@@ -1,0 +1,127 @@
+[
+  {
+    "claim": "Ponytail board implementation",
+    "class": "features",
+    "pub_date": "2026-10-16"
+  },
+  {
+    "claim": "Ponytail visual reference",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "T3 usage and cost semantics",
+    "class": "features",
+    "pub_date": "2026-11-02"
+  },
+  {
+    "claim": "Ponytail MIT license",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "T3 MIT license",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "CodeMie role-scoped analytics",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "CodeMie skill sharing/export",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "CodeMie MCP and correlation",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "CodeMie enterprise capabilities",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "CodeMie explicit access/retention limits",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "Visdom tracing and analytics",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "Visdom context and dependencies",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "Visdom deployment and ticket evidence",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "Visdom commercial positioning",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "Visdom metrics methodology",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "CodeMie screenshot",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "Visdom screenshot",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "T3 inbound webhook contract",
+    "class": "features",
+    "pub_date": "2026-11-01"
+  },
+  {
+    "claim": "CodeMie API and conversation configuration",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "PAPI product/workflow",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "PAPI hosted connection/context",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "PAPI planning and learning features",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "PAPI hub screenshot",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "PAPI plan entitlements",
+    "class": "features",
+    "pub_date": "unknown"
+  },
+  {
+    "claim": "PAPI exports and platform boundaries",
+    "class": "features",
+    "pub_date": "2026-09-18"
+  }
+]

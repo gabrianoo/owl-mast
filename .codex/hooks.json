@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/gabrianoo/.local/bin/bmad-loop relay SessionStart"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/gabrianoo/.local/bin/bmad-loop relay Stop"
+          }
+        ]
+      }
+    ]
+  }
+}

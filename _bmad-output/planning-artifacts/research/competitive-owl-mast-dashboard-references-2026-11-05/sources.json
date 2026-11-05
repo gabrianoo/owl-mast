@@ -1,0 +1,152 @@
+[
+  [
+    "Ponytail board implementation",
+    "DietrichGebert",
+    "2026-10-16 (file change)",
+    "https://github.com/DietrichGebert/ponytail/blob/main/hooks/band/board.ts"
+  ],
+  [
+    "Ponytail visual reference",
+    "DietrichGebert",
+    "undated",
+    "https://raw.githubusercontent.com/DietrichGebert/ponytail/main/assets/band/board.png"
+  ],
+  [
+    "T3 usage and cost semantics",
+    "T3 Code",
+    "2026-11-02 (file change)",
+    "https://github.com/pingdotgg/t3code/blob/main/docs/user/usage.md"
+  ],
+  [
+    "Ponytail MIT license",
+    "DietrichGebert",
+    "undated",
+    "https://github.com/DietrichGebert/ponytail/blob/main/LICENSE"
+  ],
+  [
+    "T3 MIT license",
+    "T3 Tools",
+    "undated",
+    "https://github.com/pingdotgg/t3code/blob/main/LICENSE"
+  ],
+  [
+    "CodeMie role-scoped analytics",
+    "EPAM",
+    "undated",
+    "https://docs.codemie.ai/user-guide/analytics/"
+  ],
+  [
+    "CodeMie skill sharing/export",
+    "EPAM",
+    "undated",
+    "https://docs.codemie.ai/user-guide/skills/manage-skills/"
+  ],
+  [
+    "CodeMie MCP and correlation",
+    "EPAM",
+    "undated",
+    "https://docs.codemie.ai/user-guide/workflows/configuration/integration-capabilities/"
+  ],
+  [
+    "CodeMie enterprise capabilities",
+    "EPAM",
+    "undated",
+    "https://docs.codemie.ai/user-guide/getting-started/enterprise-features/"
+  ],
+  [
+    "CodeMie explicit access/retention limits",
+    "EPAM",
+    "undated",
+    "https://docs.codemie.ai/admin/faq/"
+  ],
+  [
+    "Visdom tracing and analytics",
+    "VirtusLab",
+    "undated",
+    "https://visdom.virtuslab.com/platform/ai-tracing"
+  ],
+  [
+    "Visdom context and dependencies",
+    "VirtusLab",
+    "undated",
+    "https://visdom.virtuslab.com/platform/context-fabric"
+  ],
+  [
+    "Visdom deployment and ticket evidence",
+    "VirtusLab",
+    "undated",
+    "https://docs.visdom.virtuslab.com/"
+  ],
+  [
+    "Visdom commercial positioning",
+    "VirtusLab",
+    "undated",
+    "https://visdom.virtuslab.com/"
+  ],
+  [
+    "Visdom metrics methodology",
+    "VirtusLab",
+    "undated",
+    "https://visdom-maturity-matrix.virtuslab.com/matrix/delivery/metrics"
+  ],
+  [
+    "CodeMie screenshot",
+    "EPAM",
+    "undated",
+    "https://docs.codemie.ai/assets/images/analytics-dashboard-overview-85b720dc070fcf05955e3ad098ae2264.png"
+  ],
+  [
+    "Visdom screenshot",
+    "VirtusLab",
+    "undated",
+    "https://visdom.virtuslab.com/images/visdom/header-page/view-ai-tracing.webp"
+  ],
+  [
+    "T3 inbound webhook contract",
+    "T3 Code",
+    "2026-11-01 (file change)",
+    "https://github.com/pingdotgg/t3code/blob/main/docs/user/project-settings.md"
+  ],
+  [
+    "CodeMie API and conversation configuration",
+    "EPAM",
+    "undated",
+    "https://docs.codemie.ai/admin/configuration/codemie/api-configuration/"
+  ],
+  [
+    "PAPI product/workflow",
+    "PAPI",
+    "undated",
+    "https://getpapi.ai/"
+  ],
+  [
+    "PAPI hosted connection/context",
+    "PAPI",
+    "undated",
+    "https://getpapi.ai/llms.txt"
+  ],
+  [
+    "PAPI planning and learning features",
+    "PAPI",
+    "undated",
+    "https://getpapi.ai/features"
+  ],
+  [
+    "PAPI hub screenshot",
+    "PAPI",
+    "undated",
+    "https://getpapi.ai/landing/hub-desktop-light.webp"
+  ],
+  [
+    "PAPI plan entitlements",
+    "PAPI",
+    "undated",
+    "https://getpapi.ai/pricing"
+  ],
+  [
+    "PAPI exports and platform boundaries",
+    "PAPI",
+    "2026-09-18",
+    "https://getpapi.ai/trust"
+  ]
+]

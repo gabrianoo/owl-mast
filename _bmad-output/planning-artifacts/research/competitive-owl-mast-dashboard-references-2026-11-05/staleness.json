@@ -1,0 +1,36 @@
+{
+  "today": "2026-11-05",
+  "claims": [
+    {
+      "claim": "Ponytail board implementation",
+      "class": "features",
+      "pub_date": "2026-10-16",
+      "recheck": "2027-01-16",
+      "stale": false
+    },
+    {
+      "claim": "T3 usage and cost semantics",
+      "class": "features",
+      "pub_date": "2026-11-02",
+      "recheck": "2027-02-02",
+      "stale": false
+    },
+    {
+      "claim": "T3 inbound webhook contract",
+      "class": "features",
+      "pub_date": "2026-11-01",
+      "recheck": "2027-02-01",
+      "stale": false
+    },
+    {
+      "claim": "PAPI exports and platform boundaries",
+      "class": "features",
+      "pub_date": "2026-09-18",
+      "recheck": "2026-12-18",
+      "stale": false
+    }
+  ],
+  "stale_count": 0,
+  "earliest_recheck": "2026-12-18",
+  "no_window_classes": []
+}
