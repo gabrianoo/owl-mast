@@ -1,0 +1,32 @@
+{
+  "artifact": "/mnt/c/Users/gabrianoo/Downloads/Owl-Mast-UX-Review-2026-11-05.html",
+  "bytes": 502642,
+  "sha256": "77b6a0a1c6133053fbd142f2d456d0d7a6c42bf5b6bbe744fdb20abf5dbec15d",
+  "screens": 17,
+  "local_routes_checked": 54,
+  "source_sample_counts": {
+    "jira": 6,
+    "github": 5,
+    "bitbucket": 5,
+    "notion": 5
+  },
+  "external_assets": 0,
+  "static_checks": [
+    "embedded-source identity",
+    "IDs/ARIA",
+    "JavaScript syntax",
+    "local routes and anchors",
+    "exact CSS-bank reconstruction",
+    "six source stage names and separate unmapped group",
+    "all 16 gallery embeds equal source mocks"
+  ],
+  "runtime_spot_checks": [
+    "1100px dark clean package initial render; no console errors",
+    "Updated board at 320px light and 1200px dark: no outer overflow; assigned/team counts 6/8",
+    "Knowledge statistics at 390px dark: memory filtering and reset; no outer overflow",
+    "Audit at 320px light: no outer overflow",
+    "Dependencies at 390px dark: no outer overflow, mobile List default",
+    "Connections at 320px light: no outer overflow; observed/configured machine context"
+  ],
+  "limits": "Author static checks and runtime spot checks, not assistive-technology conformance or live integration. Counts/events are illustrative; real Notion load/use telemetry unavailable. Prior independent review predates UX-18\u201324."
+}

@@ -1,0 +1,15 @@
+# Per-ticket run history reference
+
+- Confirmed input: UX-18 requires model name, effort per task, session ID, ticket input/output tokens, and machine/sandbox identity. This is a read-only observation addition to S2/S7.
+- The new user-supplied execution-ledger image informed the ticket → task-role → run-evidence hierarchy. Its figures, session UUIDs, local path and work records were not copied. Accepted Owl Mast typography, palette, chips and owl mark remain.
+- Layout is a designer proposal: ticket header and token subtotal, then separate implementation/review cards on wider layouts; vertically stacked cards below 600px. A third verification record shows partial evidence and a different machine.
+- All records and values are illustrative. SYN-42, client/session/machine IDs, time windows, model/effort examples and token counts do not establish current provider availability, actual integration or pilot results.
+- This is a separate illustrative dataset from the existing Usage screen. Its numbers are not part of that screen's totals; the separation is explicitly visible in the example banner.
+- Arithmetic: implementation 120,000 IN / 8,000 OUT plus review 40,000 IN / 2,000 OUT gives a partial 160,000 IN / 10,000 OUT subtotal. Verification counters are unavailable. The 16,000 input cache reads are a subset and are not added again. Coverage is 2 of 3 permitted fixture records, never a hidden-record count.
+- Model and effort describe each recorded contribution. In the product, any changes within a run must retain their source-supported segments/settings; a single ticket model/effort cannot overwrite them. The fixture uses one setting per run only for readability.
+- Session IDs are selectable in full and source-qualified in disclosures. They are not universal identities. Personal owl aliases remain distinct from provider type, client identity and model name.
+- Machine labels describe observation, not a routing control or security-isolation guarantee. Underlying fixture machine identity is inspectable where supplied. No raw hostname, IP address or local path is required.
+- Finished runs do not establish ticket acceptance. Run state, trace coverage and token coverage are separately labeled. Missing model/effort stays Unknown; absent token or price evidence stays Unavailable rather than zero.
+- Token allocation requires supporting attribution; shared usage without it remains unassigned. A distinct measured retry may add usage; duplicate observations do not. The existing separate observed-unit, API-equivalent estimate, subscription-allocation and actual-bill classes remain.
+- No new component or primary IA destination is introduced by this reference. The root may expose it as a third tab in the private demo for convenient comparison; product navigation remains governed by EXPERIENCE.md.
+- The fragment is namespaced with `rh-` classes/IDs except the integration heading `run-history-heading`. It has no scripts, external assets or network calls. The standalone embeds the accepted theme fallback and owl mark. Root handles preview/render verification.

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Owl Mast — Usage</title>
+<style>
+/* Governed by DESIGN: Brand & Style, Typography, Layout & Spacing, Components.
+   EXPERIENCE: S7, scope-bar, usage-breakdown, settings-field, state-message;
+   State Patterns S7; Usage semantics; J6 steps 1–4. The accepted key-focus shell
+   is retained. Host tokens illustrate, rather than validate, the exact palette.
+   All quantities, rates, source records, and mappings are illustrative fixtures. */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: transparent; }
+body { color: var(--foreground,var(--owl-text)); font: 14px/1.5 var(--font-sans, system-ui, sans-serif); -webkit-font-smoothing: antialiased; }
+h1, h2, h3, p, dl, dd { margin: 0; }
+strong { font-weight: 600; }
+svg { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
+.study-note { margin-bottom: 12px; color: var(--muted-foreground,var(--owl-secondary-text)); }
+.study-note strong { color: var(--foreground,var(--owl-text)); }
+.app { overflow: hidden; border: 1px solid var(--border,var(--owl-divider)); border-radius: 14px; background: var(--background,var(--owl-canvas)); }
+.topbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px 24px; border-bottom: 1px solid var(--border,var(--owl-divider)); background: var(--card,var(--owl-card)); }
+.brand { display: flex; align-items: center; gap: 9px; font-size: 17px; font-weight: 700; letter-spacing: -.035em; }
+.brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--border,var(--owl-divider)); border-radius: 10px; color: var(--primary,var(--owl-primary)); background: var(--secondary,var(--owl-secondary-surface)); }
+.brand-mark svg { width: 24px; height: 24px; stroke-width: 1.8; }
+.workspace { text-align: right; font-weight: 600; }
+.workspace span { display: block; font-weight: 400; color: var(--muted-foreground,var(--owl-secondary-text)); }
+.nav { display: flex; align-items: center; gap: 24px; min-height: 48px; padding: 0 24px; border-bottom: 1px solid var(--border,var(--owl-divider)); color: var(--muted-foreground,var(--owl-secondary-text)); }
+.nav span { display: flex; align-items: center; min-height: 48px; }
+.nav [aria-current] { font-weight: 600; color: var(--foreground,var(--owl-text)); border-bottom: 2px solid var(--primary,var(--owl-primary)); }
+main { padding: 24px; }
+h1 { font-size: 28px; line-height: 1.2; font-weight: 650; letter-spacing: -.025em; }
+h2 { font-size: 18px; line-height: 1.4; font-weight: 600; letter-spacing: -.015em; }
+h3 { font-size: 14px; font-weight: 600; }
+.subtitle { margin-top: 7px; color: var(--muted-foreground,var(--owl-secondary-text)); }
+.scope { padding: 12px 16px; background: var(--secondary,var(--owl-secondary-surface)); border-radius: 8px; margin-top: 20px; }
+.scope p + p { margin-top: 3px; }
+.muted { color: var(--muted-foreground,var(--owl-secondary-text)); }
+.id { font-family: var(--font-mono, ui-monospace, monospace); }
+.ticket-chip { display: inline-flex; align-items: center; min-height: 28px; padding: 2px 8px; border: 1px solid var(--border,var(--owl-divider)); border-radius: 6px; background: var(--secondary,var(--owl-secondary-surface)); color: var(--foreground,var(--owl-text)); font: 600 14px/1.5 var(--font-mono, ui-monospace, monospace); vertical-align: middle; }
+.agent-chip { --chip-accent: var(--primary,var(--owl-primary)); display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; min-height: 30px; padding: 3px 8px; border: 1px solid color-mix(in srgb, var(--chip-accent) 40%, var(--border,var(--owl-divider))); border-radius: 8px; background: color-mix(in srgb, var(--chip-accent) 8%, var(--card,var(--owl-card))); color: var(--foreground,var(--owl-text)); font-size: 14px; vertical-align: middle; }
+.agent-chip.snowy { --chip-accent: var(--identity-mulberry); }
+.agent-chip .alias { font-weight: 600; }
+.type-mark { width: 16px; height: 16px; stroke-width: 1.6; color: var(--chip-accent); }
+.metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
+.metric { min-width: 0; padding: 16px; border: 1px solid var(--border,var(--owl-divider)); border-radius: 12px; background: var(--card,var(--owl-card)); }
+.metric dt { font-weight: 600; }
+.metric dd { margin-top: 8px; font-size: 25px; line-height: 1.25; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.025em; }
+.metric .unavailable { font-size: 20px; }
+.metric p { margin-top: 8px; color: var(--muted-foreground,var(--owl-secondary-text)); }
+.panel { margin-top: 20px; border: 1px solid var(--border,var(--owl-divider)); border-radius: 12px; padding: 16px; background: var(--card,var(--owl-card)); }
+.compact-note { margin-top: 12px; color: var(--muted-foreground,var(--owl-secondary-text)); }
+.toolbar { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: end; margin-top: 16px; }
+label { display: block; margin-bottom: 5px; }
+select { width: 100%; min-height: 44px; padding: 8px 12px; font: inherit; color: var(--foreground,var(--owl-text)); background: var(--card,var(--owl-card)); border: 1px solid var(--muted-foreground,var(--owl-secondary-text)); border-radius: 8px; }
+select:disabled { opacity: 1; color: var(--muted-foreground,var(--owl-secondary-text)); -webkit-text-fill-color: var(--muted-foreground,var(--owl-secondary-text)); cursor: not-allowed; }
+.work-row { margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--border,var(--owl-divider)); }
+.row-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 12px; }
+.row-head strong { font-variant-numeric: tabular-nums; }
+.work-row > p { margin-top: 4px; color: var(--muted-foreground,var(--owl-secondary-text)); }
+.bar { height: 5px; margin-top: 10px; border-radius: 6px; background: var(--secondary,var(--owl-secondary-surface)); overflow: hidden; }
+.bar span { display: block; width: var(--share); height: 100%; background: var(--primary,var(--owl-primary)); }
+.bar.unassigned span { background: var(--muted-foreground,var(--owl-secondary-text)); }
+details { margin-top: 10px; }
+summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding: 8px 0; cursor: pointer; font-weight: 600; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary::after { content: '+'; font-size: 20px; font-weight: 400; flex-shrink: 0; }
+details[open] > summary::after { content: '−'; }
+summary:focus-visible { outline: 3px solid var(--ring,var(--owl-control-outline)); outline-offset: 3px; border-radius: 4px; }
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 20px; padding: 8px 0 12px; }
+.fields > div { min-width: 0; }
+.fields dt { color: var(--muted-foreground,var(--owl-secondary-text)); margin-bottom: 3px; }
+.fields dd { overflow-wrap: anywhere; }
+.method { margin: 5px 0 12px; padding: 12px; background: var(--secondary,var(--owl-secondary-surface)); border-radius: 8px; }
+.method p + p { margin-top: 8px; }
+.disclosure { padding-top: 0; padding-bottom: 0; }
+.disclosure > details { margin: 0; }
+.disclosure > details > summary { min-height: 54px; }
+.footer { margin-top: 18px; color: var(--muted-foreground,var(--owl-secondary-text)); }
+.alternate { margin-top: 18px; padding: 16px; border: 1px dashed var(--border,var(--owl-divider)); border-radius: 12px; background: var(--card,var(--owl-card)); }
+.alternate h2 { font-size: 16px; margin: 4px 0 8px; }
+.alternate p + p { margin-top: 6px; }
+@media (max-width: 599px) {
+ .topbar { padding: 14px 16px; gap: 12px; align-items: flex-start; }
+ .brand { font-size: 16px; }
+ .workspace { max-width: 130px; }
+ .nav { gap: 20px; padding: 0 16px; }
+ main { padding: 20px 16px; }
+ h1 { font-size: 25px; }
+ .metrics, .toolbar, .fields { grid-template-columns: 1fr; }
+ .metric, .panel { padding: 14px; }
+ .disclosure { padding-top: 0; padding-bottom: 0; }
+ .scope { padding: 12px; }
+}
+
+/* Reviewer corrections: operational 14px floor; 16px fields; safe personal identity;
+   native disclosures; readable reflow; fixed type glyphs. No runtime integration. */
+.app,.project-panel{overflow:visible}.topbar{border-radius:12px 12px 0 0}.nav,.brand,.row-head,.agent-line,.client-head,.client-chiprow{flex-wrap:wrap}.brand{white-space:normal}.nav{gap:8px 20px}
+body{overflow-wrap:anywhere}.meta,.workspace,.workspace span,.eyebrow,.readiness-time,.notification-state-label,.footer,.study-note{font-size:14px}
+input,select,.field input[type=text],.field select{font-size:16px}button,input,select,summary,a{touch-action:manipulation}
+a{color:var(--primary,var(--owl-primary));text-underline-offset:3px}a.local-link{display:inline-flex;align-items:center;min-height:44px;padding:8px 4px;gap:8px}
+summary:focus-visible,a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-visible{outline:3px solid var(--ring,var(--owl-control-outline));outline-offset:3px}
+summary::after{content:none!important}summary{gap:10px;min-height:44px}summary>span{min-width:0}.chevron{width:16px;height:16px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.7}details[open]>summary .chevron{transform:rotate(90deg)}
+.agent-chip{display:inline-flex;align-items:center;flex-wrap:wrap;gap:6px;max-width:100%;padding:6px 9px;border:1px solid var(--border,var(--owl-divider));border-radius:999px;background:var(--secondary,var(--owl-secondary-surface));color:var(--foreground,var(--owl-text));font-size:14px;line-height:1.5;vertical-align:middle;overflow-wrap:anywhere}.agent-chip .alias{font-weight:600;overflow-wrap:anywhere;max-width:100%}.agent-chip .type,.stable-id{color:var(--muted-foreground,var(--owl-secondary-text));font-size:14px}.stable-id{font-family:var(--font-mono,monospace)}.agent-marker{width:8px;height:8px;flex-shrink:0;transform:rotate(45deg);border:1px solid var(--identity-color,CanvasText);background:var(--identity-color,CanvasText);margin:0 3px}.type-glyph{display:block;width:16px;height:16px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;color:var(--muted-foreground,var(--owl-secondary-text))}
+.ticket-chip{max-width:100%;overflow-wrap:anywhere}.scope-basis{margin:10px 0;color:var(--foreground,var(--owl-text));font-size:14px}.section-links{display:flex;gap:0 16px;flex-wrap:wrap;margin:10px 0}.section-links a{min-height:44px;display:inline-flex;align-items:center}.facts dd p,.metrics dd p{font-size:14px;font-weight:400;letter-spacing:normal;line-height:1.5}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.bar span,.bar.unassigned span{background:var(--primary,var(--owl-primary))}
+fieldset{min-width:0;border:1px solid var(--border,var(--owl-divider));border-radius:8px;padding:12px;margin:12px 0}legend{font-size:14px;font-weight:600;padding:0 6px}.check-label{min-height:44px}.help{margin-top:8px;font-size:14px}.error-copy{color:var(--foreground,var(--owl-text));border-left:3px solid var(--destructive,var(--owl-error));padding-left:10px;margin:12px 0}.list{padding-left:20px;margin:12px 0}.list li+li{margin-top:6px}.fixture-state{margin-top:18px;padding:16px;border:1px dashed var(--border,var(--owl-divider));border-radius:12px}.fixture-state h1,.fixture-state h2{margin:8px 0}.arrival-shell{border:1px solid var(--border,var(--owl-divider));border-radius:12px;padding:16px;margin-top:16px;background:var(--card,var(--owl-card))}.arrival-shell p+p{margin-top:8px}.receipt-note{margin-top:10px}.totals dd{font-variant-numeric:tabular-nums}
+@media(max-width:599px){.row-head,.facts,.fields,.toolbar,.metrics,.client-grid,.split{display:grid;grid-template-columns:1fr}.row-head{gap:6px}.source-row,.definition-row{grid-template-columns:1fr}.workspace,.workspace span{font-size:14px}.topbar{align-items:flex-start}.nav{flex-wrap:wrap}.work-row{min-width:0}.agent-chip{max-width:100%}.app{overflow:visible}}
+@media(forced-colors:active){.agent-marker{background:CanvasText;border:1px solid CanvasText}.bar span,.progress-track span{background:Highlight}.ticket-chip,.agent-chip{border:1px solid CanvasText}.nav [aria-current]{outline:2px solid Highlight;outline-offset:-2px}}
+.skip-link{position:absolute;left:12px;top:-200px;z-index:5;padding:10px;background:var(--card,var(--owl-card));color:var(--foreground,var(--owl-text))}.skip-link:focus{top:12px}
+</style>
+<style id="owl-reference-theme">:root{--owl-canvas:#F5F7FB;--owl-card:#FFFFFF;--owl-secondary-surface:#EAF0F8;--owl-text:#172337;--owl-secondary-text:#52627A;--owl-divider:#D7E0EC;--owl-control-outline:#74849B;--owl-primary:#2456D6;--owl-on-primary:#FFFFFF;--owl-knowledge:#086A7B;--owl-attention:#845900;--owl-success:#176B50;--owl-error:#B23549;--owl-identity-iris:#6B4CC2;--owl-identity-mulberry:#943B75;--owl-identity-clay:#8F4D40;--owl-identity-slate:#556579;color-scheme:light;--identity-iris:var(--owl-identity-iris);--identity-mulberry:var(--owl-identity-mulberry);--identity-clay:var(--owl-identity-clay);--identity-slate:var(--owl-identity-slate);}
+@media(prefers-color-scheme:dark){:root{--owl-canvas:#0B1018;--owl-card:#121A27;--owl-secondary-surface:#1B2738;--owl-text:#EAF1FA;--owl-secondary-text:#A5B5CB;--owl-divider:#2E3C50;--owl-control-outline:#73869E;--owl-primary:#91B5FF;--owl-on-primary:#0B1730;--owl-knowledge:#70D7E7;--owl-attention:#F0C268;--owl-success:#72D6AF;--owl-error:#FF95A5;--owl-identity-iris:#C4B0FF;--owl-identity-mulberry:#F0ADDA;--owl-identity-clay:#F0B5A8;--owl-identity-slate:#B7C8DD;color-scheme:dark;}}
+html[data-owl-theme="dark"]{--owl-canvas:#0B1018;--owl-card:#121A27;--owl-secondary-surface:#1B2738;--owl-text:#EAF1FA;--owl-secondary-text:#A5B5CB;--owl-divider:#2E3C50;--owl-control-outline:#73869E;--owl-primary:#91B5FF;--owl-on-primary:#0B1730;--owl-knowledge:#70D7E7;--owl-attention:#F0C268;--owl-success:#72D6AF;--owl-error:#FF95A5;--owl-identity-iris:#C4B0FF;--owl-identity-mulberry:#F0ADDA;--owl-identity-clay:#F0B5A8;--owl-identity-slate:#B7C8DD;color-scheme:dark;}
+html[data-owl-theme="light"]{--owl-canvas:#F5F7FB;--owl-card:#FFFFFF;--owl-secondary-surface:#EAF0F8;--owl-text:#172337;--owl-secondary-text:#52627A;--owl-divider:#D7E0EC;--owl-control-outline:#74849B;--owl-primary:#2456D6;--owl-on-primary:#FFFFFF;--owl-knowledge:#086A7B;--owl-attention:#845900;--owl-success:#176B50;--owl-error:#B23549;--owl-identity-iris:#6B4CC2;--owl-identity-mulberry:#943B75;--owl-identity-clay:#8F4D40;--owl-identity-slate:#556579;color-scheme:light;}
+html,body{background:transparent}body{color:var(--foreground,var(--owl-text));font-family:var(--font-sans,system-ui)}input,select,textarea{font-size:16px}input,select,textarea,button{max-width:100%}.app{overflow:visible}.agent-chip,.ticket-chip{border-radius:9999px;max-width:100%;overflow-wrap:anywhere}.agent-chip{background:var(--secondary,var(--owl-secondary-surface));border-color:var(--border,var(--owl-divider));color:var(--foreground,var(--owl-text))}.type-glyph{color:var(--foreground,var(--owl-text))}.agent-dot,.agent-marker,.identity-marker{width:9px;height:9px;flex:0 0 9px;border-radius:1px;transform:rotate(45deg)}p,dd,h1,h2,h3{overflow-wrap:anywhere}@media(forced-colors:active){[aria-current],[aria-pressed="true"]{outline:2px solid Highlight}.agent-dot,.agent-marker,.identity-marker{background:CanvasText}}</style></head>
+<body><a class="skip-link local-link" href="#main-content">Skip to content</a>
+
+<p class="study-note"><strong>Illustrative data.</strong> Usage study. Quantities and rates are fixtures, not current provider prices or actual project measurements.</p>
+<div class="app">
+ <header class="topbar"><div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5l3 2 5-1 5 1 3-2-1 11-7 4-7-4z"/><path d="M7 11h3m4 0h3m-6 3 1 1 1-1"/><path d="M12 2v3m0 16v1"/></svg></span>Owl Mast</div><div class="workspace">AISQUAD<span>Syntelligence</span></div></header>
+ <nav class="nav" aria-label="Workspace surfaces"><span>Daily Work</span><span>Focus</span><span aria-current="page">Usage</span></nav>
+ <main id="main-content" tabindex="-1"><nav aria-label="Related views" style="display:flex;flex-wrap:wrap;gap:8px 18px;margin-bottom:14px"><a style="display:inline-flex;align-items:center;min-height:44px;font-size:14px" href="knowledge-usage.html">Skill and memory statistics</a></nav>
+  <h1 id="usage-heading" tabindex="-1">Understand the usage</h1><p class="subtitle">Observed consumption, with its evidence and gaps.</p>
+  <div class="scope"><p><strong>Syntelligence</strong> · Syntelligence Jira site + GitHub</p><p>5 Nov, 00:00–08:42 Europe/Warsaw · Claude + Codex records</p></div>
+
+  <p class="scope-basis">Counted from records you can access.</p><p>Only measurement classes you are authorized to see are included. No allocation basis exposes another project’s share.</p><nav class="section-links" aria-label="Usage sections"><a href="#breakdown-title">Work attribution</a><a href="#measurement-evidence">Calculation and coverage</a></nav><dl class="metrics">
+   <div class="metric"><dt>Observed units</dt><dd>1.60M tokens<p>1.40M input + 0.20M output<br>6 observed sessions</p></dd></div>
+   <div class="metric"><dt>API-equivalent estimate</dt><dd>$7.20 <span style="font-size:14px;font-weight:400">USD</span><p>1.20M tokens priced · 0.40M unpriced<br>Illustrative schedule · 5 Nov</p></dd></div>
+   <div class="metric"><dt>Subscription allocation</dt><dd class="unavailable">Not allocated<p>No allocation basis recorded for this project and period.</p></dd></div>
+   <div class="metric"><dt>Actual bill</dt><dd class="unavailable">Unavailable<p>No billing evidence connected. The estimate above is not a charge.</p></dd></div>
+  </dl>
+  <p class="compact-note">0.90M cached-read tokens are already included in input. Missing usage is not counted as zero.</p>
+  <p><a class="local-link" href="run-history.html">Inspect a separate ticket-linked run-history example</a></p><p class="compact-note">That example shows model, effort, source session ID, machine and tokens IN/OUT per task. Its figures are a separate dataset and are not included in this screen’s totals.</p>
+
+  <section class="panel" aria-labelledby="breakdown-title">
+   <h2 id="breakdown-title" tabindex="-1">Usage awaiting work attribution</h2>
+   <details><summary><span>View options · Attribution status / both clients</span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></summary><div class="toolbar"><div><label for="group">Breakdown</label><select id="group" disabled aria-describedby="fixed-controls"><option>Attribution status</option></select></div><div><label for="client">Client</label><select id="client" disabled aria-describedby="fixed-controls"><option>Claude + Codex</option></select></div></div><p class="compact-note" id="fixed-controls">Selections are fixed in this static preview. Expand a row to inspect its example evidence.</p></details>
+
+   <article class="work-row"><div class="row-head"><h3>Shared session · work allocation unavailable</h3><strong>0.60M tokens · 37.5%</strong></div><p class="scope-basis">Counted from records you can access.</p><div class="bar" aria-hidden="true"><span style="--share:37.5%"></span></div><p>$3.60 API-equivalent estimate · kept unassigned to a work item</p><p><span class="agent-chip" style="--identity-color:var(--identity-iris, CanvasText)"><span class="agent-marker" aria-hidden="true"></span><span class="alias">Tawny</span><span class="sr-only">, </span><svg class="type-glyph" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1M5.6 18.4l2.1-2.1m8.6-8.6 2.1-2.1"/></svg><span class="type">Claude</span><span class="sr-only"> agent, client </span><span class="stable-id">CL-17</span></span></p><details><summary><span>Inspect shared-session attribution<span class="sr-only"> for CL-17, session R-17</span></span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></summary><dl class="fields"><div><dt>Client / session</dt><dd>CL-17 / R-17</dd></div><div><dt>Initiating person</dt><dd>Ahmed · confirmed session record</dd></div><div><dt>Permitted linked work</dt><dd><span class="ticket-chip">SYN-42</span> + <span class="ticket-chip">SYN-67</span></dd></div><div><dt>Allocation evidence</dt><dd>No supported split between those work items. All 0.60M tokens and $3.60 remain unassigned; neither ticket receives the full session amount.</dd></div></dl><p>These links are visible because the viewer may read both. Otherwise no shared marker or hidden work reference would appear.</p></details></article>
+<article class="work-row"><div class="row-head"><h3>Unlinked client usage</h3><strong>0.40M tokens · 25%</strong></div><p class="scope-basis">Counted from records you can access.</p><div class="bar" aria-hidden="true"><span style="--share:25%"></span></div><p>$2.40 API-equivalent estimate · no supported work-item mapping</p><p><span class="agent-chip" style="--identity-color:var(--identity-mulberry, CanvasText)"><span class="agent-marker" aria-hidden="true"></span><span class="alias">Snowy</span><span class="sr-only">, </span><svg class="type-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 6-5 6 5 6m8-12 5 6-5 6m-3-14-2 16"/></svg><span class="type">Codex</span><span class="sr-only"> agent, client </span><span class="stable-id">CX-16</span></span></p><details><summary><span>Inspect unlinked attribution<span class="sr-only"> for CX-16, session R-16</span></span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></summary><dl class="fields"><div><dt>Client / session</dt><dd>CX-16 / R-16</dd></div><div><dt>Initiating person</dt><dd>Ahmed · confirmed session record</dd></div><div><dt>Model</dt><dd>Recorded model B · illustrative label</dd></div><div><dt>Work item</dt><dd>Unknown. A person, client, or nearby timestamp does not establish a ticket link.</dd></div></dl></details></article>
+<article class="work-row"><div class="row-head"><h3>Other unassigned work</h3><strong>0.60M tokens · 37.5%</strong></div><p class="scope-basis">Counted from records you can access.</p><div class="bar" aria-hidden="true"><span style="--share:37.5%"></span></div><p>$1.20 estimate for 0.20M tokens · 0.40M remain unpriced</p><details><summary><span>Inspect remaining attribution gaps<span class="sr-only"></span></span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></summary><p>These authorized project records have no supported work mapping. One session has no model label, usable price mapping, or confirmed person association. Units remain counted without inventing a ticket, owner, or price.</p></details></article><p class="compact-note">All 1.60M observed tokens remain unassigned to individual work items. Bars partition authorized observed records once; no people ranking or inaccessible-source residual is shown.</p>
+  </section>
+
+  <section class="panel disclosure" aria-label="Dimensions and measurement evidence" id="measurement-evidence" tabindex="-1"><details><summary><span>Dimensions, calculation, and coverage</span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></summary><p>Supported dimensions in this example: project, client, model, agent, person, session, and work item. Unknown values stay visible within each breakdown.</p><div class="method"><p><strong>Estimate basis:</strong> 1.05M priced input tokens × $4/M + 0.15M priced output tokens × $20/M = $7.20. Illustrative schedule dated 5 Nov 2026; these are not vendor rates.</p><p><strong>Unpriced:</strong> 0.35M input + 0.05M output have no usable price mapping. They are excluded from the estimate, included in observed units.</p><p><strong>Counting:</strong> cached reads are a subset of input, counted once. Shared session appearances do not create extra sessions or tokens.</p></div><p class="muted">Latest received client event: 08:40. Last successful collection: 08:42. This scope includes only permitted Syntelligence records. No other project identity or usage is disclosed.</p><p class="compact-note">Source records and rates are fixed examples. This screen does not validate connectors, bills, source coverage, or economic return.</p></details></section>
+  <p class="footer">Usage describes consumption. It does not measure a person's productivity or the value of delivered work.</p>
+ </main>
+</div>
+<section class="alternate" aria-labelledby="alternate-title"><p class="muted">Alternate state · partial collection</p><h2 id="alternate-title">Codex collection is delayed.</h2><p>Last successful collection: 08:20. Keep received, authorized data and label totals incomplete; unavailable records are not zero.</p><p class="muted">The gap concerns collection, not agent health. If source access cannot be checked, withhold its records and totals rather than expose cached detail.</p></section>
+
+</body>
+</html>

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Owl Mast — Work evidence</title>
+<style>
+/* Governed by DESIGN: Brand & Style, Typography, Layout & Spacing, Components.
+   EXPERIENCE: S2, scope-bar, work-record, progress-evidence, evidence-detail,
+   State Patterns S2, Evidence semantics, SC-1 steps 3–5. This static composition
+   extends key-focus.html's accepted shell. Host tokens illustrate the direction;
+   they do not verify the exact DESIGN palette. All records and rules are fixtures. */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: transparent; }
+body { color: var(--foreground, CanvasText); font: 14px/1.5 var(--font-sans, system-ui, sans-serif); -webkit-font-smoothing: antialiased; }
+h1, h2, h3, p, dl, dd { margin: 0; }
+strong { font-weight: 600; }
+svg { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
+.study-note { margin: 0 0 12px; color: var(--muted-foreground, CanvasText); }
+.study-note strong { color: var(--foreground, CanvasText); }
+.app { overflow: hidden; border: 1px solid var(--border, GrayText); border-radius: 14px; background: var(--background, Canvas); }
+.topbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px 24px; border-bottom: 1px solid var(--border, GrayText); background: var(--card, Canvas); }
+.brand { display: flex; align-items: center; gap: 9px; font-size: 17px; font-weight: 700; letter-spacing: -.035em; }
+.brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--border, GrayText); border-radius: 10px; color: var(--primary, LinkText); background: var(--secondary, Canvas); }
+.brand-mark svg { width: 24px; height: 24px; stroke-width: 1.8; }
+.workspace { text-align: right; font-weight: 600; }
+.workspace span { display: block; font-weight: 400; color: var(--muted-foreground, CanvasText); }
+.nav { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 48px; padding: 8px 24px; border-bottom: 1px solid var(--border, GrayText); color: var(--muted-foreground, CanvasText); }
+.nav [aria-current] { font-weight: 600; color: var(--foreground, CanvasText); }
+main { padding: 24px; }
+.scope { padding: 12px 16px; background: var(--secondary, Canvas); border-radius: 8px; margin-bottom: 20px; }
+.scope p + p { margin-top: 3px; }
+.muted { color: var(--muted-foreground, CanvasText); }
+.id { font-family: var(--font-mono, ui-monospace, monospace); }
+.ticket-chip { display: inline-flex; align-items: center; min-height: 28px; padding: 2px 8px; border: 1px solid var(--border, GrayText); border-radius: 6px; background: var(--secondary, Canvas); color: var(--foreground, CanvasText); font: 600 14px/1.5 var(--font-mono, ui-monospace, monospace); vertical-align: middle; }
+.agent-chip { --chip-accent: var(--primary, LinkText); display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; min-height: 30px; padding: 3px 8px; border: 1px solid color-mix(in srgb, var(--chip-accent) 40%, var(--border, GrayText)); border-radius: 8px; background: color-mix(in srgb, var(--chip-accent) 8%, var(--card, Canvas)); color: var(--foreground, CanvasText); font-size: 14px; vertical-align: middle; }
+.agent-chip.snowy { --chip-accent: var(--chart-2, var(--primary, LinkText)); }
+.agent-chip .alias { font-weight: 600; }
+.type-mark { width: 16px; height: 16px; stroke-width: 1.6; color: var(--chip-accent); }
+.agent-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.agent-line + .agent-line { margin-top: 7px; }
+h1 { font-size: 28px; line-height: 1.2; letter-spacing: -.025em; font-weight: 650; }
+.eyebrow { margin-bottom: 5px; color: var(--muted-foreground, CanvasText); }
+.title-note { margin-top: 8px; color: var(--muted-foreground, CanvasText); }
+.panel { margin-top: 20px; padding: 16px; background: var(--card, Canvas); border: 1px solid var(--border, GrayText); border-radius: 12px; }
+h2 { font-size: 18px; line-height: 1.4; font-weight: 600; letter-spacing: -.015em; }
+.section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.measure { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.progress-track { height: 5px; border-radius: 6px; background: var(--secondary, Canvas); margin: 12px 0 9px; overflow: hidden; }
+.progress-track span { display: block; width: 75%; height: 100%; background: var(--primary, LinkText); }
+details { margin-top: 10px; }
+summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding: 8px 0; cursor: pointer; list-style: none; font-weight: 600; }
+summary::-webkit-details-marker { display: none; }
+summary::after { content: '+'; font-size: 20px; font-weight: 400; flex-shrink: 0; }
+details[open] > summary::after { content: '−'; }
+summary:focus-visible { outline: 3px solid var(--ring, Highlight); outline-offset: 3px; border-radius: 4px; }
+.criterion-list { list-style: none; padding: 0; margin: 4px 0 8px; }
+.criterion-list li { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 10px; padding: 9px 0; border-top: 1px solid var(--border, GrayText); }
+.criterion-state { color: var(--muted-foreground, CanvasText); }
+.facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 14px; }
+.fact { min-width: 0; padding-left: 12px; border-left: 2px solid var(--border, GrayText); }
+.fact dt { color: var(--muted-foreground, CanvasText); }
+.fact dd { margin-top: 4px; font-weight: 600; }
+.fact p { margin-top: 3px; color: var(--muted-foreground, CanvasText); }
+.acceptance { background: var(--secondary, Canvas); border: 0; }
+.acceptance .section-head p { color: var(--foreground, CanvasText); font-weight: 600; }
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 20px; margin-top: 14px; }
+.fields > div { min-width: 0; }
+.fields dt { margin-bottom: 4px; color: var(--muted-foreground, CanvasText); }
+.fields dd { overflow-wrap: anywhere; }
+.note { margin-top: 12px; }
+.disclosure { padding-top: 0; padding-bottom: 0; }
+.disclosure > details { margin-top: 0; }
+.disclosure > details > summary { min-height: 54px; }
+.disclosure .fields { margin: 2px 0 16px; }
+.disclosure p { margin: 0 0 14px; }
+.relationship-list { margin: 0 0 14px; padding-left: 20px; }
+.relationship-list li + li { margin-top: 8px; }
+.footer { margin-top: 18px; color: var(--muted-foreground, CanvasText); }
+.alternate { margin-top: 18px; padding: 16px; border: 1px dashed var(--border, GrayText); border-radius: 12px; background: var(--card, Canvas); }
+.alternate h2 { font-size: 16px; margin: 4px 0 8px; }
+.alternate p + p { margin-top: 6px; }
+@media (max-width: 599px) {
+ .topbar { padding: 14px 16px; gap: 12px; align-items: flex-start; }
+ .brand { font-size: 16px; }
+ .workspace { max-width: 130px; }
+ .nav { padding: 10px 16px; }
+ main { padding: 20px 16px; }
+ h1 { font-size: 25px; }
+ .scope { padding: 12px; }
+ .facts, .fields { grid-template-columns: 1fr; }
+ .panel { padding: 14px; }
+ .disclosure { padding-top: 0; padding-bottom: 0; }
+ .criterion-list li { grid-template-columns: 1fr; gap: 2px; }
+}
+</style>
+</head>
+<body>
+<p class="study-note"><strong>Illustrative data.</strong> Full work-evidence study. Source records, people mappings, times, and the acceptance rule below are examples.</p>
+<div class="app">
+ <header class="topbar">
+  <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5l3 2 5-1 5 1 3-2-1 11-7 4-7-4z"/><path d="M7 11h3m4 0h3m-6 3 1 1 1-1"/><path d="M12 2v3m0 16v1"/></svg></span>Owl Mast</div>
+  <div class="workspace">AISQUAD<span>Syntelligence</span></div>
+ </header>
+ <nav class="nav" aria-label="Location"><span>Daily work</span><span aria-hidden="true">/</span><span aria-current="page">Work evidence</span></nav>
+ <main>
+  <div class="scope"><p><strong>Syntelligence</strong> · Syntelligence Jira site + GitHub</p><p class="muted">Observed 5 Nov, 08:42 Europe/Warsaw · This project only</p></div>
+  <p class="eyebrow"><span class="ticket-chip">SYN-52</span> · Epic <span class="ticket-chip">SYN-10</span> Account onboarding</p>
+  <h1>Verify account rollout rules</h1>
+  <p class="title-note">Owned by Mohamed · Contributions observed</p>
+  <div class="agent-line" style="margin-top:8px"><span class="agent-chip"><span class="alias">Tawny</span><svg class="type-mark" aria-hidden="true" viewBox="0 0 16 16"><path d="M8 2v12M2 8h12M4 4l8 8M12 4l-8 8"/></svg><span>Claude</span></span><span class="agent-chip snowy"><span class="alias">Snowy</span><svg class="type-mark" aria-hidden="true" viewBox="0 0 16 16"><path d="m3 4 4 4-4 4m6 0h4"/></svg><span>Codex</span></span></div>
+
+  <section class="panel" aria-labelledby="criteria-title">
+   <div class="section-head"><h2 id="criteria-title">Acceptance criteria</h2><p class="measure">3 of 4 · 75%</p></div>
+   <div class="progress-track" role="progressbar" aria-label="Jira checklist" aria-valuenow="75" aria-valuemin="0" aria-valuemax="100" aria-valuetext="3 of 4 Jira criteria marked complete; acceptance not recorded"><span></span></div>
+   <p class="muted">Jira checklist, observed 08:42. Checklist completion does not establish acceptance.</p>
+   <details><summary>Inspect the four criteria</summary><ul class="criterion-list"><li><span class="criterion-state">Complete</span><span>Document the authorized account scope.</span></li><li><span class="criterion-state">Complete</span><span>Handle an account outside the project scope.</span></li><li><span class="criterion-state">Complete</span><span>Record validation for the linked revision.</span></li><li><span class="criterion-state">Open</span><span>Confirm the rollout boundary with the project approver.</span></li></ul><p class="muted">Source checklist revision 4. A changed checklist changes this denominator.</p></details>
+  </section>
+
+  <section class="panel" aria-labelledby="facts-title">
+   <h2 id="facts-title">What the sources establish</h2>
+   <dl class="facts">
+    <div class="fact"><dt>Tracker closure</dt><dd>Closed · 08:31</dd><p>Syntelligence Jira · <span class="ticket-chip">SYN-52</span></p></div>
+    <div class="fact"><dt>Repository contribution</dt><dd>Merged · 08:34</dd><p>GitHub · PR #118 · <span class="id">c8f2a71</span></p></div>
+    <div class="fact"><dt>Checks on the revision</dt><dd>2 passed · 1 skipped</dd><p>GitHub checks · observed 08:40</p></div>
+    <div class="fact"><dt>Deployment</dt><dd>Not observed</dd><p>No deployment evidence collected.</p></div>
+   </dl>
+  </section>
+
+  <section class="panel acceptance" aria-labelledby="acceptance-title">
+   <div class="section-head"><h2 id="acceptance-title">Acceptance</h2><p>Not recorded</p></div>
+   <dl class="fields"><div><dt>Configured source rule · example</dt><dd>Project approver's sign-off in a Jira validation record for this revision.</dd></div><div><dt>Required evidence artifact</dt><dd>No matching validation record observed for <span class="id">c8f2a71</span>.</dd></div></dl>
+   <p class="note">The open criterion and missing acceptance record remain visible even though the tracker is closed and the PR is merged.</p>
+  </section>
+
+  <section class="panel" aria-labelledby="usage-title">
+   <h2 id="usage-title">Usage &amp; cost</h2>
+   <dl class="fields"><div><dt>Observed units</dt><dd>Not linked to this work</dd></div><div><dt>API-equivalent estimate</dt><dd>Unavailable</dd></div><div><dt>Subscription allocation</dt><dd>Not allocated</dd></div><div><dt>Actual bill</dt><dd>Unavailable</dd></div></dl>
+   <details><summary>Inspect usage detail</summary><p>No usage record has a supported link to <span class="ticket-chip">SYN-52</span>. No work-level units, price basis, or billed amount can be established; none is shown as zero.</p><p class="note muted">Unassigned project usage remains visible in Usage. Full project, client, model, agent, person, session, and work breakdowns preserve the same source scope.</p></details>
+  </section>
+
+  <section class="panel disclosure" aria-label="People and agent evidence">
+   <details><summary>People, agents, and correlation</summary><dl class="fields"><div><dt>Work owner</dt><dd>Mohamed · Jira assignee</dd></div><div><dt>Initiating person</dt><dd>Mohamed · confirmed session record</dd></div><div><dt>Executing agents</dt><dd><span class="agent-line"><span class="agent-chip"><span class="alias">Tawny</span><svg class="type-mark" aria-hidden="true" viewBox="0 0 16 16"><path d="M8 2v12M2 8h12M4 4l8 8M12 4l-8 8"/></svg><span>Claude</span></span><span class="id">CL-21</span> implementation</span><span class="agent-line"><span class="agent-chip snowy"><span class="alias">Snowy</span><svg class="type-mark" aria-hidden="true" viewBox="0 0 16 16"><path d="m3 4 4 4-4 4m6 0h4"/></svg><span>Codex</span></span><span class="id">CX-14</span> review</span></dd></div><div><dt>Work-to-contribution mapping</dt><dd>Confirmed · <span class="ticket-chip">SYN-52</span> recorded in the sessions and linked GitHub PR.</dd></div></dl><p class="muted">Delegation between these runs is unknown. A shared work item does not prove that one agent started the other. Work linkage does not establish token attribution.</p></details>
+  </section>
+
+  <section class="panel disclosure" aria-label="Dependencies and observation history"><details><summary>Dependencies and source history</summary><ul class="relationship-list"><li><strong>Explicit prerequisite:</strong> Syntelligence Jira <span class="ticket-chip">SYN-40</span>. Its tracker is closed; acceptance evidence is checked separately.</li><li><strong>Possible dependency:</strong> <span class="ticket-chip">SYN-67</span>. Inferred from a shared change; not a confirmed blocker.</li><li><strong>Source events:</strong> checklist 08:29; closure 08:31; merge 08:34; check result 08:40.</li><li><strong>Collection:</strong> Jira and GitHub last collected at 08:42. Client records last collected at 08:41.</li></ul><p class="muted">Source references are illustrative text in this preview. No real work record or external agent tool is opened.</p></details></section>
+  <p class="footer">Work observation only. Replies, assignments, merges, and agent controls remain in the existing tools.</p>
+ </main>
+</div>
+<section class="alternate" aria-labelledby="alternate-title"><p class="muted">Alternate state · missing evidence</p><h2 id="alternate-title">Progress unknown. Collection is delayed.</h2><p>No measurable checklist is available; no percentage is shown. Last successful source collection: 08:20.</p><p class="muted">This gap does not mean the work is blocked or complete. If access is revoked, replace the detail with “This item is unavailable” and omit its title, people, and evidence.</p></section>
+</body>
+</html>

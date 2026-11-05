@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Owl Mast — daily work study</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: transparent; }
+    body { color: var(--foreground); font-family: var(--font-sans); font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+    button, select { font: inherit; }
+    button { cursor: pointer; }
+    button, summary { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+    button:focus-visible, summary:focus-visible { outline: 3px solid var(--ring); outline-offset: 4px; }
+    h1, h2, h3, p { margin: 0; }
+    svg { display: block; width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+    .study-note { margin: 0 0 10px; font-size: 12px; color: var(--muted-foreground); }
+    .study-note strong { color: var(--foreground); font-weight: 550; }
+    .app { overflow: hidden; border: 1px solid var(--border); border-radius: calc(var(--radius) + 6px); background: var(--background); }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 72px; padding: 16px 26px; border-bottom: 1px solid var(--border); background: var(--card); }
+    .brand { display: flex; align-items: center; gap: 10px; font-size: 17px; font-weight: 700; letter-spacing: -.045em; white-space: nowrap; }
+    .brand-symbol { display: grid; width: 33px; height: 33px; place-items: center; border: 1px solid color-mix(in srgb, var(--primary) 32%, var(--border)); border-radius: 10px; background: color-mix(in srgb, var(--primary) 12%, var(--card)); color: var(--primary); }
+    .brand-symbol svg { width: 22px; height: 22px; stroke-width: 1.8; }
+    .scope { display: flex; align-items: center; gap: 10px; }
+    .scope-name { font-size: 14px; font-weight: 600; }
+    .scope-detail { color: var(--muted-foreground); font-size: 14px; }
+    .scope-icon { display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid var(--border); border-radius: 9px; color: var(--muted-foreground); }
+    .scope-icon svg { width: 16px; height: 16px; }
+    .app-body { padding: 26px; }
+    .pagehead { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+    .eyebrow { display: flex; align-items: center; gap: 7px; color: var(--muted-foreground); font-size: 14px; letter-spacing: .08em; font-weight: 600; text-transform: uppercase; margin-bottom: 6px; }
+    h1 { font-size: 28px; font-weight: 650; line-height: 1.2; letter-spacing: -.045em; }
+    .subtitle { margin-top: 7px; color: var(--muted-foreground); font-size: 14px; }
+    .view-switch { flex-shrink: 0; display: inline-flex; padding: 4px; border: 1px solid var(--border); border-radius: 11px; background: var(--secondary); gap: 3px; }
+    .view-switch button { padding: 7px 13px; min-height: 38px; border: 0; border-radius: 7px; color: var(--muted-foreground); background: transparent; font-size: 14px; font-weight: 600; }
+    .view-switch button[aria-pressed="true"] { background: var(--card); color: var(--foreground); box-shadow: 0 1px 3px color-mix(in srgb, var(--foreground) 8%, transparent); }
+    .summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+    .stat { padding: 16px 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); }
+    .stat-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .stat-value { font-size: 28px; font-weight: 600; line-height: 1.1; letter-spacing: -.05em; font-variant-numeric: tabular-nums; }
+    .stat-icon { padding: 6px; border-radius: 8px; color: var(--muted-foreground); background: var(--secondary); }
+    .stat-icon svg { width: 15px; height: 15px; }
+    .stat-label { margin-top: 9px; font-size: 14px; color: var(--muted-foreground); }
+    .stat-note { margin-top: 2px; font-size: 14px; color: var(--muted-foreground); }
+    .stat.attention .stat-icon { color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, var(--card)); }
+    .dashboard { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(220px, 1fr); grid-template-areas: "request epic" "work epic" "feed coverage"; gap: 18px; align-items: start; }
+    .panel { background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+    .panel-heading { padding: 17px 18px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    h2 { font-size: 14px; font-weight: 650; letter-spacing: -.02em; }
+    .meta { font-size: 14px; color: var(--muted-foreground); }
+    .count { min-width: 22px; padding: 2px 6px; border-radius: 5px; background: var(--secondary); text-align: center; color: var(--muted-foreground); font-size: 14px; }
+    .request { grid-area: request; padding: 18px; border-color: color-mix(in srgb, var(--warning) 38%, var(--border)); background: color-mix(in srgb, var(--warning) 5%, var(--card)); }
+    .request-label { display: flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 650; color: var(--foreground); margin-bottom: 10px; }
+    .request-label svg { color: var(--warning); width: 15px; height: 15px; }
+    .request h2 { font-size: 16px; line-height: 1.4; }
+    .request .meta { margin-top: 7px; }
+    details summary { list-style: none; }
+    details summary::-webkit-details-marker { display: none; }
+    .request summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; margin-top: 12px; padding-top: 10px; border-top: 1px solid color-mix(in srgb, var(--warning) 18%, var(--border)); font-size: 14px; font-weight: 600; cursor: pointer; }
+    .chevron { width: 15px; height: 15px; flex-shrink: 0; transition: transform .15s ease; }
+    details[open] > summary .chevron { transform: rotate(90deg); }
+    .request-detail { padding-top: 10px; font-size: 14px; line-height: 1.65; }
+    .request-detail .source-line { margin-top: 10px; color: var(--muted-foreground); font-size: 14px; }
+    .epic { grid-area: epic; }
+    .epic-content { padding: 0 18px 18px; }
+    .epic-name { font-size: 16px; font-weight: 600; letter-spacing: -.02em; margin: 3px 0 5px; }
+    .epic-progress { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 22px 0 10px; }
+    .epic-progress strong { font-size: 27px; line-height: 1; font-weight: 600; letter-spacing: -.045em; }
+    .epic-progress span { color: var(--muted-foreground); font-size: 14px; }
+    .bar { height: 5px; overflow: hidden; border-radius: 5px; background: var(--secondary); }
+    .bar span { display: block; height: 100%; width: var(--progress); background: var(--chart-1); border-radius: inherit; }
+    .epic .bar { height: 7px; }
+    .epic-legend { display: flex; justify-content: space-between; gap: 8px; margin: 9px 0 17px; font-size: 14px; color: var(--muted-foreground); }
+    .small-note { font-size: 14px; color: var(--muted-foreground); line-height: 1.6; }
+    .epic summary { display: flex; align-items: center; justify-content: space-between; min-height: 44px; cursor: pointer; border-top: 1px solid var(--border); margin-top: 16px; padding-top: 9px; font-size: 14px; font-weight: 550; }
+    .evidence-list { margin: 9px 0 0; padding-left: 17px; color: var(--muted-foreground); font-size: 14px; }
+    .evidence-list li + li { margin-top: 6px; }
+    .work { grid-area: work; }
+    .work .panel-heading { padding-bottom: 8px; }
+    .ticket { margin: 0 18px; padding: 13px 0 16px; }
+    .ticket + .ticket { border-top: 1px solid var(--border); }
+    .ticket-kicker { display: flex; gap: 8px; align-items: center; margin-bottom: 5px; color: var(--muted-foreground); font-family: var(--font-mono); font-size: 14px; }
+    .agent-pill { font-family: var(--font-sans); font-size: 14px; padding: 1px 6px; border-radius: 4px; background: var(--secondary); color: var(--secondary-foreground); }
+    .ticket-title { font-weight: 600; font-size: 14px; line-height: 1.45; margin-bottom: 10px; }
+    .ticket-progress { display: flex; align-items: center; justify-content: space-between; margin: 0 0 7px; gap: 12px; font-size: 14px; }
+    .ticket-progress span { color: var(--muted-foreground); }
+    .ticket-progress strong { font-weight: 600; }
+    .ticket-unknown { color: var(--muted-foreground); border: 1px dashed var(--border); padding: 7px 9px; border-radius: 6px; font-size: 14px; }
+    .ticket summary { display: flex; align-items: center; justify-content: space-between; min-height: 44px; cursor: pointer; font-size: 14px; color: var(--muted-foreground); margin-bottom: -9px; }
+    .ticket details[open] summary { margin-bottom: 0; }
+    .ticket details p { margin-top: 4px; font-size: 14px; color: var(--muted-foreground); }
+    .feed { grid-area: feed; }
+    .feed .panel-heading { padding-bottom: 11px; }
+    .filters { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 14px 12px; border-bottom: 1px solid var(--border); }
+    .filter { border: 0; border-radius: 6px; min-height: 36px; padding: 7px 9px; background: transparent; color: var(--muted-foreground); font-size: 14px; }
+    .filter[aria-pressed="true"] { background: var(--secondary); color: var(--foreground); font-weight: 600; }
+    .filter:hover, .view-switch button:hover { color: var(--foreground); background: color-mix(in srgb, var(--accent) 60%, var(--secondary)); }
+    .events { list-style: none; padding: 0 18px; margin: 0; }
+    .event { position: relative; padding: 17px 0 17px 30px; }
+    .event + .event { border-top: 1px solid var(--border); }
+    .event-icon { position: absolute; left: 0; top: 20px; color: var(--muted-foreground); }
+    .event-icon svg { width: 15px; height: 15px; }
+    .event.closed .event-icon { color: var(--success); }
+    .event.attention .event-icon { color: var(--warning); }
+    .event.knowledge .event-icon { color: var(--info); }
+    .event-heading { display: flex; align-items: start; justify-content: space-between; gap: 10px; }
+    .event-title { font-size: 14px; font-weight: 600; line-height: 1.5; }
+    .event time { flex-shrink: 0; font-family: var(--font-mono); font-size: 14px; color: var(--muted-foreground); line-height: 1.8; }
+    .event .event-sub { margin-top: 4px; color: var(--muted-foreground); font-size: 14px; line-height: 1.6; }
+    .event summary { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; font-size: 14px; font-weight: 550; color: var(--muted-foreground); cursor: pointer; margin-bottom: -10px; }
+    .event details[open] summary { margin-bottom: 0; }
+    .event details p { padding: 9px 10px; margin-top: 5px; border-radius: 6px; background: var(--secondary); color: var(--secondary-foreground); font-size: 14px; line-height: 1.6; }
+    .empty { padding: 28px 20px; }
+    .empty strong { font-size: 14px; font-weight: 600; }
+    .empty p { margin-top: 6px; font-size: 14px; color: var(--muted-foreground); }
+    .coverage { grid-area: coverage; }
+    .coverage-body { padding: 0 18px 18px; }
+    .coverage-row { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; padding: 9px 0; font-size: 14px; border-bottom: 1px solid var(--border); }
+    .coverage-row time { color: var(--muted-foreground); font-family: var(--font-mono); font-size: 14px; }
+    .coverage-subhead { margin: 19px 0 5px; font-size: 14px; font-weight: 600; color: var(--muted-foreground); letter-spacing: .07em; text-transform: uppercase; }
+    .client { display: flex; align-items: center; gap: 8px; margin: 13px 0; }
+    .client-mark { display: grid; place-items: center; width: 27px; height: 27px; border: 1px solid var(--border); border-radius: 7px; color: var(--muted-foreground); font-family: var(--font-mono); font-size: 14px; font-weight: 600; }
+    .client-name { font-size: 14px; font-weight: 550; }
+    .client-info { font-size: 14px; color: var(--muted-foreground); }
+    .coverage-note { margin-top: 17px; padding-top: 13px; border-top: 1px solid var(--border); font-size: 14px; line-height: 1.65; color: var(--muted-foreground); }
+    .coverage-note strong { color: var(--foreground); font-weight: 550; }
+    .bottomline { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 7px 12px; margin-top: 18px; font-size: 14px; color: var(--muted-foreground); }
+    .scope-lock { display: flex; align-items: center; gap: 5px; }
+    .scope-lock svg { width: 11px; height: 11px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+    @media (max-width: 800px) {
+      .topbar { padding: 15px 20px; }
+      .app-body { padding: 22px 20px; }
+      .dashboard { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "request epic" "work work" "feed feed" "coverage coverage"; gap: 14px; }
+      .coverage-body { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
+      .coverage-subhead { margin-top: 0; }
+      .coverage-note { grid-column: 1 / -1; }
+      .epic-progress { margin-top: 15px; }
+    }
+    @media (max-width: 540px) {
+      .topbar { padding: 13px 15px; gap: 10px; }
+      .brand { font-size: 15px; gap: 7px; }
+      .brand-symbol { width: 29px; height: 29px; border-radius: 8px; }
+      .scope { gap: 0; }
+      .scope-icon { display: none; }
+      .scope-name { font-size: 14px; text-align: right; }
+      .scope-detail { font-size: 14px; }
+      .app-body { padding: 20px 14px 15px; }
+      .pagehead { align-items: stretch; flex-direction: column; gap: 16px; margin-bottom: 16px; }
+      h1 { font-size: 25px; }
+      .view-switch { align-self: flex-start; }
+      .view-switch button { min-height: 40px; padding: 7px 17px; }
+      .summary { gap: 7px; margin-bottom: 14px; }
+      .stat { padding: 12px 10px; border-radius: 9px; }
+      .stat-value { font-size: 26px; }
+      .stat-icon { display: none; }
+      .stat-label { font-size: 14px; line-height: 1.4; min-height: 28px; }
+      .stat-note { font-size: 14px; }
+      .dashboard { grid-template-columns: minmax(0, 1fr); grid-template-areas: "request" "epic" "work" "feed" "coverage"; }
+      .request { padding: 16px; }
+      .panel-heading { padding: 15px 16px 12px; }
+      .epic-content, .coverage-body { padding: 0 16px 16px; }
+      .ticket { margin: 0 16px; }
+      .epic-progress { margin-top: 16px; }
+      .epic-legend { margin-bottom: 10px; }
+      .events { padding: 0 16px; }
+      .event { padding-left: 25px; }
+      .event-heading { gap: 7px; }
+      .filter { min-height: 40px; padding-left: 8px; padding-right: 8px; }
+      .coverage-body { display: block; }
+      .coverage-subhead { margin-top: 19px; }
+      .bottomline { margin-top: 15px; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; } }
+.agent-chip{display:inline-flex;align-items:center;flex-wrap:wrap;gap:6px;padding:6px 9px;border:1px solid var(--border);border-radius:999px;background:var(--secondary);font-size:14px;line-height:1.4;max-width:100%}.agent-chip .alias{font-weight:600}.agent-chip .type{color:var(--muted-foreground);font-weight:400}.agent-dot{width:7px;height:7px;border-radius:50%;background:var(--agent-color,var(--primary));flex-shrink:0}.type-glyph{width:14px;height:14px;flex-shrink:0;color:var(--muted-foreground)}.client-chiprow{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.ticket-chip{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border:1px solid color-mix(in srgb,var(--primary) 28%,var(--border));border-radius:6px;background:color-mix(in srgb,var(--primary) 7%,var(--card));font-family:var(--font-mono);font-size:14px;color:var(--foreground);vertical-align:baseline}.ticket-chip svg{width:13px;height:13px;color:var(--muted-foreground)}.source-with-chip{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-top:8px}
+    .tag-line{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-top:7px}
+    .usage-detail{margin-top:8px;border-top:1px solid var(--border);padding-top:3px}
+    .usage-detail>summary{border-top:0!important;display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:44px!important;margin:0!important;padding:6px 0!important;font-size:14px!important;color:var(--muted-foreground);font-weight:400;cursor:pointer}
+    .usage-detail>p{font-size:14px!important;line-height:1.6;color:var(--muted-foreground);margin:7px 0 10px}
+
+    .ticket-kicker{flex-wrap:wrap;font-family:var(--font-sans);gap:8px;margin-bottom:9px}
+    .ticket-source{font-size:14px;color:var(--muted-foreground);margin:0 0 7px}
+    #request-meta{display:flex;align-items:center;flex-wrap:wrap;gap:7px}
+    .event .event-sub{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+    .client-name{font-size:14px}.client-info{margin-top:5px}
+    .event summary,.request summary,.filter{min-height:44px}
+    .view-switch button{font-size:14px;min-height:44px}
+    @media(max-width:540px){.topbar{flex-wrap:wrap;align-items:flex-start}.scope{margin-left:auto}.scope-name{text-align:left}.stat-label{min-height:42px}.view-switch button{min-height:44px}.filter{min-height:44px}.epic-legend{flex-wrap:wrap}}
+  </style>
+</head>
+<body>
+  <p class="study-note"><strong>Illustrative data.</strong> Exploratory UX study. Switch views, filter updates, and expand evidence; interactions stay in this preview.</p>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand"><span class="brand-symbol" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5l3 2 5-1 5 1 3-2-1 11-7 4-7-4z"/><path d="M7 11h3m4 0h3m-6 3 1 1 1-1"/><path d="M12 2v3m0 16v1"/></svg></span>Owl Mast</div>
+      <div class="scope"><span class="scope-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 8h16v12H4zM8 8V4h8v4M4 12h16"/></svg></span><div><div class="scope-name">Syntelligence</div><div class="scope-detail">Jira + GitHub · Project scope</div></div></div>
+    </header>
+    <main class="app-body">
+      <div class="pagehead">
+        <div><p class="eyebrow">Daily work · Thursday, 5 Nov</p><h1 id="page-title">Your work</h1><p class="subtitle" id="page-subtitle">What moved, what needs you, and the evidence.</p></div>
+        <div class="view-switch" role="group" aria-label="Whose work to show"><button type="button" data-view="mine" aria-pressed="true">My work</button><button type="button" data-view="mohamed" aria-pressed="false">Mohamed</button></div>
+      </div>
+      <div class="summary" aria-label="Today's observed work summary">
+        <div class="stat"><div class="stat-top"><span class="stat-value" id="closed-count">2</span><span class="stat-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m6 12 4 4 8-8"/><circle cx="12" cy="12" r="9"/></svg></span></div><p class="stat-label">Tickets closed today</p><p class="stat-note">Jira status</p></div>
+        <div class="stat attention"><div class="stat-top"><span class="stat-value">1</span><span class="stat-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 4 2 20h20zM12 9v4m0 3v.1"/></svg></span></div><p class="stat-label">Blocker observed</p><p class="stat-note">Source reported</p></div>
+        <div class="stat"><div class="stat-top"><span class="stat-value" id="active-count">3</span><span class="stat-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 9h8m-8 4h5"/></svg></span></div><p class="stat-label">Open tickets</p><p class="stat-note">Owned in this project</p></div>
+      </div>
+      <div class="dashboard">
+        <section class="panel request" aria-labelledby="request-title"><p class="request-label"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 4v.1"/></svg><span id="request-label">Needs your input</span></p><h2 id="request-title">Choose the rollout scope</h2><p class="meta" id="request-meta">SYN-42 · Claude observation · 08:32</p><details id="request-details"><summary>View request <svg class="chevron" aria-hidden="true" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></summary><div class="request-detail"><p id="request-body">The source request asks whether the first rollout should include existing accounts or new accounts only. Planning is waiting for this decision.</p><p class="source-line" id="request-source">Source: linked Claude session · 08:32. Respond in your existing agent app.</p></div></details></section>
+        <section class="panel epic" aria-labelledby="epic-heading"><div class="panel-heading"><h2 id="epic-heading">Epic progress</h2><span class="meta">Jira · 08:42</span></div><div class="epic-content"><p class="meta"><span class="ticket-chip" title="Syntelligence Jira site" aria-label="Syntelligence Jira site, SYN-10"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM9 9h6m-6 4h6"/></svg><span id="epic-key">SYN-10</span></span></p><p class="epic-name" id="epic-name">Account onboarding</p><p class="meta" id="epic-owner">Your owned scope</p><div class="epic-progress"><strong>60%</strong><span>3 of 5 tickets closed</span></div><div class="bar" role="progressbar" aria-label="Epic tracker closure" aria-valuenow="60" aria-valuemin="0" aria-valuemax="100" aria-valuetext="3 of 5 tickets closed in Jira; epic acceptance not recorded"><span style="--progress:60%"></span></div><div class="epic-legend"><span>Tracker closure</span><span>2 still open</span></div><p class="small-note">Closure is the tracker state. Epic acceptance is not recorded.</p><details><summary>See the basis <svg class="chevron" aria-hidden="true" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></summary><ul class="evidence-list"><li>Denominator: five tickets in this epic at 08:42.</li><li>Three have a closed Jira status; two remain open.</li><li>No acceptance decision is linked. This percentage does not establish release readiness.</li></ul></details><details class="usage-detail"><summary>Usage &amp; cost: Unavailable <svg class="chevron" aria-hidden="true" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></summary><p>No linked usage records are available for this epic. Observed tokens, API-equivalent estimates, subscription allocation, and actual bills remain separate unavailable measures. No zero cost is implied. Shared-run usage must be counted once, with attribution coverage shown.</p></details></div></section>
+        <section class="panel work" aria-labelledby="work-heading"><div class="panel-heading"><h2 id="work-heading">Work in focus</h2><span class="count">2</span></div><article class="ticket"><div class="ticket-kicker"><span class="ticket-chip" title="Syntelligence Jira site" aria-label="Syntelligence Jira site, SYN-42"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM9 9h6m-6 4h6"/></svg><span id="ticket-one-key">SYN-42</span></span><span id="ticket-one-agent"><span class="agent-chip" style="--agent-color:var(--chart-1)"><span class="agent-dot" aria-hidden="true"></span><span class="alias">Tawny</span><svg class="type-glyph" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1M5.6 18.4l2.1-2.1m8.6-8.6 2.1-2.1"/></svg><span class="type">Claude</span></span></span></div><p class="ticket-source">Jira · Syntelligence</p><h3 class="ticket-title" id="ticket-one-title">Define account rollout rules</h3><div class="ticket-progress"><span>2 / 4 acceptance criteria complete</span><strong>50%</strong></div><div class="bar" role="progressbar" aria-label="Ticket acceptance checklist" aria-valuenow="50" aria-valuemin="0" aria-valuemax="100" aria-valuetext="2 of 4 acceptance criteria marked complete in the source checklist"><span style="--progress:50%"></span></div><details><summary>Checklist evidence · Jira · 08:42 <svg class="chevron" aria-hidden="true" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></summary><p>Two criteria are marked complete in the linked Jira checklist. Rollout scope and the final validation remain open. Overall ticket acceptance has not been recorded.</p></details><details class="usage-detail"><summary>Usage &amp; cost: Unavailable <svg class="chevron" aria-hidden="true" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></summary><p>No linked usage records are available for this ticket. Observed tokens, API-equivalent estimates, subscription allocation, and actual bills remain separate unavailable measures. No zero cost is implied. Shared-run usage must be counted once, with attribution coverage shown.</p></details></article><article class="ticket"><div class="ticket-kicker"><span class="ticket-chip" title="Syntelligence Jira site" aria-label="Syntelligence Jira site, SYN-48"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM9 9h6m-6 4h6"/></svg><span id="ticket-two-key">SYN-48</span></span><span id="ticket-two-agent"><span class="agent-chip" style="--agent-color:var(--chart-2)"><span class="agent-dot" aria-hidden="true"></span><span class="alias">Snowy</span><svg class="type-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 6-5 6 5 6m8-12 5 6-5 6m-3-14-2 16"/></svg><span class="type">Codex</span></span></span></div><p class="ticket-source">Jira · Syntelligence</p><h3 class="ticket-title" id="ticket-two-title">Audit account usage mapping</h3><div class="ticket-unknown">Progress unknown · no checklist available</div><details><summary>Latest evidence · GitHub · 08:39 <svg class="chevron" aria-hidden="true" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></summary><p>A linked pull request is open. No acceptance checklist is available; elapsed time, commits, and agent activity do not establish a completion percentage.</p></details><details class="usage-detail"><summary>Usage &amp; cost: Unavailable <svg class="chevron" aria-hidden="true" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></summary><p>No linked usage records are available for this ticket. Observed tokens, API-equivalent estimates, subscription allocation, and actual bills remain separate unavailable measures. No zero cost is implied. Shared-run usage must be counted once, with attribution coverage shown.</p></details></article></section>
+        <section class="panel feed" aria-labelledby="feed-heading"><div class="panel-heading"><h2 id="feed-heading">Recent updates</h2><span class="meta">Today</span></div><div class="filters" role="group" aria-label="Filter recent updates"><button type="button" class="filter" data-filter="all" aria-pressed="true">All</button><button type="button" class="filter" data-filter="attention" aria-pressed="false">Needs input</button><button type="button" class="filter" data-filter="closed" aria-pressed="false">Closed</button><button type="button" class="filter" data-filter="knowledge" aria-pressed="false">Knowledge</button><button type="button" class="filter" data-filter="review" aria-pressed="false">Reviews</button></div><ol class="events" id="events"></ol><div class="empty" id="empty" hidden><strong>No review requests observed today.</strong><p>The current source snapshot contains no matching updates. Check source coverage before treating this as a complete picture.</p></div></section>
+        <aside class="panel coverage" aria-labelledby="coverage-heading"><div class="panel-heading"><h2 id="coverage-heading">Behind this view</h2></div><div class="coverage-body"><div><p class="small-note">Latest successful collection</p><div class="coverage-row"><span>Jira · Syntelligence</span><time datetime="2026-11-05T08:42:00+01:00">08:42</time></div><div class="coverage-row"><span>GitHub · Syntelligence</span><time datetime="2026-11-05T08:39:00+01:00">08:39</time></div></div><div><p class="coverage-subhead">Agent observations</p><div class="client"><div><p class="client-name" id="client-one-agent"><span class="agent-chip" style="--agent-color:var(--chart-1)"><span class="agent-dot" aria-hidden="true"></span><span class="alias">Tawny</span><svg class="type-glyph" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1M5.6 18.4l2.1-2.1m8.6-8.6 2.1-2.1"/></svg><span class="type">Claude</span></span></p><p class="client-info">Last observed 08:41</p></div></div><div class="client"><div><p class="client-name" id="client-two-agent"><span class="agent-chip" style="--agent-color:var(--chart-2)"><span class="agent-dot" aria-hidden="true"></span><span class="alias">Snowy</span><svg class="type-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 6-5 6 5 6m8-12 5 6-5 6m-3-14-2 16"/></svg><span class="type">Codex</span></span></p><p class="client-info">Last observed 08:40</p></div></div></div><p class="coverage-note"><strong>Notion skill reading is unverified.</strong> A working activity connection does not establish knowledge readiness. Delivery evidence appears item by item.</p></div></aside>
+      </div>
+      <footer class="bottomline"><span class="scope-lock"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 10h12v10H6zM8 10V7a4 4 0 0 1 8 0v3"/></svg>Only your permitted project and source records</span><span>Times shown in Europe/Warsaw</span></footer>
+    </main>
+  </div>
+  <p class="sr-only" id="announcement" role="status" aria-live="polite"></p>
+  <script>
+    const icons = {
+      closed: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m7 12 3 3 7-7"/></svg>',
+      attention: '<svg viewBox="0 0 24 24"><path d="M12 4 2 20h20zM12 9v4m0 3v.1"/></svg>',
+      knowledge: '<svg viewBox="0 0 24 24"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/></svg>',
+      activity: '<svg viewBox="0 0 24 24"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>'
+    };
+    const chevron = '<svg class="chevron" aria-hidden="true" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>';
+
+    function agentChip(alias,provider,color='--primary') {
+      const glyph=provider==='Claude'?'<svg class="type-glyph" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1M5.6 18.4l2.1-2.1m8.6-8.6 2.1-2.1"/></svg>':'<svg class="type-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 6-5 6 5 6m8-12 5 6-5 6m-3-14-2 16"/></svg>';
+      return `<span class="agent-chip" style="--agent-color:var(${color})"><span class="agent-dot" aria-hidden="true"></span><span class="alias">${alias}</span>${glyph}<span class="type">${provider}</span></span>`;
+    }
+    function ticketChip(key,scope='Syntelligence Jira site') {
+      return `<span class="ticket-chip" title="${scope}" aria-label="${scope}, ${key}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM9 9h6m-6 4h6"/></svg><span>${key}</span></span>`;
+    }
+    function usageMarkup(kind) {
+      return `<details class="usage-detail"><summary>Usage &amp; cost: Unavailable ${chevron}</summary><p>No linked usage records are available for this ${kind}. Observed tokens, API-equivalent estimates, subscription allocation, and actual bills remain separate unavailable measures. No zero cost is implied. Shared-run usage must be counted once, with attribution coverage shown.</p></details>`;
+    }
+
+    function currentAgent(provider) {
+      const mine=activeView==='mine';
+      return provider==='Claude'?agentChip(mine?'Tawny':'Barn','Claude',mine?'--chart-1':'--chart-3'):agentChip(mine?'Snowy':'Eagle','Codex',mine?'--chart-2':'--chart-4');
+    }
+    function richEventSub(event) {
+      let result=event.sub.replace(/SYN-\d+/g,key=>ticketChip(key));
+      result=result.replace(/Claude|Codex/g,provider=>currentAgent(provider));
+      if(event.kind==='knowledge') result+=' '+currentAgent('Codex');
+      return result;
+    }
+    function refreshIdentityChips() {
+      const view=views[activeView];
+      document.getElementById('request-meta').innerHTML=ticketChip(view.oneKey)+' '+currentAgent('Claude')+' <span>Observation · '+(activeView==='mine'?'08:32':'08:31')+'</span>';
+      for(const prefix of ['ticket','client']) {
+        document.getElementById(prefix+'-one-agent').innerHTML=currentAgent('Claude');
+        document.getElementById(prefix+'-two-agent').innerHTML=currentAgent('Codex');
+      }
+      document.getElementById('epic-key').parentElement.setAttribute('aria-label','Syntelligence Jira site, '+view.epicKey);
+      document.getElementById('ticket-one-key').parentElement.setAttribute('aria-label','Syntelligence Jira site, '+view.oneKey);
+      document.getElementById('ticket-two-key').parentElement.setAttribute('aria-label','Syntelligence Jira site, '+view.twoKey);
+    }
+    const views = {
+      mine: {
+        title: 'Your work', subtitle: 'What moved, what needs you, and the evidence.', closed: '2', active: '3',
+        requestLabel: 'Needs your input', requestTitle: 'Choose the rollout scope', requestMeta: 'SYN-42 · Claude observation · 08:32',
+        requestBody: 'The source request asks whether the first rollout should include existing accounts or new accounts only. Planning is waiting for this decision.',
+        requestSource: 'Source: linked Claude session · 08:32. Respond in your existing agent app.',
+        epicKey: 'SYN-10', epicName: 'Account onboarding', epicOwner: 'Your owned scope',
+        oneKey: 'SYN-42', oneTitle: 'Define account rollout rules', twoKey: 'SYN-48', twoTitle: 'Audit account usage mapping',
+        checklistEvidence: 'Two criteria are marked complete in the linked Jira checklist. Rollout scope and the final validation remain open. Overall ticket acceptance has not been recorded.',
+        events: [
+          {kind:'closed', time:'08:38', title:'Account validation moved to Done', sub:'SYN-39 · Jira status changed', evidence:'The linked Jira record changed to Done at 08:38. Acceptance evidence is not recorded. A tracker closure alone does not establish accepted delivery.'},
+          {kind:'attention', time:'08:32', title:'Rollout scope needs a decision', sub:'SYN-42 · Claude reported a blocker', evidence:'Claude’s linked session asks whether existing accounts are included. This blocker comes from an explicit source request, not a lack of observed activity.'},
+          {kind:'knowledge', time:'08:24', title:'A relevant lesson reached Snowy', sub:'Stable account identifiers · v3 · Project knowledge', evidence:'Version 3 was delivered to the linked Codex session in Syntelligence. Delivery is recorded; useful reuse has not yet been verified. The source item remains project-scoped.'},
+          {kind:'activity', time:'08:12', title:'Usage audit pull request opened', sub:'SYN-48 · GitHub · Codex-linked contribution', evidence:'A source link connects this pull request with the Codex session. Acceptance checklist coverage is unknown. The contribution is not counted as completed work.'}
+        ]
+      },
+      mohamed: {
+        title: 'Mohamed’s work', subtitle: 'Closures, blockers, and progress in this project.', closed: '3', active: '2',
+        requestLabel: 'Mohamed is blocked', requestTitle: 'An access decision is holding up sync', requestMeta: 'SYN-67 · Claude observation · 08:31',
+        requestBody: 'The source request asks which service account should own the initial sync. Mohamed’s linked planning session is waiting for a decision.',
+        requestSource: 'Source: linked Claude session · 08:31. Advice and agent instructions continue in the existing work tools.',
+        epicKey: 'SYN-20', epicName: 'Reliable project sync', epicOwner: 'Owned by Mohamed',
+        oneKey: 'SYN-67', oneTitle: 'Define project sync rules', twoKey: 'SYN-71', twoTitle: 'Audit source attribution',
+        checklistEvidence: 'Two criteria are marked complete in the linked Jira checklist. Service-account ownership and the final validation remain open. Overall ticket acceptance has not been recorded.',
+        events: [
+          {kind:'closed', time:'08:39', title:'Sync validation moved to Done', sub:'SYN-64 · Owned by Mohamed · Jira', evidence:'Jira records a transition to Done at 08:39. This is one of three tickets closed today in Mohamed’s permitted project scope. No acceptance decision is linked.'},
+          {kind:'attention', time:'08:31', title:'Sync ownership needs a decision', sub:'SYN-67 · Claude reported a blocker', evidence:'The linked session explicitly requests a service-account decision. It is attributed to Mohamed through a confirmed session mapping; no initiator is inferred from commit authorship.'},
+          {kind:'knowledge', time:'08:25', title:'A sync lesson reached Eagle', sub:'Safe retry boundaries · v2 · Project knowledge', evidence:'Version 2 was delivered to Mohamed’s linked Codex session in Syntelligence. Delivery is recorded; useful reuse has not yet been verified. No company promotion is implied.'},
+          {kind:'activity', time:'08:10', title:'Attribution audit pull request opened', sub:'SYN-71 · GitHub · Codex-linked contribution', evidence:'This pull request is linked to a Codex session through a confirmed source mapping. The checklist is unavailable, so ticket progress remains unknown.'}
+        ]
+      }
+    };
+    let activeView = 'mine';
+    let activeFilter = 'all';
+    const setText = (id, value) => { document.getElementById(id).textContent = value; };
+    function renderEvents(announce = false) {
+      refreshIdentityChips();
+      const records = views[activeView].events.filter(event => activeFilter === 'all' || event.kind === activeFilter);
+      document.getElementById('events').innerHTML = records.map(event => `<li class="event ${event.kind}"><span class="event-icon" aria-hidden="true">${icons[event.kind]}</span><div class="event-heading"><h3 class="event-title">${event.title}</h3><time datetime="2026-11-05T${event.time}:00+01:00">${event.time}</time></div><p class="event-sub">${richEventSub(event)}</p><details><summary>View evidence ${chevron}</summary><p>${event.evidence}</p></details></li>`).join('');
+      document.getElementById('empty').hidden = records.length > 0;
+      document.querySelectorAll('[data-filter]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.filter === activeFilter)));
+      if (announce) setText('announcement', `${records.length} updates shown for ${activeView === 'mine' ? 'your work' : 'Mohamed’s work'}. Illustrative data.`);
+    }
+    document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
+      activeView = button.dataset.view;
+      const view = views[activeView];
+      const bindings = {'page-title':'title', 'page-subtitle':'subtitle', 'closed-count':'closed', 'active-count':'active', 'request-label':'requestLabel', 'request-title':'requestTitle', 'request-meta':'requestMeta', 'request-body':'requestBody', 'request-source':'requestSource', 'epic-key':'epicKey', 'epic-name':'epicName', 'epic-owner':'epicOwner', 'ticket-one-key':'oneKey', 'ticket-one-title':'oneTitle', 'ticket-two-key':'twoKey', 'ticket-two-title':'twoTitle'};
+      Object.entries(bindings).forEach(([id,key]) => setText(id, view[key]));
+      document.querySelector('.ticket details p').textContent = view.checklistEvidence;
+      document.querySelectorAll('[data-view]').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
+      document.querySelectorAll('details[open]').forEach(detail => { detail.open = false; });
+      activeFilter = 'all';
+      renderEvents(true);
+    }));
+    document.querySelectorAll('[data-filter]').forEach(button => button.addEventListener('click', () => { activeFilter = button.dataset.filter; renderEvents(true); }));
+    renderEvents();
+  </script>
+</body>
+</html>

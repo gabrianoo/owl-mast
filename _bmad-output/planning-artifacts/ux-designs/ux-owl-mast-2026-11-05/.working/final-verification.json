@@ -1,0 +1,217 @@
+{
+  "date": "2026-11-05",
+  "scope": "UX references; not implementation conformance",
+  "narrow": [
+    {
+      "file": "daily-work",
+      "width": 320,
+      "contentHeight": 3845,
+      "capturedHeight": 3845,
+      "consoleMessages": [
+        {
+          "level": "log",
+          "text": "UX_CHECK {\"width\":320,\"scrollWidth\":320,\"duplicates\":[],\"overflow\":[]}"
+        }
+      ]
+    },
+    {
+      "file": "focus",
+      "width": 320,
+      "contentHeight": 3828,
+      "capturedHeight": 3828,
+      "consoleMessages": [
+        {
+          "level": "log",
+          "text": "UX_CHECK {\"width\":320,\"scrollWidth\":320,\"duplicates\":[],\"overflow\":[]}"
+        }
+      ]
+    },
+    {
+      "file": "work-detail",
+      "width": 320,
+      "contentHeight": 3290,
+      "capturedHeight": 3290,
+      "consoleMessages": [
+        {
+          "level": "log",
+          "text": "UX_CHECK {\"width\":320,\"scrollWidth\":320,\"duplicates\":[],\"overflow\":[]}"
+        }
+      ]
+    },
+    {
+      "file": "knowledge",
+      "width": 320,
+      "contentHeight": 2676,
+      "capturedHeight": 2676,
+      "consoleMessages": [
+        {
+          "level": "log",
+          "text": "UX_CHECK {\"width\":320,\"scrollWidth\":320,\"duplicates\":[],\"overflow\":[]}"
+        }
+      ]
+    },
+    {
+      "file": "knowledge-detail",
+      "width": 320,
+      "contentHeight": 4186,
+      "capturedHeight": 4000,
+      "consoleMessages": [
+        {
+          "level": "log",
+          "text": "UX_CHECK {\"width\":320,\"scrollWidth\":320,\"duplicates\":[],\"overflow\":[]}"
+        }
+      ]
+    },
+    {
+      "file": "connections",
+      "width": 320,
+      "contentHeight": 3943,
+      "capturedHeight": 3943,
+      "consoleMessages": [
+        {
+          "level": "log",
+          "text": "UX_CHECK {\"width\":320,\"scrollWidth\":320,\"duplicates\":[],\"overflow\":[]}"
+        }
+      ]
+    },
+    {
+      "file": "promotion",
+      "width": 320,
+      "contentHeight": 3457,
+      "capturedHeight": 3457,
+      "consoleMessages": [
+        {
+          "level": "log",
+          "text": "UX_CHECK {\"width\":320,\"scrollWidth\":320,\"duplicates\":[],\"overflow\":[]}"
+        }
+      ]
+    },
+    {
+      "file": "usage",
+      "width": 320,
+      "contentHeight": 2992,
+      "capturedHeight": 2992,
+      "consoleMessages": [
+        {
+          "level": "log",
+          "text": "UX_CHECK {\"width\":320,\"scrollWidth\":320,\"duplicates\":[],\"overflow\":[]}"
+        }
+      ]
+    },
+    {
+      "file": "administrator-setup",
+      "width": 320,
+      "contentHeight": 2652,
+      "capturedHeight": 2652,
+      "consoleMessages": [
+        {
+          "level": "log",
+          "text": "UX_CHECK {\"width\":320,\"scrollWidth\":320,\"duplicates\":[],\"overflow\":[]}"
+        }
+      ]
+    },
+    {
+      "file": "notifications",
+      "width": 320,
+      "contentHeight": 3963,
+      "capturedHeight": 3963,
+      "consoleMessages": [
+        {
+          "level": "log",
+          "text": "UX_CHECK {\"width\":320,\"scrollWidth\":320,\"duplicates\":[],\"overflow\":[]}"
+        }
+      ]
+    },
+    {
+      "file": "navigation",
+      "width": 320,
+      "contentHeight": 1995,
+      "capturedHeight": 1995,
+      "consoleMessages": [
+        {
+          "level": "log",
+          "text": "UX_CHECK {\"width\":320,\"scrollWidth\":320,\"duplicates\":[],\"overflow\":[]}"
+        }
+      ]
+    }
+  ],
+  "wide": [
+    {
+      "file": "daily-work",
+      "width": 728,
+      "contentHeight": 2749,
+      "capturedHeight": 2749,
+      "consoleMessages": []
+    },
+    {
+      "file": "focus",
+      "width": 728,
+      "contentHeight": 2550,
+      "capturedHeight": 2550,
+      "consoleMessages": []
+    },
+    {
+      "file": "work-detail",
+      "width": 728,
+      "contentHeight": 2198,
+      "capturedHeight": 2198,
+      "consoleMessages": []
+    },
+    {
+      "file": "knowledge",
+      "width": 728,
+      "contentHeight": 1741,
+      "capturedHeight": 1741,
+      "consoleMessages": []
+    },
+    {
+      "file": "knowledge-detail",
+      "width": 728,
+      "contentHeight": 2549,
+      "capturedHeight": 2549,
+      "consoleMessages": []
+    },
+    {
+      "file": "connections",
+      "width": 728,
+      "contentHeight": 2232,
+      "capturedHeight": 2232,
+      "consoleMessages": []
+    },
+    {
+      "file": "promotion",
+      "width": 728,
+      "contentHeight": 2146,
+      "capturedHeight": 2146,
+      "consoleMessages": []
+    },
+    {
+      "file": "usage",
+      "width": 728,
+      "contentHeight": 1991,
+      "capturedHeight": 1991,
+      "consoleMessages": []
+    },
+    {
+      "file": "administrator-setup",
+      "width": 728,
+      "contentHeight": 1719,
+      "capturedHeight": 1719,
+      "consoleMessages": []
+    },
+    {
+      "file": "notifications",
+      "width": 728,
+      "contentHeight": 2421,
+      "capturedHeight": 2421,
+      "consoleMessages": []
+    },
+    {
+      "file": "navigation",
+      "width": 1280,
+      "contentHeight": 1005,
+      "capturedHeight": 1005,
+      "consoleMessages": []
+    }
+  ]
+}

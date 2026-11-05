@@ -1,0 +1,16 @@
+{
+  "date": "2026-11-05",
+  "change": "UX-18 and private Notion sample",
+  "html_files_checked": 4,
+  "gallery_exact_embeds": 12,
+  "private_notion_records": 5,
+  "private_github_prs_preserved": 5,
+  "ids_and_references": "passed",
+  "script_syntax": "passed",
+  "local_links": "passed",
+  "token_references": "passed",
+  "fixture_arithmetic": "passed",
+  "notion_search_project_type_empty_reset": "passed in html_preview",
+  "preview": "320px light and 728px dark; no horizontal overflow; author checks only",
+  "independent_review": "Not rerun for this amendment"
+}

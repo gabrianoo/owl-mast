@@ -1,0 +1,27 @@
+# ConvaDesk image-set reconciliation
+
+2026-11-05; six supplied images treated as one reference input, with each mapped below. Identity/checksums: [import manifest](imports/manifest.md). Documentary source: [brief addendum, ConvaDesk references](../../briefs/brief-owl-mast-2026-11-05/addendum.md#colleagues-convadesk-ui-references); [original extraction](.working/source-brief-references.md).
+
+The user wants the concepts/UX retained, not ConvaDesk's appearance (UX-03). They subsequently accepted Owl Mast's displayed colors, mobile appearance and generated mark (UX-13). Static screenshots establish visual arrangement and example labels only; no runtime integration, metric correctness, accessibility or reuse rights are inferred.
+
+| Image / qualitative idea | Disposition | Draft location |
+|---|---|---|
+| [IMG_AB4D1C8F3C45-1.jpeg](imports/IMG_AB4D1C8F3C45-1.jpeg): focused ticket detail, metadata, prerequisites, source link, readable content and CI/review evidence | Retained/adapted | DESIGN `evidence-detail`; EXPERIENCE S2, `work-record`/`evidence-detail`, SC-1. Provenance can sit beside content on wide screens and above it on phone. Literal modal dimensions and tab labels are not required. |
+| Same image: Completed badge versus planned body/no current PR signal | Retained as a semantic warning | EXPERIENCE Evidence semantics, S2 stale/error states and SC-1 failure; DESIGN Do's/Don'ts. Tracker closure, checks, acceptance and inferred progress remain distinct. The screenshot's cause is not asserted. |
+| [IMG_A9CC932E588C-1.jpeg](imports/IMG_A9CC932E588C-1.jpeg): focus a ticket, inspect prerequisites/dependents, distinguish source status from acceptance | Retained/adapted | EXPERIENCE S2 readable dependency list, `evidence-detail` and Evidence semantics; DESIGN component reference mapping. Explicit and inferred relationships remain separate. |
+| Same image: full graph, graph/list switch, CSV export | Optional/deferred | EXPERIENCE IA says graph is optional within S2; accessible list is sufficient. Interaction Primitives conditions any later export on permissions. No graph/export requirement was established by the reference or user. |
+| [IMG_EF516651E585-1.jpeg](imports/IMG_EF516651E585-1.jpeg): scoped overview, progress, attention panel, goal/release groups | Retained/adapted | DESIGN `work-summary`, `attention-item`, `epic-group`; EXPERIENCE S1/SC-1/J1 and separate S10/J8. Exact release sidebar/goal grid is not copied; Focus remains separate assigned-to-me work with parallel epics. |
+| Same image: ticket completion differs from release qualification | Retained/refined | EXPERIENCE Ticket/Epic/Evidence semantics keep child closure and parent acceptance distinct. UX-07 uses completed criteria/checklist items for ticket percentage and Unknown without a measurable basis. |
+| [IMG_BC54BCBE01C2-1.jpeg](imports/IMG_BC54BCBE01C2-1.jpeg): scope filters, token/cache breakdown, time/agent/machine views, “not a bill” | Retained/adapted | DESIGN `usage-breakdown`; EXPERIENCE S7, J6, usage semantics and scoped drill-down. Literal chart types and a machine filter are reference details rather than confirmed mandatory controls; capability/coverage remains visible. |
+| [IMG_3626EBD8C28F-1.jpeg](imports/IMG_3626EBD8C28F-1.jpeg): ticket/work attribution table with explicit Unassigned work | Retained | DESIGN aligned usage numbers/units/unassigned rows; EXPERIENCE `usage-breakdown`, S7 and J6 preserve unknown/unassigned/unpriced portions and supported attribution. |
+| [IMG_DE187537BF11-1.jpeg](imports/IMG_DE187537BF11-1.jpeg): continuation of inspectable per-work usage rows | Retained/adapted | Same usage contract, with readable responsive detail and equivalent tables/lists in EXPERIENCE Accessibility/Responsive. No requirement to reproduce a very long desktop table on phone. |
+| Set-wide green palette, large rounded white cards and spacious desktop composition | Visual style explicitly not adopted | DESIGN Brand & Style records UX-03 and Owl Mast's delegated palette; accepted owl geometry is preserved under UX-13. Inspiration does not override the newer direction. |
+| Set-wide tiny labels and dense relationship graph | Explicitly avoided in adaptation | DESIGN Typography requires essential text ≥14px and forbids copying the mock's tiny labels; EXPERIENCE accessibility/reflow and list alternatives preserve comprehension. No measured defect of ConvaDesk is claimed. |
+
+All six inputs have a traceable draft destination. No essential qualitative idea was silently dropped, and no screenshot number or visible integration was promoted into an Owl Mast capability claim. Cross-person learning, promotion, onboarding and delegation are specified from product requirements and later discovery; their absence from these images is not presented as a ConvaDesk limitation.
+
+Focus mock production is a known pending artifact. Its separate-board/parallel-epic requirement is already retained in both spines; this reconciliation does not substitute the Daily Work study for that board or approve spine-only coverage on the user's behalf.
+
+## Finalization addendum — 2026-11-05
+
+The earlier pending Focus/reference statements describe the reconciliation snapshot. All ten surfaces now have visual references, with a separate shared navigation/company example. Review dispositions cover the later UX-15 identity chips, UX-17 contextual cost, explicit system quarantine (FR-13), and derivative permissions. Original A-1–A-6 remain unconfirmed. See [review disposition](review-disposition.md).

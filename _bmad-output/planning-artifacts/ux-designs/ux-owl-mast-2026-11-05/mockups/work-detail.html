@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Owl Mast — Work evidence</title>
+<style>
+/* Governed by DESIGN: Brand & Style, Typography, Layout & Spacing, Components.
+   EXPERIENCE: S2, scope-bar, work-record, progress-evidence, evidence-detail,
+   State Patterns S2, Evidence semantics, SC-1 steps 3–5. This static composition
+   extends key-focus.html's accepted shell. Host tokens illustrate the direction;
+   they do not verify the exact DESIGN palette. All records and rules are fixtures. */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: transparent; }
+body { color: var(--foreground,var(--owl-text)); font: 14px/1.5 var(--font-sans, system-ui, sans-serif); -webkit-font-smoothing: antialiased; }
+h1, h2, h3, p, dl, dd { margin: 0; }
+strong { font-weight: 600; }
+svg { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
+.study-note { margin: 0 0 12px; color: var(--muted-foreground,var(--owl-secondary-text)); }
+.study-note strong { color: var(--foreground,var(--owl-text)); }
+.app { overflow: hidden; border: 1px solid var(--border,var(--owl-divider)); border-radius: 14px; background: var(--background,var(--owl-canvas)); }
+.topbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px 24px; border-bottom: 1px solid var(--border,var(--owl-divider)); background: var(--card,var(--owl-card)); }
+.brand { display: flex; align-items: center; gap: 9px; font-size: 17px; font-weight: 700; letter-spacing: -.035em; }
+.brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--border,var(--owl-divider)); border-radius: 10px; color: var(--primary,var(--owl-primary)); background: var(--secondary,var(--owl-secondary-surface)); }
+.brand-mark svg { width: 24px; height: 24px; stroke-width: 1.8; }
+.workspace { text-align: right; font-weight: 600; }
+.workspace span { display: block; font-weight: 400; color: var(--muted-foreground,var(--owl-secondary-text)); }
+.nav { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 48px; padding: 8px 24px; border-bottom: 1px solid var(--border,var(--owl-divider)); color: var(--muted-foreground,var(--owl-secondary-text)); }
+.nav [aria-current] { font-weight: 600; color: var(--foreground,var(--owl-text)); }
+main { padding: 24px; }
+.scope { padding: 12px 16px; background: var(--secondary,var(--owl-secondary-surface)); border-radius: 8px; margin-bottom: 20px; }
+.scope p + p { margin-top: 3px; }
+.muted { color: var(--muted-foreground,var(--owl-secondary-text)); }
+.id { font-family: var(--font-mono, ui-monospace, monospace); }
+.ticket-chip { display: inline-flex; align-items: center; min-height: 28px; padding: 2px 8px; border: 1px solid var(--border,var(--owl-divider)); border-radius: 6px; background: var(--secondary,var(--owl-secondary-surface)); color: var(--foreground,var(--owl-text)); font: 600 14px/1.5 var(--font-mono, ui-monospace, monospace); vertical-align: middle; }
+.agent-chip { --chip-accent: var(--primary,var(--owl-primary)); display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; min-height: 30px; padding: 3px 8px; border: 1px solid color-mix(in srgb, var(--chip-accent) 40%, var(--border,var(--owl-divider))); border-radius: 8px; background: color-mix(in srgb, var(--chip-accent) 8%, var(--card,var(--owl-card))); color: var(--foreground,var(--owl-text)); font-size: 14px; vertical-align: middle; }
+.agent-chip.snowy { --chip-accent: var(--identity-mulberry); }
+.agent-chip .alias { font-weight: 600; }
+.type-mark { width: 16px; height: 16px; stroke-width: 1.6; color: var(--chip-accent); }
+.agent-line { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.agent-line + .agent-line { margin-top: 7px; }
+h1 { font-size: 28px; line-height: 1.2; letter-spacing: -.025em; font-weight: 650; }
+.eyebrow { margin-bottom: 5px; color: var(--muted-foreground,var(--owl-secondary-text)); }
+.title-note { margin-top: 8px; color: var(--muted-foreground,var(--owl-secondary-text)); }
+.panel { margin-top: 20px; padding: 16px; background: var(--card,var(--owl-card)); border: 1px solid var(--border,var(--owl-divider)); border-radius: 12px; }
+h2 { font-size: 18px; line-height: 1.4; font-weight: 600; letter-spacing: -.015em; }
+.section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.measure { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.progress-track { height: 5px; border-radius: 6px; background: var(--secondary,var(--owl-secondary-surface)); margin: 12px 0 9px; overflow: hidden; }
+.progress-track span { display: block; width: 75%; height: 100%; background: var(--primary,var(--owl-primary)); }
+details { margin-top: 10px; }
+summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding: 8px 0; cursor: pointer; list-style: none; font-weight: 600; }
+summary::-webkit-details-marker { display: none; }
+summary::after { content: '+'; font-size: 20px; font-weight: 400; flex-shrink: 0; }
+details[open] > summary::after { content: '−'; }
+summary:focus-visible { outline: 3px solid var(--ring,var(--owl-control-outline)); outline-offset: 3px; border-radius: 4px; }
+.criterion-list { list-style: none; padding: 0; margin: 4px 0 8px; }
+.criterion-list li { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 10px; padding: 9px 0; border-top: 1px solid var(--border,var(--owl-divider)); }
+.criterion-state { color: var(--muted-foreground,var(--owl-secondary-text)); }
+.facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 14px; }
+.fact { min-width: 0; padding-left: 12px; border-left: 2px solid var(--border,var(--owl-divider)); }
+.fact dt { color: var(--muted-foreground,var(--owl-secondary-text)); }
+.fact dd { margin-top: 4px; font-weight: 600; }
+.fact p { margin-top: 3px; color: var(--muted-foreground,var(--owl-secondary-text)); }
+.acceptance { background: var(--secondary,var(--owl-secondary-surface)); border: 0; }
+.acceptance .section-head p { color: var(--foreground,var(--owl-text)); font-weight: 600; }
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 20px; margin-top: 14px; }
+.fields > div { min-width: 0; }
+.fields dt { margin-bottom: 4px; color: var(--muted-foreground,var(--owl-secondary-text)); }
+.fields dd { overflow-wrap: anywhere; }
+.note { margin-top: 12px; }
+.disclosure { padding-top: 0; padding-bottom: 0; }
+.disclosure > details { margin-top: 0; }
+.disclosure > details > summary { min-height: 54px; }
+.disclosure .fields { margin: 2px 0 16px; }
+.disclosure p { margin: 0 0 14px; }
+.relationship-list { margin: 0 0 14px; padding-left: 20px; }
+.relationship-list li + li { margin-top: 8px; }
+.footer { margin-top: 18px; color: var(--muted-foreground,var(--owl-secondary-text)); }
+.alternate { margin-top: 18px; padding: 16px; border: 1px dashed var(--border,var(--owl-divider)); border-radius: 12px; background: var(--card,var(--owl-card)); }
+.alternate h2 { font-size: 16px; margin: 4px 0 8px; }
+.alternate p + p { margin-top: 6px; }
+@media (max-width: 599px) {
+ .topbar { padding: 14px 16px; gap: 12px; align-items: flex-start; }
+ .brand { font-size: 16px; }
+ .workspace { max-width: 130px; }
+ .nav { padding: 10px 16px; }
+ main { padding: 20px 16px; }
+ h1 { font-size: 25px; }
+ .scope { padding: 12px; }
+ .facts, .fields { grid-template-columns: 1fr; }
+ .panel { padding: 14px; }
+ .disclosure { padding-top: 0; padding-bottom: 0; }
+ .criterion-list li { grid-template-columns: 1fr; gap: 2px; }
+}
+
+/* Reviewer corrections: operational 14px floor; 16px fields; safe personal identity;
+   native disclosures; readable reflow; fixed type glyphs. No runtime integration. */
+.app,.project-panel{overflow:visible}.topbar{border-radius:12px 12px 0 0}.nav,.brand,.row-head,.agent-line,.client-head,.client-chiprow{flex-wrap:wrap}.brand{white-space:normal}.nav{gap:8px 20px}
+body{overflow-wrap:anywhere}.meta,.workspace,.workspace span,.eyebrow,.readiness-time,.notification-state-label,.footer,.study-note{font-size:14px}
+input,select,.field input[type=text],.field select{font-size:16px}button,input,select,summary,a{touch-action:manipulation}
+a{color:var(--primary,var(--owl-primary));text-underline-offset:3px}a.local-link{display:inline-flex;align-items:center;min-height:44px;padding:8px 4px;gap:8px}
+summary:focus-visible,a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-visible{outline:3px solid var(--ring,var(--owl-control-outline));outline-offset:3px}
+summary::after{content:none!important}summary{gap:10px;min-height:44px}summary>span{min-width:0}.chevron{width:16px;height:16px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.7}details[open]>summary .chevron{transform:rotate(90deg)}
+.agent-chip{display:inline-flex;align-items:center;flex-wrap:wrap;gap:6px;max-width:100%;padding:6px 9px;border:1px solid var(--border,var(--owl-divider));border-radius:999px;background:var(--secondary,var(--owl-secondary-surface));color:var(--foreground,var(--owl-text));font-size:14px;line-height:1.5;vertical-align:middle;overflow-wrap:anywhere}.agent-chip .alias{font-weight:600;overflow-wrap:anywhere;max-width:100%}.agent-chip .type,.stable-id{color:var(--muted-foreground,var(--owl-secondary-text));font-size:14px}.stable-id{font-family:var(--font-mono,monospace)}.agent-marker{width:8px;height:8px;flex-shrink:0;transform:rotate(45deg);border:1px solid var(--identity-color,CanvasText);background:var(--identity-color,CanvasText);margin:0 3px}.type-glyph{display:block;width:16px;height:16px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;color:var(--muted-foreground,var(--owl-secondary-text))}
+.ticket-chip{max-width:100%;overflow-wrap:anywhere}.scope-basis{margin:10px 0;color:var(--foreground,var(--owl-text));font-size:14px}.section-links{display:flex;gap:0 16px;flex-wrap:wrap;margin:10px 0}.section-links a{min-height:44px;display:inline-flex;align-items:center}.facts dd p,.metrics dd p{font-size:14px;font-weight:400;letter-spacing:normal;line-height:1.5}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.bar span,.bar.unassigned span{background:var(--primary,var(--owl-primary))}
+fieldset{min-width:0;border:1px solid var(--border,var(--owl-divider));border-radius:8px;padding:12px;margin:12px 0}legend{font-size:14px;font-weight:600;padding:0 6px}.check-label{min-height:44px}.help{margin-top:8px;font-size:14px}.error-copy{color:var(--foreground,var(--owl-text));border-left:3px solid var(--destructive,var(--owl-error));padding-left:10px;margin:12px 0}.list{padding-left:20px;margin:12px 0}.list li+li{margin-top:6px}.fixture-state{margin-top:18px;padding:16px;border:1px dashed var(--border,var(--owl-divider));border-radius:12px}.fixture-state h1,.fixture-state h2{margin:8px 0}.arrival-shell{border:1px solid var(--border,var(--owl-divider));border-radius:12px;padding:16px;margin-top:16px;background:var(--card,var(--owl-card))}.arrival-shell p+p{margin-top:8px}.receipt-note{margin-top:10px}.totals dd{font-variant-numeric:tabular-nums}
+@media(max-width:599px){.row-head,.facts,.fields,.toolbar,.metrics,.client-grid,.split{display:grid;grid-template-columns:1fr}.row-head{gap:6px}.source-row,.definition-row{grid-template-columns:1fr}.workspace,.workspace span{font-size:14px}.topbar{align-items:flex-start}.nav{flex-wrap:wrap}.work-row{min-width:0}.agent-chip{max-width:100%}.app{overflow:visible}}
+@media(forced-colors:active){.agent-marker{background:CanvasText;border:1px solid CanvasText}.bar span,.progress-track span{background:Highlight}.ticket-chip,.agent-chip{border:1px solid CanvasText}.nav [aria-current]{outline:2px solid Highlight;outline-offset:-2px}}
+.skip-link{position:absolute;left:12px;top:-200px;z-index:5;padding:10px;background:var(--card,var(--owl-card));color:var(--foreground,var(--owl-text))}.skip-link:focus{top:12px}
+</style>
+<style id="owl-reference-theme">:root{--owl-canvas:#F5F7FB;--owl-card:#FFFFFF;--owl-secondary-surface:#EAF0F8;--owl-text:#172337;--owl-secondary-text:#52627A;--owl-divider:#D7E0EC;--owl-control-outline:#74849B;--owl-primary:#2456D6;--owl-on-primary:#FFFFFF;--owl-knowledge:#086A7B;--owl-attention:#845900;--owl-success:#176B50;--owl-error:#B23549;--owl-identity-iris:#6B4CC2;--owl-identity-mulberry:#943B75;--owl-identity-clay:#8F4D40;--owl-identity-slate:#556579;color-scheme:light;--identity-iris:var(--owl-identity-iris);--identity-mulberry:var(--owl-identity-mulberry);--identity-clay:var(--owl-identity-clay);--identity-slate:var(--owl-identity-slate);}
+@media(prefers-color-scheme:dark){:root{--owl-canvas:#0B1018;--owl-card:#121A27;--owl-secondary-surface:#1B2738;--owl-text:#EAF1FA;--owl-secondary-text:#A5B5CB;--owl-divider:#2E3C50;--owl-control-outline:#73869E;--owl-primary:#91B5FF;--owl-on-primary:#0B1730;--owl-knowledge:#70D7E7;--owl-attention:#F0C268;--owl-success:#72D6AF;--owl-error:#FF95A5;--owl-identity-iris:#C4B0FF;--owl-identity-mulberry:#F0ADDA;--owl-identity-clay:#F0B5A8;--owl-identity-slate:#B7C8DD;color-scheme:dark;}}
+html[data-owl-theme="dark"]{--owl-canvas:#0B1018;--owl-card:#121A27;--owl-secondary-surface:#1B2738;--owl-text:#EAF1FA;--owl-secondary-text:#A5B5CB;--owl-divider:#2E3C50;--owl-control-outline:#73869E;--owl-primary:#91B5FF;--owl-on-primary:#0B1730;--owl-knowledge:#70D7E7;--owl-attention:#F0C268;--owl-success:#72D6AF;--owl-error:#FF95A5;--owl-identity-iris:#C4B0FF;--owl-identity-mulberry:#F0ADDA;--owl-identity-clay:#F0B5A8;--owl-identity-slate:#B7C8DD;color-scheme:dark;}
+html[data-owl-theme="light"]{--owl-canvas:#F5F7FB;--owl-card:#FFFFFF;--owl-secondary-surface:#EAF0F8;--owl-text:#172337;--owl-secondary-text:#52627A;--owl-divider:#D7E0EC;--owl-control-outline:#74849B;--owl-primary:#2456D6;--owl-on-primary:#FFFFFF;--owl-knowledge:#086A7B;--owl-attention:#845900;--owl-success:#176B50;--owl-error:#B23549;--owl-identity-iris:#6B4CC2;--owl-identity-mulberry:#943B75;--owl-identity-clay:#8F4D40;--owl-identity-slate:#556579;color-scheme:light;}
+html,body{background:transparent}body{color:var(--foreground,var(--owl-text));font-family:var(--font-sans,system-ui)}input,select,textarea{font-size:16px}input,select,textarea,button{max-width:100%}.app{overflow:visible}.agent-chip,.ticket-chip{border-radius:9999px;max-width:100%;overflow-wrap:anywhere}.agent-chip{background:var(--secondary,var(--owl-secondary-surface));border-color:var(--border,var(--owl-divider));color:var(--foreground,var(--owl-text))}.type-glyph{color:var(--foreground,var(--owl-text))}.agent-dot,.agent-marker,.identity-marker{width:9px;height:9px;flex:0 0 9px;border-radius:1px;transform:rotate(45deg)}p,dd,h1,h2,h3{overflow-wrap:anywhere}@media(forced-colors:active){[aria-current],[aria-pressed="true"]{outline:2px solid Highlight}.agent-dot,.agent-marker,.identity-marker{background:CanvasText}}</style></head>
+<body><a class="skip-link local-link" href="#main-content">Skip to content</a>
+
+<p class="study-note"><strong>Illustrative data.</strong> Full work-evidence study. Source records, people mappings, times, and the acceptance rule below are examples.</p>
+<div class="app">
+ <header class="topbar">
+  <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5l3 2 5-1 5 1 3-2-1 11-7 4-7-4z"/><path d="M7 11h3m4 0h3m-6 3 1 1 1-1"/><path d="M12 2v3m0 16v1"/></svg></span>Owl Mast</div>
+  <div class="workspace">AISQUAD<span>Syntelligence</span></div>
+ </header>
+ <nav class="nav" aria-label="Location"><span>Daily Work</span><span aria-hidden="true">/</span><span aria-current="page">Work evidence</span></nav>
+ <main id="main-content" tabindex="-1"><nav aria-label="Related views" style="display:flex;flex-wrap:wrap;gap:8px 18px;margin-bottom:14px"><a style="display:inline-flex;align-items:center;min-height:44px;font-size:14px" href="dependencies.html">Ticket and PR dependencies</a><a style="display:inline-flex;align-items:center;min-height:44px;font-size:14px" href="audit.html">Audit trail</a></nav>
+  <div class="scope"><p><strong>Syntelligence</strong> · Syntelligence Jira site + GitHub</p><p class="muted">Observed 5 Nov, 08:42 Europe/Warsaw · This project only</p></div>
+  <nav class="section-links" aria-label="Work evidence sections"><a href="#criteria-title">Criteria</a><a href="#facts-title">Source facts</a><a href="#acceptance-title">Acceptance</a><a href="#usage-title">Usage &amp; cost</a></nav><p class="eyebrow"><span class="ticket-chip">SYN-72</span> · Epic <span class="ticket-chip">SYN-10</span> Account onboarding</p>
+  <a class="local-link" href="daily-work.html">Back to Daily Work</a><h1 id="work-heading" tabindex="-1">Verify account rollout rules</h1>
+  <p class="title-note">Owned by Mohamed · Contributions observed</p>
+  <div class="agent-line" style="margin-top:8px"><span class="agent-chip" style="--identity-color:var(--identity-slate, CanvasText)"><span class="agent-marker" aria-hidden="true"></span><svg class="type-glyph" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1M5.6 18.4l2.1-2.1m8.6-8.6 2.1-2.1"/></svg><span class="type">Claude</span><span class="sr-only"> agent, client </span><span class="stable-id">CL-21</span></span></div>
+
+  <section class="panel" aria-labelledby="request-heading"><h2 id="request-heading">Request evidence</h2><p><strong>Request text isn’t collected under this project’s policy.</strong></p><p>Observed request metadata · Syntelligence Jira SYN-72 · source event 08:29 · collected 08:42. Permitted reason: input requested. No linked session transcript is displayed.</p><p class="muted">A-3 remains unconfirmed. Captured request text would appear only after policy and reader access permit it.</p></section><section class="panel" aria-labelledby="criteria-title">
+   <div class="section-head"><h2 id="criteria-title" tabindex="-1">Acceptance criteria</h2><p class="measure">3 of 4 · 75%</p></div>
+   <p class="scope-basis">Counted from records you can access.</p><div class="progress-track" role="progressbar" aria-label="Jira checklist" aria-valuenow="75" aria-valuemin="0" aria-valuemax="100" aria-valuetext="3 of 4 Jira criteria marked complete; acceptance not recorded"><span></span></div>
+   <p class="muted">Jira checklist, observed 08:42. Checklist completion does not establish acceptance.</p>
+   <details><summary><span>Inspect the four criteria</span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></summary><ul class="criterion-list"><li><span class="criterion-state">Complete</span><span>Document the authorized account scope.</span></li><li><span class="criterion-state">Complete</span><span>Handle an account outside the project scope.</span></li><li><span class="criterion-state">Complete</span><span>Record validation for the linked revision.</span></li><li><span class="criterion-state">Open</span><span>Confirm the rollout boundary with the project approver.</span></li></ul><p class="muted">Source checklist revision 4. A changed checklist changes this denominator.</p></details>
+  </section>
+
+  <section class="panel" aria-labelledby="facts-title">
+   <h2 id="facts-title" tabindex="-1">What the sources establish</h2><p class="scope-basis">Counted from records you can access.</p>
+   <dl class="facts">
+    <div class="fact"><dt>Tracker closure</dt><dd>Closed · 08:31<p>Syntelligence Jira · <span class="ticket-chip">SYN-72</span></p></dd></div>
+    <div class="fact"><dt>Repository contribution</dt><dd>Merged · 08:34<p>GitHub · PR #118 · <span class="id">c8f2a71</span></p></dd></div>
+    <div class="fact"><dt>Checks on the revision</dt><dd>2 passed · 1 skipped<p>GitHub checks · observed 08:40</p></dd></div>
+    <div class="fact"><dt>Deployment</dt><dd>Not observed<p>No deployment evidence collected.</p></dd></div>
+   </dl>
+  </section>
+
+  <section class="panel acceptance" aria-labelledby="acceptance-title">
+   <div class="section-head"><h2 id="acceptance-title" tabindex="-1">Acceptance</h2><p>Not recorded</p></div>
+   <dl class="fields"><div><dt>Configured source rule · example</dt><dd>Project approver's sign-off in a Jira validation record for this revision.</dd></div><div><dt>Required evidence artifact</dt><dd>No matching validation record observed for <span class="id">c8f2a71</span>.</dd></div></dl>
+   <p class="note">The open criterion and missing acceptance record remain visible even though the tracker is closed and the PR is merged.</p>
+  </section>
+
+  <section class="panel" aria-labelledby="run-evidence-title">
+   <h2 id="run-evidence-title" tabindex="-1">Run evidence</h2><p>Implementation · run <span class="id">R-21</span> · Claude client CL-21. The linked run does not establish the fields below.</p>
+   <dl class="fields"><div><dt>Model</dt><dd>Unknown</dd></div><div><dt>Task effort</dt><dd>Unknown</dd></div><div><dt>Source session ID</dt><dd>Unknown</dd></div><div><dt>Machine / sandbox</dt><dd>Unknown</dd></div><div><dt>Tokens IN</dt><dd>Unavailable</dd></div><div><dt>Tokens OUT</dt><dd>Unavailable</dd></div></dl>
+   <p class="muted">Current client settings cannot fill historical gaps. Each implementation, review or verification contribution retains its own observed model, effort, session and machine.</p><a class="local-link" href="run-history.html">Explore a separate SYN-42 run-history example</a>
+  </section>
+
+  <section class="panel" aria-labelledby="usage-title">
+   <h2 id="usage-title" tabindex="-1">Usage &amp; cost</h2><p class="scope-basis">Counted from records you can access.</p><p>Only measurement classes available to this viewer in Usage appear here. An allocation or bill never reveals another audience’s share.</p>
+   <dl class="fields"><div><dt>Observed units</dt><dd>Not linked to this work</dd></div><div><dt>API-equivalent estimate</dt><dd>Unavailable</dd></div><div><dt>Subscription allocation</dt><dd>Not allocated</dd></div><div><dt>Actual bill</dt><dd>Unavailable</dd></div></dl>
+   <details><summary><span>Inspect usage detail<span class="sr-only"> for SYN-72</span></span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></summary><p>No usage record has a supported link to <span class="ticket-chip">SYN-72</span>. No work-level units, price basis, or billed amount can be established; none is shown as zero.</p><p class="note muted">Unassigned authorized project usage remains visible in Usage. Full project, client, model, agent, person, session, and work breakdowns preserve the same source scope.</p></details>
+  </section>
+
+  <section class="panel disclosure" aria-label="People and agent evidence">
+   <details><summary><span>People, agents, and correlation</span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></summary><dl class="fields"><div><dt>Work owner</dt><dd>Mohamed · Jira assignee</dd></div><div><dt>Initiating person</dt><dd>Mohamed · confirmed session record</dd></div><div><dt>Executing agent</dt><dd><span class="agent-line"><span class="agent-chip" style="--identity-color:var(--identity-slate, CanvasText)"><span class="agent-marker" aria-hidden="true"></span><svg class="type-glyph" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1M5.6 18.4l2.1-2.1m8.6-8.6 2.1-2.1"/></svg><span class="type">Claude</span><span class="sr-only"> agent, client </span><span class="stable-id">CL-21</span></span>Run <span class="id">R-21</span> · implementation</span></dd></div><div><dt>Work-to-contribution mapping</dt><dd>Confirmed · <span class="ticket-chip">SYN-72</span> recorded in run R-21 and the linked GitHub PR.</dd></div></dl><p class="muted">Delegation is not established by this record. Client CL-21 and run R-21 are separate identities. Work linkage does not establish token attribution.</p></details>
+  </section>
+
+  <section class="panel disclosure" aria-label="Dependencies and observation history"><details><summary><span>Dependencies and source history</span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></summary><ul class="relationship-list"><li><strong>Explicit prerequisite:</strong> Syntelligence Jira <span class="ticket-chip">SYN-40</span>. Its tracker is closed; acceptance evidence is checked separately.</li><li><strong>Possible dependency:</strong> <span class="ticket-chip">SYN-67</span>. Inferred from a shared change; not a confirmed blocker.</li><li><strong>Source events:</strong> checklist 08:29; closure 08:31; merge 08:34; check result 08:40.</li><li><strong>Collection:</strong> Jira and GitHub last collected at 08:42. Client records last collected at 08:41.</li></ul><p class="muted">Source references are illustrative text in this preview. No real work record or external agent tool is opened.</p></details></section>
+  <p class="footer">Work observation only. Replies, assignments, merges, and agent controls remain in the existing tools.</p>
+ </main>
+</div>
+<section class="alternate" aria-labelledby="alternate-title"><p class="muted">Alternate state · missing evidence</p><h2 id="alternate-title">Progress unknown. Collection is delayed.</h2><p>No measurable checklist is available; no percentage is shown. Last successful source collection: 08:20.</p><p class="muted">This gap does not mean the work is blocked or complete. If access is revoked, replace the detail with “This item is unavailable” and omit its title, people, and evidence.</p></section>
+
+</body>
+</html>

@@ -1,0 +1,1077 @@
+<!DOCTYPE html>
+<!--
+  UX Design Validation Report — skeleton template.
+
+  This file is a starter the synthesis pass fills in directly. There is no
+  substitution engine. The LLM:
+    1. Reads {doc_workspace}/review-rubric.md and every review-{slug}.md from
+       additional reviewers.
+    2. Copies this skeleton.
+    3. Replaces the placeholder content (everything between TEMPLATE markers)
+       with the consolidated review, preserving the structure and CSS.
+    4. Writes the result to {doc_workspace}/validation-report.html.
+    5. Writes a markdown twin to {doc_workspace}/validation-report.md.
+
+  Visual rules the LLM must preserve:
+    - The container width, the color tokens, the typography.
+    - One dimension = one collapsible <section class="dimension">.
+    - Verdict pill uses the verdict-* class matching its judgment.
+    - Severity badge uses the badge-sev-* class matching its level.
+    - Each extra reviewer (accessibility, adversarial, etc.) gets its own
+      collapsible section below the rubric dimensions.
+    - The footer always shows the artifact paths and timestamp.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>UX Design Validation: Owl Mast</title>
+<style>
+  :root {
+    --bg: #fafaf9;
+    --surface: #ffffff;
+    --border: #e7e5e4;
+    --text: #1c1917;
+    --muted: #78716c;
+
+    --verdict-strong: #16a34a;
+    --verdict-adequate: #65a30d;
+    --verdict-thin: #d97706;
+    --verdict-broken: #dc2626;
+
+    --sev-low: #64748b;
+    --sev-medium: #ca8a04;
+    --sev-high: #ea580c;
+    --sev-critical: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    font-size: 15px;
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 32px 24px 64px; }
+
+  header.report-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 24px;
+  }
+  .title h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+  .title .subtitle { color: var(--muted); font-size: 13px; margin-top: 4px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+  .synthesis {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--muted);
+    border-radius: 8px;
+    padding: 18px 22px;
+    margin-bottom: 24px;
+    font-size: 15.5px;
+  }
+  .synthesis p { margin: 0 0 10px; }
+  .synthesis p:last-child { margin-bottom: 0; }
+
+  .dimension-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px;
+    margin-bottom: 24px;
+  }
+  .dim-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .dim-card .dim-name { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .dim-card .dim-verdict { font-size: 14px; font-weight: 600; }
+
+  section.dimension, section.reviewer-section { margin-bottom: 14px; }
+  section.dimension details, section.reviewer-section details {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  section summary {
+    padding: 14px 20px;
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  section summary::-webkit-details-marker { display: none; }
+  section summary::before {
+    content: "▸";
+    display: inline-block;
+    color: var(--muted);
+    transition: transform 0.15s ease;
+  }
+  section details[open] summary::before { transform: rotate(90deg); }
+  section summary h2 {
+    display: inline;
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    flex: 1;
+  }
+  .verdict-pill {
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: white;
+  }
+  .verdict-strong { background: var(--verdict-strong); }
+  .verdict-adequate { background: var(--verdict-adequate); }
+  .verdict-thin { background: var(--verdict-thin); }
+  .verdict-broken { background: var(--verdict-broken); }
+
+  .dim-body { padding: 4px 20px 18px; }
+  .dim-judgment { color: var(--text); font-size: 14.5px; }
+  .dim-judgment p { margin: 0 0 10px; }
+
+  .findings-list { padding: 0 20px 4px; }
+  article.finding {
+    padding: 14px 0;
+    border-top: 1px solid var(--border);
+  }
+  article.finding:first-child { border-top: none; }
+  article.finding header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+  .badge {
+    font-size: 10.5px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    line-height: 1.4;
+  }
+  .badge-sev-low { background: rgba(100, 116, 139, 0.12); color: var(--sev-low); }
+  .badge-sev-medium { background: rgba(202, 138, 4, 0.14); color: var(--sev-medium); }
+  .badge-sev-high { background: rgba(234, 88, 12, 0.14); color: var(--sev-high); }
+  .badge-sev-critical { background: rgba(220, 38, 38, 0.14); color: var(--sev-critical); }
+  .finding-title { margin: 0; font-size: 15px; font-weight: 500; flex: 1; min-width: 200px; }
+  .finding-location { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; color: var(--muted); }
+  .finding-note, .finding-fix { margin-top: 6px; font-size: 14px; }
+  .finding-fix strong { color: var(--muted); font-weight: 500; }
+
+  .reviewer-source {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  .mechanical {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-top: 24px;
+    font-size: 14px;
+  }
+  .mechanical h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .mechanical ul { margin: 0; padding-left: 20px; }
+  .mechanical li { margin-bottom: 4px; color: var(--text); }
+
+  footer.report-footer {
+    margin-top: 40px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--muted);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  footer .meta { display: flex; gap: 24px; flex-wrap: wrap; }
+</style>
+<style>html,body{background:transparent}.container{padding:0;max-width:960px}body{color:var(--foreground,var(--text))}.synthesis,.dim-card,section details,.mechanical{background:var(--card,var(--surface));border-color:var(--border)}table{display:block;max-width:100%;overflow:auto;font-size:14px}td,th{padding:8px;border-bottom:1px solid var(--border)}a{color:var(--primary,#2456D6)}summary{min-height:44px}summary:focus-visible,a:focus-visible{outline:3px solid var(--ring,#74849B)}.finding-title{min-width:0}.finding-location{overflow-wrap:anywhere}.verdict-pill,.badge{color:var(--foreground,var(--text));background:var(--secondary,#EAF0F8);border:1px solid currentColor}.dimension-summary{grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr))}</style><style>section.dimension details,section.reviewer-section details{background:var(--card,#FFFFFF);color:var(--foreground,#172337);border-color:var(--border,#D7E0EC)}.dim-judgment,.mechanical li{color:var(--foreground,#172337)}.finding-fix strong,.reviewer-source,.finding-location,.dim-card .dim-name,footer.report-footer,.mechanical h3{color:var(--muted-foreground,#52627A)}@media(prefers-color-scheme:dark){section.dimension details,section.reviewer-section details{background:var(--card,#121A27);color:var(--foreground,#EAF1FA)}.dim-judgment,.mechanical li{color:var(--foreground,#EAF1FA)}}</style></head>
+<body><div class="container"><header class="report-header"><div class="title"><h1>Owl Mast — UX validation</h1><p>Independent findings and author dispositions · 2026-11-05</p></div></header><div class="synthesis"><p>The independent reviews found a structurally sound pair that preserves confirmed choices and A-1–A-6, but required bounded fixes before finalization. The original findings include one critical token gap and nine high findings across scope, identity, notifications, permissions and focus behavior. These counts describe the reviewed drafts, not remaining defects or unique deduplicated issues.</p><p>The author applied or explicitly adapted every finding below. Editorial review adds 23 structure rows (18 changes, 5 preserve) and 21 prose rows, kept unranked. This is author remediation with static and visual-reference checks, not an independent post-fix approval, a usability test, WCAG conformance, source integration or a pilot success claim. Original reports and pre-edit spine snapshots remain available.</p><p>Original findings: <strong>1 critical · 9 high · 34 medium · 25 low</strong>. Overlapping findings retain their reviewer IDs.</p></div><div class="dimension-summary"><div class="dim-card"><div class="dim-name">1. Flow coverage</div><div class="dim-verdict">Reviewed draft: adequate</div></div><div class="dim-card"><div class="dim-name">2. Token completeness</div><div class="dim-verdict">Reviewed draft: thin</div></div><div class="dim-card"><div class="dim-name">3. Component coverage</div><div class="dim-verdict">Reviewed draft: adequate</div></div><div class="dim-card"><div class="dim-name">4. State coverage</div><div class="dim-verdict">Reviewed draft: adequate</div></div><div class="dim-card"><div class="dim-name">5. Visual reference coverage</div><div class="dim-verdict">Reviewed draft: adequate</div></div><div class="dim-card"><div class="dim-name">6. Bloat and overspecification</div><div class="dim-verdict">Reviewed draft: adequate</div></div><div class="dim-card"><div class="dim-name">7. Inheritance discipline</div><div class="dim-verdict">Reviewed draft: adequate</div></div><div class="dim-card"><div class="dim-name">8. Shape fit</div><div class="dim-verdict">Reviewed draft: strong</div></div></div><section class="dimension"><details ><summary><h2>1. Flow coverage</h2><span class="verdict-pill verdict-adequate">adequate</span></summary><div class="dim-body"><p>Original rubric verdict, before author fixes. Location references name the reviewed snapshot.</p></div><div class="findings-list"><article class="finding"><header><span class="badge badge-sev-high">high</span><h3 class="finding-title">F1 · Focus has two incompatible default scopes.</h3></header><div class="finding-note"><p>E:44 says company context is explicitly selected and &quot;not an automatic cross-project default.&quot; E:254 says Focus shows work &quot;within his authorized project scope.&quot; <code>focus.html:173</code> defaults to &quot;Both permitted projects,&quot; and its summary reports &quot;5 assigned tickets across 3 epics&quot; across Syntelligence and Movesion. E:150 makes the spine win, so a builder following it could hide the cross-project concurrency that UX-12 exists to show; a builder following the mock would ship an aggregate the IA forbids as a default. <em>Fix:</em> add one sentence to S10 (E:57) and J8 step 1 (E:254) choosing a labeled [P] default. Recommended: Focus may open on all authorized projects as an explicit, visibly labeled aggregate, with project and source on every card. Add this exception to E:44.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: IA and J8 explicitly propose all authorized projects as the labeled Focus exception; project sections and filter remain visible.</div></article><article class="finding"><header><span class="badge badge-sev-high">high</span><h3 class="finding-title">F2 · &quot;Observed work update,&quot; the push trigger, is undefined, and the push controls use conflicting terms.</h3></header><div class="finding-note"><p>UX-10 is preserved at E:40, E:245, and E:268, but nothing lists which events count. J7 step 3 (E:247) routes notifications to S2, S4, or S6, which implies knowledge and promotion events may notify even though the decision says &quot;work update.&quot; S1's filters also include Knowledge (<code>daily-work.html</code>, Recent updates). S9 promises &quot;category choice&quot; (E:56), J7 says &quot;follow/notification scope&quot; (E:245), and <code>notifications.html</code> offers only followed projects and a generic-preview option. A category control could recreate the attention-only filter that UX-10 rejects, and architecture has no event classes to design against. <em>Fix:</em> add a short [P] event table to S9 or J7 listing each event class, whether it counts as a work update under UX-10, and its destination. Replace &quot;category choice&quot; with the controls actually intended. Keep every-update as the default and platform delivery as an implementation validation.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: event table defines work changes, separate knowledge/system categories, default-enabled preferences, destinations, replay handling and authorization.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">F3 · Two user-requested behaviors have no flow.</h3></header><div class="finding-note"><p>Alias and color editing (UX-15) and contextual cost drill-down (UX-17) appear only in component rows and semantics (E:90, E:99, E:166, E:168). S5's row (E:52) omits appearance settings, S2 and S10 (E:49, E:57) omit Usage &amp; cost, and J6 enters only from a project or company scope (E:236). Stories have no sequence or climax to build from. <em>Fix:</em> add one step or a short branch: J2 or a J2 appendix for appearance editing, and a J6 entry from a ticket or epic summary with scope retained. Add both to the IA rows, tagged [P].</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: S2/S5/S10 IA and J2 appearance/J6 contextual-cost branches now cover the requested behavior.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">F4 · FR-15&#x27;s company view has no flow, visual, or surface state outside S7.</h3></header><div class="finding-note"><p>FR-15 covers progress, agent activity, attention, knowledge, and usage. S1 and S10 claim FR-15 (E:48, E:57), but SC-1 and J1 are project-scoped, only J6 mentions company scope (E:236), and no mock shows a labeled company aggregate. <em>Fix:</em> add a J6 or S1 branch that selects company context and shows the aggregate label, partial coverage, and drill-down context. Alternatively, state which surfaces have company scope in V1.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: named company-overview branch and navigation.html show progress, agent activity, attention, knowledge and Usage entry with permission-safe counts.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">F5 · FR-3 recovery non-duplication is missing.</h3></header><div class="finding-note"><p>PRD FR-3 requires that recovery not duplicate contributions, runs, or usage. E:250 covers only notification replay, and E:92 and E:99 cover only shared-run totals. <em>Fix:</em> add one clause to S5/S8 state patterns or the J2 failure path.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: recovery preserves unique observations, contributions, runs, receipts and usage.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">F6 · Flow numbering is unexplained.</h3></header><div class="finding-note"><p>IDs jump from J2 to J6 with no note, and J-IDs are not PRD identifiers. <em>Fix:</em> add one line saying J-IDs are UX-local and gaps are intentional, or renumber them.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: SC/J identifier purpose and unused J3–J5 are explained without inventing historical reasons.</div></article></div></details></section><section class="dimension"><details open><summary><h2>2. Token completeness</h2><span class="verdict-pill verdict-thin">thin</span></summary><div class="dim-body"><p>Original rubric verdict, before author fixes. Location references name the reviewed snapshot.</p></div><div class="findings-list"><article class="finding"><header><span class="badge badge-sev-critical">critical</span><h3 class="finding-title">T1 · Agent identity colors have no tokens, hex values, dark pairs, or contrast targets.</h3></header><div class="finding-note"><p>D:162 and E:90 require a user-changeable colored marker. E:166 requires an &quot;accessible color palette,&quot; and D:79 defines no identity color. Mocks fill the gap three ways:</p>
+<ul>
+<li>host <code>--chart-1</code> through <code>--chart-4</code> in <code>connections.html</code>, <code>focus.html</code>, and <code>daily-work.html</code></li>
+<li>literal <code>#9F8CEB</code> and <code>#C7A06D</code> in <code>knowledge-detail.html:42</code>, with no dark pair, measuring 2.47:1 and 2.11:1 on light <code>secondary-surface</code> (2.83:1 and 2.42:1 on <code>card</code>), below the 3:1 boundary target if the marker is meaningful</li>
+<li>&quot;Blue / Cyan / Amber&quot; in the <code>connections.html</code> color field, which reuses hues D:115–118 reserves for orientation, knowledge, and attention</li>
+</ul>
+<p>This also violates D:122 (&quot;do not… introduce unmeasured accent tints&quot;) and undermines D:162's rule that personal color never implies status. Rubric rule applied: missing hex is critical, and this affects every <code>agent-chip</code> on every surface. <em>Fix:</em> add a [D]/[P] token family such as <code>agent-identity-1…n</code> with <code>-dark</code> pairs, hues distinct from semantic roles, and a measured marker target. Reference it from <code>agent-chip</code> and align the S5 picker. Palette contents remain delegated designer proposals; alias ownership is handled in C1.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: four dedicated identity token pairs, diamond markers, neutral fallback and named picker; all 16 identity contrast checks pass.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">T2 · Component frontmatter contradicts component prose for two load-bearing text colors.</h3></header><div class="finding-note"><p><code>attention-item</code> sets <code>textColor: {colors.attention}</code> (D:75), but D:158 says &quot;Body remains main text.&quot; <code>state-message</code> sets <code>{colors.secondary-text}</code> (D:90), but D:113 requires main text for permission and failure messages, and E:101 uses this component for denied and failure states. Code that mirrors the tokens will implement the wrong hierarchy. <em>Fix:</em> set both text colors to <code>{colors.text}</code>. Express amber as a marker property on <code>attention-item</code>.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: attention-item and state-message use main text; attention color marks the reason.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">T3 · Data-visualization colors are unspecified.</h3></header><div class="finding-note"><p>D:171 and E:99 require charts, but <code>usage.html</code> uses <code>--share</code> and <code>--chart-2</code> with no DESIGN token. <em>Fix:</em> add a chart or share-bar token, or state that V1 bars use <code>{colors.primary}</code> on <code>{colors.secondary-surface}</code>.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: charts use primary on secondary surface with labeled equivalents.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">T4 · `action-control-dark` is redundant.</h3></header><div class="finding-note"><p>The D:106 mapping already covers dark mode, yet this is the only component with a separate dark entry, and D:106 presents it as an example of a variant. <em>Fix:</em> remove it and rely on the mapping, or state clearly why this component alone is enumerated. Update D:92, D:174, and E:102 together.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Adapted: retained explicit light/dark export variants and documented precedence and shared behavior.</div></article></div></details></section><section class="dimension"><details ><summary><h2>3. Component coverage</h2><span class="verdict-pill verdict-adequate">adequate</span></summary><div class="dim-body"><p>Original rubric verdict, before author fixes. Location references name the reviewed snapshot.</p></div><div class="findings-list"><article class="finding"><header><span class="badge badge-sev-high">high</span><h3 class="finding-title">C1 · Alias rendering has no fallback or identity level.</h3></header><div class="finding-note"><p>E:90 defines aliases as this viewer's personal display preferences, and D:162 makes an owl name part of every <code>agent-chip</code>. Nothing specifies what a viewer sees for an agent they have not named, including a colleague's agent, which SC-1 depends on. Nothing specifies whether an alias attaches to a client enrollment, a client-project pair, or a run, or how invalid, duplicate, or failed saves behave. Illustrative fixtures show the ambiguity: &quot;Tawny&quot; is a client-project identity in <code>connections.html</code> (<code>CL-SYN-01</code>), a run <code>CL-17</code> initiated by Ahmed in <code>usage.html</code>, and run <code>CL-21</code> on Mohamed's work in <code>work-detail.html</code>. <em>Fix:</em> add a [P] rule to E:90 and D:162:</p>
+<ul>
+<li>the identity level an alias attaches to</li>
+<li>the unaliased display, such as fixed type label plus stable short ID and a neutral marker</li>
+<li>name validation and whether duplicates are allowed</li>
+<li>reset behavior</li>
+<li>a save-failure entry in the S5 state row (E:115)</li>
+</ul>
+<p>Keep shared naming authority explicitly unresolved, as E:90 already says.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: viewer-local client aliases, fixed type/ID fallback, length validation, duplicate disambiguation, reset, failure and revocation rules.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">C2 · Recurring UI elements have no component contract.</h3></header><div class="finding-note"><p>Mocks and spines rely on these without rows:</p>
+<ul>
+<li>person, view, and filter switches (S1 My work/Mohamed, S1 update filters, S10 By epic/Together, S3 lifecycle filters; E:91, E:94)</li>
+<li>lifecycle and status badges (<code>knowledge-detail.html</code>, <code>promotion.html</code>)</li>
+<li>disclosures (native details on every surface; E:124 gives only general behavior)</li>
+<li>notification preview (<code>notifications.html</code>)</li>
+<li>secondary actions (&quot;Keep project-scoped&quot; in <code>promotion.html</code>; D:174 defines only a filled primary action)</li>
+</ul>
+<p>Parity checks pass only because these were never named, so downstream teams will define them inconsistently. <em>Fix:</em> add <code>filter-control</code>, <code>status-badge</code>, <code>disclosure</code>, and <code>notification-preview</code> to frontmatter and both tables, and add a secondary <code>action-control</code> variant. Alternatively, explicitly classify any of these as native primitives with stated rules.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: native filters, switches, badges, disclosures, previews and secondary actions explicitly inherit named component contracts.</div></article></div></details></section><section class="dimension"><details ><summary><h2>4. State coverage</h2><span class="verdict-pill verdict-adequate">adequate</span></summary><div class="dim-body"><p>Original rubric verdict, before author fixes. Location references name the reviewed snapshot.</p></div><div class="findings-list"><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">S1 · System quarantine is not a user-visible lifecycle state.</h3></header><div class="finding-note"><p>FR-13 says the system can quarantine a version. E:160's distinct-state list and E:114's S4 row omit it, leaving only passing mentions of quarantine at E:230 and E:270. <code>knowledge-record</code> (E:95) has no way to distinguish a system quarantine from a maintainer withdrawal. <em>Fix:</em> add Quarantined, with its system origin, to E:160 and E:114. Keep retrieval and re-publication semantics deferred to A-2.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: system quarantine is a distinct visible lifecycle state; A-2 effects remain provisional.</div></article></div></details></section><section class="dimension"><details ><summary><h2>5. Visual reference coverage</h2><span class="verdict-pill verdict-adequate">adequate</span></summary><div class="dim-body"><p>Original rubric verdict, before author fixes. Location references name the reviewed snapshot.</p></div><div class="findings-list"><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">V1 · The proposed navigation appears in no reference.</h3></header><div class="finding-note"><p>E:44 defines five primary destinations plus Preferences. D:134 and E:146 commit to a rail at ≥1024px and a labeled menu below that. Actual mock shells differ:</p>
+<ul>
+<li><code>daily-work.html:194</code> has no navigation, although J8 starts &quot;From the landing page&quot; (E:254)</li>
+<li><code>focus.html:170</code> shows two items and <code>usage.html:101</code> three</li>
+<li><code>knowledge.html</code>, <code>knowledge-detail.html</code>, and <code>promotion.html</code> show &quot;Workspace / Knowledge,&quot; and &quot;Workspace&quot; is not an IA term</li>
+<li><code>notifications.html</code> shows two items and <code>connections.html</code> shows sub-navigation</li>
+<li><code>work-detail.html:105</code> shows a breadcrumb</li>
+</ul>
+<p>E:150's &quot;demonstrate the layouts&quot; and D:177's &quot;uses the defined components&quot; overstate this for <code>surface-navigation</code>. The spine controls, but the most cross-cutting shell has never been drawn. <em>Fix:</em> add one shared shell reference at wide and compact widths, or narrow both claims and note that navigation is spine-only.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: navigation.html supplies the complete rail, compact menu and contextual/company branch; individual mocks remain focused compositions.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">V2 · The host-theme caveat covers one mock, but the dependency affects all ten.</h3></header><div class="finding-note"><p>D:136 discloses it only for <code>daily-work.html</code>. <code>daily-work</code>, <code>focus</code>, <code>connections</code>, <code>notifications</code>, and <code>administrator-setup</code> use undefined host variables almost entirely without fallbacks (94–116 uses). <code>work-detail</code> and <code>usage</code> fall back mostly to system colors; <code>knowledge</code>, <code>knowledge-detail</code>, and <code>promotion</code> fall back to DESIGN hex for the core palette. The gallery copies its parent's computed variables, which are empty outside a host. By CSS rules, panels in the first five lose fills and borders when opened directly (inferred; not rendered). This matches the brief's known boundary but is not disclosed to spine readers. <em>Fix:</em> move the caveat to D:177 and E:59, naming which rendering context the references need. Optionally inject a standalone DESIGN token block so references are usable in architecture and story work.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: exact standalone fallback layer in every reference; host rendering limitation disclosed for the complete set.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">V3 · Key lifecycle actions and states have no reference.</h3></header><div class="finding-note"><p>S6's row promises withdrawal and supersession (E:53), and SC-3 steps 6–7 depend on them along with mode changes. <code>promotion.html</code> shows modes, one exception, and one manual review, with no withdraw, supersede, or mode-change preview. <code>knowledge-detail.html</code>'s only alternate is unavailable, despite E:114's conflicting, superseded, withdrawn, and version-unknown states. D:174 and E:138 specify destructive styling and confirmation, but nothing shows them. <em>Fix:</em> add static alternates in native disclosures, or state in E:59 that these states are spine-only.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: knowledge/promotion references show withdrawal, supersession, quarantine, audit and mode-change alternatives.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">V4 · Epic progress is displayed three different ways.</h3></header><div class="finding-note"><p>E:156 requires the label &quot;child tickets closed,&quot; and Voice uses &quot;3 of 5 child tickets closed&quot; with no percentage (E:69). <code>daily-work.html:210</code> makes &quot;60%&quot; dominant with &quot;3 of 5 tickets closed,&quot; despite D:185's warning about big percentages. <code>focus.html</code> shows &quot;Epic: 3/5 tracker-closed&quot; with a bar. SC-1 step 2 tags &quot;completion percentages for… tickets/epics&quot; as [U: UX-05] (E:194), while UX-07 defines only tickets, leaving epic percentages unresolved. <code>daily-work.html:210</code> also labels &quot;Your owned scope&quot; while its basis says &quot;five tickets in this epic,&quot; blurring the distinction J8 requires (E:256). <em>Fix:</em> state in E:156 whether a derived percentage may accompany the fraction, keeping the proposal labeled [P] and the fraction dominant. Use one label across S1, S2, S10, and Voice, and correct the S1 scope text.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: epic fraction and child-tickets-closed label dominate; optional percentage and record-set basis are explicit.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">V5 · Mock vocabulary drifts from spine vocabulary.</h3></header><div class="finding-note"><p>&quot;Work in focus&quot; in <code>daily-work.html:211</code> collides with the separate Focus board, the confusion J8's climax warns about (E:258). Other drift: &quot;Together&quot; vs &quot;combined&quot; (E:91), &quot;Daily work&quot; vs &quot;Daily Work&quot; (E:44), and &quot;Receiving observations&quot; vs &quot;Observation ready&quot; (E:70). <em>Fix:</em> align labels; rename the S1 section, for example to &quot;Active work.&quot;</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: Active work, Daily Work, Combined, and Observation ready vocabulary aligned.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">V6 · Visual links are inconsistent in the state table.</h3></header><div class="finding-note"><p>S2, S4, S5, and S9 rows have no visual links (E:112, E:114, E:115, E:119); the other six do. <em>Fix:</em> link all ten or remove them from this table, since the IA already links each surface.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: all ten state-table surfaces have visual links.</div></article></div></details></section><section class="dimension"><details ><summary><h2>6. Bloat and overspecification</h2><span class="verdict-pill verdict-adequate">adequate</span></summary><div class="dim-body"><p>Original rubric verdict, before author fixes. Location references name the reviewed snapshot.</p></div><div class="findings-list"><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">B1 · Process status sits in contract text.</h3></header><div class="finding-note"><p>E:272 records reviewer selection (&quot;All four review lenses… Claude Opus 5.5 Ultrathink&quot;) and reconciliation progress. E:25's &quot;latest user addition&quot; is a session note. Neither helps a downstream builder, and both go stale at finalization. <em>Fix:</em> keep these in <code>.memlog.md</code> only.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: session/review status moved outside the contracts.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">B2 · Some rules are restated or misplaced.</h3></header><div class="finding-note"><p>The execution boundary recurs at E:36, E:86, E:91, E:186, E:197, E:150, E:257, and E:258. E:158–164 partly restate FR text that semantic and component rows also apply. D:136 and D:138 carry surface order and Focus behavior that E:148, E:91, and E:92 own. <em>Fix:</em> keep one authoritative statement in each case and reference it elsewhere; retain repetition only where a flow step needs it.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Adapted: redundant prose reduced; execution boundaries at journey climaxes and assumption reminders preserved intentionally, as editorial review recommends.</div></article></div></details></section><section class="dimension"><details ><summary><h2>7. Inheritance discipline</h2><span class="verdict-pill verdict-adequate">adequate</span></summary><div class="dim-body"><p>Original rubric verdict, before author fixes. Location references name the reviewed snapshot.</p></div><div class="findings-list"><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">I1 · The PRD&#x27;s &quot;knowledge maintainer&quot; role is never mapped.</h3></header><div class="finding-note"><p>That exact term has zero occurrences in either spine (PRD §2, FR-12, FR-13). E uses &quot;project-designated maintainer&quot; and &quot;maintainer&quot; (E:98, E:224, E:229). UX-09 confirms exceptions and manual review, while the PRD role also covers policy configuration and withdrawal. E:100 and E:225 never say who may change the mode. Architecture could model one role or two. <em>Fix:</em> add one line, preserving the user's term and assigning no real people: &quot;A project-designated maintainer is the PRD's knowledge maintainer for that project,&quot; or state explicitly if they differ. Name that authority in the S6 policy rule.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: project-designated maintainer maps to the PRD knowledge-maintainer role for that project; policy/lifecycle authority remains authorization-bound.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">I2 · Stable decision IDs are replaced by &quot;latest&quot; wording.</h3></header><div class="finding-note"><p>E never cites UX-11, UX-12, UX-13, UX-15, or UX-17 (E:25, E:40, E:57, E:166, E:168, E:254 use phrases such as &quot;latest Focus request&quot;), and later decisions have already made &quot;latest&quot; wrong. UX-16 is a sample boundary and needs no citation. <em>Fix:</em> cite the memlog IDs.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: stable UX decision IDs replace latest wording.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">I3 · `[OPEN]` is defined but never applied.</h3></header><div class="finding-note"><p>It appears only in the E:32 and E:34 definitions. E:272 lists bounded refinements without shared alias authority or the palette (E:90, E:166), so real open items are harder to find. <em>Fix:</em> tag remaining items <code>[OPEN]</code> and add them to the register, or remove the label.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: OPEN tags identify remaining bounded dependencies; identity palette is now specified.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">I4 · Some handoff evidence links only to `.working/`.</h3></header><div class="finding-note"><p>D:122 and E:270 point to <code>.working/palette-contrast.md</code> and <code>.working/source-prd.md</code>, a folder the skill treats as working space. A-1–A-6 are also safe in the PRD and memlog, but the contrast evidence is not. <em>Fix:</em> promote the contrast calculation or confirm <code>.working/</code> ships with the package.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: palette evidence promoted to assets/palette-contrast.md; original .working source extracts remain in the package.</div></article></div></details></section><section class="dimension"><details ><summary><h2>8. Shape fit</h2><span class="verdict-pill verdict-strong">strong</span></summary><div class="dim-body"><p>Original rubric verdict, before author fixes. Location references name the reviewed snapshot.</p></div><div class="findings-list"><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">SH1 · The Responsive table specifies only part of the surface set.</h3></header><div class="finding-note"><p>E:148 gives phone order for S1 and full-width rules for S2, S4, and S6. S7's wide table and S3, S5, and S8 have no phone rule beyond D:187's general warning; D:138 covers S10 separately. <code>daily-work.html</code> uses 540px and 800px breakpoints rather than D:134's 600/1024px. <em>Fix:</em> add one general rule or per-surface phone rows, starting with S7 tables, and align the mock breakpoints.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: common phone rules cover all surfaces, labeled Usage rows and bounded lists; breakpoints aligned.</div></article></div></details></section><section class="reviewer-section"><details><summary><h2>Permissions and knowledge lifecycle</h2></summary><div class="dim-body"><p>Independent reviewer findings preserved; static review only. <a href="review-permissions-knowledge.md">Original report</a></p></div><div class="findings-list"><article class="finding"><header><span class="badge badge-sev-high">high</span><h3 class="finding-title">PK-1 · Permission-filtered totals must either look complete or reveal that records are hidden</h3></header><div class="finding-note"><p><strong>Location:</strong> <code>EXPERIENCE.md:85</code> (<code>work-summary</code>: &quot;Count authorized data only; show partial coverage&quot;), <code>:111</code> (no hidden-source counts), <code>:117</code>, <code>:156</code> (incomplete child scope &quot;prevents a complete-looking rollup&quot;), <code>:260</code> (&quot;never reveal hidden titles or counts&quot;). <code>DESIGN.md:157–159</code>, <code>:164</code>. <code>mockups/daily-work.html:210</code>, <code>mockups/focus.html:237</code>, <code>mockups/usage.html:124</code>. Source: PRD FR-6 line 108, NFR-1 line 249, NFR-2 line 250.</p>
+<p><strong>Evidence:</strong> The contract requires partial coverage to show and also forbids disclosing hidden records, but never says how both hold when the partiality comes from permissions. The references differ:</p>
+<ul>
+<li>Daily Work states an absolute: &quot;Denominator: five tickets in this epic&quot;, under &quot;Your owned scope&quot;.</li>
+<li>Focus says &quot;permitted epic tickets&quot;, but only inside a collapsed disclosure, and its visible label is &quot;Epic: 3/5 tracker-closed&quot;.</li>
+<li>Usage places &quot;only permitted … records&quot; inside a collapsed disclosure.</li>
+</ul>
+<p><strong>Impact:</strong> A viewer who cannot read 3 of 8 child tickets sees &quot;5 of 5 child tickets closed&quot;, an apparently finished epic. If an &quot;incomplete&quot; label appears only when something is actually hidden, that label itself discloses hidden records. SC-1's climax (&quot;can explain what is closed&quot;) then fails silently, and two viewers get different figures with no signal why.</p>
+<p><strong>Minimal fix:</strong> Add one rule to <code>work-summary</code>, <code>epic-group</code>, and <code>usage-breakdown</code>:</p>
+<ul>
+<li>Every aggregate carries a constant, always-visible basis label, such as &quot;Counted from records you can access&quot;. It appears identically whether or not anything is hidden, so it reveals nothing and never implies a whole-source total.</li>
+<li>A permission-scoped rollup never presents as &quot;all closed&quot; or &quot;complete&quot; without that label.</li>
+<li>Source-collection gaps (FR-3) keep their own conditional &quot;incomplete&quot; label, separate from this basis label.</li>
+<li>Search omission notices (<code>:160</code>) count only eligible results that were truncated, never results filtered out by permission.</li>
+<li>Change the Daily Work denominator copy to match.</li>
+</ul>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: constant accessible-record basis on aggregates, separate collection-gap warnings, no permission-omission counts.</div></article><article class="finding"><header><span class="badge badge-sev-high">high</span><h3 class="finding-title">PK-2 · A project-scoped lesson has no reader check when it derives from restricted same-project material</h3></header><div class="finding-note"><p><strong>Location:</strong> <code>EXPERIENCE.md:160</code> (project scope; &quot;permitted references&quot;), <code>:95</code>, <code>:114</code> (&quot;no inaccessible origin excerpt&quot;), <code>:98</code>, SC-2 <code>:213–216</code>. <code>mockups/knowledge-detail.html:38</code>, <code>mockups/knowledge.html:42</code>. Source: PRD FR-17 lines 209–211, FR-21 line 244, FR-12 line 161.</p>
+<p><strong>Evidence:</strong> The contract gates excerpts and references, not the lesson itself. S4's mock says &quot;Visible in Syntelligence · Original source access is checked separately&quot;, and S3's says &quot;Source access is required to inspect the supporting record&quot;, so the body's visibility is decided at project level. The restricted-content checks in FR-12 apply only to company promotion. Nothing equivalent applies when Hermes or Notion capture produces a project lesson from a restricted Jira record or a narrowly shared Notion page.</p>
+<p><strong>Impact:</strong></p>
+<ul>
+<li>SC-2's Mohamed → Ahmed path can deliver restricted text to a same-project agent, or show it in S3. This is the FR-17 case of a same-project user lacking source access, reached through a derivative rather than a preview. It also covers the case where source permission is removed after indexing.</li>
+<li>Evaluation basis and check-reason text are derived content with the same exposure.</li>
+<li><code>promotion-review</code> is internally unresolved. A maintainer must &quot;inspect exact candidate content&quot;, yet &quot;designation does not grant source access&quot;. The contract does not say what happens when the candidate contains material that maintainer may not read.</li>
+</ul>
+<p><strong>Minimal fix:</strong> State that project scope is a ceiling, not a read grant.</p>
+<ul>
+<li>A version's title, body, evaluation basis, and check reasons are disclosed, delivered, or returned in search only to a person or agent authorized for the material they derive from, or after a version has been evaluated as safe for the wider project audience.</li>
+<li>If this cannot be determined, withhold the version (fail closed) under the existing S3/S4 and SC-2 failure copy.</li>
+<li>Add an S6 state: &quot;This review needs a maintainer with access to its source.&quot; No decision is recorded and the item stays project-scoped.</li>
+</ul>
+<p>This keeps the project-default confirmed direction and selects no mechanism.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: whole derivative payload requires source-derived authorization or an evaluated wider-audience version; inaccessible maintainer review has a safe no-decision state.</div></article><article class="finding"><header><span class="badge badge-sev-high">high</span><h3 class="finding-title">PK-3 · A company publication has neither its own identity nor a defined view for readers in another project</h3></header><div class="finding-note"><p><strong>Location:</strong> SC-3 <code>EXPERIENCE.md:226–229</code>, <code>:95</code>, <code>:114</code>, <code>:162</code>. <code>DESIGN.md:167</code>, <code>:170</code>. <code>mockups/promotion.html:41–42</code>, <code>mockups/knowledge-detail.html:39</code>. Source: PRD FR-12 lines 162–164, A-2 line 172, SM-5 line 278.</p>
+<p><strong>Evidence:</strong></p>
+<ul>
+<li>S6's &quot;Exact proposed company content&quot; differs from S4's v3 body: it drops &quot;and inspect its reported result&quot; and the third sentence. Yet the record is labeled &quot;Evaluated source version SYN-K07 · v3&quot; and the control says &quot;Approve v3 for this audience&quot;. What was approved is therefore not the exact content of v3, despite FR-12's &quot;exact version&quot;.</li>
+<li><code>knowledge-record</code> shows evaluator or policy, basis, and origin with no audience distinction, and the ID format embeds the source project key.</li>
+<li>No surface or reference shows SC-3's climax: how a reader or agent in the other project sees the published item.</li>
+</ul>
+<p><strong>Impact:</strong> A Movesion reader of the published item could see &quot;SYN-K07&quot;, Syntelligence's evaluator, a basis describing source records, and lineage. All of that is provenance FR-12 reserves for authorized readers. Withdrawal, supersession, receipts, and reuse also have no unambiguous version to attach to, and A-2's &quot;promoted derivatives&quot; has no representation.</p>
+<p><strong>Minimal fix:</strong></p>
+<ul>
+<li>Define a publication as its own versioned record: publication ID without the source project key, exact text, audience, policy version, publishing person or automation identity, and a restricted reference to the originating version.</li>
+<li>Bind approval and automatic evaluation to that record, and relabel the control to approve that publication version.</li>
+<li>Add a &quot;company reader&quot; field list to S4: content, publication version, company scope, applicability, freshness, and evaluated-by-policy or reviewed-by-person kind. Origin project, source ID, named evaluator, basis, and other projects' receipts appear only to authorized readers.</li>
+<li>Add a visual reference for this state. Whether the published text may differ from the source is a product detail; if it may, the record above carries it.</li>
+</ul>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: independent CMP-K04 publication version binds exact text and audience; company-reader state excludes restricted origin/evaluation/receipt fields.</div></article><article class="finding"><header><span class="badge badge-sev-high">high</span><h3 class="finding-title">PK-4 · After withdrawal, human-read surfaces can keep showing the withdrawn content</h3></header><div class="finding-note"><p><strong>Location:</strong> <code>EXPERIENCE.md:114</code> (&quot;Conflicting/superseded/withdrawn … content carries lifecycle state&quot;), <code>:162</code>, <code>:229</code>, <code>:96</code>, <code>:94</code>, J7 <code>:247</code>. <code>mockups/daily-work.html:272</code>, <code>:287</code>. No reference shows a withdrawn state (zero occurrences of &quot;withdrawn&quot; in <code>knowledge.html</code>, <code>knowledge-detail.html</code>, <code>daily-work.html</code>, <code>notifications.html</code>). Source: PRD FR-13 lines 170–174, FR-18 line 218.</p>
+<p><strong>Evidence:</strong> The withdrawal contract covers future agent delivery and external copies. For Owl Mast's own surfaces, the only statement is that content &quot;carries lifecycle state&quot;, which reads as still displayed with a label. Feed rows embed the lesson title (&quot;Stable account identifiers · v3&quot;), and S9's return can land on S4.</p>
+<p><strong>Impact:</strong> Take an automatically published version withdrawn because its text exposed a customer detail. Former-audience readers can still read the title or body through S3, S4, S6 history, feed rows, and old notification links. That contradicts FR-18 (&quot;cannot leave excluded content in snippets, caches, exports, or derived summaries&quot;). Separately, a receipt for that version keeps looking healthy, so a recipient cannot tell that guidance they received has since been withdrawn.</p>
+<p><strong>Minimal fix:</strong> Add a post-withdrawal row covering S3, S4, S6, the activity feed, notification return, and receipts:</p>
+<ul>
+<li>Former-audience readers see the lifecycle state, plus a neutral reference when the withdrawal reason concerns safety or permission, without the body or title.</li>
+<li>Authorized maintainers or auditors see the audit record.</li>
+<li>Feed rows and receipts for that version show &quot;since withdrawn&quot; or &quot;since superseded&quot;.</li>
+<li>Superseded content may stay readable.</li>
+</ul>
+<p>Keep A-2's exact retention and retrieval default open, with this as the state contract it resolves.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: withdrawn payloads are suppressed across human-read surfaces and receipts; neutral lifecycle return and restricted audit are separate. A-2 remains open.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">PK-5 · A generic push can still reveal a restricted update, and the &quot;non-generic&quot; preview is undefined</h3></header><div class="finding-note"><p><strong>Location:</strong> J7 <code>EXPERIENCE.md:245–246</code>, <code>:250</code>; <code>mockups/notifications.html:10</code>. Source: NFR-1 line 249, FR-18 line 218.</p>
+<p><strong>Evidence and impact:</strong></p>
+<ul>
+<li>&quot;Rights are checked before any notification disclosure&quot; can be read as: send &quot;Owl Mast has an update&quot; for every project event and withhold only the detail. The arrival and timing of a push for a record the recipient cannot read is an inference-bearing signal.</li>
+<li>The mock's &quot;Use a generic preview&quot; checkbox implies a richer mode, but no contract defines its content. With every-update push, it could put customer titles on lock screens in copies the spine admits cannot be recalled.</li>
+</ul>
+<p><strong>Minimal fix:</strong> Keep UX-10 and add three rules:</p>
+<ul>
+<li>Push eligibility is evaluated per recipient and per source record at send time, including when the recipient's device session has ended. An unauthorized or unverifiable update produces no push at all, not a generic one.</li>
+<li>This withholding is not throttling or a digest, and the feed follows the same rule.</li>
+<li>Either remove the preview checkbox or list exactly which fields a non-generic preview may carry.</li>
+</ul>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: unauthorized/unverifiable events send no push, even generic; only generic preview is currently proposed.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">PK-6 · Receipts have no boundary for colleagues, other projects, or query text</h3></header><div class="finding-note"><p><strong>Location:</strong> <code>EXPERIENCE.md:96</code>, <code>:114</code>, <code>:229</code>; <code>DESIGN.md:168</code>; <code>mockups/knowledge-detail.html:44</code>; <code>mockups/daily-work.html:287</code>. Source: FR-11 line 152, FR-13 line 170, A-3 line 217.</p>
+<p><strong>Evidence and impact:</strong></p>
+<ul>
+<li>SC-3 asks maintainers to see earlier deliveries &quot;subject to permissions&quot;, but no state exists for recipients outside the maintainer's access. They either see cross-project recipients or get no sense of withdrawal impact.</li>
+<li>The mock adds &quot;Requested context: Syntelligence Jira · SYN-42 · Check review&quot;, beyond FR-11's recipient, project, item/version, and time. For a cross-project delivery, this would show one customer's work to another project's maintainer.</li>
+<li>On-demand search also creates a new data flow, agent query text, whose retention and visibility are undefined.</li>
+<li>Daily Work's &quot;A sync lesson reached Eagle&quot; shows a colleague's receipt with the lesson title, with no stated link to S4's separate recipient-visibility check.</li>
+</ul>
+<p><strong>Minimal fix:</strong></p>
+<ul>
+<li>Apply <code>delivery-receipt</code> visibility wherever a receipt appears, including feed rows and push.</li>
+<li>Requested context and query text are gated to the recipient's project access. Their retention is undecided, so mark it [OPEN] under A-3 rather than implying they are stored.</li>
+<li>Add a state showing the maintainer a neutral statement that deliveries outside their access exist under the publication's permitted audience, without identities or task context. The publication's audience is already known to its maintainer, so this reveals nothing new.</li>
+</ul>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: receipt visibility follows recipient-project access everywhere; constant visibility note avoids hidden identities/counts; query/context retention remains OPEN under A-3.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">PK-7 · Personal aliases are undefined for other people&#x27;s agents, and the references contradict the personal scope</h3></header><div class="finding-note"><p><strong>Location:</strong> <code>EXPERIENCE.md:90</code>, <code>:166</code>; <code>DESIGN.md:162</code>. <code>mockups/daily-work.html:241</code>, <code>:287</code>; <code>focus.html:210–213</code>; <code>connections.html:10</code>; <code>administrator-setup.html:10</code>; <code>work-detail.html:143</code>; <code>knowledge-detail.html:42</code>, <code>:44</code>; <code>usage.html:118–119</code>.</p>
+<p><strong>Evidence:</strong> The contract says aliases are per-viewer preferences, and DESIGN says &quot;User-chosen owl display name&quot;. It does not say what a chip shows for an agent the viewer did not name, or whose clients S5 lists. The fixtures show one alias on different agents and people:</p>
+<table>
+<thead>
+<tr>
+<th>Alias</th>
+<th>Depicted as</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Eagle</td>
+<td>Ahmed-initiated Movesion run CX-4 in Focus; Mohamed's Syntelligence Codex session in Daily Work</td>
+</tr>
+<tr>
+<td>Barn</td>
+<td>Movesion client in Connections and Focus; Mohamed's Syntelligence Claude in Daily Work</td>
+</tr>
+<tr>
+<td>Tawny</td>
+<td>Ahmed's CL-17 in Focus and Usage; Mohamed's CL-21 in Work Detail; Mohamed's contributor agent in Knowledge Detail</td>
+</tr>
+</tbody>
+</table>
+<p>S8 also shows contributors' aliases to an administrator, and alias text is embedded in feed titles.</p>
+<p><strong>Impact:</strong> If one person's alias renders for another viewer, free text from one person crosses audiences, and the same name can point to different agents. Evidence reading then becomes unreliable (FR-4). Implementers would also have to guess the shared-naming authority the spine leaves unspecified.</p>
+<p><strong>Minimal fix (designer proposal, no shared-naming decision):</strong></p>
+<ul>
+<li>A viewer sees only their own alias for a client. Otherwise the chip shows the fixed type label plus a stable short identifier.</li>
+<li>Another person's alias is never rendered in S1–S10, push, receipts, or audit.</li>
+<li>Alias settings list only clients the viewer may currently see, and drop out when access is revoked.</li>
+<li>Keep S5 scoped to the viewer's own clients unless a separate shared-workspace view is defined (FR-15).</li>
+<li>Correct the fixtures so each alias names one client throughout.</li>
+</ul>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: aliases are viewer-local client preferences; other viewers use fixed type/ID. Fixtures separate client identities from runs and align ownership.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">PK-8 · Contextual cost lacks a viewer rule and an epic scope, and its fixtures violate its own attribution rule</h3></header><div class="finding-note"><p><strong>Location:</strong> <code>EXPERIENCE.md:99</code>, <code>:117</code>, <code>:120</code>, <code>:168</code>. <code>mockups/usage.html:118–119</code>, <code>focus.html:194</code>, <code>:210</code>, <code>daily-work.html:210–211</code>, <code>:236</code>. Source: FR-16 lines 197–201, FR-17 line 207.</p>
+<p><strong>Evidence and impact:</strong></p>
+<ol>
+<li>S10 applies S1/S2 access to each card, so anyone who can read a ticket gets its cost. No rule says that allocation or bill classes need separate authority, or that a share of a company-wide subscription could let a viewer infer the other project's share by subtraction. S7's residual rule isn't stated for allocation bases.</li>
+<li>Focus's epic cost doesn't say whether it covers the whole permitted child set or only the viewer's assigned subset, though Focus distinguishes those for closure counts.</li>
+<li>False state: Focus and Daily Work show SYN-42 as &quot;Usage &amp; cost: Unavailable … No linked usage records&quot;, while S7 shows SYN-42 with 0.60M tokens and $3.60 from an &quot;explicit session work reference&quot; on the same date.</li>
+<li>False state: S7 assigns all of CL-17's session to SYN-42, while Focus says that one session links both SYN-42 and SYN-67. Under <code>:99</code>, &quot;ambiguous allocation stays unassigned&quot;. S7 also assigns SYN-67 to Mohamed's Snowy CX-16, while Focus links it to Ahmed's CL-17 and Daily Work calls it &quot;Define project sync rules&quot;.</li>
+</ol>
+<p><strong>Minimal fix:</strong></p>
+<ul>
+<li>Contextual summaries show only classes the viewer may see in S7.</li>
+<li>Allocation or bill figures never expose a basis from which an inaccessible share can be derived.</li>
+<li>Each epic amount names its record set.</li>
+<li>Align the three references: one illustrative SYN-42 state and an unassigned or explicitly split shared session.</li>
+</ul>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: contextual class access equals S7; allocation cannot expose inaccessible residuals; epic sets are named and shared session usage remains unassigned.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">PK-9 · The &quot;Shared run&quot; label and its evidence text can reveal hidden work</h3></header><div class="finding-note"><p><strong>Location:</strong> <code>EXPERIENCE.md:92</code>, <code>:256</code>, <code>:260</code>; <code>DESIGN.md:164</code>; <code>mockups/focus.html:210</code>, <code>:223</code>, <code>:234</code>.</p>
+<p><strong>Evidence and impact:</strong> A &quot;Shared&quot; marker and &quot;One confirmed session links SYN-42 in SYN-10 and SYN-67 in SYN-20&quot; assume the viewer can see both sides. For a viewer with only SYN-10, the marker reveals another linked item and the text names it. The rule at <code>:260</code> covers hidden titles and counts, not this label or a run linked across projects.</p>
+<p><strong>Minimal fix:</strong> Show the marker, references, and shared-run labels only for links the viewer can read; otherwise render the run as an ordinary run. A run's other-project links never appear in the other project's scope. Deduplicated totals count only records the viewer can access.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: shared labels/counterparts require readable same-project links; inaccessible counterparts produce ordinary run presentation.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">PK-10 · Maintainers own exceptions, but the exception has no resolution path</h3></header><div class="finding-note"><p><strong>Location:</strong> <code>EXPERIENCE.md:40</code>, <code>:53</code>, <code>:227</code>, <code>:232</code>; <code>mockups/promotion.html:41</code>. Source: UX-09, FR-12 line 161.</p>
+<p><strong>Evidence and impact:</strong> The mock tells the maintainer to &quot;Confirm permitted company use before evaluating this version again&quot;, and also that &quot;A human decision cannot bypass the required checks&quot;. Nothing says where that confirmation is recorded, who may give it (the maintainer or a project data owner), or what outcomes exist. The confirmed exception-handling job therefore has no defined action. Under the preferred automatic mode, this is the main human touchpoint. A version whose lineage carries a withdrawal also needs a defined outcome. Without one, implementers may build an override, which the spine forbids, or a dead end.</p>
+<p><strong>Minimal fix:</strong> Enumerate exception outcomes on <code>promotion-review</code>:</p>
+<ul>
+<li>Keep project-scoped with a recorded reason.</li>
+<li>Correct the content, creating a new version that gets a new evaluation.</li>
+<li>Request re-evaluation after the missing permission or policy input is recorded by its authorized owner.</li>
+</ul>
+<p>Mark the owner of the use-permission input as [OPEN] instead of implying it is the maintainer.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: keep project-scoped, correct as new version, or request reevaluation after authorized input; owner remains OPEN and no override bypasses checks.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">PK-11 · The required quarantine state is missing from the lifecycle model</h3></header><div class="finding-note"><p><strong>Location:</strong> <code>EXPERIENCE.md:53</code>, <code>:114</code>, <code>:160</code>, <code>:230</code>, <code>:270</code>; <code>DESIGN.md:167</code>; zero occurrences in <code>knowledge.html</code>, <code>knowledge-detail.html</code>, and <code>promotion.html</code>. <code>reconcile-prd.md:25</code>. Source: FR-13 line 170, SM-5 line 278.</p>
+<p><strong>Evidence and impact:</strong> FR-13's system quarantine is a requirement outside A-2. A-2 only proposes its effects. The spine's lifecycle list omits quarantined, S4 has no state for it, and no maintainer path or actor record exists. Reconciliation filed it entirely under A-2. SM-5 tests quarantine blocking new delivery, and a system-initiated change with no surface would look like silent disappearance.</p>
+<p><strong>Minimal fix:</strong> Add <strong>Quarantined (system-initiated, with reason and time)</strong> as a distinct state in Knowledge semantics, <code>knowledge-record</code>, S3 filters, S4/S6 states, and the maintainer exception view. Leave its exact retrieval effects to A-2.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: system quarantine appears in semantics, catalog filters, detail and maintainer alternatives; retrieval defaults remain A-2.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">PK-12 · Withdrawal and receipts don&#x27;t disclose independent Notion or client access</h3></header><div class="finding-note"><p><strong>Location:</strong> <code>EXPERIENCE.md:96</code>, <code>:114</code>, <code>:162</code>, <code>:229</code>; <code>mockups/knowledge-detail.html:44</code>. Source: FR-17 line 211, FR-21 line 245.</p>
+<p><strong>Evidence and impact:</strong> The spine discloses the limit on &quot;earlier copies&quot; but not ongoing independent access: a client with its own Notion access can still read the source page after an Owl Mast withdrawal, and that read produces no receipt. So &quot;withdrawn&quot; can be taken to mean no agent can get it now, and &quot;no deliveries&quot; can be taken to mean nobody read it. The PRD requires these limits to be reported separately.</p>
+<p><strong>Minimal fix:</strong></p>
+<ul>
+<li>Label withdrawal outcomes &quot;Owl Mast delivery stopped&quot; and add one line noting that direct source or client access is governed separately.</li>
+<li>Label receipts as covering Owl Mast-mediated delivery only, so &quot;No deliveries&quot; isn't read as no reads.</li>
+<li>Whether a withdrawal should also change the Notion page stays with the implementation design, per FR-14.</li>
+</ul>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: Owl Mast-only delivery and receipt boundaries explicitly distinguish independent Notion/client access and prior copies.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">PK-13 · Attention items assume captured session text, which the A-3 default wouldn&#x27;t collect</h3></header><div class="finding-note"><p><strong>Location:</strong> <code>EXPERIENCE.md:86</code>, J1 <code>:185</code>; <code>mockups/daily-work.html:264</code>, <code>:279</code>. Source: A-3 line 217, FR-7 line 116.</p>
+<p><strong>Evidence and impact:</strong> J1 has Ahmed &quot;read the request&quot;, and the mock shows a body taken from a &quot;linked Claude session&quot;, including for Mohamed's work. A-3's proposed default collects metadata, references, and deliberately submitted knowledge, with raw chat needing explicit enablement. No state covers that default, so building the shown body presumes the unresolved answer, and colleagues read session content before data owners decide.</p>
+<p><strong>Minimal fix:</strong> Add an attention and S2 state: &quot;Request text isn't collected under this project's policy&quot;, showing reason, source, time, and the source link (all FR-7 needs). Show captured text only where policy permits. Keep A-3 open.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: request-text-not-collected state preserves A-3; references show source metadata/link when text collection is excluded.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">PK-14 · Duplicate and conflict references are a side channel</h3></header><div class="finding-note"><p><strong>Location:</strong> <code>EXPERIENCE.md:95</code> (&quot;Duplicate detection links to existing lineage&quot;), <code>:51</code>, <code>:214</code>. Source: FR-8 line 130, FR-9 line 137.</p>
+<p><strong>Evidence and impact:</strong> Submitting a lesson that matches a restricted item, or an item in another project, would return a link or a &quot;duplicate&quot; result that confirms the item exists. Conflict exposure has the same risk if the conflicting version isn't visible to that recipient. FR-9's exposure duty has no stated scope limit.</p>
+<p><strong>Minimal fix:</strong></p>
+<ul>
+<li>Readers and agents see duplicate or conflict references only for versions they can access.</li>
+<li>For anything else, the submission records neutrally (&quot;Saved as a candidate&quot;) and the match is routed to an authorized maintainer.</li>
+<li>Two projects' private items are never compared in anything shown to a reader.</li>
+</ul>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: duplicate/conflict links require access; restricted matches receive neutral candidate acknowledgement and private authorized routing.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">PK-15 · &quot;Assigned to me&quot; has no identity-mapping guard or state</h3></header><div class="finding-note"><p><strong>Location:</strong> <code>EXPERIENCE.md:44</code>, <code>:91</code>, <code>:120</code>, <code>:193</code>, <code>:254</code>. Source: FR-1 line 65, FR-4 line 93.</p>
+<p><strong>Evidence and impact:</strong> Focus and the S1 person filter need one person's identities across two Jira sites, but no contract says how assignment is established. S10 has only &quot;No assignments&quot; as an empty state. An unmapped identity would give a false &quot;nothing assigned&quot; on the page meant to show parallel work, and matching by display name could show another person's work, which FR-1 explicitly rejects.</p>
+<p><strong>Minimal fix:</strong> Attribute assignment only through a source-provided identity or confirmed mapping, never a display-name match. Add a per-source S1/S10 state: &quot;Your identity in this source isn't confirmed; assigned work may be missing.&quot; The mapping mechanism stays with architecture.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: assigned-to-me requires source identity or confirmed mapping, with a distinct unmapped-source state.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">PK-16 · Reuse verification has no actor, action, or boundary</h3></header><div class="finding-note"><p><strong>Location:</strong> SC-2 <code>EXPERIENCE.md:218</code>, <code>:96</code>, <code>:114</code>; <code>mockups/knowledge-detail.html:44</code>. Source: FR-11 line 153, A-6 line 276.</p>
+<p><strong>Evidence and impact:</strong> &quot;Only then record demonstrable reuse&quot; names no verifier or surface, and <code>delivery-receipt</code> has no write action. SM-3's proof therefore can't be recorded from this contract. In the SC-3 case, the task artifact lives in the recipient project, so attaching it to the origin project's S4 would expose it to that project's maintainers.</p>
+<p><strong>Minimal fix:</strong> Define a permitted action on the receipt: an authorized reviewer records verified reuse with the version, artifact reference, and time. The artifact reference is visible only to readers with access to its project; origin-project readers see only &quot;Reuse verified in a permitted project&quot;. The sample size stays A-6.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: authorized reviewer records verified reuse on a receipt with version/artifact/time; artifact visibility follows its project.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">PK-17 · Focus opens with a cross-project aggregate, against the IA&#x27;s default</h3></header><div class="finding-note"><p><strong>Location:</strong> <code>EXPERIENCE.md:44</code>, <code>:254</code>; <code>mockups/focus.html:173</code>, <code>:216</code>.</p>
+<p>The IA says company context is explicitly selected, &quot;not an automatic cross-project default&quot;. Focus defaults to &quot;Both permitted projects&quot;. It is labeled and contains only authorized data, so this is a contract inconsistency rather than a leak. <strong>Fix:</strong> state explicitly whether Focus is a deliberate exception for the concurrent-work need, or start it from the restored project.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied with F1: Focus is the explicit labeled proposed cross-project exception.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">PK-18 · Reference copy departs from the safe patterns the spine defines</h3></header><div class="finding-note"><p><strong>Location and fix:</strong></p>
+<ul>
+<li><code>mockups/usage.html:124</code> names Movesion and its tools on a Syntelligence-scoped screen, against <code>EXPERIENCE.md:63</code>. Remove it, or render it only for viewers authorized for both.</li>
+<li><code>mockups/notifications.html:10</code> adds &quot;Its current access could not be verified&quot; to the neutral message, which differs from a missing item. Use the single copy at <code>EXPERIENCE.md:73</code>.</li>
+<li><code>mockups/knowledge.html:43</code> omits a scope marker on candidate SYN-K12, against <code>DESIGN.md:167</code>. Add one.</li>
+<li><code>mockups/knowledge-detail.html:44</code> merges &quot;Retrieved and delivered&quot; on one row, though its timestamps differ. Show separate rows, per <code>EXPERIENCE.md:96</code>.</li>
+</ul>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: safe unavailable copy, scope badges, split receipt times, and authorized-only cross-project mentions.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">PK-19 · One source failure is shown as a single client&#x27;s state</h3></header><div class="finding-note"><p><strong>Location:</strong> <code>mockups/connections.html:10</code>, <code>administrator-setup.html:10</code>, <code>focus.html:223</code>; <code>EXPERIENCE.md:115</code>.</p>
+<p>S8 shows the Movesion Jira authorization as expired at the source level. S5 shows only Barn affected and withholds its knowledge because &quot;source access cannot be verified&quot;, while Eagle in the same project shows healthy observation with only &quot;Not verified&quot;. Focus's Movesion cards say &quot;Source observed 08:42&quot;, while S5 and S8 show that Jira's last success was 07:55. <strong>Fix:</strong> show the shared source failure on both Movesion clients, apply the withholding consistently where it depends on that source, and label Focus's snapshot accordingly.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: Movesion Jira failure appears on both dependent clients, setup and Focus, consistently last-success 07:55.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">PK-20 · Administrator authority isn&#x27;t scoped to a project</h3></header><div class="finding-note"><p><strong>Location:</strong> <code>EXPERIENCE.md:55</code>, <code>:118</code>; <code>mockups/administrator-setup.html:10</code>. Source: FR-18 line 215.</p>
+<p>&quot;Only authorized administrators&quot; and a single two-customer page can be read as company-wide administration. <strong>Fix:</strong> S8 lists only projects the viewer administers, and another project's site, repository, and client identities don't appear. The mock remains valid for someone who administers both.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: S8 contains only projects this viewer administers; two-project fixture states dual authorization.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">PK-21 · Enabling automatic mode and the successful-publication path aren&#x27;t shown</h3></header><div class="finding-note"><p><strong>Location:</strong> <code>EXPERIENCE.md:100</code>, <code>:230</code>; <code>mockups/promotion.html</code>. Source: FR-12 lines 164–165.</p>
+<p>SC-3 step 7 covers switching away from automatic. It doesn't cover switching to it, which evaluates existing candidates and may publish many under the preferred mode. References show only withheld and pending-manual states. <strong>Fix:</strong> make the mode-change confirmation state that existing candidates will be evaluated and name the audience. Add one reference for a published-by-policy record showing the automation identity and policy version.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: enabling automatic mode confirms evaluation of existing candidates/audience; successful policy publication is shown.</div></article></div></details></section><section class="reviewer-section"><details><summary><h2>Accessibility and responsive behavior</h2></summary><div class="dim-body"><p>Independent reviewer findings preserved; static review only. <a href="review-accessibility.md">Original report</a></p></div><div class="findings-list"><article class="finding"><header><span class="badge badge-sev-high">high</span><h3 class="finding-title">A11Y-01 · Live refresh and removal of focused content are only partly specified</h3></header><div class="finding-note"><p><strong>Type:</strong> Contract
+<strong>Location:</strong> <code>EXPERIENCE.md:94</code> (<code>activity-list</code>), <code>:107</code> (State baseline), <code>:136</code> (Accessibility Floor), <code>:245</code> (every update pushes). No reference shows a refresh state: a search for &quot;New updates&quot; across all ten surfaces finds nothing.</p>
+<p><strong>Evidence:</strong> &quot;Preserve reading position&quot; and the &quot;New updates&quot; affordance apply only to <code>activity-list</code>. <code>:136</code> forbids announcing each event and moving focus on refresh, which is right, but three things remain undefined:</p>
+<ul>
+<li>how a screen-reader user learns that buffered updates exist;</li>
+<li>where focus goes after &quot;New updates&quot; is activated;</li>
+<li>what happens on S1 summaries, S2 open evidence, S7 totals and S10 boards when data refreshes.</li>
+</ul>
+<p><code>:107</code> also says expired or revoked access &quot;removes restricted data&quot;, without saying where focus goes if the focused element was part of that data.</p>
+<p><strong>Impact:</strong> keyboard and screen-reader users can have focus silently dropped to the document start when a record is revoked or refiltered. Open evidence may collapse during a poll. Non-visual users may never learn that buffered updates are waiting. Auto-updating content without user control is also relevant to WCAG 2.2.2, and focus order to 2.4.3.</p>
+<p><strong>Minimal fix:</strong> add this rule to Accessibility Floor, for all of S1–S10:</p>
+<blockquote>
+<p>Refresh never reorders, collapses, or removes content under focus or the reading position without a user action. New list items wait behind &quot;New updates&quot;, announced through one coalesced polite status (&quot;3 new updates&quot;), not per event. Activating it moves focus to the first new item. Open disclosures and scroll position survive refresh. If the focused element must be removed for permission or scope reasons, move focus to the nearest surviving section heading or the neutral <code>state-message</code>, and announce it politely without naming restricted content.</p>
+</blockquote>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: all-surface refresh buffering, polite coalesced announcement, disclosure/reading-position preservation and safe focus after revocation.</div></article><article class="finding"><header><span class="badge badge-sev-high">high</span><h3 class="finding-title">A11Y-02 · Arrival focus, announcement and return path are undefined for notification and contextual entry</h3></header><div class="finding-note"><p><strong>Type:</strong> Contract, with a Reference note
+<strong>Location:</strong> <code>EXPERIENCE.md:107</code> (focus &quot;returns to the trigger after detail closes&quot;), <code>:119</code>, <code>:124</code>, <code>:148</code> (explicit Back only for <code>&lt;600px</code>, S2/S4/S6), <code>:247</code>, <code>:248</code>; <code>DESIGN.md:142</code> (temporary overlaid detail); <code>mockups/notifications.html:10</code> (return card and unavailable note).</p>
+<p><strong>Evidence:</strong> a notification deep link has no trigger to return to and may have no in-app history. The spines do not define:</p>
+<ul>
+<li>initial focus or title change on arrival;</li>
+<li>where &quot;this has changed&quot; sits relative to the heading;</li>
+<li>the Back destination when no history exists;</li>
+<li>whether a wide-layout S2 overlay is modal, with focus moved in and the background inert.</li>
+</ul>
+<p>In the references:</p>
+<ul>
+<li>The S9 return card sits inside Preferences, with <code>aria-current</code> on Preferences. There is no arrival state on an S2/S4/S6 destination.</li>
+<li>No reference has a Back control (zero matches).</li>
+<li>The S9 unavailable note says &quot;Return to your workspace&quot; with no control to do so.</li>
+<li>The resolved status (<code>&lt;p class=&quot;status success&quot;&gt;</code>) comes before the <code>&lt;h3&gt;</code>, so heading navigation skips it.</li>
+</ul>
+<p><strong>Impact:</strong> a screen-reader user opening a push on a phone can land with focus at the start of the document or nowhere defined, hear no page change, and miss that the request is already resolved. That is the climax of J7. A revoked target can also become a dead end. Relevant to WCAG 2.4.3 and 4.1.3.</p>
+<p><strong>Minimal fix:</strong> add this rule to Interaction Primitives:</p>
+<blockquote>
+<p>On any route or contextual entry, update the page title and move focus to the destination <code>h1</code>. For notification entry, the <code>h1</code> or the first content after it states the current state and notification time. Back returns to the prior location, or to S1 in the same authorized project when there is no history. The neutral unavailable state has a working link to the user's work and receives focus at its heading. A temporary overlay is a named modal dialog with focus inside, an inert background, and focus returned to its trigger.</p>
+</blockquote>
+<p>The Back rule applies wherever a contextual destination has no surrounding navigation, not just below 600px.</p>
+<hr />
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: destination title/h1 focus, current state/time, Back fallback, safe return link, modal focus contract and explicit notification arrival fixture.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">A11Y-03 · Identical generic pushes give no way to tell updates apart</h3></header><div class="finding-note"><p><strong>Type:</strong> Contract
+<strong>Location:</strong> <code>EXPERIENCE.md:245</code>, <code>:246</code>, <code>:250</code>; <code>mockups/notifications.html:10</code> (&quot;Owl Mast has an update&quot;).</p>
+<p><strong>Evidence:</strong> default every-update push [U] combined with a proposed generic preview [P] produces repeated identical notifications. The S9 reference shows &quot;Opened from the 08:32 notification&quot;, but <code>EXPERIENCE.md</code> does not require anything equivalent. <code>:250</code> dedupes replays but does not require distinct updates to stay distinct at the platform level.</p>
+<p><strong>Impact:</strong> screen-reader users hear the same sentence for every update and cannot judge which matters before opening. Sighted users are in the same position. After opening one, nothing leads to the others. On some platforms, a reused notification identifier would also replace earlier notifications, which conflicts with the no-silent-loss intent.</p>
+<p><strong>Minimal fix:</strong> keep every-update push and the generic default, and add to J7:</p>
+<ul>
+<li>Each distinct source event uses its own notification identity; only replays dedupe.</li>
+<li>Arrival shows the notification time and a labeled link to other updates since then in S1.</li>
+<li>Platform stacking is acceptable only if no update is dropped or summarized away.</li>
+</ul>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: distinct event notification identities, replay-only deduplication, preserved platform stacking and link to other updates.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">A11Y-04 · Interactive chips can nest or overlap; agent-chip interactivity is undefined</h3></header><div class="finding-note"><p><strong>Type:</strong> Contract
+<strong>Location:</strong> <code>EXPERIENCE.md:85</code>, <code>:86</code>, <code>:88</code>, <code>:89</code>, <code>:90</code>; <code>DESIGN.md:161</code>, <code>:162</code>; <code>mockups/daily-work.html:176</code> (<code>.tag-line</code> gap 7px).</p>
+<p><strong>Evidence:</strong></p>
+<ul>
+<li><code>work-record</code> and <code>attention-item</code> &quot;open&quot; a destination, and <code>ticket-chip</code> also opens S2, with no statement of which element is the control. If the row is the link, the chip becomes nested interactive content.</li>
+<li>A chip's 44px hit area extends beyond its capsule, but chip rows use 6–8px gaps, so adjacent interactive chips would overlap.</li>
+<li><code>agent-chip</code> says identity is &quot;inspectable&quot; without saying whether the chip is itself a control.</li>
+<li>The accessible output is just &quot;Tawny Claude&quot;, which can sound like one name.</li>
+<li><code>agent-chip</code> has no rule for long or unbroken aliases.</li>
+</ul>
+<p><strong>Impact:</strong> nested controls behave unpredictably with assistive technology, and overlapping targets cause wrong taps on phones. A long alias could overflow and be clipped by <code>.app { overflow: hidden }</code>.</p>
+<p><strong>Minimal fix:</strong> add these rules:</p>
+<ul>
+<li>A record has one primary link, its title. Chips are siblings, never nested inside a row link.</li>
+<li>Interactive chip hit areas must not overlap; add spacing or stack them.</li>
+<li><code>agent-chip</code> is read-only unless explicitly linked, and is exposed as &quot;Tawny, Claude agent&quot;.</li>
+<li>Aliases wrap with <code>overflow-wrap: anywhere</code> under a defined maximum length.</li>
+</ul>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: title is primary link, chips are siblings/read-only unless linked, no overlapping targets, type-aware names and bounded wrapping aliases.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">A11Y-05 · Personal agent colors have no measured palette and overlap reserved status colors</h3></header><div class="finding-note"><p><strong>Type:</strong> Contract
+<strong>Location:</strong> <code>DESIGN.md:19</code>–<code>45</code> (no identity or chart tokens), <code>:122</code>, <code>:162</code>; <code>EXPERIENCE.md:166</code>; <code>mockups/connections.html:10</code> (options Blue, Cyan, Amber); <code>mockups/knowledge-detail.html:42</code>, <code>:44</code> (hard-coded <code>#C7A06D</code>, <code>#9F8CEB</code>).</p>
+<p><strong>Evidence:</strong> the spine requires an &quot;accessible color palette&quot; and readable markers, but no such tokens exist. The contrast calculation has no identity pairs, and <code>DESIGN.md:122</code> forbids unmeasured accents. The prototype's color options match the blue, cyan and amber used for selection, knowledge and attention, even though <code>DESIGN.md:162</code> says personal color never implies status. Calculated from the exact palette, the hard-coded markers fall below the 3:1 target in light mode:</p>
+<table>
+<thead>
+<tr>
+<th>Marker</th>
+<th style="text-align:right">Light card</th>
+<th style="text-align:right">Light secondary surface</th>
+<th style="text-align:right">Dark card</th>
+<th style="text-align:right">Dark secondary surface</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>#C7A06D</code></td>
+<td style="text-align:right">2.42:1</td>
+<td style="text-align:right">2.11:1</td>
+<td style="text-align:right">7.21:1</td>
+<td style="text-align:right">6.23:1</td>
+</tr>
+<tr>
+<td><code>#9F8CEB</code></td>
+<td style="text-align:right">2.83:1</td>
+<td style="text-align:right">2.47:1</td>
+<td style="text-align:right">6.17:1</td>
+<td style="text-align:right">5.33:1</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Impact:</strong> because the alias and type text remain, this is not a color-only failure. It does mean the requested color differentiation fades for low-vision users in light mode, and an amber owl can read as &quot;needs attention&quot;.</p>
+<p><strong>Minimal fix:</strong> keep color customization and add a designer-proposed set of named light/dark identity pairs, each ≥3:1 on card and secondary surface. Add them to the contrast calculation. Avoid exact semantic hues, or keep identity visibly distinct from status markers by using a different marker shape. Alias and type text stay mandatory.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied with T1: measured identity palette, diamond shape and fixed type/name text.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">A11Y-06 · Selected filters and view switches rely on a 1.15:1 fill change</h3></header><div class="finding-note"><p><strong>Type:</strong> Reference, with a Contract clarification
+<strong>Location:</strong> <code>mockups/daily-work.html:36</code>, <code>:96</code>; <code>mockups/focus.html:40</code>; <code>DESIGN.md:122</code>, <code>:150</code>.</p>
+<p><strong>Evidence:</strong> selected state is a card fill on a secondary surface, or the reverse, at a calculated 1.15:1 in light and 1.16:1 in dark, plus a text-color and weight change. <code>aria-pressed</code> is correct programmatically. <code>DESIGN.md:150</code> asks for &quot;a visible indicator&quot; but gives no contrast target for it. Background-only indicators may also disappear in Windows forced-colors mode, and no reference has a <code>forced-colors</code> rule.</p>
+<p><strong>Impact:</strong> low-vision users may not be able to see which person, layout or event filter is active, including whether they are viewing their own work or Mohamed's. Relevant to WCAG 1.4.11.</p>
+<p><strong>Minimal fix:</strong> in <code>DESIGN.md:150</code>, say that the selection indicator is ≥3:1 and is not background-only. In the references, add a 2px primary underline or inset outline to the existing selected state. No layout change is needed.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: selected controls gain non-background-only ≥3:1 indicators and forced-colors treatment.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">A11Y-07 · Focus ring is clipped on Focus board epic disclosures</h3></header><div class="finding-note"><p><strong>Type:</strong> Reference
+<strong>Location:</strong> <code>mockups/focus.html:14</code> (outline with 3px offset), <code>:43</code> (<code>.epic { overflow: hidden }</code>), <code>:59</code> (full-bleed <code>.epic-work &gt; summary</code>).</p>
+<p><strong>Evidence:</strong> the ring draws 3–6px outside a summary that spans the full width of a clipping parent. Left and right edges are clipped for every epic, and the bottom edge too when collapsed, leaving only the top edge visible.</p>
+<p><strong>Impact:</strong> this weakens the 3px focus indicator on the primary control of each S10 epic group (<code>DESIGN.md:150</code>). Relevant to WCAG 2.4.7. This pattern was checked in Daily Work and does not recur there: its focusable content has at least 14px of inset.</p>
+<p><strong>Minimal fix:</strong> on this one selector, use a negative <code>outline-offset</code> such as <code>-3px</code>, or inset the summary by 8px.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: Focus disclosure ring inset to avoid clipping.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">A11Y-08 · Focus board run links: accessible name, target size and return path</h3></header><div class="finding-note"><p><strong>Type:</strong> Reference
+<strong>Location:</strong> <code>mockups/focus.html:223</code> (<code>aria-label</code>), <code>:234</code> (&quot;Same evidence&quot;), <code>:95</code>, <code>:259</code>–<code>:268</code>; <code>EXPERIENCE.md:107</code>; <code>DESIGN.md:132</code>.</p>
+<p><strong>Evidence:</strong></p>
+<ol>
+<li><code>aria-label=&quot;Observed evidence for Tawny, Claude&quot;</code> replaces the visible &quot;Tawny Claude Shared run evidence&quot;. The name loses &quot;Shared run&quot; and doesn't contain the visible label.</li>
+<li>&quot;Same evidence&quot; is an inline link with no minimum size, so it is well under the 44px target. Its text has no context out of sequence.</li>
+<li>These links can jump to a run in another epic. Focus moves correctly, but there's no way back to the originating ticket.</li>
+</ol>
+<p><strong>Impact:</strong></p>
+<ul>
+<li>Screen-reader users don't hear the shared-run fact that the design is careful to state.</li>
+<li>Speech-control users can't say the visible label (WCAG 2.5.3).</li>
+<li>Touch users get a small target.</li>
+<li>Keyboard users lose their place on long boards.</li>
+</ul>
+<p><strong>Minimal fix:</strong></p>
+<ol>
+<li>Remove <code>aria-label</code> and add visually hidden ticket context within the link text.</li>
+<li>Make the shared-run link <code>display: inline-flex; min-height: 44px</code>, with text such as &quot;Same evidence as SYN-42's run&quot;.</li>
+<li>After a jump, offer &quot;Back to SYN-67&quot;, or state in the contract that an in-page jump provides a return link.</li>
+</ol>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: visible shared-link naming, 44px targets, contextual evidence labels and return-to-origin links.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">A11Y-09 · Key facts and field labels are set at 12px</h3></header><div class="finding-note"><p><strong>Type:</strong> Reference, with a small Contract gap
+<strong>Location:</strong> <code>DESIGN.md:126</code>, <code>:185</code>.</p>
+<ul>
+<li><code>mockups/focus.html:36</code> (Project scope label), <code>:41</code> (assigned ticket and run counts), <code>:91</code> (<code>.run-state</code>: &quot;Reported active · 08:42&quot;), <code>:96</code> (counted-once note), <code>:111</code>, <code>:113</code> (source state time).</li>
+<li><code>mockups/connections.html</code>, <code>administrator-setup.html</code>, <code>notifications.html</code>, line 6: <code>.meta</code> (&quot;Last successful collection 07:55&quot;, &quot;Latest collection 09:18&quot;), <code>.readiness-time</code>, <code>.notification-state-label</code>, <code>.workspace span</code> (&quot;Authorized administrator&quot;).</li>
+</ul>
+<p><strong>Evidence:</strong> <code>DESIGN.md:126</code> keeps key facts, source identity, access messages and labels at the 14px floor. These uses aren't supplementary. Freshness is not named in that list, although <code>:185</code> requires it to be readable. The Daily Work, S2, S3, S4, S6 and S7 references correctly avoid 12px outside their study notes.</p>
+<p><strong>Impact:</strong> totals, field labels, access role and collection freshness become the smallest text on the phone, which works against the product's core promise of readable evidence.</p>
+<p><strong>Minimal fix:</strong> add &quot;freshness and field labels&quot; to <code>DESIGN.md:126</code>. Move these selectors to 14px, reserving 12px for truly supplementary text.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: operational labels, freshness, counts, access roles and run states use at least 14px.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">A11Y-10 · &quot;Persist&quot; and &quot;remain visible&quot; could produce a blocking sticky scope bar</h3></header><div class="finding-note"><p><strong>Type:</strong> Contract
+<strong>Location:</strong> <code>DESIGN.md:155</code>; <code>EXPERIENCE.md:83</code>, <code>:135</code>, <code>:138</code>.</p>
+<p><strong>Evidence:</strong> <code>scope-bar</code> must &quot;persist&quot; and &quot;remain visible&quot; while wrapping on phone. This does not say whether that means present on each surface or fixed during scrolling. No reference makes it sticky, but an implementer could reasonably do so. A wrapped project, source and period bar at 200% text or in phone landscape could take much of the viewport.</p>
+<p><strong>Impact:</strong> low-vision and landscape users could have little reading area left, and focused content could be obscured despite <code>:135</code>. Relevant to WCAG 1.4.10 and 2.4.11.</p>
+<p><strong>Minimal fix:</strong> clarify that persistence means present in the page and on each summary or detail surface. It does not stick at compact widths or enlarged text. A wide-layout sticky bar must leave focused content unobscured.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: scope persistence means present, not sticky on compact/enlarged-text layouts; wide sticky UI cannot obscure focus.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">A11Y-11 · Long evidence and usage views lack phone, zoom and paging rules</h3></header><div class="finding-note"><p><strong>Type:</strong> Contract
+<strong>Location:</strong> <code>EXPERIENCE.md:94</code>, <code>:99</code>, <code>:134</code>, <code>:135</code>; <code>DESIGN.md:165</code>, <code>:171</code>, <code>:187</code>; <code>mockups/usage.html:114</code>–<code>:122</code> (the rows are a good model).</p>
+<p><strong>Evidence:</strong></p>
+<ul>
+<li><code>DESIGN.md:187</code> says what not to do, forcing a wide table into phone-sized text, but gives no required alternative for model, person or session breakdowns. Only one row-based work-item view is shown.</li>
+<li>Paging is defined only for <code>activity-list</code>; S2 evidence and S7 rows are unbounded.</li>
+<li>&quot;Load-more&quot; has no focus rule.</li>
+<li>Long phone pages have no section navigation. S2 has six major panels and S10 repeats two disclosures per ticket.</li>
+<li>Long unbroken values such as IDs, branch names, URLs and log excerpts have no wrapping rule outside some <code>dd</code> styles.</li>
+</ul>
+<p><strong>Impact:</strong> at 320 CSS px or 200% text, implementers may ship clipped tables or sideways scrolling, and keyboard or screen-reader users face long traversal. Load-more can strand focus.</p>
+<p><strong>Minimal fix:</strong> add these rules:</p>
+<ul>
+<li>Below 600px or at enlarged text, breakdowns become labeled rows, with each value keeping its unit and measurement class. Any retained table scroller is a named, keyboard-focusable region with real headers.</li>
+<li>All potentially long lists use bounded pages. Load-more moves focus to the first new item and announces the count.</li>
+<li>Long detail pages offer in-page section links.</li>
+<li>Evidence values wrap, and unwrappable excerpts scroll inside a focusable region.</li>
+</ul>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: labeled responsive rows, bounded lists, load-more focus/count, section links and safely wrapping/scrolled evidence.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">A11Y-12 · Phone-width clipping risk under enlarged text</h3></header><div class="finding-note"><p><strong>Type:</strong> Reference
+<strong>Location:</strong> <code>mockups/daily-work.html:37</code>, <code>:153</code> (three-up summary retained on phone), <code>:19</code> (<code>.app { overflow: hidden }</code>), which is also used in the other references; <code>mockups/usage.html:28</code> (<code>.nav</code> without wrap); <code>EXPERIENCE.md:135</code>.</p>
+<p><strong>Evidence (static estimate):</strong></p>
+<ul>
+<li>At 320px, each stat content column is about 70px; at 390px, about 93px.</li>
+<li>That fits 14px labels at normal text size.</li>
+<li>With text-only zoom to 200%, a word like &quot;observed&quot; needs about 115px and has no <code>overflow-wrap</code>.</li>
+<li>Usage's three-item nav needs about 360px at 200% text.</li>
+<li><code>.app { overflow: hidden }</code> turns overflow into clipped, unreachable content rather than scrolling.</li>
+</ul>
+<p><strong>Impact:</strong> summary labels can collide and navigation labels can be cut off at the text size the spine requires.</p>
+<p><strong>Minimal fix:</strong> keep the accepted three-up appearance at default text size (UX-13) with <code>grid-template-columns: repeat(auto-fit, minmax(min(100%, 6em), 1fr))</code>, which collapses as text grows. Add <code>flex-wrap: wrap</code> to <code>.nav</code>, as most other references already do. Use <code>overflow: clip</code> only for corners with a checked inner reflow, or remove the clipping. Verify after the change.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: auto-fit statistics, wrapping navigation and unclipped content. Narrow previews supplement the static checks; full text/zoom testing remains implementation work.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">A11Y-13 · Feed event type is exposed only through a hidden icon</h3></header><div class="finding-note"><p><strong>Type:</strong> Reference
+<strong>Location:</strong> <code>mockups/daily-work.html:298</code>, <code>:103</code>–<code>:105</code>; <code>DESIGN.md:166</code>.</p>
+<p><strong>Evidence:</strong> <code>activity-list</code> requires &quot;event type&quot; in each row. In the mock, the only type marker is an <code>aria-hidden</code> icon, colored by kind. Icon shapes differ, so it's not strictly color-only visually, but it provides no text and nothing programmatic. Filters offer &quot;Needs input / Closed / Knowledge / Reviews&quot;, yet rows carry no matching label.</p>
+<p><strong>Impact:</strong> screen-reader users, and anyone who doesn't memorize the icons, must infer type from the title. The filtered categories can't be verified on the row.</p>
+<p><strong>Minimal fix:</strong> add a short visible type label to each row, using the same vocabulary as the filters. Keep the icon decorative.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: visible feed event types match filter vocabulary; icons remain decorative.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span><h3 class="finding-title">A11Y-14 · S9 settings pattern lacks group semantics and a matching label</h3></header><div class="finding-note"><p><strong>Type:</strong> Reference (the controls are deliberately disabled; the semantic pattern is what would be copied)
+<strong>Location:</strong> <code>mockups/notifications.html:10</code>; <code>DESIGN.md:172</code>; <code>EXPERIENCE.md:134</code>.</p>
+<p><strong>Evidence:</strong></p>
+<ul>
+<li>&quot;Followed project scope&quot; is a <code>&lt;p&gt;</code> above checkboxes, with no <code>fieldset</code> and <code>legend</code>; no reference has one.</li>
+<li>Appearance has a visible <code>&lt;p&gt;Appearance&lt;/p&gt;</code> while the select's real label is sr-only &quot;Theme&quot;, so the visible and programmatic names differ.</li>
+<li><code>DESIGN.md:172</code> requires a persistent label above the field.</li>
+</ul>
+<p><strong>Impact:</strong> a screen-reader user hears &quot;Syntelligence, checkbox&quot; without the group's meaning at J7's first step, and a speech user can't say the visible &quot;Appearance&quot;. Relevant to WCAG 1.3.1 and 2.5.3.</p>
+<p><strong>Minimal fix:</strong> use <code>fieldset</code> and <code>legend</code> for the followed-project group. Make &quot;Appearance&quot; the visible <code>&lt;label&gt;</code> of the select.</p>
+<hr />
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: project/event preferences use fieldset/legend and visible Appearance label.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">A11Y-15 · Repeated disclosure labels lack context</h3></header><div class="finding-note"><p><strong>Type:</strong> Reference
+<strong>Location:</strong> <code>mockups/connections.html:10</code> (&quot;Readiness evidence&quot; ×4); <code>mockups/usage.html:118</code>, <code>:119</code> (&quot;Inspect attribution&quot; ×2); <code>mockups/daily-work.html:298</code> (&quot;View evidence&quot; ×4 rendered); <code>mockups/focus.html:223</code> (&quot;Work evidence&quot; ×5, &quot;Usage &amp; cost: Unavailable&quot; ×8 rendered in the By epic view); <code>EXPERIENCE.md:124</code>.</p>
+<p><strong>Impact:</strong> in a screen reader's controls list or with voice commands, the triggers are indistinguishable.</p>
+<p><strong>Minimal fix:</strong> add visually hidden context such as the ticket key or client/project. Keep the visible text.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: repeated disclosures carry ticket/client context.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">A11Y-16 · CSS disclosure markers may enter the accessible name</h3></header><div class="finding-note"><p><strong>Type:</strong> Reference
+<strong>Location:</strong> <code>mockups/work-detail.html:54</code>–<code>:55</code>, <code>mockups/usage.html:67</code>–<code>:68</code> (<code>+</code>, <code>−</code>); <code>mockups/knowledge.html:23</code> and the same rule in <code>knowledge-detail.html</code> and <code>promotion.html</code> (<code>›</code>, <code>⌄</code>). The Daily Work, Focus and shell references already use <code>aria-hidden</code> SVG chevrons correctly.</p>
+<p><strong>Impact:</strong> some browser and screen-reader combinations may read &quot;Inspect attribution plus&quot;, on top of the native expanded state.</p>
+<p><strong>Minimal fix:</strong> reuse the <code>aria-hidden</code> SVG chevron, or use <code>content: '+' / ''</code>, subject to the browser-support check.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: decorative SVG disclosure markers replace spoken CSS glyphs.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">A11Y-17 · `aria-label` on generic elements</h3></header><div class="finding-note"><p><strong>Type:</strong> Reference
+<strong>Location:</strong> <code>mockups/daily-work.html:203</code> (<code>.summary</code>), <code>:233</code> (<code>ticketChip</code>; also <code>focus.html:191</code>), <code>mockups/knowledge.html:39</code> (<code>.filter-row</code>).</p>
+<p><strong>Evidence:</strong> these <code>&lt;span&gt;</code> and <code>&lt;div&gt;</code> elements have no role, and support for naming them is unreliable. The chip's source qualification is otherwise only in a hover <code>title</code>. Project/source context is usually visible nearby, so this isn't a data loss on screen, but <code>EXPERIENCE.md:89</code>'s qualification may not be heard.</p>
+<p><strong>Minimal fix:</strong> use visually hidden text inside the chip, and <code>role=&quot;group&quot;</code> on named groups.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: named groups have roles; chip qualification uses text rather than labels on generic spans.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">A11Y-18 · `&lt;p&gt;` placed directly in `&lt;dl&gt;` groups detaches provenance from its value</h3></header><div class="finding-note"><p><strong>Type:</strong> Reference
+<strong>Location:</strong> <code>mockups/work-detail.html:123</code>–<code>:126</code>; <code>mockups/usage.html:107</code>–<code>:110</code>.</p>
+<p><strong>Impact:</strong> invalid <code>dl</code> structure can leave source or coverage notes unassociated with their fact, for example &quot;1.20M tokens priced · 0.40M unpriced&quot;.</p>
+<p><strong>Minimal fix:</strong> move each <code>&lt;p&gt;</code> into its <code>&lt;dd&gt;</code>, or into a second <code>&lt;dd&gt;</code>.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: provenance paragraphs are inside definition values.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">A11Y-19 · Component tokens conflict with text rules</h3></header><div class="finding-note"><p><strong>Type:</strong> Contract
+<strong>Location:</strong> <code>DESIGN.md:75</code> vs <code>:158</code> (<code>attention-item</code> token uses attention text; the table says the body is main text); <code>DESIGN.md:90</code> vs <code>:113</code> (<code>state-message</code> uses secondary text, while permission and failure text should be main text).</p>
+<p><strong>Impact:</strong> both pairs pass contrast (5.41:1 or better), so this isn't a contrast failure. An implementer following the token would lower emphasis on failures, permissions and attention text.</p>
+<p><strong>Minimal fix:</strong> set both component text tokens to <code>{colors.text}</code>. Use the attention color only on the marker, and secondary text only for supporting lines.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied with T2: component text tokens match main-text rules.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">A11Y-20 · Other reference drift from the spines</h3></header><div class="finding-note"><p><strong>Type:</strong> Reference (the spines win; correct these if the mockups will be copied)</p>
+<table>
+<thead>
+<tr>
+<th>Location</th>
+<th>Drift</th>
+<th>Impact</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mockups/daily-work.html:131</code>, <code>:140</code> vs <code>DESIGN.md:134</code></td>
+<td>Breakpoints 540/800 instead of 600/1024; two columns remain at 541–599px.</td>
+<td>Layout at those widths differs from the contract.</td>
+<td>Align the values.</td>
+</tr>
+<tr>
+<td><code>mockups/focus.html:10</code>–<code>:11</code> (live); <code>usage.html:55</code>; shell references line 6 vs <code>DESIGN.md:126</code></td>
+<td>Selects render at 14px; the contract says inputs are 16px.</td>
+<td>iOS may zoom on focus.</td>
+<td>Set inputs to 16px.</td>
+</tr>
+<tr>
+<td><code>mockups/focus.html:244</code></td>
+<td>Together view goes from <code>h1</code> to <code>h3</code>, and &quot;Distinct observed agent runs&quot; is a <code>&lt;p&gt;</code>.</td>
+<td>Heading navigation is less clear.</td>
+<td>Add a section <code>h2</code>.</td>
+</tr>
+<tr>
+<td><code>mockups/daily-work.html:209</code></td>
+<td>Section is named only by the title, without &quot;Needs your input&quot;.</td>
+<td>The attention reason is missing from region navigation.</td>
+<td>Include the label's ID in <code>aria-labelledby</code>.</td>
+</tr>
+<tr>
+<td><code>mockups/usage.html:118</code>–<code>:120</code> vs <code>DESIGN.md:171</code></td>
+<td>Row totals &quot;0.60M · 37.5%&quot; have no unit.</td>
+<td>The measure is ambiguous when read out alone.</td>
+<td>Write &quot;0.60M tokens&quot;.</td>
+</tr>
+<tr>
+<td>Daily/Focus vs <code>work-detail</code>/<code>usage</code> vs <code>knowledge*</code> vs <code>DESIGN.md:162</code></td>
+<td>&quot;Fixed&quot; Claude/Codex placeholder glyphs differ across three families. Marker forms differ too.</td>
+<td>Weakens consistent recognition. Glyphs stay illustrative.</td>
+<td>Use one placeholder per type and one marker form.</td>
+</tr>
+<tr>
+<td><code>mockups/daily-work.html:52</code> vs <code>DESIGN.md:122</code>, <code>:158</code></td>
+<td>Attention panel is a 5% amber tint; spec says neutral panel and no unmeasured tints.</td>
+<td>No contrast problem: the secondary text calculates to 5.79:1 light, 7.66:1 dark. It's a rule inconsistency only.</td>
+<td>Use a neutral panel, or measure and record the tint.</td>
+</tr>
+</tbody>
+</table>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: breakpoint/input/heading/unit/vocabulary consistency, neutral attention panel and shared provider glyph family.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">A11Y-21 · Standalone references lose focus rings or fall below the ring target</h3></header><div class="finding-note"><p><strong>Type:</strong> Reference (does not affect the product or host-rendered previews)
+<strong>Location:</strong> <code>daily-work.html:14</code>, <code>focus.html:14</code>, and line 6 of <code>connections.html</code>, <code>administrator-setup.html</code>, <code>notifications.html</code>, all using <code>var(--ring)</code> with no fallback. <code>knowledge.html:10</code>, <code>knowledge-detail.html:10</code>, <code>promotion.html:10</code> use a fixed <code>#2456D6</code> fallback that their dark media query doesn't override.</p>
+<p><strong>Evidence:</strong></p>
+<ul>
+<li>Without host tokens, an undefined variable invalidates the outline at computed-value time, so the rule removes the browser's default ring as well. The same applies to progress fills and agent dots.</li>
+<li>In dark mode, <code>#2456D6</code> calculates to 3.07:1 on canvas, 2.81:1 on card and 2.42:1 on secondary surface.</li>
+<li><code>DESIGN.md</code> links these files directly, so opening them outside the host is a realistic way to review them.</li>
+</ul>
+<p><strong>Impact:</strong> reviewers could misjudge focus visibility and bars, or validate the wrong thing.</p>
+<p><strong>Minimal fix:</strong> give the tokens exact-palette fallbacks, or label each file as host-rendered only. The existing &quot;not proof of the standalone palette&quot; note doesn't cover the lost focus ring.</p>
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: exact light/dark standalone fallbacks include focus and identity colors; embedded host colors still need separate evaluation.</div></article><article class="finding"><header><span class="badge badge-sev-low">low</span><h3 class="finding-title">A11Y-22 · Gallery chooser label and iframe height</h3></header><div class="finding-note"><p><strong>Type:</strong> Reference
+<strong>Location:</strong> <code>mockups/gallery.html:1</code>.</p>
+<p><strong>Evidence:</strong> <code>aria-label=&quot;Choose a visual reference&quot;</code> overrides the visible &quot;Screen&quot; label. Height is set only on load, capped at 1750px, so expanding details adds nested scrolling in the frame.</p>
+<p><strong>Impact:</strong> a speech-input mismatch, plus awkward nested scrolling at phone widths. This affects review only.</p>
+<p><strong>Minimal fix:</strong> remove the <code>aria-label</code>, and either update the height when disclosures toggle or link each screen to its standalone file.</p>
+<hr />
+</div><div class="finding-fix"><strong>Disposition:</strong> Applied: Screen label matches select name; gallery resizes for content changes and links every standalone reference.</div></article></div></details></section><section class="reviewer-section"><details><summary><h2>Structure and prose · 44 unranked rows</h2></summary><div class="dim-body"><h1>Editorial review — Owl Mast UX spines</h1>
+<p><strong>Targets:</strong> <code>DESIGN.md</code> (2,305 words) and <code>EXPERIENCE.md</code> (5,253 words). Counts come from <code>word_metrics.py</code> and include frontmatter. Mockups, the memlog, and source extracts were read for context only.</p>
+<p><strong>Purpose read:</strong> these documents exist to help downstream UX, architecture, and build readers look up how Owl Mast looks and behaves, and to see which statements are confirmed, inherited, proposed, or still open.</p>
+<p><strong>Structure model:</strong> Reference/Database, the closest fit for paired contract spines that readers enter at random. Key Flows follows the bmad-ux named-journey shape inside that model. The DESIGN.md section order is canonical and correct. All required EXPERIENCE.md sections are present in template order. No row asks to reorder canonical sections.</p>
+<p><strong>Standards:</strong> Microsoft Writing Style Guide (configured baseline), reader type <code>humans</code>, no length target. Editorial rows carry no severity or rank, and the rows are ordered by comprehension impact.</p>
+<p><strong>Scope of findings:</strong> every row is a document edit. None is a downstream implementation test or an architecture dependency. Rows tagged QUESTION or phrased &quot;Consider&quot; need the author's confirmation. A-1–A-6 stay provisional and unchanged, along with their pointers.</p>
+<p><strong>Style noted and preserved:</strong> telegraphic table fragments, slash shorthand inside tables, arrows for sequence, absolute rules (&quot;never&quot;), canonical title-case headings, DESIGN.md's spelled-out labels (&quot;Designer proposal&quot;), EXPERIENCE.md's bracket tags, and the <code>DESIGN.md.Components</code> reference form, which the bmad-ux template also uses. Prose rows flag only places where these habits stop a reader from parsing the meaning.</p>
+<h2>Structure findings</h2>
+<p>Line references are to the current files. Quoted text matches the file exactly.</p>
+<table>
+<thead>
+<tr>
+<th>Pass</th>
+<th>Original Text</th>
+<th>Revised Text</th>
+<th>Changes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>structure</td>
+<td><code>EXPERIENCE.md</code> §Open decisions, L264–272. The section opens with a table of resolved questions. The open items sit in the last paragraph (L272), which mixes proposals, validation, assumption revisits, process status, and a live-data boundary.</td>
+<td><strong>MOVE + CONDENSE.</strong> Use this order inside the section. (1) Open items as bullets: &quot;<strong>[P] Bounded refinements</strong> remain designer proposals: exact Daily Work/feed layout … generic notification previews. These do not reopen confirmed needs.&quot;; &quot;<strong>[OPEN]</strong> Architecture must validate packaging/push support, source-app links, and real client enrollment/delivery paths; pre-live/acceptance owners must revisit A-1–A-6 at their stated checkpoints. No missing implementation evidence becomes a capability promise.&quot;; and the live-data sentence unchanged. (2) The L270 A-1–A-6 paragraph, verbatim. (3) The resolved table, verbatim.</td>
+<td>The heading promises open items, so they should come first. This also gives the <code>[OPEN]</code> tag its only use. No decision changes. +4 words (labels).</td>
+</tr>
+<tr>
+<td>structure</td>
+<td><code>EXPERIENCE.md</code> §Foundation legend, L27–34. It defines <code>[U]</code>, <code>[R]</code>, <code>[D]</code>, <code>[P]</code>, <code>[A-n]</code>, and <code>[OPEN]</code>, but the document also uses <code>[U/R]</code> (L36, L154), <code>[P/R]</code> (L156), <code>[U: UX-n]</code>, and <code>[R: FR-n]</code> (Key Flows). <code>[OPEN]</code> is defined but never applied.</td>
+<td><strong>MERGE</strong> the undefined forms into the legend with two rows. <code>[U/R]</code>, <code>[P/R]</code>: &quot;The passage combines both kinds of source; its sentences say which part is which.&quot; <code>[U: UX-n]</code>, <code>[R: FR-n]</code>: &quot;The tag cites the decision or requirement.&quot; Apply <code>[OPEN]</code> as in the row above.</td>
+<td>Readers can't currently tell whether <code>[P/R]</code> means proposed, required, or both, and that tag sits on the epic-progress rule. Existing tags are unchanged. +33 words.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td><code>EXPERIENCE.md</code> §Key Flows, L179 and headings L181–252. The sequence is J1, SC-1, J2, SC-2, SC-3, J6, J7, J8. J3–J5 appear nowhere in the spine, and nothing explains the two ID schemes.</td>
+<td><strong>QUESTION.</strong> Add after &quot;Named actors mirror the PRD.&quot;: &quot;SC-n are the PRD's scenarios, named verbatim; Jn are UX journeys. J3–J5 are unused because [author to state].&quot; Keep all IDs.</td>
+<td>A reader or reviewer can reasonably conclude that three journeys are missing. The reason is not recorded in the spine, so the author must supply it. +18 words.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td><code>EXPERIENCE.md</code> §Foundation, L25: &quot;Later user decisions resolve execution, ticket percentages, demand-driven knowledge, promotion authority, and every-update push. The latest user addition requires a separate Focus board and concurrent epic visibility.&quot;</td>
+<td><strong>CONDENSE</strong> to: &quot;Component and state tables use terms defined in the semantics section after Responsive &amp; Platform; remaining proposals and dependencies are in the final section.&quot;</td>
+<td>L36, L40, and L154 already state each of these decisions. The replacement adds scaffolding that is missing today: L76–120 use &quot;basis,&quot; &quot;delivered,&quot; and &quot;reused&quot; before the section that defines them (L152), and canonical order keeps that section where it is. −3 words.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td><code>DESIGN.md</code> §Layout &amp; Spacing, L136: &quot;The proposed Daily Work order is scope and period → own/colleague summary → attention → epic and ticket evidence → recent updates → collection coverage. This is an IA proposal, not a confirmed feed-versus-wall choice.&quot;</td>
+<td><strong>MOVE</strong> to the S1 row at <code>EXPERIENCE.md</code> L48, replacing &quot;Feed versus wall remains unchosen.&quot; with: &quot;Proposed order: scope and period → own/colleague summary → attention → epic and ticket evidence → recent updates → collection coverage; an IA proposal, not a confirmed feed-versus-wall choice.&quot;</td>
+<td>The passage calls itself IA, and EXPERIENCE.md owns IA. The S1 row currently lists contents without this order. The proposal label moves with the text. −35 words in DESIGN.md, +24 in EXPERIENCE.md.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td><code>DESIGN.md</code> L136: &quot;The HTML inherits preview-host theme tokens, so it is <strong>not visual proof of these exact standalone colors</strong>. Its fixture dates, records, and counts are illustrative.&quot;</td>
+<td><strong>MOVE</strong> to §Colors L122, after &quot;…or the final app.&quot;: &quot;Rendered references inherit preview-host theme tokens, so they are <strong>not visual proof of these exact standalone colors</strong>.&quot; Drop the fixture sentence because L177 already says &quot;illustrative data.&quot;</td>
+<td>The caveat limits how far the color acceptance at L102 reaches, but it sits in a layout paragraph and names one mock. The review brief applies it to rendered references generally. Author should confirm the plural scope. −25 words at L136, +17 at L122.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td><code>EXPERIENCE.md</code> L272: &quot;All four review lenses are selected on Claude Opus 5.5 Ultrathink; review and final polish remain. Input reconciliation is complete and all surfaces have visual references.&quot;</td>
+<td><strong>CUT.</strong></td>
+<td>This is session status in a contract, and it goes stale at finalization. Memlog L43 and L45 already record it, and L59 covers visual references. −26 words.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td><code>EXPERIENCE.md</code> §IA, S5 row L52 and S2 row L49. Personal agent appearance (L90, L166; <code>DESIGN.md</code> L177) and the contextual Usage &amp; cost summary (L99, L168) are placed on surfaces, but the IA rows omit them.</td>
+<td><strong>QUESTION.</strong> Append to S5: &quot;personal agent appearance.&quot; Append to S2: &quot;compact Usage &amp; cost summary.&quot;</td>
+<td>Random-access readers look in the IA table to find where a feature lives. Both additions keep the default <code>[P]</code> status. Not a scope change. +8 words.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td><code>EXPERIENCE.md</code> §IA, L59: &quot;The proposed IA covers every required outcome … These are layout references with illustrative data and disabled source actions, not completed integrations.&quot;</td>
+<td><strong>CONDENSE</strong> to: &quot;A dependency graph is optional exploration within S2, not a required primary destination. The user requested visual references for every surface (UX-14); each row links its screen, and the <a href="mockups/daily-work.html">daily-work study</a> and <a href="mockups/focus.html">Focus study</a> also show inline S2 evidence. These are layout references with illustrative data and disabled source actions; they do not prove source integration, permissions, full detail navigation, or completed integrations.&quot; Keep the gallery link.</td>
+<td>The same disclaimer appears twice, from before and after the full mock set existed. All links and limits survive. This also removes the self-assessment &quot;covers every required outcome,&quot; which the table shows and the completeness review tests. −23 words.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td>Dense multi-topic paragraphs: <code>EXPERIENCE.md</code> L36–40, L44, L107, L150; <code>DESIGN.md</code> L102.</td>
+<td><strong>CONDENSE</strong> (format only). L36–40: place L40 directly after L36 so the <code>[U]</code> statements are adjacent, then L38. L44: split the destination list from the entry and default-scope rules. L107: one bullet per baseline rule. L150: separate bullets for mobile scope, not promised, and language. L102: split references from acceptance, and join the acceptance text to the mark paragraph (L104).</td>
+<td>Each paragraph holds four to eight separate rules that are hard to find or cite. Lists improve scanning and pacing. No wording changes here; the word cuts are in their own rows. 0 words.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td><code>EXPERIENCE.md</code> §Evidence, progress, and knowledge semantics, L152–168. The heading omits usage, identity, and cost, and the bold run-ins can't be linked.</td>
+<td><strong>QUESTION.</strong> Rename to &quot;Evidence, knowledge, usage, and identity semantics.&quot; Promote each run-in to an H3 that keeps its tag, for example <code>### [U/R] Ticket progress</code>.</td>
+<td>The section defines terms the whole document uses, and stories will need stable anchors. This is an invented section, so canonical names are unaffected. About +1 word.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td>Aggregate-deduplication rule, stated at <code>EXPERIENCE.md</code> L92, L99, L120, L168, L256. Cut L120: &quot;Shared records are not duplicated in aggregate totals.&quot; Cut L168: &quot;Epics aggregate distinct attributable records once; they never sum duplicated shared runs.&quot;</td>
+<td><strong>CUT</strong> the two quoted sentences. Keep L92 (work records), L99 (usage), and L256 (scenario).</td>
+<td>L120 is not an error or stale state, so it sits in the wrong column. L168 repeats L99. −20 words.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td><code>EXPERIENCE.md</code> §Responsive &amp; Platform, L150: &quot;The visual references demonstrate the layouts; these spine rules govern implementation and take precedence over prototype deviations.&quot;</td>
+<td><strong>CUT.</strong></td>
+<td><code>DESIGN.md</code> L98 already says &quot;Both spines take precedence,&quot; and the bmad-ux rubric asks for that statement once. Trade-off: someone reading only EXPERIENCE.md depends on its L25 link to DESIGN.md. −17 words.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td><code>DESIGN.md</code> §Layout &amp; Spacing, L138: &quot;Parallel agent activity across several epics is visible without implying that each agent belongs to only one epic.&quot;</td>
+<td><strong>CUT</strong> this sentence. Keep the &quot;User-confirmed addition&quot; and &quot;Designer proposal&quot; labels and all visual text.</td>
+<td>This is behavior, and <code>EXPERIENCE.md</code> L40, L92, and L256 cover it. −18 words.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td><code>EXPERIENCE.md</code> §Responsive table, L146–147: &quot;Labeled navigation rail; main area can use two columns.&quot; and &quot;Labeled navigation menu; flexible panel pairs only when readable.&quot;</td>
+<td><strong>CONDENSE</strong> each to &quot;Layout per DESIGN.md.&quot; Keep the S2 and evidence clauses in those rows, and keep the L148 row unchanged.</td>
+<td><code>DESIGN.md</code> L134 owns breakpoint rules under the spec. Stating them twice invites drift. The width keys stay. −12 words.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td><code>EXPERIENCE.md</code> §State Patterns, L112, L114, L115, L119. These four surface cells omit the <code>· [visual](…)</code> link that the other six carry.</td>
+<td><strong>MERGE</strong> the schema by adding: <code>· [visual](mockups/work-detail.html)</code>, <code>· [visual](mockups/knowledge-detail.html)</code>, <code>· [visual](mockups/connections.html)</code>, <code>· [visual](mockups/notifications.html)</code>.</td>
+<td>The gaps suggest these four surfaces have no reference, but all ten do. +8 words.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td><code>DESIGN.md</code> §Brand &amp; Style, L102: &quot;No UI framework or implementation stack is selected.&quot;</td>
+<td><strong>CUT.</strong></td>
+<td><code>EXPERIENCE.md</code> L38 owns this statement, and <code>DESIGN.md</code> L189 covers the visual inference. −8 words.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td><code>DESIGN.md</code> <code>agent-chip</code>, L162: &quot;Prototype glyphs illustrate icon placement; final provider artwork remains an asset choice.&quot;</td>
+<td><strong>MERGE</strong> into L177 by appending &quot;; final provider artwork remains an asset choice&quot; to the provider-glyph sentence.</td>
+<td>L177 already carries the same prototype disclaimer. −5 words net.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td><code>DESIGN.md</code> and <code>EXPERIENCE.md</code> component tables (L152–175; L80–103).</td>
+<td><strong>PRESERVE.</strong></td>
+<td>The same names with visual and behavioral contracts form a deliberate pair, not duplication.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td><code>EXPERIENCE.md</code> no-execution reminders at flow climaxes: L186, L197, L248, L258.</td>
+<td><strong>PRESERVE.</strong></td>
+<td>These reinforce UX-06 and FR-19 at the moment a reader would expect an action. A summary would weaken the scope boundary.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td><code>EXPERIENCE.md</code> L270 A-1–A-6 one-line glosses, and A-n pointers at L100, L162, L205–206, L214, L218, L230.</td>
+<td><strong>PRESERVE.</strong></td>
+<td>They look repetitive, but they keep each assumption provisional at the point of use. The exact text stays in the sources they link to.</td>
+</tr>
+<tr>
+<td>structure</td>
+<td>Key Flows headings L191, L211, L222: trailing periods and mixed apostrophes.</td>
+<td><strong>PRESERVE.</strong></td>
+<td>These are verbatim PRD scenario names (PRD L30–32). The extract instructs &quot;Use these names verbatim.&quot;</td>
+</tr>
+<tr>
+<td>structure</td>
+<td>Six import links in both <code>DESIGN.md</code> L179 and <code>EXPERIENCE.md</code> L172–173.</td>
+<td><strong>PRESERVE.</strong></td>
+<td>Each spine ties the imports to different decisions: components in one, concepts and anti-patterns in the other. The links are required inline.</td>
+</tr>
+</tbody>
+</table>
+<h2>Prose findings</h2>
+<p>Prose rows skip passages tagged CUT above. Style-guide and clarity fixes are minimal.</p>
+<table>
+<thead>
+<tr>
+<th>Pass</th>
+<th>Original Text</th>
+<th>Revised Text</th>
+<th>Changes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>prose</td>
+<td><code>EXPERIENCE.md</code> L258: &quot;without mistaking the landing feed for his board&quot;</td>
+<td>&quot;without mistaking Daily Work for his board&quot;</td>
+<td>&quot;Feed&quot; contradicts L48, where feed versus wall &quot;remains unchosen.&quot; −1 word.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>EXPERIENCE.md</code> L254: &quot;[U: latest Focus request]&quot;; L57: &quot;latest user Focus request&quot;; L40: &quot;it does not replace the landing page.&quot;</td>
+<td>L254: &quot;[U: UX-11]&quot;. L57: &quot;UX-11/12&quot;. L40: &quot;it does not replace the landing page (UX-11, UX-12).&quot;</td>
+<td>&quot;Latest&quot; is no longer true because UX-15–17 came later. The memlog IDs are stable. Same label, better citation. −3 words.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>EXPERIENCE.md</code> L114: &quot;No deliveries is not unavailable collection&quot; and &quot;delivery capability unsupported is not no recipients.&quot;</td>
+<td>&quot;“No deliveries” differs from “collection unavailable”&quot; and &quot;“delivery capability unsupported” differs from “no recipients.”&quot;</td>
+<td>These are state names read as a double negative. Quotation marks make them parse. 0 words.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>EXPERIENCE.md</code> L245: &quot;permission remains unchanged.&quot;</td>
+<td>Consider: &quot;source access remains unchanged.&quot;?</td>
+<td>In this step &quot;permission&quot; could mean operating-system push permission, which the same sentence just requested, or source rights. Author to confirm source rights are meant. +1 word.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>EXPERIENCE.md</code> L245: &quot;explain the purpose before asking&quot;; L247: &quot;Recheck current access and load … suppress an unauthorized or obsolete sensitive preview.&quot;; L229: &quot;Explain that external past copies/actions cannot be erased&quot;</td>
+<td>L245: &quot;Owl Mast explains the purpose before asking&quot;. L247: &quot;Owl Mast rechecks current access and loads … it suppresses an unauthorized or obsolete sensitive preview.&quot; L229: &quot;Owl Mast explains that external past copies/actions cannot be erased&quot;</td>
+<td>These imperatives have no actor inside a narrative where Ahmed is the subject, so they could read as Ahmed's instructions. +7 words.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>DESIGN.md</code> L189: &quot;Treat the study as exploratory&quot;</td>
+<td>&quot;Treat the mockups as exploratory&quot;</td>
+<td>&quot;The study&quot; dates from when only one mock existed. The package now has ten surface references plus a gallery. 0 words.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>EXPERIENCE.md</code> L150: &quot;No schedule/digest has been chosen.&quot;</td>
+<td>Consider: &quot;No digest or notification schedule has been chosen; UX-10 excludes a silent digest.&quot;?</td>
+<td>The current text reads like a pending decision, yet L268 settles the silent-digest case. Preserves UX-10. +8 words.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>DESIGN.md</code> L128, L132, L156: &quot;compact layouts,&quot; &quot;compact margins,&quot; &quot;wide layouts,&quot; &quot;compact navigation.&quot; None is defined.</td>
+<td>Consider adding before &quot;Wide-page margins use&quot; (L132): &quot;Wide means 1024px and above; compact means below 1024px.&quot;?</td>
+<td>Tablet width is ambiguous for <code>title-compact</code> and the margins. The proposed split follows L134 and L156, but author must confirm it. +9 words.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>DESIGN.md</code> L106: &quot;Component variants are separate entries, as illustrated by <code>action-control-dark</code>.&quot;</td>
+<td>Consider: &quot;A component with its own <code>-dark</code> entry, such as <code>action-control-dark</code>, uses that entry instead of the mapping.&quot;?</td>
+<td>The prior sentence says the mapping already covers component tokens, so the variant looks either redundant or contradictory. +8 words.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>DESIGN.md</code> L142: &quot;No glow, animated pulse, or decorative blur is required.&quot;</td>
+<td>Consider: &quot;Do not use glow, animated pulse, or decorative blur.&quot;?</td>
+<td>&quot;Not required&quot; permits these effects, but the surrounding rules read as a ban. Author to choose; keep the original if they are optional. 0 words.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>EXPERIENCE.md</code> L57: &quot;Separate board for work assigned to Ahmed;&quot;</td>
+<td>&quot;Separate board for work assigned to the viewer;&quot;</td>
+<td>A surface definition should not read as single-user. L44 and L91 already use viewer-relative wording. Ahmed stays in J8. +1 word.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>EXPERIENCE.md</code> L97: &quot;no launch test.&quot;</td>
+<td>Consider: &quot;readiness checks do not launch an agent.&quot;?</td>
+<td>The fragment could also mean launch is untested. Meaning inferred from FR-19. +4 words.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>EXPERIENCE.md</code> L115: &quot;no protected readiness result from unverifiable cached rights.&quot;</td>
+<td>&quot;do not show protected readiness results when cached rights cannot be verified.&quot;</td>
+<td>The noun stack is hard to parse. Fail-closed meaning from L107 is unchanged. +4 words.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>EXPERIENCE.md</code> L250: &quot;Already delivered external notification copies cannot be promised recall.&quot;</td>
+<td>&quot;Owl Mast cannot promise to recall external notification copies already delivered.&quot;</td>
+<td>The passive construction makes the copies the thing being promised. +2 words.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>DESIGN.md</code> L146: &quot;and compact markers <code>{rounded.sm}</code>. <code>{rounded.full}</code> is reserved for small identity/status markers.&quot;</td>
+<td>Consider: &quot;and progress-evidence markers <code>{rounded.sm}</code>. <code>{rounded.full}</code> is reserved for chips and small identity/status markers.&quot;?</td>
+<td>&quot;Compact&quot; and &quot;small&quot; markers can't be told apart. The wording follows the frontmatter, where <code>progress-evidence</code> uses <code>sm</code> and both chips use <code>full</code>. +2 words.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>EXPERIENCE.md</code> L119: &quot;Push not requested/denied/unsupported are independent of agent health.&quot;</td>
+<td>&quot;Push states (not requested, denied, unsupported) are independent of agent health.&quot;</td>
+<td>The subject doesn't parse at first read. +3 words.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>DESIGN.md</code> L126: &quot;Key facts, source identity, progress basis, access messages, and actions remain <strong>at least 14px</strong>. <code>{typography.meta}</code> is reserved for supplementary text. Keep compact labels at the same readable floor as other operational facts.&quot;</td>
+<td>&quot;Key facts, source identity, progress basis, access messages, actions, and compact labels remain <strong>at least 14px</strong>. <code>{typography.meta}</code> is reserved for supplementary text.&quot;</td>
+<td>Puts one floor in one sentence. −10 words.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>EXPERIENCE.md</code> L166: &quot;<strong>[U] Identity presentation:</strong>&quot;; L168: &quot;discoverable on work.&quot;; <code>DESIGN.md</code> L102: &quot;The user accepted the displayed colors,&quot;</td>
+<td>&quot;<strong>[U] Identity presentation (UX-15):</strong>&quot;; &quot;discoverable on work (UX-17).&quot;; &quot;The user accepted (UX-13) the displayed colors,&quot;</td>
+<td>Neighboring statements cite memlog IDs, and these three don't. Label semantics are unchanged. +3 words.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>EXPERIENCE.md</code> L32: &quot;[U]/[R]/[D]/[A]/[OPEN]&quot;; L34: &quot;UX-Q1–3 are resolved.&quot;</td>
+<td>L32: &quot;[U]/[R]/[D]/[A-n]/[OPEN]&quot;. L34: delete the sentence.</td>
+<td><code>[A]</code> is not a defined tag. The deleted sentence is unrelated to the <code>[OPEN]</code> definition, and L264–268 state the resolution. −3 words.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>EXPERIENCE.md</code> L73: &quot;without leaking its existence or title through detail.&quot;</td>
+<td>Consider: &quot;without leaking its existence or title.&quot;?</td>
+<td>&quot;Through detail&quot; has no clear referent. −2 words.</td>
+</tr>
+<tr>
+<td>prose</td>
+<td><code>EXPERIENCE.md</code> L44: &quot;Daily Work/notifications cover&quot;; L189: &quot;Lost access/offline →&quot;</td>
+<td>&quot;Daily Work and notifications cover&quot;; &quot;Lost access or offline →&quot;</td>
+<td>The style guide discourages slashes for &quot;and&quot; and &quot;or.&quot; These two are in running prose and change the logic if misread. Table shorthand is left alone. +4 words.</td>
+</tr>
+</tbody>
+</table>
+<h2>Summary</h2>
+<table>
+<thead>
+<tr>
+<th>Measure</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Structure recommendations</td>
+<td>23 rows: 18 changes and 5 PRESERVE</td>
+</tr>
+<tr>
+<td>Prose recommendations</td>
+<td>21 rows</td>
+</tr>
+<tr>
+<td>Structure pass, if all accepted</td>
+<td>−79 words, 1.0% of 7,558 (<code>DESIGN.md</code> −74, 3.2%; <code>EXPERIENCE.md</code> −5, 0.1%)</td>
+</tr>
+<tr>
+<td>Prose pass, if all accepted</td>
+<td>+37 words (<code>DESIGN.md</code> +10; <code>EXPERIENCE.md</code> +27)</td>
+</tr>
+<tr>
+<td>Both passes, if all accepted</td>
+<td>−42 words, 0.6% (<code>DESIGN.md</code> 2,241; <code>EXPERIENCE.md</code> 5,275)</td>
+</tr>
+<tr>
+<td>Length target</td>
+<td>None provided; net length is not the goal of these edits</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Reading the numbers:</strong> the near-neutral total is expected. Accepting every row removes about 210 repeated or misplaced words and adds about 170 words of moved text, scaffolding, citations, and clearer sentences.</p>
+<p><strong>Comprehension trade-offs:</strong></p>
+<ul>
+<li>A reader of EXPERIENCE.md alone loses the local statement that spines win on conflict and relies on the link to DESIGN.md.</li>
+<li>Removing the L59 self-assessment leaves the IA table to demonstrate its own coverage.</li>
+<li>Neither cut sacrifices a requirement, a label, or a source link.</li>
+</ul>
+<p><strong>Author input needed:</strong></p>
+<ul>
+<li>The reason J3–J5 are unused.</li>
+<li>The compact and wide definitions.</li>
+<li>Whether L142's effects are banned or optional.</li>
+<li>Which permission L245 means.</li>
+<li>Whether the host-token caveat applies to all rendered references.</li>
+</ul>
+<p><a href="review-disposition.md">Applied editorial dispositions</a></p></div></details></section><div class="mechanical"><h3>Verification boundaries</h3><p>Author fixes checked for paired components, tokens, local links, assumptions, reference fixtures and narrow/wide rendering. No independent post-fix re-review or implemented-system validation is claimed. A-1–A-6 remain open. Jira/Bitbucket sampling requires connection; the private GitHub sample is partial.</p></div><footer class="report-footer"><p><a href="DESIGN.md">DESIGN.md</a> · <a href="EXPERIENCE.md">EXPERIENCE.md</a> · <a href="review-disposition.md">Disposition</a> · <a href="validation-report.md">Markdown report</a></p><p>Generated 2026-11-05 · Review lines refer to pre-edit snapshots in .working/</p></footer></div></body></html>

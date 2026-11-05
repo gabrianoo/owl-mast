@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Owl Mast — Usage</title>
+<style>
+/* Governed by DESIGN: Brand & Style, Typography, Layout & Spacing, Components.
+   EXPERIENCE: S7, scope-bar, usage-breakdown, settings-field, state-message;
+   State Patterns S7; Usage semantics; J6 steps 1–4. The accepted key-focus shell
+   is retained. Host tokens illustrate, rather than validate, the exact palette.
+   All quantities, rates, source records, and mappings are illustrative fixtures. */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: transparent; }
+body { color: var(--foreground, CanvasText); font: 14px/1.5 var(--font-sans, system-ui, sans-serif); -webkit-font-smoothing: antialiased; }
+h1, h2, h3, p, dl, dd { margin: 0; }
+strong { font-weight: 600; }
+svg { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
+.study-note { margin-bottom: 12px; color: var(--muted-foreground, CanvasText); }
+.study-note strong { color: var(--foreground, CanvasText); }
+.app { overflow: hidden; border: 1px solid var(--border, GrayText); border-radius: 14px; background: var(--background, Canvas); }
+.topbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px 24px; border-bottom: 1px solid var(--border, GrayText); background: var(--card, Canvas); }
+.brand { display: flex; align-items: center; gap: 9px; font-size: 17px; font-weight: 700; letter-spacing: -.035em; }
+.brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--border, GrayText); border-radius: 10px; color: var(--primary, LinkText); background: var(--secondary, Canvas); }
+.brand-mark svg { width: 24px; height: 24px; stroke-width: 1.8; }
+.workspace { text-align: right; font-weight: 600; }
+.workspace span { display: block; font-weight: 400; color: var(--muted-foreground, CanvasText); }
+.nav { display: flex; align-items: center; gap: 24px; min-height: 48px; padding: 0 24px; border-bottom: 1px solid var(--border, GrayText); color: var(--muted-foreground, CanvasText); }
+.nav span { display: flex; align-items: center; min-height: 48px; }
+.nav [aria-current] { font-weight: 600; color: var(--foreground, CanvasText); border-bottom: 2px solid var(--primary, LinkText); }
+main { padding: 24px; }
+h1 { font-size: 28px; line-height: 1.2; font-weight: 650; letter-spacing: -.025em; }
+h2 { font-size: 18px; line-height: 1.4; font-weight: 600; letter-spacing: -.015em; }
+h3 { font-size: 14px; font-weight: 600; }
+.subtitle { margin-top: 7px; color: var(--muted-foreground, CanvasText); }
+.scope { padding: 12px 16px; background: var(--secondary, Canvas); border-radius: 8px; margin-top: 20px; }
+.scope p + p { margin-top: 3px; }
+.muted { color: var(--muted-foreground, CanvasText); }
+.id { font-family: var(--font-mono, ui-monospace, monospace); }
+.ticket-chip { display: inline-flex; align-items: center; min-height: 28px; padding: 2px 8px; border: 1px solid var(--border, GrayText); border-radius: 6px; background: var(--secondary, Canvas); color: var(--foreground, CanvasText); font: 600 14px/1.5 var(--font-mono, ui-monospace, monospace); vertical-align: middle; }
+.agent-chip { --chip-accent: var(--primary, LinkText); display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; min-height: 30px; padding: 3px 8px; border: 1px solid color-mix(in srgb, var(--chip-accent) 40%, var(--border, GrayText)); border-radius: 8px; background: color-mix(in srgb, var(--chip-accent) 8%, var(--card, Canvas)); color: var(--foreground, CanvasText); font-size: 14px; vertical-align: middle; }
+.agent-chip.snowy { --chip-accent: var(--chart-2, var(--primary, LinkText)); }
+.agent-chip .alias { font-weight: 600; }
+.type-mark { width: 16px; height: 16px; stroke-width: 1.6; color: var(--chip-accent); }
+.metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
+.metric { min-width: 0; padding: 16px; border: 1px solid var(--border, GrayText); border-radius: 12px; background: var(--card, Canvas); }
+.metric dt { font-weight: 600; }
+.metric dd { margin-top: 8px; font-size: 25px; line-height: 1.25; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.025em; }
+.metric .unavailable { font-size: 20px; }
+.metric p { margin-top: 8px; color: var(--muted-foreground, CanvasText); }
+.panel { margin-top: 20px; border: 1px solid var(--border, GrayText); border-radius: 12px; padding: 16px; background: var(--card, Canvas); }
+.compact-note { margin-top: 12px; color: var(--muted-foreground, CanvasText); }
+.toolbar { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: end; margin-top: 16px; }
+label { display: block; margin-bottom: 5px; }
+select { width: 100%; min-height: 44px; padding: 8px 12px; font: inherit; color: var(--foreground, CanvasText); background: var(--card, Canvas); border: 1px solid var(--muted-foreground, GrayText); border-radius: 8px; }
+select:disabled { opacity: 1; color: var(--muted-foreground, CanvasText); -webkit-text-fill-color: var(--muted-foreground, CanvasText); cursor: not-allowed; }
+.work-row { margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--border, GrayText); }
+.row-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 12px; }
+.row-head strong { font-variant-numeric: tabular-nums; }
+.work-row > p { margin-top: 4px; color: var(--muted-foreground, CanvasText); }
+.bar { height: 5px; margin-top: 10px; border-radius: 6px; background: var(--secondary, Canvas); overflow: hidden; }
+.bar span { display: block; width: var(--share); height: 100%; background: var(--primary, LinkText); }
+.bar.unassigned span { background: var(--muted-foreground, GrayText); }
+details { margin-top: 10px; }
+summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding: 8px 0; cursor: pointer; font-weight: 600; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary::after { content: '+'; font-size: 20px; font-weight: 400; flex-shrink: 0; }
+details[open] > summary::after { content: '−'; }
+summary:focus-visible { outline: 3px solid var(--ring, Highlight); outline-offset: 3px; border-radius: 4px; }
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 20px; padding: 8px 0 12px; }
+.fields > div { min-width: 0; }
+.fields dt { color: var(--muted-foreground, CanvasText); margin-bottom: 3px; }
+.fields dd { overflow-wrap: anywhere; }
+.method { margin: 5px 0 12px; padding: 12px; background: var(--secondary, Canvas); border-radius: 8px; }
+.method p + p { margin-top: 8px; }
+.disclosure { padding-top: 0; padding-bottom: 0; }
+.disclosure > details { margin: 0; }
+.disclosure > details > summary { min-height: 54px; }
+.footer { margin-top: 18px; color: var(--muted-foreground, CanvasText); }
+.alternate { margin-top: 18px; padding: 16px; border: 1px dashed var(--border, GrayText); border-radius: 12px; background: var(--card, Canvas); }
+.alternate h2 { font-size: 16px; margin: 4px 0 8px; }
+.alternate p + p { margin-top: 6px; }
+@media (max-width: 599px) {
+ .topbar { padding: 14px 16px; gap: 12px; align-items: flex-start; }
+ .brand { font-size: 16px; }
+ .workspace { max-width: 130px; }
+ .nav { gap: 20px; padding: 0 16px; }
+ main { padding: 20px 16px; }
+ h1 { font-size: 25px; }
+ .metrics, .toolbar, .fields { grid-template-columns: 1fr; }
+ .metric, .panel { padding: 14px; }
+ .disclosure { padding-top: 0; padding-bottom: 0; }
+ .scope { padding: 12px; }
+}
+</style>
+</head>
+<body>
+<p class="study-note"><strong>Illustrative data.</strong> Usage study. Quantities and rates are fixtures, not current provider prices or actual project measurements.</p>
+<div class="app">
+ <header class="topbar"><div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5l3 2 5-1 5 1 3-2-1 11-7 4-7-4z"/><path d="M7 11h3m4 0h3m-6 3 1 1 1-1"/><path d="M12 2v3m0 16v1"/></svg></span>Owl Mast</div><div class="workspace">AISQUAD<span>Syntelligence</span></div></header>
+ <nav class="nav" aria-label="Workspace surfaces"><span>Daily work</span><span>Focus</span><span aria-current="page">Usage</span></nav>
+ <main>
+  <h1>Understand the usage</h1><p class="subtitle">Observed consumption, with its evidence and gaps.</p>
+  <div class="scope"><p><strong>Syntelligence</strong> · Syntelligence Jira site + GitHub</p><p>5 Nov, 00:00–08:42 Europe/Warsaw · Claude + Codex records</p></div>
+
+  <dl class="metrics">
+   <div class="metric"><dt>Observed units</dt><dd>1.60M tokens</dd><p>1.40M input + 0.20M output<br>6 observed sessions</p></div>
+   <div class="metric"><dt>API-equivalent estimate</dt><dd>$7.20 <span style="font-size:14px;font-weight:400">USD</span></dd><p>1.20M tokens priced · 0.40M unpriced<br>Illustrative schedule · 5 Nov</p></div>
+   <div class="metric"><dt>Subscription allocation</dt><dd class="unavailable">Not allocated</dd><p>No allocation basis recorded for this project and period.</p></div>
+   <div class="metric"><dt>Actual bill</dt><dd class="unavailable">Unavailable</dd><p>No billing evidence connected. The estimate above is not a charge.</p></div>
+  </dl>
+  <p class="compact-note">0.90M cached-read tokens are already included in input. Missing usage is not counted as zero.</p>
+
+  <section class="panel" aria-labelledby="breakdown-title">
+   <h2 id="breakdown-title">Where observed tokens are linked</h2>
+   <details><summary>View options · Work item / both clients</summary><div class="toolbar"><div><label for="group">Breakdown</label><select id="group" disabled aria-describedby="fixed-controls"><option>Work item</option></select></div><div><label for="client">Client</label><select id="client" disabled aria-describedby="fixed-controls"><option>Claude + Codex</option></select></div></div><p class="compact-note" id="fixed-controls">Selections are fixed in this static preview. Expand a row to inspect its example evidence.</p></details>
+
+   <article class="work-row"><div class="row-head"><h3><span class="ticket-chip">SYN-42</span> Define account rollout rules</h3><strong>0.60M · 37.5%</strong></div><div class="bar" aria-hidden="true"><span style="--share:37.5%"></span></div><p>$3.60 API-equivalent estimate · all shown units priced</p><p><span class="agent-chip"><span class="alias">Tawny</span><svg class="type-mark" aria-hidden="true" viewBox="0 0 16 16"><path d="M8 2v12M2 8h12M4 4l8 8M12 4l-8 8"/></svg><span>Claude</span></span></p><details><summary>Inspect attribution</summary><dl class="fields"><div><dt>Project / source</dt><dd>Syntelligence · Syntelligence Jira site + GitHub</dd></div><div><dt>Agent / fixed client type</dt><dd><span class="agent-chip"><span class="alias">Tawny</span><svg class="type-mark" aria-hidden="true" viewBox="0 0 16 16"><path d="M8 2v12M2 8h12M4 4l8 8M12 4l-8 8"/></svg><span>Claude</span></span><br><span class="id">CL-17</span></dd></div><div><dt>Person association</dt><dd>Ahmed · confirmed initiating person</dd></div><div><dt>Model / session</dt><dd>Recorded model A · session <span class="id">SY-017</span></dd></div><div><dt>Work link</dt><dd><span class="ticket-chip">SYN-42</span> · explicit session work reference</dd></div><div><dt>Coverage</dt><dd>Observed records only; not an assertion of all effort.</dd></div></dl></details></article>
+   <article class="work-row"><div class="row-head"><h3><span class="ticket-chip">SYN-67</span> Validate sync ownership rules</h3><strong>0.40M · 25%</strong></div><div class="bar" aria-hidden="true"><span style="--share:25%"></span></div><p>$2.40 API-equivalent estimate · all shown units priced</p><p><span class="agent-chip snowy"><span class="alias">Snowy</span><svg class="type-mark" aria-hidden="true" viewBox="0 0 16 16"><path d="m3 4 4 4-4 4m6 0h4"/></svg><span>Codex</span></span></p><details><summary>Inspect attribution</summary><dl class="fields"><div><dt>Project / source</dt><dd>Syntelligence · Syntelligence Jira site + GitHub</dd></div><div><dt>Agent / fixed client type</dt><dd><span class="agent-chip snowy"><span class="alias">Snowy</span><svg class="type-mark" aria-hidden="true" viewBox="0 0 16 16"><path d="m3 4 4 4-4 4m6 0h4"/></svg><span>Codex</span></span><br><span class="id">CX-16</span></dd></div><div><dt>Person association</dt><dd>Mohamed · confirmed initiating person</dd></div><div><dt>Model / session</dt><dd>Recorded model B · session <span class="id">SY-028</span></dd></div><div><dt>Work link</dt><dd><span class="ticket-chip">SYN-67</span> · explicit session work reference</dd></div><div><dt>Evidence quality</dt><dd>Confirmed mapping; no contribution score inferred.</dd></div></dl></details></article>
+   <article class="work-row"><div class="row-head"><h3>Unassigned work</h3><strong>0.60M · 37.5%</strong></div><div class="bar unassigned" aria-hidden="true"><span style="--share:37.5%"></span></div><p>$1.20 estimate for 0.20M tokens · 0.40M remain unpriced</p><details><summary>Why this remains unassigned</summary><p class="muted">No supported work-item mapping was recorded. One session has no model label, pricing basis, or confirmed person association. Its units remain in the project total without an invented ticket, owner, or price.</p><p class="compact-note">Unassigned work is observed, authorized project data. It is not a residual that reveals inaccessible sources.</p></details></article>
+   <p class="compact-note">Bars show portions of 1.60M observed tokens. This is a work attribution view, not a ranking of people.</p>
+  </section>
+
+  <section class="panel disclosure" aria-label="Dimensions and measurement evidence"><details><summary>Dimensions, calculation, and coverage</summary><p>Supported dimensions in this example: project, client, model, agent, person, session, and work item. Unknown values stay visible within each breakdown.</p><div class="method"><p><strong>Estimate basis:</strong> 1.05M priced input tokens × $4/M + 0.15M priced output tokens × $20/M = $7.20. Illustrative schedule dated 5 Nov 2026; these are not vendor rates.</p><p><strong>Unpriced:</strong> 0.35M input + 0.05M output have no usable price mapping. They are excluded from the estimate, included in observed units.</p><p><strong>Counting:</strong> cached reads are a subset of input, counted once. Shared session appearances do not create extra sessions or tokens.</p></div><p class="muted">Latest received client event: 08:40. Last successful collection: 08:42. This scope includes only permitted Syntelligence records; Movesion uses a separate Jira site and Bitbucket scope.</p><p class="compact-note">Source records and rates are fixed examples. This screen does not validate connectors, bills, source coverage, or economic return.</p></details></section>
+  <p class="footer">Usage describes consumption. It does not measure a person's productivity or the value of delivered work.</p>
+ </main>
+</div>
+<section class="alternate" aria-labelledby="alternate-title"><p class="muted">Alternate state · partial collection</p><h2 id="alternate-title">Codex collection is delayed.</h2><p>Last successful collection: 08:20. Keep received, authorized data and label totals incomplete; unavailable records are not zero.</p><p class="muted">The gap concerns collection, not agent health. If source access cannot be checked, withhold its records and totals rather than expose cached detail.</p></section>
+</body>
+</html>
