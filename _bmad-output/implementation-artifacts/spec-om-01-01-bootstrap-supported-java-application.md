@@ -76,7 +76,7 @@ context:
 - Error Prone caught a real defect during development (`[FormatString]`), which is cited as executable evidence that it works on javac 27.
 - Health endpoint exposes only `status` (show-details never) plus liveness/readiness groups; the bootstrap `schemaBaseline` indicator contributes to the aggregate.
 - Files: root Gradle files, `backend/**`, `docs/{toolchain-qualification,engineering-conventions,development}.md`, `README.md`, `scripts/verify-quality-gates.sh`, `.github/workflows/ci.yml`, `.editorconfig`, `.gitattributes`, `.gitignore` additions.
-- Verified: `./gradlew clean build --no-build-cache` (23 unit + 11 integration tests, 0 failures/skips, 17s), `scripts/verify-quality-gates.sh` (4/4 gates fail on injected violations), `bootTestRun` health UP. CI run on GitHub is pending the pull request.
+- Verified: `./gradlew clean build --no-build-cache` (23 unit + 11 integration tests, 0 failures/skips, 17s), `scripts/verify-quality-gates.sh` (4/4 gates fail on injected violations), `bootTestRun` health UP. CI: first run failed with exit 126 because the repository has `core.fileMode=false` and the executable bits of `gradlew`/`scripts/verify-quality-gates.sh` were not recorded; fixed with `git update-index --chmod=+x` (commit b595b8d). Second run https://github.com/gabrianoo/owl-mast/actions/runs/42203046822 passed both jobs (build 1m47s, gate negatives 1m27s) on GitHub `ubuntu-latest` with Docker. PR https://github.com/gabrianoo/owl-mast/pull/105.
 
 ## Spec Change Log
 

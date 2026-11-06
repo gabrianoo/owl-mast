@@ -138,7 +138,7 @@ $ curl -s http://localhost:18080/actuator/health
 - Windows x64 and macOS x64 daemon-JVM assets pin the 27+35 GA build until Adoptium publishes 27.0.1 for those platforms; re-run `updateDaemonJvm` or edit the properties file when they appear.
 - Lombok's `Unsafe` notice will become an error in a future JDK; track Lombok releases before moving past JDK 27.
 - Netty prints a JDK native-access notice unless `--enable-native-access=ALL-UNNAMED` is passed; tests pass it, and the runtime image (OM-01.02) must do the same.
-- CI's `ubuntu-latest` Docker availability is assumed from GitHub's runner images; the first pull request run is the executable proof.
+- CI on GitHub `ubuntu-latest` (Docker preinstalled) passed both jobs in run https://github.com/gabrianoo/owl-mast/actions/runs/42203046822 (build 1m47s, gate negatives 1m27s). The repository has `core.fileMode=false`, so executable bits for `gradlew` and `scripts/verify-quality-gates.sh` must be recorded with `git update-index --chmod=+x` when such files are added.
 
 ## Re-check commands
 
