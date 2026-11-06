@@ -35,8 +35,10 @@ def dependency_state(dep: Entry | None, dep_id: str) -> tuple[bool, str]:
     closed as completed. Anything else, including a Done-but-open (reopened) issue, is not."""
     if dep is None:
         return False, f"{dep_id}: unknown (not in snapshot)"
-    if dep.status == "Done" and dep.state == "CLOSED" and (dep.state_reason or "COMPLETED") == "COMPLETED":
-        return True, f"{dep_id}: Done and closed"
+    if dep.status == "Done" and dep.state == "CLOSED" and dep.state_reason == "COMPLETED":
+        return True, f"{dep_id}: Done and closed as completed"
+    if dep.status == "Done" and dep.state == "CLOSED" and dep.state_reason is None:
+        return False, f"{dep_id}: Done and closed but the close reason is unknown; fail closed"
     if dep.status == "Done" and dep.state == "OPEN":
         return False, f"{dep_id}: Done but reopened (OPEN) — inconsistent, fail closed"
     if dep.state == "CLOSED" and dep.status != "Done":

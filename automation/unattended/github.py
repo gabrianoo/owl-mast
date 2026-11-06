@@ -151,7 +151,12 @@ class GhCliTransport:
         for key, value in variables.items():
             flag = "-F" if isinstance(value, int) else "-f"
             args += [flag, f"{key}={value}"]
-        data = json.loads(self._run(args))
+        try:
+            data = json.loads(self._run(args))
+        except json.JSONDecodeError as exc:
+            raise TransportError(f"GraphQL response is not JSON: {exc}") from exc
+        if not isinstance(data, dict) or ("data" not in data and not data.get("errors")):
+            raise TransportError("GraphQL response has no data")
         if data.get("errors"):
             messages = "; ".join(e.get("message", "") for e in data["errors"])
             low = messages.lower()
@@ -252,12 +257,40 @@ class GhCliTransport:
 
     # -- pull requests -----------------------------------------------------------------
     def get_pull_request(self, number: int) -> PullRequestRecord:
+        """Head, state, status rollup and *every* review (paginated). A page that is
+        malformed, a total that does not match the collected count, or a missing cursor on a
+        page that claims more, refuses instead of returning a truncated review set."""
         q = ("query{ repository(owner:\"%s\", name:\"%s\"){ pullRequest(number:%d){ number state merged headRefOid "
-             "reviews(first:50){ nodes{ state submittedAt author{login} commit{oid} } } "
+             "reviews(first:100){ totalCount pageInfo{hasNextPage endCursor} nodes{ state submittedAt author{login} commit{oid} } } "
              "commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } } } } }" % (self.owner, self.repo, number))
         pr = self._graphql(q)["repository"]["pullRequest"]
         if pr is None:
             raise NotFound(f"pull request #{number} not found")
+        nodes, total = self._review_page(pr.get("reviews"), number)
+        page = pr["reviews"]["pageInfo"]
+        while page.get("hasNextPage"):
+            cursor = page.get("endCursor")
+            if not cursor:
+                raise TransportError(f"PR #{number} reviews: page claims more results without a cursor")
+            more = ("query{ repository(owner:\"%s\", name:\"%s\"){ pullRequest(number:%d){ reviews(first:100, after:%s){ totalCount pageInfo{hasNextPage endCursor} nodes{ state submittedAt author{login} commit{oid} } } } } }"
+                    % (self.owner, self.repo, number, json.dumps(cursor)))
+            reviews = (self._graphql(more)["repository"].get("pullRequest") or {}).get("reviews")
+            page_nodes, page_total = self._review_page(reviews, number)
+            if page_total != total:
+                raise TransportError(f"PR #{number} reviews changed while paginating ({total} -> {page_total}); retry")
+            nodes.extend(page_nodes)
+            page = reviews["pageInfo"]
+        if len(nodes) != total:
+            raise TransportError(f"PR #{number} reviews: collected {len(nodes)} of {total}; refusing a truncated review set")
         rollup = ((pr.get("commits") or {}).get("nodes") or [{}])[0].get("commit", {}).get("statusCheckRollup")
-        reviews = tuple({"state": r["state"], "commit": (r.get("commit") or {}).get("oid"), "author": (r.get("author") or {}).get("login"), "submitted_at": r.get("submittedAt")} for r in pr["reviews"]["nodes"])
+        reviews = tuple({"state": r["state"], "commit": (r.get("commit") or {}).get("oid"), "author": (r.get("author") or {}).get("login"), "submitted_at": r.get("submittedAt")} for r in nodes)
         return PullRequestRecord(pr["number"], pr["state"], pr["headRefOid"], bool(pr["merged"]), reviews, (rollup or {}).get("state") if rollup else None)
+
+    @staticmethod
+    def _review_page(reviews, number: int) -> tuple[list[dict], int]:
+        if not isinstance(reviews, dict) or not isinstance(reviews.get("nodes"), list) or not isinstance(reviews.get("pageInfo"), dict) or not isinstance(reviews.get("totalCount"), int):
+            raise TransportError(f"PR #{number} reviews: malformed page")
+        for node in reviews["nodes"]:
+            if not isinstance(node, dict) or "state" not in node:
+                raise TransportError(f"PR #{number} reviews: malformed review node")
+        return list(reviews["nodes"]), reviews["totalCount"]

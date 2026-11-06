@@ -30,8 +30,20 @@ class ScriptedGh:
         self.posted: list[str] = []
         self.pr_reviews = [{"state": "CHANGES_REQUESTED", "submittedAt": "1", "author": {"login": "A"}, "commit": {"oid": "HEAD"}},
                            {"state": "APPROVED", "submittedAt": "2", "author": {"login": "B"}, "commit": {"oid": "HEAD"}}]
+        self.review_pages: list[list[dict]] | None = None  # when set, reviews are served page by page
+        self.malformed_page = False
+        self.drift_total = False
         self.head = "HEAD"
         self.comments: list[dict] = []
+
+    def _reviews_payload(self, cursor):
+        pages = self.review_pages or [self.pr_reviews]
+        index = 0 if cursor is None else int(cursor[1:])
+        total = sum(len(p) for p in pages) + (1 if self.drift_total and cursor else 0)
+        last = index == len(pages) - 1
+        if self.malformed_page and cursor:
+            return {"totalCount": total, "nodes": "oops"}
+        return {"totalCount": total, "pageInfo": {"hasNextPage": not last, "endCursor": None if last else f"C{index + 1}"}, "nodes": pages[index]}
 
     def __call__(self, args, stdin=None):
         self.calls.append(args)
@@ -49,9 +61,12 @@ class ScriptedGh:
                     return {"id": f"PVTI_{n}", "updatedAt": "2026-11-06T10:00:00Z", "content": {"number": n},
                             "fieldValues": {"nodes": [{"name": status, "field": {"name": "Status"}}, {"text": sid, "field": {"name": "Stable ID"}}, {}]}}
                 return json.dumps({"data": {"user": {"projectV2": {"items": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [item(1, "E01", "Backlog"), item(20, "OM-01.01", "Done"), item(21, "OM-01.02", "Ready")]}}}}})
+            if "pullRequest(number:7)" in query and "reviews(first:100, after:" in query:
+                cursor = query.split("after:", 1)[1].split(")", 1)[0].strip('"')
+                return json.dumps({"data": {"repository": {"pullRequest": {"reviews": self._reviews_payload(cursor)}}}})
             if "pullRequest(number:7)" in query:
                 return json.dumps({"data": {"repository": {"pullRequest": {"number": 7, "state": "OPEN", "merged": False, "headRefOid": self.head,
-                                                                           "reviews": {"nodes": self.pr_reviews},
+                                                                           "reviews": self._reviews_payload(None),
                                                                            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}}}}})
             if "projectV2(number:2){ id fields" in query:
                 return json.dumps({"data": {"user": {"projectV2": {"id": "PVT", "fields": {"nodes": [{"id": "F", "name": "Status", "options": [{"id": "o1", "name": "Ready"}]}]}}}}})
@@ -88,6 +103,34 @@ class TransportParsingTests(unittest.TestCase):
         pr = self.t.get_pull_request(7)
         self.assertEqual([r["state"] for r in pr.reviews], ["CHANGES_REQUESTED", "APPROVED"])
         self.assertEqual(pr.checks, "SUCCESS")
+
+    def test_reviews_are_paginated_and_objections_after_page_one_are_seen(self):
+        """Round-1 finding R1-E6: an objection on a later page must reach the gate."""
+        from automation.unattended.coordinator import outstanding_objections
+
+        self.gh.review_pages = [[{"state": "APPROVED", "submittedAt": "1", "author": {"login": "B"}, "commit": {"oid": "HEAD"}}],
+                                [{"state": "CHANGES_REQUESTED", "submittedAt": "2", "author": {"login": "C"}, "commit": {"oid": "HEAD"}}]]
+        pr = self.t.get_pull_request(7)
+        self.assertEqual(len(pr.reviews), 2)
+        self.assertEqual(outstanding_objections(pr), ["C"])
+        self.assertEqual(sum(1 for c in self.gh.calls if "reviews(first:100, after:" in c[3]), 1)
+        self.gh.review_pages = [[{"state": "CHANGES_REQUESTED", "submittedAt": "1", "author": {"login": "C"}, "commit": {"oid": "HEAD"}}],
+                                [{"state": "DISMISSED", "submittedAt": "2", "author": {"login": "C"}, "commit": {"oid": "HEAD"}}]]
+        self.assertEqual(outstanding_objections(self.t.get_pull_request(7)), [])
+
+    def test_malformed_or_inconsistent_review_pages_refuse(self):
+        self.gh.review_pages = [[{"state": "APPROVED", "submittedAt": "1", "author": {"login": "B"}, "commit": {"oid": "HEAD"}}], [{"state": "APPROVED", "submittedAt": "2", "author": {"login": "D"}, "commit": {"oid": "HEAD"}}]]
+        self.gh.malformed_page = True
+        with self.assertRaises(TransportError):
+            self.t.get_pull_request(7)
+        self.gh.malformed_page, self.gh.drift_total = False, True
+        with self.assertRaises(TransportError):
+            self.t.get_pull_request(7)
+        self.gh.drift_total = False
+        self.gh.review_pages = None
+        self.gh._reviews_payload = lambda cursor: {"totalCount": 5, "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": self.gh.pr_reviews}
+        with self.assertRaises(TransportError):
+            self.t.get_pull_request(7)  # claims 5, delivers 2
 
     def test_comment_lines_and_post_round_trip(self):
         posted = self.t.post_comment(21, "<!-- unattended kind=probe op=probe run=r story=ENG-21 -->\nhello")
@@ -137,7 +180,8 @@ class CoordinatorOverTransportTests(unittest.TestCase):
 
     def approved(self):
         snap = take_snapshot(self.t, "gabrianoo/owl-mast", "now")
-        self.c.claim("OM-01.02", snap, IMPLEMENTER, str(self.worktree), "t3/om-01-02", "base", ok_worktree)
+        self.c.reserve("OM-01.02", snap, "base")
+        self.c.bind_receipt("OM-01.02", IMPLEMENTER, str(self.worktree), "t3/om-01-02", ok_worktree)
         self.c.record_head("OM-01.02", self.sha)
         self.c.run_checks("OM-01.02", self.sha, str(self.worktree), passing_runner)
         self.c.request_review("OM-01.02", self.sha, REVIEWER)
@@ -157,11 +201,25 @@ class CoordinatorOverTransportTests(unittest.TestCase):
         self.assertEqual(state.phase, "proposed")
         self.assertEqual(len([p for p in self.gh.posted if "kind=proposal" in p]), 1)
 
+    def test_objection_on_a_later_page_refuses_the_proposal_through_the_coordinator(self):
+        self.gh.pr_reviews = []
+        self.gh.review_pages = [[{"state": "APPROVED", "submittedAt": "1", "author": {"login": "B"}, "commit": {"oid": self.sha}}],
+                                [{"state": "CHANGES_REQUESTED", "submittedAt": "2", "author": {"login": "C"}, "commit": {"oid": self.sha}}]]
+        self.approved()
+        with self.assertRaises(Refused) as ctx:
+            self.c.propose_evidence("OM-01.02", self.sha, 7, [], "s")
+        self.assertIn("C", str(ctx.exception))
+        self.assertEqual(len([p for p in self.gh.posted if "kind=proposal" in p]), 0)
+
     def test_live_transport_flag_blocks_admission_before_any_call(self):
         self.t.live = True
         snap = take_snapshot(self.t, "gabrianoo/owl-mast", "now")
+        live = Coordinator(self.t, self.policy, Store(Path(self.tmp.name) / "runs", "run-live"), live=True)
         before = len(self.gh.calls)
         with self.assertRaises(Refused) as ctx:
-            self.c.claim("OM-01.02", snap, IMPLEMENTER, str(self.worktree), "t3/om-01-02", "base", ok_worktree)
+            live.reserve("OM-01.02", snap, "base")
         self.assertEqual(ctx.exception.code, "live-execution-disabled")
         self.assertEqual(len(self.gh.calls), before)
+        with self.assertRaises(Refused) as ctx:
+            Coordinator(self.t, self.policy, Store(Path(self.tmp.name) / "runs", "run-t"), live=True)  # fixture-born state
+        self.assertEqual(ctx.exception.code, "environment-mismatch")

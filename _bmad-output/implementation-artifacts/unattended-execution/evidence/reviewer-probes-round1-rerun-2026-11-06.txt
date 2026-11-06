@@ -1,0 +1,15 @@
+1 stale_resume: REFUSED stale-revision: OM-01.02: revisions changed since admission for ['OM-01.02']; re-plan or rebase-revisions explicitly
+   new_comments [] PR_read False
+2 live_resume_new_coordinator: REFUSED environment-mismatch: run run-1 state belongs to the 'fixture' environment; refusing to reuse it with a 'live' transport
+2 live_resume_same_object: REFUSED live-execution-disabled: resume: live execution is disabled; the T3 execution protocol and a bounded credential are not qualified
+   comments 0
+3 reclaim_same_run: REFUSED no-reclaim: OM-01.02 already has state in run run-1; a story is admitted at most once per run (no reclaim)
+   foreign_active_seen_by_run2 []
+3 second_run_claim: reserved
+   stories [('OM-01.02', 'cancelled')] [('OM-01.02', 'reserved')]
+4 review_after_head_change: REFUSED evidence-invalidated: request-review: worktree HEAD 54eff822760e79cacc1142f68b0cf5701b3888f7 / clean=True differs from the evidence at ab5ee9c
+   phase implemented head True
+4b dirty_review: REFUSED evidence-invalidated: request-review: worktree HEAD ab5ee9c5e082094f4968be778f3c52950d95a72a / clean=False differs from the evidence at ab5ee9
+5 unknown_dependency_reason: blocked-by-dependency
+6 permissions {'basic_access': True, 'bounded': False, 'denial_tested': False, 'resource_scope_verified': False, 'unattended_activation_allowed': False}
+7 terminal_crash cancelled pending 0 release_comments 1

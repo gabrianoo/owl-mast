@@ -71,6 +71,16 @@ class EligibilityTests(unittest.TestCase):
         self.assertEqual(d.outcome, "blocked-by-dependency")
         self.assertIn("not planned", d.reasons[0])
 
+    def test_unknown_dependency_close_reason_fails_closed(self):
+        """Round-1 findings R1-B7/V6: only an explicit COMPLETED reason satisfies a dependency."""
+        closed = self.fake.issues[20]
+        self.fake.issues[20] = IssueRecord(**{**closed.__dict__, "state_reason": None})
+        d = decide("OM-01.02", self.snap(), self.policy(allow='["OM-01.02"]'))
+        self.assertEqual(d.outcome, "blocked-by-dependency")
+        self.assertIn("unknown", d.reasons[0])
+        self.fake.issues[20] = IssueRecord(**{**closed.__dict__, "state_reason": "DUPLICATE"})
+        self.assertEqual(decide("OM-01.02", self.snap(), self.policy(allow='["OM-01.02"]')).outcome, "blocked-by-dependency")
+
     def test_reopened_story_itself_is_inconsistent(self):
         self.fake.set_status_externally(21, "Done")
         d = decide("OM-01.02", self.snap(), self.policy(allow='["OM-01.02"]'))

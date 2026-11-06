@@ -29,8 +29,8 @@ from pathlib import Path
 
 from .errors import Refused
 
-PHASES = ("claim-incomplete", "claimed", "implemented", "checks-passed", "checks-failed", "review-requested", "review-approved", "changes-requested", "proposed", "blocked", "cancelled", "conflict")
-ACTIVE_PHASES = ("claim-incomplete", "claimed", "implemented", "checks-passed", "checks-failed", "review-requested", "review-approved", "changes-requested")
+PHASES = ("reserved", "claim-incomplete", "claimed", "implemented", "checks-passed", "checks-failed", "review-requested", "review-approved", "changes-requested", "proposed", "blocked", "cancelled", "conflict")
+ACTIVE_PHASES = ("reserved", "claim-incomplete", "claimed", "implemented", "checks-passed", "checks-failed", "review-requested", "review-approved", "changes-requested")
 TERMINAL_PHASES = ("proposed", "blocked", "cancelled", "conflict")
 
 
@@ -65,6 +65,7 @@ class RunState:
     repo: str
     policy_digest: str
     started_at: str
+    environment: str = "fixture"  # fixture | live — the transport kind this run's state belongs to
     stories_claimed: int = 0
     delegated_tasks: int = 0
     repair_rounds: int = 0
@@ -81,7 +82,10 @@ class Intent:
     op: str
     kind: str
     marker: dict[str, str]
-    status: str = "pending"  # pending | done
+    body: str = ""  # the complete comment text; a replay posts exactly this
+    preconditions: dict = field(default_factory=dict)  # what must still hold before an advancing replay
+    status: str = "pending"  # pending | done | abandoned
+    reason: str | None = None
     comment_id: int | None = None
     created_at: str = field(default_factory=utcnow)
     completed_at: str | None = None
@@ -95,6 +99,7 @@ class StoryState:
     phase: str
     run_id: str
     claim: dict | None = None
+    worker_state: str = "none"  # none | running | returned
     revisions: dict = field(default_factory=dict)  # issue/item revisions verified at admission
     implementer_receipts: list[dict] = field(default_factory=list)
     reviewer_receipts: list[dict] = field(default_factory=list)
@@ -184,17 +189,20 @@ class Store:
     def save_run(self, run: RunState) -> None:
         atomic_write_text(self.run_path, json.dumps(asdict(run), indent=1, sort_keys=True))
 
-    def ensure_run(self, repo: str, policy_digest: str) -> RunState:
-        """Create the run or validate its binding. A run belongs to exactly one repository
-        and policy digest; any other pairing is refused before recovery or effects."""
+    def ensure_run(self, repo: str, policy_digest: str, environment: str) -> RunState:
+        """Create the run or validate its binding. A run belongs to exactly one repository,
+        policy digest and transport environment (fixture or live); any other pairing is
+        refused before recovery or effects, so synthetic state can never drive production."""
         with self.locked():
             run = self.load_run()
             if run is None:
-                run = RunState(self.run_id, repo, policy_digest, utcnow())
+                run = RunState(self.run_id, repo, policy_digest, utcnow(), environment=environment)
                 self.save_run(run)
-                self.journal(None, "run-started", {"repo": repo, "policy_digest": policy_digest})
+                self.journal(None, "run-started", {"repo": repo, "policy_digest": policy_digest, "environment": environment})
             elif (run.repo, run.policy_digest) != (repo, policy_digest):
                 raise Refused(f"run {self.run_id} is bound to {run.repo} / policy {run.policy_digest[:12]}; refusing {repo} / {policy_digest[:12]}", code="run-binding-mismatch")
+            elif run.environment != environment:
+                raise Refused(f"run {self.run_id} state belongs to the {run.environment!r} environment; refusing to reuse it with a {environment!r} transport", code="environment-mismatch")
             return run
 
     # -- stories -------------------------------------------------------------------------

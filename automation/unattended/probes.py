@@ -48,12 +48,18 @@ def run_commands(commands: list[str], cwd: str | None, timeout: int, runner: Run
 
 
 def check_permissions(owner: str, repo: str, project_owner: str, project_number: int, runner: Runner = default_runner) -> dict:
-    """Two separate verdicts. ``basic_access`` says the identity can do what the tool needs.
-    ``bounded`` says the credential is provably limited to the minimum: known classic scopes
-    equal to exactly the minimum set. Unknown scopes (fine-grained tokens expose none) or any
-    excess scope leave ``bounded`` false, and unattended activation is not allowed."""
+    """``basic_access``: the identity can do what the tool needs (observed). ``bounded``: the
+    credential is proven limited to the minimum. Scope names and the admin flag never prove
+    that (classic ``repo`` is broad by definition), so ``bounded`` is true only when
+    ``denial_tested`` and ``resource_scope_verified`` are both recorded by a qualification
+    this probe does not perform; today it is always false and activation is never allowed."""
     report: dict = {
-        "minimum": {"classic_scopes": list(MINIMUM_CLASSIC_SCOPES), "fine_grained": ["Issues: read/write", "Pull requests: read", "Contents: read", "Metadata: read", "Projects (user account): read/write"]},
+        "minimum": {
+            "classic_scopes": list(MINIMUM_CLASSIC_SCOPES),
+            "minimum_note": "classic `repo` is broader than needed; `read:project` is enough for this tool's Project reads",
+            "fine_grained": ["Issues: read/write", "Pull requests: read", "Contents: read", "Metadata: read", "Projects: read (user-owned Projects are a documented fine-grained PAT limitation)"],
+            "implementer_branch_privileges": "separate identity: push to implementation branches and open PRs; not part of this tool's minimum",
+        },
         "observed": {}, "problems": [], "excess": [], "bounded_reasons": [],
     }
     auth = runner(["gh", "auth", "status"], None, 60)
@@ -72,21 +78,24 @@ def check_permissions(owner: str, repo: str, project_owner: str, project_number:
             perms = {}
         report["observed"]["repository_permissions"] = perms
         if not perms.get("push"):
-            report["problems"].append("repository push permission missing (needed for issue comments and PR branches)")
+            report["problems"].append("repository push permission missing (needed to post issue comments through this identity)")
         if perms.get("admin"):
             report["bounded_reasons"].append("identity has admin on the repository")
     else:
         report["problems"].append(f"repository not readable: {headers.stderr.strip()[:200]}")
     report["observed"]["token_scopes"] = scopes
     if scopes is None:
-        report["bounded_reasons"].append("no classic scope header (fine-grained token or app): declared permissions cannot be read from the API; unknown is not bounded")
+        report["bounded_reasons"].append("no classic scope header (fine-grained token or app): declared permissions cannot be read from the API")
     else:
-        missing = [sc for sc in MINIMUM_CLASSIC_SCOPES if sc not in scopes]
-        if missing:
-            report["problems"].append(f"missing classic scopes {missing}")
-        report["excess"] = [sc for sc in scopes if sc not in MINIMUM_CLASSIC_SCOPES]
+        if "repo" not in scopes:
+            report["problems"].append("missing classic scope repo")
+        if not any(sc in scopes for sc in ("project", "read:project")):
+            report["problems"].append("missing classic scope project or read:project")
+        report["excess"] = [sc for sc in scopes if sc not in MINIMUM_CLASSIC_SCOPES and sc != "read:project"]
         if report["excess"]:
             report["bounded_reasons"].append(f"excess scopes beyond the minimum: {report['excess']}")
+        if "repo" in scopes:
+            report["bounded_reasons"].append("classic `repo` grants full repository access; scope names cannot prove a bounded credential")
     project = runner(["gh", "api", "graphql", "-f", f'query={{ user(login:"{project_owner}"){{ projectV2(number:{project_number}){{ id title viewerCanUpdate }} }} }}'], None, 60)
     if project.returncode == 0:
         try:
@@ -96,14 +105,19 @@ def check_permissions(owner: str, repo: str, project_owner: str, project_number:
         report["observed"]["project"] = node
         if not node:
             report["problems"].append("project not readable")
+        elif node.get("viewerCanUpdate"):
+            report["bounded_reasons"].append("identity can update the Project although this tool only reads it")
     else:
         report["problems"].append(f"project query failed: {project.stderr.strip()[:200]}")
     report["basic_access"] = not report["problems"]
-    report["bounded"] = report["basic_access"] and not report["bounded_reasons"]
     report["denial_tested"] = False
-    report["unattended_activation_allowed"] = report["bounded"]
-    report["enforcement"] = ("The policy restricts what the tool writes; the credential boundary is enforced only by the token the operator provisions. "
-                             "basic_access proves the identity can act; bounded proves it cannot act beyond the minimum. Denial of forbidden operations has not been tested.")
+    report["resource_scope_verified"] = False
+    report["bounded_reasons"].append("denial of forbidden operations not tested")
+    report["bounded_reasons"].append("resource scope (single repository, single Project) not verified")
+    report["bounded"] = False
+    report["unattended_activation_allowed"] = False
+    report["enforcement"] = ("basic_access is an observation that the identity can act. bounded requires denial testing and resource-scope verification that this probe does not perform; "
+                             "scope headers and the admin flag alone never qualify a credential. The policy restricts what the tool writes; the credential boundary is enforced only by the token the operator provisions.")
     return report
 
 

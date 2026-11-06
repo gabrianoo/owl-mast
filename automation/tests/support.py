@@ -86,8 +86,18 @@ class Harness:
         self.worktree = tmp / "wt"
         self.sha = make_git_repo(self.worktree)
 
+    def reserve(self, story="OM-01.02"):
+        return self.coordinator.reserve(story, self.snapshot, "c5d9d2e")
+
     def claim(self, story="OM-01.02", receipt_=None):
-        return self.coordinator.claim(story, self.snapshot, receipt_ or IMPLEMENTER, str(self.worktree), "t3/om-01-02", "c5d9d2e", ok_worktree)
+        """Reserve before the (simulated) delegate, then bind its receipt and worktree."""
+        self.reserve(story)
+        return self.coordinator.bind_receipt(story, receipt_ or IMPLEMENTER, str(self.worktree), "t3/om-01-02", ok_worktree)
+
+    def terminal(self, story="OM-01.02", status="result_available"):
+        state = self.store.load_story(story)
+        receipts = state.reviewer_receipts if state.phase == "review-requested" else state.implementer_receipts
+        return {"taskId": receipts[-1]["taskId"], "status": status}
 
     def checks(self, story="OM-01.02", sha=None, runner=passing_runner):
         sha = sha or self.sha

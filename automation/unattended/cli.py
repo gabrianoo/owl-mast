@@ -21,7 +21,7 @@ from .probes import check_permissions, run_commands, write_probe
 from .state import Store, utcnow
 
 # Every command that can reach a GitHub write, directly or through a fallback (repair may block).
-WRITE_COMMANDS = {"claim", "repair", "propose-evidence", "block", "cancel", "cancel-run", "resume", "rebase-revisions", "probe-write"}
+WRITE_COMMANDS = {"reserve", "repair", "propose-evidence", "block", "cancel", "cancel-run", "resume", "rebase-revisions", "probe-write"}
 
 
 def _json(obj) -> None:
@@ -64,17 +64,19 @@ def build_parser() -> argparse.ArgumentParser:
     pw = sub.add_parser("probe-write", help="bounded live write probe on an engineering-automation issue")
     pw.add_argument("--issue", type=int, required=True)
 
-    c = sub.add_parser("claim", help="claim a dispatchable story for one implementer")
-    c.add_argument("story"); c.add_argument("--receipt", required=True); c.add_argument("--worktree", required=True); c.add_argument("--branch", required=True); c.add_argument("--baseline", required=True)
+    rv0 = sub.add_parser("reserve", help="admit a dispatchable story BEFORE delegating its implementer task")
+    rv0.add_argument("story"); rv0.add_argument("--baseline", required=True)
+    bd = sub.add_parser("bind-receipt", help="bind the delegated implementer task receipt and worktree to a reservation")
+    bd.add_argument("story"); bd.add_argument("--receipt", required=True); bd.add_argument("--worktree", required=True); bd.add_argument("--branch", required=True)
     rh = sub.add_parser("record-head"); rh.add_argument("story"); rh.add_argument("--sha", required=True)
     rc = sub.add_parser("run-checks", help="execute the full configured check set on the exact claimed HEAD and record it"); rc.add_argument("story"); rc.add_argument("--sha", required=True); rc.add_argument("--cwd", required=True)
     rq = sub.add_parser("request-review"); rq.add_argument("story"); rq.add_argument("--sha", required=True); rq.add_argument("--receipt", required=True)
     rv = sub.add_parser("record-review"); rv.add_argument("story"); rv.add_argument("--sha", required=True); rv.add_argument("--verdict", choices=["approved", "changes-requested"], required=True); rv.add_argument("--report", required=True)
     rp = sub.add_parser("repair"); rp.add_argument("story"); rp.add_argument("--receipt", required=True)
     pe = sub.add_parser("propose-evidence"); pe.add_argument("story"); pe.add_argument("--sha", required=True); pe.add_argument("--pr", type=int, required=True); pe.add_argument("--task", action="append", default=[]); pe.add_argument("--summary", required=True)
-    b = sub.add_parser("block"); b.add_argument("story"); b.add_argument("--reason", required=True)
-    ca = sub.add_parser("cancel"); ca.add_argument("story"); ca.add_argument("--reason", required=True)
-    cr = sub.add_parser("cancel-run"); cr.add_argument("--reason", required=True)
+    b = sub.add_parser("block"); b.add_argument("story"); b.add_argument("--reason", required=True); b.add_argument("--task-evidence", default=None, help="JSON {taskId, status} from task_status/task_cancel when a worker is running")
+    ca = sub.add_parser("cancel"); ca.add_argument("story"); ca.add_argument("--reason", required=True); ca.add_argument("--task-evidence", default=None)
+    cr = sub.add_parser("cancel-run"); cr.add_argument("--reason", required=True); cr.add_argument("--task-evidence", default=None, help="JSON {story: {taskId, status}}")
     rs = sub.add_parser("resume"); rs.add_argument("story")
     rb = sub.add_parser("rebase-revisions", help="explicitly accept changed GitHub revisions after human verification"); rb.add_argument("story"); rb.add_argument("--reason", required=True)
     sub.add_parser("status")
@@ -122,8 +124,11 @@ def main(argv: list[str] | None = None) -> int:
         if not args.run_id:
             raise UnattendedError("--run-id is required for state commands")
         coordinator = Coordinator(transport, policy, Store(Path(args.state_dir), args.run_id), live=bool(args.live))
-        if args.command == "claim":
-            state = coordinator.claim(args.story, _snapshot(args, transport, policy), _load_json_arg(args.receipt), args.worktree, args.branch, args.baseline)
+        if args.command == "reserve":
+            coordinator.require_not_live("reserve")  # before any GitHub read on a live transport
+            state = coordinator.reserve(args.story, _snapshot(args, transport, policy), args.baseline)
+        elif args.command == "bind-receipt":
+            state = coordinator.bind_receipt(args.story, _load_json_arg(args.receipt), args.worktree, args.branch)
         elif args.command == "record-head":
             state = coordinator.record_head(args.story, args.sha)
         elif args.command == "run-checks":
@@ -137,11 +142,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "propose-evidence":
             state = coordinator.propose_evidence(args.story, args.sha, args.pr, args.task, args.summary)
         elif args.command == "block":
-            state = coordinator.block(args.story, args.reason)
+            state = coordinator.block(args.story, args.reason, _load_json_arg(args.task_evidence) if args.task_evidence else None)
         elif args.command == "cancel":
-            state = coordinator.cancel(args.story, args.reason)
+            state = coordinator.cancel(args.story, args.reason, _load_json_arg(args.task_evidence) if args.task_evidence else None)
         elif args.command == "cancel-run":
-            _json({"cancelled": [s.to_dict() for s in coordinator.cancel_run(args.reason)]})
+            _json(coordinator.cancel_run(args.reason, _load_json_arg(args.task_evidence) if args.task_evidence else None))
             return 0
         elif args.command == "resume":
             state = coordinator.resume(args.story)

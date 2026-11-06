@@ -9,7 +9,9 @@ from automation.tests.fake_transport import small_backlog
 from automation.tests.support import IMPLEMENTER, REVIEWER, Harness, failing_runner, git_commit, ok_worktree, passing_runner, receipt
 from automation.unattended import cli, coordinator, github
 from automation.unattended.errors import BudgetExhausted, ReceiptInvalid, Refused
+from automation.unattended.coordinator import Coordinator
 from automation.unattended.github import PullRequestRecord
+from automation.unattended.state import Store
 
 
 class LifecycleTests(unittest.TestCase):
@@ -19,6 +21,20 @@ class LifecycleTests(unittest.TestCase):
 
     def tearDown(self):
         self.h.close()
+
+    def test_reserve_precedes_delegation_and_bind_binds_the_receipt(self):
+        state = self.h.reserve()
+        self.assertEqual((state.phase, state.worker_state), ("reserved", "none"))
+        self.assertEqual(self.h.store.load_run().delegated_tasks, 0)
+        with self.assertRaises(Refused):
+            self.c.record_head("OM-01.02", "s1")  # nothing bound yet
+        with self.assertRaises(Refused):
+            self.c.bind_receipt("OM-01.04", IMPLEMENTER, str(self.h.worktree), "t3/om-01-02", ok_worktree)  # no reservation
+        state = self.c.bind_receipt("OM-01.02", IMPLEMENTER, str(self.h.worktree), "t3/om-01-02", ok_worktree)
+        self.assertEqual((state.phase, state.worker_state), ("claimed", "running"))
+        self.assertEqual(self.h.store.load_run().delegated_tasks, 1)
+        with self.assertRaises(Refused):
+            self.c.bind_receipt("OM-01.02", IMPLEMENTER, str(self.h.worktree), "t3/om-01-02", ok_worktree)  # bound once
 
     def test_claim_posts_marker_and_records_revisions(self):
         state = self.h.claim()
@@ -36,11 +52,12 @@ class LifecycleTests(unittest.TestCase):
     def test_claim_requires_effort_in_receipt(self):
         with self.assertRaises(ReceiptInvalid):
             self.h.claim(receipt_={**IMPLEMENTER, "options": {}})
-        self.assertIsNone(self.h.store.load_story("OM-01.02"))
+        self.assertEqual(self.h.store.load_story("OM-01.02").phase, "reserved")
 
     def test_claim_requires_worktree_identity(self):
+        self.h.reserve()
         with self.assertRaises(Refused):
-            self.c.claim("OM-01.02", self.h.snapshot, IMPLEMENTER, "/nope", "b", "c5", lambda p, b: (False, "missing"))
+            self.c.bind_receipt("OM-01.02", IMPLEMENTER, "/nope", "b", lambda p, b: (False, "missing"))
 
     def test_one_active_implementer_per_run(self):
         self.h = Harness(small_backlog(), allow='["OM-01.02", "OM-01.04"]', max_stories_per_run="2")
@@ -52,7 +69,7 @@ class LifecycleTests(unittest.TestCase):
     def test_story_budget(self):
         self.h = Harness(small_backlog(), allow='["OM-01.02", "OM-01.04"]')
         self.h.claim("OM-01.02")
-        self.h.coordinator.cancel("OM-01.02", "test")
+        self.h.coordinator.cancel("OM-01.02", "test", self.h.terminal())
         with self.assertRaises(BudgetExhausted):
             self.h.claim("OM-01.04")
 
@@ -118,6 +135,47 @@ class LifecycleTests(unittest.TestCase):
             self.c.request_review("OM-01.02", self.h.sha, REVIEWER)
 
     # -- review / repair ----------------------------------------------------------------
+    def test_unreported_worktree_change_invalidates_evidence_at_review_admission(self):
+        """Round-1 findings R1-B5/E5/V5: HEAD and cleanliness are re-read at the gate."""
+        self.h.claim()
+        self.h.checks()
+        new = git_commit(self.h.worktree, "changed")
+        with self.assertRaises(Refused) as ctx:
+            self.c.request_review("OM-01.02", self.h.sha, REVIEWER)
+        self.assertEqual(ctx.exception.code, "evidence-invalidated")
+        state = self.h.store.load_story("OM-01.02")
+        self.assertEqual((state.phase, state.head_sha), ("implemented", new))
+        self.assertTrue(any(e["event"] == "unreported-worktree-change" for e in self.h.store.read_journal()))
+
+    def test_dirty_worktree_at_review_admission_is_refused(self):
+        self.h.claim()
+        self.h.checks()
+        (self.h.worktree / "README").write_text("changed after checks")
+        with self.assertRaises(Refused) as ctx:
+            self.c.request_review("OM-01.02", self.h.sha, REVIEWER)
+        self.assertEqual(ctx.exception.code, "evidence-invalidated")
+        self.assertEqual(self.h.store.load_story("OM-01.02").phase, "implemented")
+
+    def test_worktree_change_before_review_verdict_or_proposal_invalidates(self):
+        self.h.claim()
+        self.h.checks()
+        self.c.request_review("OM-01.02", self.h.sha, REVIEWER)
+        (self.h.worktree / "README").write_text("edited during review")
+        with self.assertRaises(Refused):
+            self.c.record_review("OM-01.02", self.h.sha, "approved", "r")
+        self.assertEqual(self.h.store.load_story("OM-01.02").phase, "implemented")
+        h2 = Harness(small_backlog())
+        try:
+            h2.to_review_approved()
+            h2.fake.pull_requests[7] = PullRequestRecord(7, "OPEN", h2.sha, False, (), "SUCCESS")
+            git_commit(h2.worktree, "late")
+            with self.assertRaises(Refused):
+                h2.coordinator.propose_evidence("OM-01.02", h2.sha, 7, [], "s")
+            self.assertEqual(h2.store.load_story("OM-01.02").phase, "implemented")
+            self.assertEqual([c for c in h2.fake.comments[21] if c.marker["kind"] == "proposal"], [])
+        finally:
+            h2.close()
+
     def test_review_sha_must_match_head(self):
         self.h.claim()
         self.h.checks()
@@ -195,7 +253,7 @@ class LifecycleTests(unittest.TestCase):
     # -- cancel / resume ------------------------------------------------------------------
     def test_cancel_posts_release_and_accepts_no_further_work(self):
         self.h.claim()
-        state = self.c.cancel("OM-01.02", "operator stop")
+        state = self.c.cancel("OM-01.02", "operator stop", self.h.terminal())
         self.assertEqual(state.phase, "cancelled")
         self.assertEqual(len([c for c in self.h.fake.comments[21] if c.marker["kind"] == "release"]), 1)
         self.assertEqual(self.h.fake.item_for(21).status, "Ready")
@@ -209,20 +267,27 @@ class LifecycleTests(unittest.TestCase):
         self.h.fake.fail_once["post_comment"] = Outage("503")
         with self.assertRaises(Outage):
             self.h.claim()
+        state = self.h.store.load_story("OM-01.02")
+        state.claim.update({"worktree_path": str(self.h.worktree), "branch": "t3/om-01-02"})
+        self.h.store.save_story(state)
         with self.assertRaises(Refused) as ctx:
             self.c.resume("OM-01.02", lambda p, b: (False, "wrong worktree"))
         self.assertEqual(ctx.exception.code, "worktree-mismatch")
         state = self.h.store.load_story("OM-01.02")
         self.assertEqual(state.phase, "claim-incomplete")
         self.assertEqual(self.h.fake.comments[21], [])
-        self.assertEqual(self.c.resume("OM-01.02", ok_worktree).phase, "claimed")
+        self.assertEqual(self.c.resume("OM-01.02", ok_worktree).phase, "reserved")
 
     def test_cancel_run_stops_everything(self):
+        self.h = Harness(small_backlog(), allow='["OM-01.02", "OM-01.04"]', max_stories_per_run="2")
         self.h.claim()
-        self.c.cancel_run("budget")
+        self.h.coordinator.record_head("OM-01.02", self.h.sha)  # worker returned
+        result = self.h.coordinator.cancel_run("budget")
+        self.assertEqual(result["awaiting_worker_termination"], [])
+        self.assertEqual(self.h.store.load_story("OM-01.02").phase, "cancelled")
         self.assertTrue(self.h.store.load_run().cancelled)
         with self.assertRaises(BudgetExhausted):
-            self.h.claim()
+            self.h.reserve("OM-01.04")
 
     # -- proposal -------------------------------------------------------------------------
     def test_propose_evidence_posts_proposal_only(self):
@@ -277,3 +342,15 @@ class LifecycleTests(unittest.TestCase):
         source = inspect.getsource(coordinator) + inspect.getsource(cli) + inspect.getsource(github)
         for needle in ("pr merge", "mergePullRequest", "updateProjectV2ItemFieldValue", "set_project_status", "updateIssue", "closeIssue"):
             self.assertNotIn(needle, source)
+
+    def test_every_operation_refuses_live_before_any_call(self):
+        self.h.fake.live = True
+        live = Coordinator(self.h.fake, self.h.policy, Store(self.h.state_dir, "run-live"), live=True)
+        self.h.fake.calls = []
+        for op in (lambda: live.reserve("OM-01.02", self.h.snapshot, "b"), lambda: live.resume("OM-01.02"), lambda: live.cancel_run("x"),
+                   lambda: live.rebase_revisions("OM-01.02", "x"), lambda: live.block("OM-01.02", "x")):
+            with self.assertRaises(Refused) as ctx:
+                op()
+            self.assertEqual(ctx.exception.code, "live-execution-disabled")
+        self.assertEqual(self.h.fake.calls, [])
+        self.assertEqual(live.status()["environment"], "live")

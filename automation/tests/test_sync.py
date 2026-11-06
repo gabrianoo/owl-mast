@@ -83,7 +83,7 @@ class StaleRevisionTests(unittest.TestCase):
 
     def test_foreign_active_claim_is_refused(self):
         other = Coordinator(self.h.fake, self.h.policy, Store(self.h.state_dir, "run-other"), live=True)
-        other.claim("OM-01.02", self.h.snapshot, dict(IMPLEMENTER), str(self.h.worktree), "t3/om-01-02", "c5d9d2e", ok_worktree)
+        other.reserve("OM-01.02", self.h.snapshot, "c5d9d2e")
         self.h.snapshot = take_snapshot(self.h.fake, "x/y", "now")
         with self.assertRaises(Refused) as ctx:
             self.h.claim()
@@ -93,7 +93,6 @@ class StaleRevisionTests(unittest.TestCase):
         self.h.to_review_approved()
         self.h.fake.pull_requests[7] = PullRequestRecord(7, "OPEN", self.h.sha, False, (), "SUCCESS")
         self.h.coordinator.propose_evidence("OM-01.02", self.h.sha, 7, [], "s")
-        self.h.coordinator.cancel("OM-01.02", "x") if False else None
         self.assertEqual(self.h.fake.item_for(21).status, "Ready")  # untouched through the whole cycle
         self.assertNotIn("set_project_status", self.h.fake.calls)
 
@@ -108,7 +107,7 @@ class IdempotencyAndRetryTests(unittest.TestCase):
     def test_duplicate_claim_event_posts_one_comment(self):
         self.h.claim()
         with self.assertRaises(Refused):
-            self.h.claim()
+            self.h.reserve()
         self.assertEqual(len(markers(self.h.fake, 21, "claim")), 1)
 
     def test_transient_outage_on_post_then_retry_has_single_effect(self):
@@ -118,8 +117,9 @@ class IdempotencyAndRetryTests(unittest.TestCase):
         state = self.h.store.load_story("OM-01.02")
         self.assertEqual(state.phase, "claim-incomplete")
         self.h.coordinator.resume("OM-01.02", ok_worktree)
-        self.assertEqual(self.h.store.load_story("OM-01.02").phase, "claimed")
+        self.assertEqual(self.h.store.load_story("OM-01.02").phase, "reserved")
         self.assertEqual(len(markers(self.h.fake, 21, "claim")), 1)
+        self.assertIn("Unattended reservation by run", markers(self.h.fake, 21, "claim")[0].body)  # persisted body, not a synthetic one
 
     def test_partial_write_crash_after_comment_is_adopted_on_resume(self):
         self.h.fake.crash_after_post = True
@@ -131,7 +131,7 @@ class IdempotencyAndRetryTests(unittest.TestCase):
         fresh.resume("OM-01.02", ok_worktree)
         state = self.h.store.load_story("OM-01.02")
         self.assertEqual(state.pending_intents(), [])
-        self.assertEqual(state.phase, "claimed")
+        self.assertEqual(state.phase, "reserved")
         self.assertEqual(len(markers(self.h.fake, 21, "claim")), 1)
         self.assertIn("comment-adopted", [e["event"] for e in self.h.store.read_journal()])
 
@@ -163,15 +163,85 @@ class IdempotencyAndRetryTests(unittest.TestCase):
         self.assertEqual(len(proposals), 1)
         self.assertEqual(proposals[0].marker["op"], f"proposal-{self.h.sha[:12]}-pr7")
 
+    def test_stale_proposal_replay_is_validated_before_posting_and_keeps_its_body(self):
+        """Round-1 findings R1-B2/E2/V4: a pending proposal is re-validated (revisions, worktree,
+        PR head/reviews/checks) before any post, and the replay carries the original payload."""
+        self.h.to_review_approved()
+        self.h.fake.pull_requests[7] = PullRequestRecord(7, "OPEN", self.h.sha, False, (), "SUCCESS")
+        self.h.fake.fail_once["post_comment"] = Outage("503")
+        with self.assertRaises(Outage):
+            self.h.coordinator.propose_evidence("OM-01.02", self.h.sha, 7, ["OM-01.02-T1"], "original evidence")
+        pending = self.h.store.load_story("OM-01.02").pending_intents()
+        self.assertEqual([i.kind for i in pending], ["proposal"])
+        self.assertIn("original evidence", pending[0].body)
+        # owner edit + PR regression after the failure
+        self.h.fake.set_status_externally(21, "Blocked")
+        self.h.fake.pull_requests[7] = PullRequestRecord(7, "OPEN", "new-head", False, (), "FAILURE")
+        self.h.fake.calls = []
+        with self.assertRaises(StaleRevision):
+            self.h.coordinator.resume("OM-01.02", ok_worktree)
+        self.assertEqual(markers(self.h.fake, 21, "proposal"), [])  # nothing posted
+        self.assertNotIn("post_comment", self.h.fake.calls)
+        # revisions accepted explicitly, PR still regressed: still nothing posted, PR is read
+        self.h.coordinator.rebase_revisions("OM-01.02", "verified")
+        self.h.fake.calls = []
+        with self.assertRaises(Refused):
+            self.h.coordinator.resume("OM-01.02", ok_worktree)
+        self.assertIn("get_pull_request", self.h.fake.calls)
+        self.assertEqual(markers(self.h.fake, 21, "proposal"), [])
+        # PR healthy again: the replay posts exactly the persisted body
+        self.h.fake.pull_requests[7] = PullRequestRecord(7, "OPEN", self.h.sha, False, (), "SUCCESS")
+        state = self.h.coordinator.resume("OM-01.02", ok_worktree)
+        self.assertEqual(state.phase, "proposed")
+        posted = markers(self.h.fake, 21, "proposal")
+        self.assertEqual(len(posted), 1)
+        self.assertIn("original evidence", posted[0].body)
+        self.assertIn("- [ ] OM-01.02-T1", posted[0].body)
+
+    def test_proposal_replay_abandoned_on_github_review_regression(self):
+        self.h.to_review_approved()
+        self.h.fake.pull_requests[7] = PullRequestRecord(7, "OPEN", self.h.sha, False, (), "SUCCESS")
+        self.h.fake.fail_once["post_comment"] = Outage("503")
+        with self.assertRaises(Outage):
+            self.h.coordinator.propose_evidence("OM-01.02", self.h.sha, 7, [], "s")
+        self.h.fake.pull_requests[7] = PullRequestRecord(7, "OPEN", self.h.sha, False, ({"state": "CHANGES_REQUESTED", "commit": self.h.sha, "author": "A", "submitted_at": "1"},), "SUCCESS")
+        with self.assertRaises(Refused):
+            self.h.coordinator.resume("OM-01.02", ok_worktree)
+        state = self.h.store.load_story("OM-01.02")
+        self.assertEqual(state.phase, "changes-requested")
+        self.assertEqual([i.status for i in state.intents if i.kind == "proposal"], ["abandoned"])
+        self.assertEqual(markers(self.h.fake, 21, "proposal"), [])
+
     def test_cancel_release_failure_is_replayed_on_resume(self):
         """Reviewer probe B7a/E8: terminal cleanup is never stranded."""
         self.h.claim()
         self.h.fake.fail_once["post_comment"] = Outage("503")
-        state = self.h.coordinator.cancel("OM-01.02", "stop")
+        state = self.h.coordinator.cancel("OM-01.02", "stop", self.h.terminal())
         self.assertEqual(state.phase, "cancelled")
         self.assertEqual([i.op for i in state.pending_intents()], ["release"])
         state = self.h.coordinator.resume("OM-01.02", ok_worktree)
         self.assertEqual(state.phase, "cancelled")
+        self.assertEqual(state.pending_intents(), [])
+        self.assertEqual(len(markers(self.h.fake, 21, "release")), 1)
+
+    def test_crash_after_terminal_save_before_post_is_recovered(self):
+        """Round-1 finding R1-B4: the terminal phase and its cleanup intent persist together."""
+        self.h.claim()
+        original = self.h.store.journal
+
+        def crash(story, event, detail=None):
+            if event == "cancelled":
+                raise RuntimeError("synthetic process crash")
+            return original(story, event, detail)
+
+        self.h.store.journal = crash
+        with self.assertRaises(RuntimeError):
+            self.h.coordinator.cancel("OM-01.02", "stop", self.h.terminal())
+        self.h.store.journal = original
+        state = self.h.store.load_story("OM-01.02")
+        self.assertEqual((state.phase, [i.op for i in state.pending_intents()]), ("cancelled", ["release"]))
+        fresh = Coordinator(self.h.fake, self.h.policy, Store(self.h.state_dir, "run-1"), live=True)
+        state = fresh.resume("OM-01.02", ok_worktree)
         self.assertEqual(state.pending_intents(), [])
         self.assertEqual(len(markers(self.h.fake, 21, "release")), 1)
 
@@ -191,16 +261,33 @@ class ConcurrencyAndBindingTests(unittest.TestCase):
 
         def interleave(issue, story):
             try:
-                c2.claim("OM-01.04", self.h.snapshot, receipt(IMPLEMENTER, "task-2"), str(self.h.worktree), "t3/om-01-02", "base", ok_worktree)
+                c2.reserve("OM-01.04", self.h.snapshot, "base")
             except StoreBusy as exc:
                 seen["busy"] = str(exc)
             return original(issue, story)
 
         self.h.coordinator._active_foreign_claims = interleave
-        self.h.claim()
+        self.h.reserve()
         self.assertIn("busy", seen)
-        self.assertEqual([(s.story, s.phase) for s in self.h.store.list_stories()], [("OM-01.02", "claimed")])
+        self.assertEqual([(s.story, s.phase) for s in self.h.store.list_stories()], [("OM-01.02", "reserved")])
         self.assertEqual(self.h.store.load_run().stories_claimed, 1)
+
+    def test_no_reclaim_in_the_same_run_and_second_run_owns_after_release(self):
+        """Round-1 findings R1-B3/E3: cancel then reclaim defeated cross-run exclusion."""
+        self.h = Harness(small_backlog(), max_stories_per_run="3")
+        self.h.claim()
+        self.h.coordinator.cancel("OM-01.02", "stop", self.h.terminal())
+        with self.assertRaises(Refused) as ctx:
+            self.h.reserve()
+        self.assertEqual(ctx.exception.code, "no-reclaim")
+        c2 = Coordinator(self.h.fake, self.h.policy, Store(self.h.state_dir, "run-2"), live=True)
+        snap = take_snapshot(self.h.fake, "x/y", "now")
+        self.assertEqual(c2.reserve("OM-01.02", snap, "base").phase, "reserved")
+        self.assertEqual(c2._active_foreign_claims(21, "OM-01.02"), [])
+        c3 = Coordinator(self.h.fake, self.h.policy, Store(self.h.state_dir, "run-3"), live=True)
+        with self.assertRaises(Refused) as ctx:
+            c3.reserve("OM-01.02", take_snapshot(self.h.fake, "x/y", "now"), "base")
+        self.assertIn("claimed by another run", str(ctx.exception))
 
     def test_lock_is_held_across_the_whole_operation_against_other_processes(self):
         import fcntl
@@ -255,19 +342,61 @@ class DenialOutageAndLiveGateTests(unittest.TestCase):
     def test_block_records_github_failure_but_stays_blocked_locally(self):
         self.h.claim()
         self.h.fake.fail_always["post_comment"] = Outage("HTTP 503")
-        state = self.h.coordinator.block("OM-01.02", "checks cannot run")
+        state = self.h.coordinator.block("OM-01.02", "checks cannot run", self.h.terminal())
         self.assertEqual(state.phase, "blocked")
         self.assertEqual(state.blocked["github_error"]["code"], "outage")
         self.assertEqual([i.op for i in state.pending_intents()], ["block"])
 
     def test_live_transport_refuses_product_admission(self):
         self.h.fake.live = True
+        live = Coordinator(self.h.fake, self.h.policy, Store(self.h.state_dir, "run-live"), live=True)
         with self.assertRaises(Refused) as ctx:
-            self.h.claim()
+            live.reserve("OM-01.02", self.h.snapshot, "base")
         self.assertEqual(ctx.exception.code, "live-execution-disabled")
         self.assertTrue(ctx.exception.detail["gaps"])
         self.assertIsNone(self.h.store.load_story("OM-01.02"))
         self.assertEqual(self.h.fake.comments[21], [])
+
+    def test_fixture_state_cannot_be_reused_with_a_live_transport(self):
+        """Round-1 findings R1-B1/E1: recovery and every other operation refuse on live."""
+        self.h.fake.fail_once["post_comment"] = Outage("503")
+        with self.assertRaises(Outage):
+            self.h.claim()
+        self.h.fake.live = True
+        with self.assertRaises(Refused) as ctx:
+            Coordinator(self.h.fake, self.h.policy, Store(self.h.state_dir, "run-1"), live=True)
+        self.assertEqual(ctx.exception.code, "environment-mismatch")
+        # even a coordinator object built before the flag flipped refuses every operation
+        self.h.coordinator.environment = "live"
+        for op in (lambda: self.h.coordinator.resume("OM-01.02", ok_worktree), lambda: self.h.coordinator.record_head("OM-01.02", "s"),
+                   lambda: self.h.coordinator.cancel("OM-01.02", "x"), lambda: self.h.coordinator.block("OM-01.02", "x"),
+                   lambda: self.h.coordinator.rebase_revisions("OM-01.02", "x"), lambda: self.h.coordinator.cancel_run("x"),
+                   lambda: self.h.coordinator.propose_evidence("OM-01.02", "s", 7, [], "s"), lambda: self.h.coordinator.repair("OM-01.02", IMPLEMENTER),
+                   lambda: self.h.coordinator.request_review("OM-01.02", "s", IMPLEMENTER), lambda: self.h.coordinator.record_review("OM-01.02", "s", "approved", "r"),
+                   lambda: self.h.coordinator.run_checks("OM-01.02", "s", str(self.h.worktree)), lambda: self.h.coordinator.bind_receipt("OM-01.02", IMPLEMENTER, str(self.h.worktree), "t3/om-01-02", ok_worktree)):
+            with self.assertRaises(Refused) as ctx:
+                op()
+            self.assertEqual(ctx.exception.code, "live-execution-disabled")
+        self.assertEqual(self.h.fake.comments[21], [])
+        self.assertEqual(self.h.store.load_story("OM-01.02").phase, "claim-incomplete")
+
+    def test_running_worker_keeps_ownership_until_terminal_evidence(self):
+        self.h.claim()
+        with self.assertRaises(Refused) as ctx:
+            self.h.coordinator.cancel("OM-01.02", "stop")
+        self.assertEqual(ctx.exception.code, "worker-not-terminal")
+        with self.assertRaises(Refused):
+            self.h.coordinator.cancel("OM-01.02", "stop", {"taskId": "task-impl-1", "status": "cancel_requested"})
+        with self.assertRaises(Refused):
+            self.h.coordinator.cancel("OM-01.02", "stop", {"taskId": "other", "status": "cancelled"})
+        self.assertEqual(self.h.store.load_story("OM-01.02").phase, "claimed")
+        self.assertEqual(markers(self.h.fake, 21, "release"), [])
+        result = self.h.coordinator.cancel_run("stop")
+        self.assertEqual(result["awaiting_worker_termination"], [{"story": "OM-01.02", "task_id": "task-impl-1"}])
+        self.assertTrue(self.h.store.load_run().cancelled)
+        state = self.h.coordinator.cancel("OM-01.02", "stop", {"taskId": "task-impl-1", "status": "cancelled"})
+        self.assertEqual(state.phase, "cancelled")
+        self.assertEqual(len(markers(self.h.fake, 21, "release")), 1)
 
     def test_non_live_coordinator_cannot_write(self):
         h = Harness(small_backlog(), live=False)

@@ -2,23 +2,25 @@
 
 Phases (``state.PHASES``)::
 
-    claim ──> claim-incomplete ──(claim marker verified, revisions unchanged)──> claimed
-    claimed ──record-head──> implemented ──run-checks (full configured set on the exact HEAD)──> checks-passed | checks-failed
-    checks-passed ──request-review (fresh reviewer receipt)──> review-requested ──record-review──> review-approved | changes-requested
+    reserve ──(admission under lock, claim marker)──> reserved ──bind-receipt (worktree identity)──> claimed
+    claimed ──record-head──> implemented ──run-checks (full set, exact clean HEAD)──> checks-passed | checks-failed
+    checks-passed ──request-review (worktree re-read, fresh reviewer receipt)──> review-requested ──record-review──> review-approved | changes-requested
     checks-failed | changes-requested ──repair (budgeted, round ≤ 2)──> claimed ; otherwise ──> blocked
-    review-approved ──record-head(new sha)──> implemented (approval invalidated)
-    review-approved ──propose-evidence (revisions unchanged, PR head == sha, open, no outstanding objection)──> proposed
-    any active ──block──> blocked ; any active ──cancel──> cancelled ; duplicate marker ──> conflict
+    checks-failed | changes-requested ──record-head──> REFUSED (repair-required)
+    review-approved ──record-head(new sha) | unreported worktree change──> implemented (evidence invalidated)
+    review-approved ──propose-evidence (revisions unchanged, worktree re-read, PR head/reviews/checks)──> proposed
+    any active | conflict ──block | cancel (terminal worker evidence when a worker is running)──> blocked | cancelled
+    duplicate marker ──> conflict
 
 External effects are append-only marker comments only (``claim``, ``release``, ``block``,
-``proposal``). Each has a stable operation identity recorded as a write-ahead intent, so a
-retry or a restart reuses the same marker and a duplicate is a conflict, never a success.
-Project Status, issue bodies, checkboxes, issue state and merges are never written.
+``proposal``). Each is a write-ahead intent carrying its stable operation identity and its
+complete comment body; a replay posts exactly that body, and advancing replays re-validate
+their preconditions first. Terminal phases persist together with their cleanup intent.
 
-Every operation runs under the store lock (cross-process), reloads run accounting from disk,
-and re-reads the GitHub revisions of the story, its parent epic and its dependency closure
-before admission and before every effect; a changed revision refuses. ``claim`` on a live
-transport is refused until T3 enforcement is qualified (``LIVE_EXECUTION_GAPS``).
+Every operation refuses a live transport (``live-execution-disabled``) and a run's state is
+bound to the environment (fixture or live) it was created in. The live gate stays until the
+T3 execution protocol is qualified with an actual bounded worker, which this foundation has
+not done.
 """
 
 from __future__ import annotations
@@ -39,12 +41,18 @@ from .state import ACTIVE_PHASES, Intent, Store, StoryState, utcnow
 
 WorktreeCheck = Callable[[str, str], tuple[bool, str]]
 
+# What the installed T3 tools do not establish; verified against the tool metadata. The
+# protocol itself (reserve under the lock before delegate_task, bind the receipt afterwards,
+# keep ownership until task_status/task_cancel report a terminal state) is supported by the
+# tools and implemented below, but it has not been qualified with an actual worker.
 LIVE_EXECUTION_GAPS = (
-    "T3 delegate_task has no admission hook: the tool cannot make admission (claim) precede the start of a delegated task; the coordinator agent orders the calls",
-    "T3 task_cancel exposes no acknowledgement the tool can observe from a subprocess: cancellation-before-release cannot be verified",
-    "T3 delegate_task has no deadline that cancels the child (timeoutMs applies to mode=wait only and does not cancel): budget termination cannot be enforced",
-    "T3 tools are MCP calls available to the coordinator agent only; this tool runs as a subprocess and cannot call task_status/task_cancel itself",
+    "no hard deadline or resource bound on a delegated child: delegate_task timeoutMs limits the wait in mode=wait only and does not cancel the child",
+    "credential confinement of a delegated child is not established: the child runs with the coordinator's credentials and runtime mode",
+    "reserve-before-delegate, receipt binding and terminal task evidence (task_status workState result_available; task_cancel reporting a terminal state) are implemented as protocol but not qualified with an actual bounded worker",
+    "no bounded GitHub credential has passed the permission probe (denial of forbidden operations untested)",
 )
+TERMINAL_TASK_STATES = ("result_available", "completed", "failed", "cancelled", "terminal")
+CLEANUP_KINDS = ("release", "block")
 
 
 def git_worktree_check(path: str, branch: str) -> tuple[bool, str]:
@@ -134,12 +142,19 @@ def revision_diff(recorded: dict[str, dict], current: dict[str, dict]) -> dict[s
 class Coordinator:
     def __init__(self, transport: Transport, policy: Policy, store: Store, now: Callable[[], str] = utcnow, live: bool = False):
         self.transport, self.policy, self.store, self.now, self.live = transport, policy, store, now, live
-        self.run = store.ensure_run(policy.repo_slug, policy.digest)
+        self.environment = "live" if getattr(transport, "live", False) else "fixture"
+        self.run = store.ensure_run(policy.repo_slug, policy.digest, self.environment)
 
-    # -- helpers -------------------------------------------------------------------------
+    # -- guards --------------------------------------------------------------------------
+    def require_not_live(self, operation: str) -> None:
+        """Every state-advancing operation and every recovery refuses a production transport.
+        No live state can exist, so there is nothing a bounded cleanup could release there."""
+        if self.environment == "live":
+            raise Refused(f"{operation}: live execution is disabled; the T3 execution protocol and a bounded credential are not qualified", code="live-execution-disabled", gaps=list(LIVE_EXECUTION_GAPS))
+
     def _reload_run(self) -> None:
         run = self.store.load_run()
-        if run is None or (run.repo, run.policy_digest) != (self.policy.repo_slug, self.policy.digest):
+        if run is None or (run.repo, run.policy_digest, run.environment) != (self.policy.repo_slug, self.policy.digest, self.environment):
             raise Refused("run binding changed on disk", code="run-binding-mismatch")
         self.run = run
 
@@ -153,7 +168,7 @@ class Coordinator:
         if state.phase not in phases:
             raise Refused(f"{state.story} is {state.phase}; this operation needs {phases}", phase=state.phase)
 
-    def _budget(self, *, delegation: bool = False, claim: bool = False) -> None:
+    def _budget(self, *, delegation: bool = False, admission: bool = False) -> None:
         run = self.run
         if run.cancelled:
             raise BudgetExhausted("run is cancelled", stop_reason=run.stop_reason)
@@ -162,7 +177,7 @@ class Coordinator:
             raise BudgetExhausted(f"wall clock budget of {self.policy.max_wall_clock_minutes} minutes exceeded")
         if delegation and run.delegated_tasks + 1 > self.policy.max_delegated_tasks:
             raise BudgetExhausted(f"delegated task budget {self.policy.max_delegated_tasks} exhausted")
-        if claim:
+        if admission:
             if run.stories_claimed + 1 > self.policy.max_stories_per_run:
                 raise BudgetExhausted(f"story budget {self.policy.max_stories_per_run} exhausted")
             active = [s.story for s in self.store.list_stories() if s.active or s.phase == "conflict"]
@@ -176,17 +191,36 @@ class Coordinator:
     def _fresh_snapshot(self) -> Snapshot:
         return take_snapshot(self.transport, self.policy.repo_slug, self.now())
 
+    def _current_revisions(self, story: str, snapshot: Snapshot | None = None) -> tuple[Snapshot, dict[str, dict]]:
+        fresh = snapshot or self._fresh_snapshot()
+        entry = fresh.by_id().get(story)
+        return fresh, (revisions_of(closure(fresh, entry)) if entry else {})
+
     def _check_revisions(self, state: StoryState, snapshot: Snapshot | None = None) -> Snapshot:
         """Re-read GitHub and refuse when any revision in the story's closure differs from
         the ones recorded at admission. Never rebases silently."""
-        fresh = snapshot or self._fresh_snapshot()
-        entry = fresh.by_id().get(state.story)
-        current = revisions_of(closure(fresh, entry)) if entry else {}
+        fresh, current = self._current_revisions(state.story, snapshot)
         changed = revision_diff(state.revisions, current)
         if changed:
             self.store.journal(state.story, "revision-mismatch", {"changed": sorted(changed)})
             raise StaleRevision(f"{state.story}: revisions changed since admission for {sorted(changed)}; re-plan or rebase-revisions explicitly", changed=changed)
         return fresh
+
+    def _verify_worktree(self, state: StoryState, sha: str, gate: str) -> None:
+        """Re-read the actual worktree identity, HEAD and cleanliness at an evidence gate.
+        An unreported change invalidates the recorded check and review evidence."""
+        if not state.claim or not state.claim.get("worktree_path"):
+            raise Refused(f"{gate}: no worktree bound to {state.story}")
+        ok, why = git_worktree_check(state.claim["worktree_path"], state.claim["branch"])
+        if not ok:
+            raise Refused(f"{gate}: worktree identity check failed: {why}", code="worktree-mismatch")
+        head = git_head(state.claim["worktree_path"])
+        clean, dirt = git_clean(state.claim["worktree_path"])
+        if head != sha or not clean:
+            state.phase, state.head_sha, state.approved_sha = "implemented", head, None
+            self.store.save_story(state)
+            self.store.journal(state.story, "unreported-worktree-change", {"gate": gate, "expected": sha, "head": head, "clean": clean, "dirt": dirt})
+            raise Refused(f"{gate}: worktree HEAD {head} / clean={clean} differs from the evidence at {sha}; check and review evidence invalidated", code="evidence-invalidated", head=head, clean=clean)
 
     def _active_foreign_claims(self, issue: int, story: str) -> list[dict]:
         claims: dict[str, dict] = {}
@@ -202,34 +236,39 @@ class Coordinator:
                 released.add(run)
         return [m for run, m in claims.items() if run != self.store.run_id and run not in released]
 
-    def _post_marked(self, state: StoryState, op: str, kind: str, body: str, **extra: str) -> Intent:
-        """Idempotent marked comment with a write-ahead intent keyed by ``op``."""
+    def _new_intent(self, state: StoryState, op: str, kind: str, body: str, preconditions: dict | None = None, **extra: str) -> Intent:
+        """Record the complete effect (identity, marker and exact body) before attempting it."""
+        existing = state.intent(op)
+        if existing is not None:
+            return existing
+        marker = {"kind": kind, "run": self.store.run_id, "story": state.story, "op": op, **extra}
+        intent = Intent(op, kind, marker, body=f"{render_marker(**marker)}\n{body}", preconditions=preconditions or {})
+        state.intents.append(intent)
+        return intent
+
+    def _post_intent(self, state: StoryState, intent: Intent) -> Intent:
+        """Idempotent post of a recorded intent: zero markers ⇒ post the persisted body,
+        one ⇒ adopt, more ⇒ conflict."""
         if not self.live:
-            raise Refused(f"{kind} for {state.story} needs live writes (--live)", code="live-required")
-        intent = state.intent(op)
-        if intent is None:
-            marker = {"kind": kind, "run": self.store.run_id, "story": state.story, "op": op, **extra}
-            intent = Intent(op, kind, marker)
-            state.intents.append(intent)
-            self.store.save_story(state)
-            self.store.journal(state.story, "intent-recorded", {"op": op, "marker": marker})
+            raise Refused(f"{intent.kind} for {state.story} needs live writes (--live)", code="live-required")
         if intent.status == "done":
             return intent
+        if intent.status == "abandoned":
+            raise Refused(f"{intent.op} for {state.story} was abandoned: {intent.reason}")
         found = [c for c in self.transport.list_comments(state.issue) if c.marker == intent.marker]
-        posted = None
         if not found:
-            posted = self.transport.post_comment(state.issue, f"{render_marker(**intent.marker)}\n{body}")
+            posted = self.transport.post_comment(state.issue, intent.body)
             found = [c for c in self.transport.list_comments(state.issue) if c.marker == intent.marker]
-            self.store.journal(state.story, "comment-posted", {"op": op, "comment_id": posted.comment_id})
+            self.store.journal(state.story, "comment-posted", {"op": intent.op, "comment_id": posted.comment_id})
             if not found:
-                raise Conflict(f"comment {op} was posted (id {posted.comment_id}) but is not readable back", comment_id=posted.comment_id)
+                raise Conflict(f"comment {intent.op} was posted (id {posted.comment_id}) but is not readable back", comment_id=posted.comment_id)
         else:
-            self.store.journal(state.story, "comment-adopted", {"op": op, "comment_id": found[0].comment_id})
+            self.store.journal(state.story, "comment-adopted", {"op": intent.op, "comment_id": found[0].comment_id})
         if len(found) > 1:
             ids = [c.comment_id for c in found]
-            self.store.journal(state.story, "duplicate-marker-detected", {"op": op, "comment_ids": ids})
+            self.store.journal(state.story, "duplicate-marker-detected", {"op": intent.op, "comment_ids": ids})
             if state.active:
-                state.blocked = {"reason": f"duplicate marker for {op}: {ids}", "at": self.now(), "from_phase": state.phase, "conflict": True}
+                state.blocked = {"reason": f"duplicate marker for {intent.op}: {ids}", "at": self.now(), "from_phase": state.phase, "conflict": True}
                 state.phase = "conflict"
                 self.store.save_story(state)
             raise Conflict(f"marker {intent.marker} appears {len(found)} times; a concurrent writer posted the same event", comment_ids=ids)
@@ -237,60 +276,79 @@ class Coordinator:
         self.store.save_story(state)
         return intent
 
-    # -- operations ----------------------------------------------------------------------
-    def claim(self, story: str, snapshot: Snapshot, receipt: dict, worktree_path: str, branch: str, baseline_sha: str, worktree_check: WorktreeCheck = git_worktree_check) -> StoryState:
+    # -- admission -------------------------------------------------------------------------
+    def reserve(self, story: str, snapshot: Snapshot, baseline_sha: str) -> StoryState:
+        """Admission BEFORE any delegated task exists: budgets, eligibility on the plan
+        snapshot and on a fresh read, no foreign claim, claim marker. The receipt of the task
+        the coordinator then launches is bound with :meth:`bind_receipt`."""
         with self.store.locked(self):
+            self.require_not_live("reserve")
             self._reload_run()
-            existing = self.store.load_story(story)
-            if existing and existing.phase != "cancelled":
-                raise Refused(f"{story} already has state {existing.phase} in this run", phase=existing.phase)
+            if self.store.load_story(story) is not None:
+                raise Refused(f"{story} already has state in run {self.store.run_id}; a story is admitted at most once per run (no reclaim)", code="no-reclaim")
             decision: Decision = decide(story, snapshot, self.policy)
             if not decision.dispatchable:
                 raise Refused(f"{story} is not dispatchable: {decision.outcome} ({'; '.join(decision.reasons)})", decision=decision.as_dict())
-            self._budget(delegation=True, claim=True)
-            receipt = validate_receipt(receipt, self.policy.implementer, "implementer")
-            ok, why = worktree_check(worktree_path, branch)
-            if not ok:
-                raise Refused(f"worktree identity check failed: {why}")
-            if getattr(self.transport, "live", False):
-                raise Refused("live product-story admission is disabled: T3 enforcement of admission, cancellation and budgets is not qualified", code="live-execution-disabled", gaps=list(LIVE_EXECUTION_GAPS))
-            # admission: re-read every revision the decision depends on and refuse on any change
+            self._budget(admission=True)
             planned = snapshot.by_id()[story]
-            fresh = self._fresh_snapshot()
-            fresh_entry = fresh.by_id().get(story)
-            changed = revision_diff(revisions_of(closure(snapshot, planned)), revisions_of(closure(fresh, fresh_entry)) if fresh_entry else {})
+            fresh, current = self._current_revisions(story)
+            changed = revision_diff(revisions_of(closure(snapshot, planned)), current)
             if changed:
                 raise StaleRevision(f"{story}: GitHub changed since the plan snapshot for {sorted(changed)}; re-plan from a fresh snapshot", changed=changed)
             fresh_decision = decide(story, fresh, self.policy)
             if not fresh_decision.dispatchable:
                 raise Refused(f"{story} is not dispatchable on the fresh snapshot: {fresh_decision.outcome}", decision=fresh_decision.as_dict())
-            entry = fresh_entry
+            entry = fresh.by_id()[story]
             foreign = self._active_foreign_claims(entry.number, story)
             if foreign:
                 raise Refused(f"{story} is claimed by another run: {foreign}", foreign=foreign)
             state = StoryState(story=story, issue=entry.number, item_id=entry.item_id, phase="claim-incomplete", run_id=self.store.run_id,
-                               claim={"worktree_path": worktree_path, "branch": branch, "baseline_sha": baseline_sha, "claimed_at": self.now(), "scope": decision.outcome},
-                               revisions=revisions_of(closure(fresh, entry)), implementer_receipts=[receipt])
+                               claim={"baseline_sha": baseline_sha, "reserved_at": self.now(), "scope": decision.outcome, "worktree_path": None, "branch": None},
+                               revisions=current)
+            intent = self._new_intent(state, "claim", "claim", f"Unattended reservation by run `{self.store.run_id}` from `{baseline_sha}` (scope: {decision.outcome}). An implementer task is delegated only after this reservation; its receipt is bound to the reservation. Project Status is owner-maintained; completion still requires checks, independent review and owner acceptance.", {"revisions": current})
             self.store.save_story(state)
             self.run.stories_claimed += 1
             self.store.save_run(self.run)
-            self._count_delegation()
-            self.store.journal(story, "claimed", {"issue": entry.number, "branch": branch, "baseline": baseline_sha, "task": receipt["taskId"], "scope": decision.outcome})
-            self._post_marked(state, "claim", "claim", f"Unattended claim by run `{self.store.run_id}`: branch `{branch}` in an isolated worktree from `{baseline_sha}`; implementer T3 task `{receipt['taskId']}` ({receipt['providerInstanceId']}/{receipt['model']}, {receipt['options']}). Scope: {decision.outcome}. Project Status is owner-maintained; completion still requires checks, independent review and owner acceptance.")
-            state.phase = "claimed"
+            self.store.journal(story, "reserved", {"issue": entry.number, "baseline": baseline_sha, "scope": decision.outcome})
+            self._post_intent(state, intent)
+            state.phase = "reserved"
             self.store.save_story(state)
             return state
 
+    def bind_receipt(self, story: str, receipt: dict, worktree_path: str, branch: str, worktree_check: WorktreeCheck = git_worktree_check) -> StoryState:
+        """Bind the delegated implementer task (its receipt and worktree) to the reservation."""
+        with self.store.locked(self):
+            self.require_not_live("bind-receipt")
+            self._reload_run()
+            state = self._story(story)
+            self._require_phase(state, "reserved")
+            self._budget(delegation=True)
+            receipt = validate_receipt(receipt, self.policy.implementer, "implementer")
+            ok, why = worktree_check(worktree_path, branch)
+            if not ok:
+                raise Refused(f"worktree identity check failed: {why}", code="worktree-mismatch")
+            state.claim.update({"worktree_path": worktree_path, "branch": branch, "claimed_at": self.now()})
+            state.implementer_receipts.append(receipt)
+            state.worker_state, state.phase = "running", "claimed"
+            self.store.save_story(state)
+            self._count_delegation()
+            self.store.journal(story, "receipt-bound", {"task": receipt["taskId"], "branch": branch, "worktree": worktree_path})
+            return state
+
+    # -- implementation ---------------------------------------------------------------------
     def record_head(self, story: str, sha: str) -> StoryState:
         with self.store.locked(self):
+            self.require_not_live("record-head")
             state = self._story(story)
             if state.phase in ("checks-failed", "changes-requested"):
                 raise Refused(f"{story} is {state.phase}; a new implementation needs a budgeted repair authorization first", code="repair-required", phase=state.phase)
             self._require_phase(state, "claimed", "implemented", "checks-passed", "review-requested", "review-approved")
+            state.worker_state = "returned"
             if state.head_sha == sha and state.phase != "claimed":
-                return state  # same head, nothing new; a repair that returns the same sha still counts as returned
+                self.store.save_story(state)
+                return state
             invalidated = state.phase in ("review-requested", "review-approved")
-            state.head_sha, state.phase = sha, "implemented"
+            state.head_sha, state.phase, state.approved_sha = sha, "implemented", None
             self.store.save_story(state)
             self.store.journal(story, "head-recorded", {"sha": sha, "approval_invalidated": invalidated})
             return state
@@ -299,10 +357,11 @@ class Coordinator:
         """Execute the full configured check set on the exact claimed HEAD in a clean tree.
         This is the only way checks become evidence; there is no asserted pass."""
         with self.store.locked(self):
+            self.require_not_live("run-checks")
             state = self._story(story)
             self._require_phase(state, "implemented", "checks-passed", "checks-failed")
-            if not state.claim or Path(cwd).resolve() != Path(state.claim["worktree_path"]).resolve():
-                raise Refused(f"checks must run in the claimed worktree {state.claim and state.claim['worktree_path']}")
+            if not state.claim or not state.claim.get("worktree_path") or Path(cwd).resolve() != Path(state.claim["worktree_path"]).resolve():
+                raise Refused(f"checks must run in the claimed worktree {state.claim and state.claim.get('worktree_path')}")
             if state.head_sha != sha:
                 raise Refused(f"checks at {sha} do not match the recorded head {state.head_sha}", head=state.head_sha)
             head_before = git_head(cwd)
@@ -327,6 +386,7 @@ class Coordinator:
 
     def request_review(self, story: str, sha: str, receipt: dict) -> StoryState:
         with self.store.locked(self):
+            self.require_not_live("request-review")
             self._reload_run()
             state = self._story(story)
             self._require_phase(state, "checks-passed")
@@ -336,11 +396,12 @@ class Coordinator:
                     or len(last.get("commands", [])) != configured or any(c.get("returncode") != 0 for c in last["commands"])
                     or last.get("head_after") != sha or not last.get("clean_after")):
                 raise Refused(f"the full configured check set ({configured} commands) has not been executed and passed at {sha}")
+            self._verify_worktree(state, sha, "request-review")
             self._budget(delegation=True)
             used = {r["taskId"] for r in state.reviewer_receipts + state.implementer_receipts}
             receipt = validate_receipt(receipt, self.policy.reviewer, "reviewer", used)
             state.reviewer_receipts.append({**receipt, "sha": sha})
-            state.phase = "review-requested"
+            state.phase, state.worker_state = "review-requested", "running"
             self.store.save_story(state)
             self._count_delegation()
             self.store.journal(story, "review-requested", {"sha": sha, "task": receipt["taskId"]})
@@ -348,14 +409,17 @@ class Coordinator:
 
     def record_review(self, story: str, sha: str, verdict: str, report: str) -> StoryState:
         with self.store.locked(self):
+            self.require_not_live("record-review")
             state = self._story(story)
             if verdict not in ("approved", "changes-requested"):
                 raise Refused("verdict must be approved or changes-requested")
             self._require_phase(state, "review-requested", "review-approved")
             if state.head_sha != sha:
                 raise Refused(f"review at {sha} does not match head {state.head_sha}; a code change invalidates it", head=state.head_sha)
+            self._verify_worktree(state, sha, "record-review")
             regression = state.phase == "review-approved" and verdict == "changes-requested"
             state.reviews.append({"sha": sha, "verdict": verdict, "report": report, "at": self.now(), "regression": regression})
+            state.worker_state = "returned"
             if verdict == "approved":
                 state.phase, state.approved_sha = "review-approved", sha
             else:
@@ -366,6 +430,7 @@ class Coordinator:
 
     def repair(self, story: str, receipt: dict) -> StoryState:
         with self.store.locked(self):
+            self.require_not_live("repair")
             self._reload_run()
             state = self._story(story)
             self._require_phase(state, "checks-failed", "changes-requested")
@@ -377,7 +442,7 @@ class Coordinator:
             receipt = validate_receipt(receipt, self.policy.implementer, "implementer", used)
             state.implementer_receipts.append(receipt)
             state.repair_rounds += 1
-            state.phase = "claimed"
+            state.phase, state.worker_state = "claimed", "running"
             self.run.repair_rounds += 1
             self.store.save_run(self.run)
             self.store.save_story(state)
@@ -385,113 +450,174 @@ class Coordinator:
             self.store.journal(story, "repair-started", {"round": state.repair_rounds, "task": receipt["taskId"]})
             return state
 
+    # -- proposal -------------------------------------------------------------------------
+    def _validate_pr(self, state: StoryState, sha: str, pr_number: int) -> PullRequestRecord:
+        pr = self.transport.get_pull_request(pr_number)
+        if pr.head_sha != sha:
+            raise Refused(f"PR #{pr_number} head {pr.head_sha} differs from approved {sha}")
+        if pr.state != "OPEN" or pr.merged:
+            raise Refused(f"PR #{pr_number} is {pr.state}; proposals need an open, unmerged PR")
+        objections = outstanding_objections(pr)
+        if objections:
+            state.phase, state.approved_sha = "changes-requested", None
+            state.reviews.append({"sha": sha, "verdict": "changes-requested", "report": f"GitHub review on PR #{pr_number} by {objections}", "at": self.now(), "regression": True})
+            for intent in state.pending_intents():
+                if intent.kind == "proposal":
+                    intent.status, intent.reason = "abandoned", f"review regression on PR #{pr_number} by {objections}"
+            self.store.save_story(state)
+            self.store.journal(state.story, "review-regression-on-github", {"pr": pr_number, "sha": sha, "reviewers": objections})
+            raise Refused(f"PR #{pr_number} has outstanding CHANGES_REQUESTED from {objections}; approval invalid")
+        if pr.checks == "FAILURE":
+            raise Refused(f"PR #{pr_number} status checks failed at {sha}")
+        return pr
+
     def propose_evidence(self, story: str, sha: str, pr_number: int, tasks: list[str], summary: str) -> StoryState:
         with self.store.locked(self):
+            self.require_not_live("propose-evidence")
             state = self._story(story)
             self._require_phase(state, "review-approved")
             if state.head_sha != sha or state.approved_sha != sha:
                 raise Refused(f"approval is for {state.approved_sha}, head is {state.head_sha}, proposal names {sha}")
             self._check_revisions(state)
-            pr = self.transport.get_pull_request(pr_number)
-            if pr.head_sha != sha:
-                raise Refused(f"PR #{pr_number} head {pr.head_sha} differs from approved {sha}")
-            if pr.state != "OPEN" or pr.merged:
-                raise Refused(f"PR #{pr_number} is {pr.state}; proposals need an open, unmerged PR")
-            objections = outstanding_objections(pr)
-            if objections:
-                state.phase, state.approved_sha = "changes-requested", None
-                state.reviews.append({"sha": sha, "verdict": "changes-requested", "report": f"GitHub review on PR #{pr_number} by {objections}", "at": self.now(), "regression": True})
+            self._verify_worktree(state, sha, "propose-evidence")
+            pr = self._validate_pr(state, sha, pr_number)
+            op = f"proposal-{sha[:12]}-pr{pr_number}"
+            intent = state.intent(op)
+            if intent is None:
+                task_lines = "\n".join(f"- [ ] {t}" for t in tasks) or "- (no task completion proposed)"
+                body = (f"Evidence proposal from run `{self.store.run_id}` at exact commit `{sha}` (PR #{pr_number}, CI rollup: {pr.checks or 'pending'}).\n"
+                        f"{summary}\n\nProposed task completion for owner application (the machine does not tick checkboxes or change Project Status):\n{task_lines}\n\n"
+                        "Checked boxes, CI pass, review approval, acceptance, merge and deployment remain distinct facts; this comment records review-approved implementation only.")
+                intent = self._new_intent(state, op, "proposal", body, {"sha": sha, "pr": pr_number, "revisions": dict(state.revisions)}, sha=sha, pr=str(pr_number))
+                state.proposal = {"sha": sha, "pr": pr_number, "tasks": tasks, "at": self.now(), "ci": pr.checks}
                 self.store.save_story(state)
-                self.store.journal(story, "review-regression-on-github", {"pr": pr_number, "sha": sha, "reviewers": objections})
-                raise Refused(f"PR #{pr_number} has outstanding CHANGES_REQUESTED from {objections}; approval invalid")
-            if pr.checks == "FAILURE":
-                raise Refused(f"PR #{pr_number} status checks failed at {sha}")
-            task_lines = "\n".join(f"- [ ] {t}" for t in tasks) or "- (no task completion proposed)"
-            body = (f"Evidence proposal from run `{self.store.run_id}` at exact commit `{sha}` (PR #{pr_number}, CI rollup: {pr.checks or 'pending'}).\n"
-                    f"{summary}\n\nProposed task completion for owner application (the machine does not tick checkboxes or change Project Status):\n{task_lines}\n\n"
-                    "Checked boxes, CI pass, review approval, acceptance, merge and deployment remain distinct facts; this comment records review-approved implementation only.")
-            state.proposal = {"sha": sha, "pr": pr_number, "tasks": tasks, "at": self.now(), "ci": pr.checks}
-            self.store.save_story(state)
-            self._post_marked(state, f"proposal-{sha[:12]}-pr{pr_number}", "proposal", body, sha=sha, pr=str(pr_number))
+            self._post_intent(state, intent)
             state.phase = "proposed"
             self.store.save_story(state)
             self.store.journal(story, "proposed", {"sha": sha, "pr": pr_number})
             return state
 
-    def _terminal(self, story: str, phase: str, reason: str, op: str, kind: str, body: str) -> StoryState:
+    # -- terminal -------------------------------------------------------------------------
+    def _require_worker_terminal(self, state: StoryState, task_evidence: dict | None, operation: str) -> None:
+        """A story whose delegated task has not returned keeps its ownership until the
+        coordinator presents terminal task evidence (task_status / task_cancel result)."""
+        if state.worker_state != "running":
+            return
+        receipts = state.reviewer_receipts if state.phase == "review-requested" else state.implementer_receipts
+        task_id = receipts[-1]["taskId"] if receipts else None
+        if not isinstance(task_evidence, dict) or task_evidence.get("taskId") != task_id or task_evidence.get("status") not in TERMINAL_TASK_STATES:
+            raise Refused(f"{operation}: delegated task {task_id} is still running; present terminal task evidence (task_status workState result_available or a terminal task_cancel result) before releasing ownership", code="worker-not-terminal", task_id=task_id)
+
+    def _terminal(self, story: str, phase: str, reason: str, op: str, kind: str, body: str, task_evidence: dict | None) -> StoryState:
         state = self._story(story)
         self._require_phase(state, *ACTIVE_PHASES, "conflict")
-        state.blocked = {"reason": reason, "at": self.now(), "from_phase": state.phase, "cancelled": phase == "cancelled"}
+        self._require_worker_terminal(state, task_evidence, phase)
+        state.blocked = {"reason": reason, "at": self.now(), "from_phase": state.phase, "cancelled": phase == "cancelled", "task_evidence": task_evidence}
         state.phase = phase
-        self.store.save_story(state)
+        state.worker_state = "none"
+        intent = self._new_intent(state, op, kind, body)
+        self.store.save_story(state)  # terminal phase and its cleanup intent persist together
         self.store.journal(story, phase, {"reason": reason})
         try:
-            self._post_marked(state, op, kind, body)
+            self._post_intent(state, intent)
         except UnattendedError as exc:
             state.blocked["github_error"] = exc.as_dict()
             self.store.save_story(state)
             self.store.journal(story, f"{phase}-github-write-failed", exc.as_dict())
         return state
 
-    def block(self, story: str, reason: str) -> StoryState:
+    def block(self, story: str, reason: str, task_evidence: dict | None = None) -> StoryState:
         with self.store.locked(self):
-            return self._terminal(story, "blocked", reason, "block", "block", f"Blocked by run `{self.store.run_id}`: {reason}. Owner decision or new evidence required; nothing advanced. Project Status is owner-maintained.")
+            self.require_not_live("block")
+            return self._terminal(story, "blocked", reason, "block", "block", f"Blocked by run `{self.store.run_id}`: {reason}. Owner decision or new evidence required; nothing advanced. Project Status is owner-maintained.", task_evidence)
 
-    def cancel(self, story: str, reason: str) -> StoryState:
+    def cancel(self, story: str, reason: str, task_evidence: dict | None = None) -> StoryState:
         with self.store.locked(self):
-            return self._terminal(story, "cancelled", reason, "release", "release", f"Claim released by run `{self.store.run_id}`: {reason}. No completion is implied. Project Status is owner-maintained.")
+            self.require_not_live("cancel")
+            return self._terminal(story, "cancelled", reason, "release", "release", f"Claim released by run `{self.store.run_id}`: {reason}. No completion is implied. Project Status is owner-maintained.", task_evidence)
 
-    def cancel_run(self, reason: str) -> list[StoryState]:
+    def cancel_run(self, reason: str, task_evidence: dict[str, dict] | None = None) -> dict:
+        """Stop admissions and release every story whose worker is terminal. Stories with a
+        running worker and no terminal evidence stay owned and are reported."""
         with self.store.locked(self):
+            self.require_not_live("cancel-run")
             self._reload_run()
-            out = [self.cancel(s.story, reason) for s in self.store.list_stories() if s.active or s.phase == "conflict"]
             self.run.cancelled, self.run.stop_reason = True, reason
             self.store.save_run(self.run)
             self.store.journal(None, "run-cancelled", {"reason": reason})
-            return out
+            released, awaiting = [], []
+            for s in self.store.list_stories():
+                if not (s.active or s.phase == "conflict"):
+                    continue
+                try:
+                    released.append(self.cancel(s.story, reason, (task_evidence or {}).get(s.story)).to_dict())
+                except Refused as exc:
+                    if exc.code != "worker-not-terminal":
+                        raise
+                    awaiting.append({"story": s.story, "task_id": exc.detail.get("task_id")})
+            return {"cancelled": released, "awaiting_worker_termination": awaiting}
 
+    # -- recovery -------------------------------------------------------------------------
     def resume(self, story: str, worktree_check: WorktreeCheck = git_worktree_check) -> StoryState:
-        """Restart recovery. Order: ownership identity, then replay of pending effects with the
-        same operation identity (duplicates stay conflicts), then revision verification."""
+        """Restart recovery. Order: live gate, ownership identity, then replay of pending
+        effects with their persisted payload: cleanups unconditionally, advancing effects only
+        after their preconditions are re-verified, then revision verification."""
         with self.store.locked(self):
+            self.require_not_live("resume")
             self._reload_run()
             state = self._story(story)
-            if state.claim:
+            if state.claim and state.claim.get("worktree_path"):
                 ok, why = worktree_check(state.claim["worktree_path"], state.claim["branch"])
                 if not ok:
                     raise Refused(f"cannot resume {story}: {why}", code="worktree-mismatch")
             for intent in state.pending_intents():
-                self._post_marked(state, intent.op, intent.kind, f"Replayed on resume by run `{self.store.run_id}` ({intent.kind}).")
-            if state.phase == "claim-incomplete":
-                fresh = self._fresh_snapshot()
-                entry = fresh.by_id().get(story)
-                current = revisions_of(closure(fresh, entry)) if entry else {}
-                changed = revision_diff(state.revisions, current)
-                if changed:
-                    self.store.journal(story, "resume-claim-abandoned", {"changed": sorted(changed)})
-                    return self.cancel(story, f"revisions changed before the claim completed: {sorted(changed)}")
-                state.phase = "claimed"
-                self.store.save_story(state)
-                self.store.journal(story, "claim-completed-on-resume", {})
-            elif state.active:
+                if intent.kind in CLEANUP_KINDS:
+                    self._post_intent(state, intent)
+            for intent in state.pending_intents():
+                if intent.kind == "claim":
+                    fresh, current = self._current_revisions(story)
+                    changed = revision_diff(intent.preconditions.get("revisions", state.revisions), current)
+                    if changed:
+                        self.store.journal(story, "resume-claim-abandoned", {"changed": sorted(changed)})
+                        intent.status, intent.reason = "abandoned", f"revisions changed before the reservation completed: {sorted(changed)}"
+                        state.phase = "cancelled"
+                        state.blocked = {"reason": intent.reason, "at": self.now(), "from_phase": "claim-incomplete", "cancelled": True}
+                        self.store.save_story(state)
+                        return state
+                    self._post_intent(state, intent)
+                    if state.phase == "claim-incomplete":
+                        state.phase = "reserved"
+                        self.store.save_story(state)
+                        self.store.journal(story, "reservation-completed-on-resume", {})
+                elif intent.kind == "proposal":
+                    self._check_revisions(state)
+                    self._verify_worktree(state, intent.preconditions["sha"], "resume-proposal")
+                    self._validate_pr(state, intent.preconditions["sha"], int(intent.preconditions["pr"]))
+                    self._post_intent(state, intent)
+                    state.phase = "proposed"
+                    self.store.save_story(state)
+                    self.store.journal(story, "proposal-completed-on-resume", {"op": intent.op})
+            if state.active and state.phase not in ("claim-incomplete",):
                 self._check_revisions(state)
             return state
 
     def rebase_revisions(self, story: str, reason: str) -> StoryState:
         """Explicit, journaled acceptance of changed revisions after a human verified them."""
         with self.store.locked(self):
+            self.require_not_live("rebase-revisions")
             state = self._story(story)
             self._require_phase(state, *ACTIVE_PHASES)
-            fresh = self._fresh_snapshot()
-            entry = fresh.by_id().get(story)
-            if entry is None:
+            fresh, current = self._current_revisions(story)
+            if story not in fresh.by_id():
                 raise Refused(f"{story} is no longer in the snapshot")
-            current = revisions_of(closure(fresh, entry))
             changed = revision_diff(state.revisions, current)
             state.revisions = current
+            for intent in state.pending_intents():
+                if "revisions" in intent.preconditions:
+                    intent.preconditions["revisions"] = dict(current)
             self.store.save_story(state)
             self.store.journal(story, "revisions-rebased", {"reason": reason, "changed": changed})
             return state
 
     def status(self) -> dict:
-        return {"run": self.run.__dict__, "stories": [s.to_dict() for s in self.store.list_stories()], "journal_events": self.store.journal_count(), "live": self.live}
+        return {"run": self.run.__dict__, "environment": self.environment, "stories": [s.to_dict() for s in self.store.list_stories()], "journal_events": self.store.journal_count(), "live": self.live, "gaps": list(LIVE_EXECUTION_GAPS)}

@@ -42,10 +42,10 @@ class CliTests(unittest.TestCase):
         self.assertEqual(out["decisions"][0]["outcome"], "awaiting-owner-acceptance")
 
     def test_write_commands_need_live(self):
-        code, out = run_cli("--policy", str(self.policy), "--run-id", "r", "claim", "OM-01.02", "--receipt", "{}", "--worktree", "w", "--branch", "b", "--baseline", "c")
+        code, out = run_cli("--policy", str(self.policy), "--run-id", "r", "reserve", "OM-01.02", "--baseline", "c")
         self.assertEqual(code, 3)
         self.assertIn("--live", out["error"]["message"])
-        for argv in (["repair", "OM-01.02", "--receipt", "{}"], ["resume", "OM-01.02"], ["rebase-revisions", "OM-01.02", "--reason", "r"], ["cancel-run", "--reason", "r"], ["probe-write", "--issue", "106"]):
+        for argv in (["repair", "OM-01.02", "--receipt", "{}"], ["resume", "OM-01.02"], ["rebase-revisions", "OM-01.02", "--reason", "r"], ["cancel-run", "--reason", "r"], ["probe-write", "--issue", "106"], ["block", "OM-01.02", "--reason", "r"], ["cancel", "OM-01.02", "--reason", "r"]):
             code, out = run_cli("--policy", str(self.policy), "--run-id", "r", *argv)
             self.assertEqual(code, 3, argv)
             self.assertIn("--live", out["error"]["message"])
@@ -55,7 +55,29 @@ class CliTests(unittest.TestCase):
         from automation.unattended.cli import WRITE_COMMANDS
 
         self.assertIn("repair", WRITE_COMMANDS)
-        self.assertNotIn("record-checks", [a for a in cli.build_parser()._subparsers._group_actions[0].choices])
+        choices = list(cli.build_parser()._subparsers._group_actions[0].choices)
+        self.assertNotIn("record-checks", choices)
+        self.assertNotIn("claim", choices)
+        self.assertIn("reserve", choices)
+        self.assertIn("bind-receipt", choices)
+
+    def test_live_state_commands_refuse_on_the_real_transport_before_any_gh_call(self):
+        """The CLI only ever builds the live gh transport; every state command must refuse."""
+        import automation.unattended.cli as cli_mod
+        from automation.unattended.github import GhCliTransport
+
+        calls = []
+        original = GhCliTransport._run
+        GhCliTransport._run = lambda self, args, stdin=None: calls.append(args) or "{}"
+        try:
+            with tempfile.TemporaryDirectory() as state_dir:
+                for argv in (["reserve", "OM-01.02", "--baseline", "c"], ["resume", "OM-01.02"], ["cancel-run", "--reason", "r"]):
+                    code, out = run_cli("--policy", str(self.policy), "--state-dir", state_dir, "--run-id", "r", "--live", *argv)
+                    self.assertEqual(code, 3, argv)
+                    self.assertEqual(out["error"]["code"], "live-execution-disabled", argv)
+        finally:
+            GhCliTransport._run = original
+        self.assertEqual(calls, [])
 
     def test_state_commands_need_run_id(self):
         code, out = run_cli("--policy", str(self.policy), "status")
@@ -99,45 +121,39 @@ class ProbeTests(unittest.TestCase):
             write_probe(fake, 21, "run-x", "now")
         self.assertEqual(fake.comments[21], [])
 
-    def test_check_permissions_separates_basic_access_from_bounded(self):
-        def runner(argv, cwd, timeout):
-            if argv[:3] == ["gh", "auth", "status"]:
-                return subprocess.CompletedProcess(argv, 0, "ok", "")
-            if argv[:3] == ["gh", "api", "-i"]:
-                return subprocess.CompletedProcess(argv, 0, "HTTP/2.0 200\r\nx-oauth-scopes: repo, project, workflow\r\n\r\n" + json.dumps({"permissions": {"push": True}}), "")
-            return subprocess.CompletedProcess(argv, 0, json.dumps({"data": {"user": {"projectV2": {"id": "P", "title": "t", "viewerCanUpdate": True}}}}), "")
+    def test_check_permissions_never_qualifies_from_scope_headers(self):
+        """Round-1 findings R1-B6/E4/V2: scope names, push and a non-admin flag never prove a
+        bounded credential; activation is never allowed by this probe."""
+        def runner(scopes="repo, project", admin=False, can_update=True):
+            def run(argv, cwd, timeout):
+                if argv[:3] == ["gh", "auth", "status"]:
+                    return subprocess.CompletedProcess(argv, 0, "ok", "")
+                if argv[:3] == ["gh", "api", "-i"]:
+                    header = f"x-oauth-scopes: {scopes}\r\n" if scopes is not None else ""
+                    return subprocess.CompletedProcess(argv, 0, "HTTP/2.0 200\r\n" + header + "\r\n" + json.dumps({"permissions": {"push": True, "admin": admin}}), "")
+                return subprocess.CompletedProcess(argv, 0, json.dumps({"data": {"user": {"projectV2": {"id": "P", "title": "t", "viewerCanUpdate": can_update}}}}), "")
+            return run
 
-        report = check_permissions("o", "r", "o", 2, runner)
-        self.assertTrue(report["basic_access"])
-        self.assertFalse(report["bounded"])
-        self.assertFalse(report["unattended_activation_allowed"])
+        for scopes, admin, can_update in (("repo, project", False, True), ("repo, read:project", False, False), ("repo, project, workflow", True, True), (None, False, False)):
+            report = check_permissions("o", "r", "o", 2, runner(scopes, admin, can_update))
+            self.assertTrue(report["basic_access"], (scopes, report["problems"]))
+            self.assertFalse(report["bounded"], scopes)
+            self.assertFalse(report["unattended_activation_allowed"], scopes)
+            self.assertFalse(report["denial_tested"])
+            self.assertFalse(report["resource_scope_verified"])
+            self.assertTrue(any("denial" in r for r in report["bounded_reasons"]))
+        report = check_permissions("o", "r", "o", 2, runner("repo, project, workflow", True, True))
         self.assertEqual(report["excess"], ["workflow"])
-
-        def exact(argv, cwd, timeout):
-            if argv[:3] == ["gh", "api", "-i"]:
-                return subprocess.CompletedProcess(argv, 0, "HTTP/2.0 200\r\nx-oauth-scopes: repo, project\r\n\r\n" + json.dumps({"permissions": {"push": True, "admin": False}}), "")
-            return runner(argv, cwd, timeout)
-
-        report = check_permissions("o", "r", "o", 2, exact)
-        self.assertTrue(report["bounded"] and report["unattended_activation_allowed"])
-        self.assertFalse(report["denial_tested"])
-
-        def unknown_scopes(argv, cwd, timeout):
-            if argv[:3] == ["gh", "api", "-i"]:
-                return subprocess.CompletedProcess(argv, 0, "HTTP/2.0 200\r\n\r\n" + json.dumps({"permissions": {"push": True}}), "")
-            return runner(argv, cwd, timeout)
-
-        report = check_permissions("o", "r", "o", 2, unknown_scopes)
-        self.assertTrue(report["basic_access"])
-        self.assertFalse(report["bounded"])
-        self.assertTrue(any("unknown is not bounded" in r for r in report["bounded_reasons"]))
+        self.assertTrue(any("admin" in r for r in report["bounded_reasons"]))
+        report = check_permissions("o", "r", "o", 2, runner(None))
+        self.assertTrue(any("cannot be read" in r for r in report["bounded_reasons"]))
 
         def denied(argv, cwd, timeout):
             if argv[:3] == ["gh", "api", "-i"]:
                 return subprocess.CompletedProcess(argv, 0, "HTTP/2.0 200\r\nx-oauth-scopes: repo\r\n\r\n" + json.dumps({"permissions": {"push": False}}), "")
-            return runner(argv, cwd, timeout)
+            return runner()(argv, cwd, timeout)
 
         report = check_permissions("o", "r", "o", 2, denied)
         self.assertFalse(report["basic_access"])
-        self.assertFalse(report["unattended_activation_allowed"])
         self.assertTrue(any("project" in p for p in report["problems"]))
+        self.assertIn("Projects: read", " ".join(report["minimum"]["fine_grained"]))
