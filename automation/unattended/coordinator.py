@@ -85,11 +85,17 @@ WorktreeCheck = Callable[[str, str], tuple[bool, str]]
 # protocol itself (authorize under the lock before delegate_task, bind the receipt afterwards,
 # keep ownership until task_status/task_cancel report a terminal state) is supported by the
 # tools and implemented below, but it has not been qualified with an actual worker.
+OPERATING_AGREEMENT = "trusted-machine operating agreement accepted by the owner on 2026-11-06 (spec-eng-01-trusted-operation.md)"
+# Why real-transport state commands are still refused, stated under the accepted agreement. These are
+# the current reasons, not the superseded strict prerequisites (hard child bounds, exhaustive
+# credential-denial qualification, automated Project Status synchronization). Accepting a residual
+# risk is not activation: the gate stays unconditional for this effort.
 LIVE_EXECUTION_GAPS = (
-    "no hard deadline or resource bound on a delegated child: delegate_task timeoutMs limits the wait in mode=wait only and does not cancel the child",
-    "credential confinement of a delegated child is not established: the child runs with the coordinator's credentials and runtime mode",
-    "pre-launch task authorization, receipt binding, terminal task evidence (task_status workState result_available; task_cancel reporting a terminal state) and the no-launch attestation are implemented as protocol but not qualified with an actual bounded worker; launches themselves are invisible to this tool, which bounds only what can be bound, and receipts, terminal evidence and no-launch attestations are the coordinator's reports",
-    "no bounded GitHub credential has passed the permission probe (denial of forbidden operations untested)",
+    "live execution is disabled for this effort: product dispatch and every real-transport state command stay refused until the engineering-only lifecycle smoke (real T3 receipts and terminal evidence, exact-SHA checks and a fresh independent review) is published and the owner separately authorizes activation",
+    "accepted residual risk, not a control: budgets are coordinator-enforced best effort (stop dispatch and request cancellation on expiry); a coordinator failure can leave a worker running; T3 timeoutMs bounds only the wait",
+    "accepted residual risk, not a control: the operator's development machine is trusted; worktrees isolate files, not host credentials; the child runs with the machine's credentials and no credential confinement is claimed",
+    "disclosed, not certified: the operator credential is broad (repository admin, excess scopes); check-permissions reports facts only and never certifies a bounded credential; restricted credentials are used where practical",
+    "manual by agreement: Project Status and acceptance are owner actions; machine comments are evidence proposals, not synchronization",
 )
 TERMINAL_TASK_STATES = ("result_available", "completed", "failed", "cancelled", "terminal")
 CLEANUP_KINDS = ("release", "block")
@@ -204,7 +210,7 @@ class Coordinator:
         """Every state-advancing operation and every recovery refuses a production transport.
         No live state can exist, so there is nothing a bounded cleanup could release there."""
         if self.environment == "live":
-            raise Refused(f"{operation}: live execution is disabled; the T3 execution protocol and a bounded credential are not qualified", code="live-execution-disabled", gaps=list(LIVE_EXECUTION_GAPS))
+            raise Refused(f"{operation}: live execution is disabled for this effort ({OPERATING_AGREEMENT}); accepting residual risk is not activation", code="live-execution-disabled", agreement=OPERATING_AGREEMENT, gaps=list(LIVE_EXECUTION_GAPS))
 
     def _reload_run(self) -> None:
         run = self.store.load_run()
@@ -1029,4 +1035,4 @@ class Coordinator:
     def status(self) -> dict:
         with self.store.locked(self):
             counts = self._counts()
-        return {"run": self.run.__dict__, "budgets": counts, "environment": self.environment, "stories": [s.to_dict() for s in self.store.list_stories()], "journal_events": self.store.journal_count(), "live": self.live, "gaps": list(LIVE_EXECUTION_GAPS)}
+        return {"run": self.run.__dict__, "budgets": counts, "environment": self.environment, "stories": [s.to_dict() for s in self.store.list_stories()], "journal_events": self.store.journal_count(), "live": self.live, "agreement": OPERATING_AGREEMENT, "gaps": list(LIVE_EXECUTION_GAPS)}

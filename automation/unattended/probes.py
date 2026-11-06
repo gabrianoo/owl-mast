@@ -116,6 +116,8 @@ def check_permissions(owner: str, repo: str, project_owner: str, project_number:
     report["bounded_reasons"].append("resource scope (single repository, single Project) not verified")
     report["bounded"] = False
     report["unattended_activation_allowed"] = False
+    report["owner_acceptance"] = ("permission facts only: this report never certifies bounded or activation; under the trusted-machine operating agreement (2026-11-06) a broad "
+                                  "credential is disclosed as broad and used where no restricted one is practical, which is an accepted residual risk, not a verdict of this probe")
     report["enforcement"] = ("basic_access is an observation that the identity can act. bounded requires denial testing and resource-scope verification that this probe does not perform; "
                              "scope headers and the admin flag alone never qualify a credential. The policy restricts what the tool writes; the credential boundary is enforced only by the token the operator provisions.")
     return report

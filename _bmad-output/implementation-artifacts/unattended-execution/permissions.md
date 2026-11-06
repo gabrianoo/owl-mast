@@ -1,5 +1,7 @@
 # ENG-01 permissions: minimum, observed, blocker (remediation pass 1, repair pass 1; unchanged observations)
 
+> **Supersession (2026-11-06).** The owner accepted the trusted-machine operating agreement (`../spec-eng-01-trusted-operation.md`). Where this document lists hard child deadline/resource bounds, credential confinement, denial-tested bounded credentials or automated Project Status synchronization as *prerequisites*, they are now accepted residual risks or manual owner steps; the controls, refusals and guards described here remain in force and nothing historical below is rewritten. Activation remains disabled.
+
 ## GitHub: what this tool needs
 
 | Need | Minimum | Observed on 2026-11-06 (`check-permissions`) |
@@ -13,7 +15,7 @@ Pushing implementation branches and opening PRs belongs to the implementer ident
 
 Verdicts: `basic_access: true`; `bounded: false`; `denial_tested: false`; `resource_scope_verified: false`; `unattended_activation_allowed: false`. Reasons recorded: admin on the repository; excess scopes `admin:public_key`, `gist`, `read:org`, `workflow`; classic `repo` is broad by definition; the identity can update the Project; denial untested; resource scope unverified. The probe never grants `bounded` or activation from scope headers or the admin flag; both require a qualification it does not perform. Full record: `evidence/check-permissions-2026-11-06.json`.
 
-## Candidate bounded credentials (proposals, none provisioned or qualified)
+## Candidate bounded credentials (proposals, none provisioned or qualified; under the agreement, use restricted credentials where practical and disclose broad ones as broad, never certify them bounded)
 
 GitHub documents, under "Fine-grained personal access tokens limitations", that "Using fine-grained personal access token to access Projects owned by a user account" is a current gap ([managing personal access tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)). Project 2 is owned by the user account, so a fine-grained PAT cannot be assumed to read it. Classic scopes, quoted from the primary source ([Scopes for OAuth apps](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps), read 2026-11-06): `read:project` "Grants read only access to user and organization projects"; `project` "Grants read/write access to user and organization projects"; `repo` "Grants full access to public and private repositories …" and "This scope also grants the ability to manage projects owned by users." Scopes grant a union of capabilities: adding `read:project` next to `repo` narrows nothing, so **no classic token that can post issue comments (which needs `repo`) is read-only on a user-owned Project**.
 

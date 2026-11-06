@@ -1,6 +1,9 @@
 # Unattended execution policy for Owl Mast (ENG-01). Loaded by `python3 -m automation.unattended`.
 # Empty allowlist: nothing is dispatchable. See docs/unattended-execution.md for the semantics and
 # automation/examples/first-run-om-01-02.toml for the candidate first activation.
+# Operating agreement (owner-accepted 2026-11-06): the operator's machine is trusted, budgets are
+# coordinator-enforced best effort, Status/acceptance stay manual. Real-transport state commands remain
+# refused (live gate) regardless of this file; the default allowlist stays empty.
 
 [repository]
 owner = "gabrianoo"
@@ -19,7 +22,7 @@ max_stories_per_run = 1
 max_concurrent_implementers = 1   # fixed: one active implementer per story and per run
 max_repair_rounds = 2             # ceiling enforced by the loader
 max_delegated_tasks = 6           # implementer + reviewer turns per run
-max_wall_clock_minutes = 240
+max_wall_clock_minutes = 240      # best effort: stops admissions/authorizations; cannot stop a launched child
 
 [targets.implementer]
 provider = "claudeAgent"
