@@ -12,17 +12,24 @@ real T3 tasks. Unit tests drive it with fixture inputs and are labelled fixtures
 Story namespace: a fixture-only epic E99 with story OM-99.01, never a product identity.
 There is no internal delegation, waiting or looping here.
 
-    python3 -m automation.tests.lifecycle_smoke prepare   --dir D [--worktree W --branch B] [--check-command C ...]
-    python3 -m automation.tests.lifecycle_smoke bind      --dir D --receipt R.json --worktree W --branch B [--authorization ID] --source real|fixture
-    python3 -m automation.tests.lifecycle_smoke head      --dir D --sha SHA --task-evidence E.json --source real|fixture
-    python3 -m automation.tests.lifecycle_smoke check     --dir D --sha SHA
-    python3 -m automation.tests.lifecycle_smoke authorize-review --dir D --sha SHA
-    python3 -m automation.tests.lifecycle_smoke bind      --dir D --receipt R.json [--authorization ID] --source real|fixture      (reviewer)
-    python3 -m automation.tests.lifecycle_smoke review    --dir D --sha SHA --verdict approved|changes-requested --report REF --task-evidence E.json --source real|fixture
-    python3 -m automation.tests.lifecycle_smoke cancel    --dir D --reason R [--task-evidence E.json] [--no-launch N.json] --source real|fixture
-    python3 -m automation.tests.lifecycle_smoke terminal  --dir D --task-evidence E.json --source real|fixture
-    python3 -m automation.tests.lifecycle_smoke restart   --dir D          (fresh process: reload persisted transport and state, resume)
-    python3 -m automation.tests.lifecycle_smoke status    --dir D
+``--dir`` is a global option and comes BEFORE the operation:
+
+    python3 -m automation.tests.lifecycle_smoke --dir D prepare   [--worktree W --branch B] [--check-command C ...]
+    python3 -m automation.tests.lifecycle_smoke --dir D bind      --receipt R.json --worktree W --branch B [--authorization ID] --source real|fixture
+    python3 -m automation.tests.lifecycle_smoke --dir D head      --sha SHA --task-evidence E.json --source real|fixture
+    python3 -m automation.tests.lifecycle_smoke --dir D check     --sha SHA
+    python3 -m automation.tests.lifecycle_smoke --dir D authorize-review --sha SHA
+    python3 -m automation.tests.lifecycle_smoke --dir D bind      --receipt R.json [--authorization ID] --source real|fixture      (reviewer)
+    python3 -m automation.tests.lifecycle_smoke --dir D review    --sha SHA --verdict approved|changes-requested --report REF --task-evidence E.json --source real|fixture
+    python3 -m automation.tests.lifecycle_smoke --dir D cancel    --reason R [--task-evidence E.json] [--no-launch N.json] --source real|fixture
+    python3 -m automation.tests.lifecycle_smoke --dir D terminal  --task-evidence E.json --source real|fixture
+    python3 -m automation.tests.lifecycle_smoke --dir D restart             (fresh process: reload persisted transport and state, resume)
+    python3 -m automation.tests.lifecycle_smoke --dir D status
+
+``status.evidence_class`` only summarizes the *declared* provenance of the inputs supplied
+so far (``real`` when every input was declared real); it says nothing about whether those
+inputs were accepted or whether the lifecycle succeeded. The story phase, the log and the
+refusals are the outcome; qualification is the published smoke plus its independent review.
 """
 
 from __future__ import annotations
@@ -33,14 +40,14 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from automation.tests.fake_transport import FakeTransport, issue
+from automation.tests.fake_transport import CrashAfterEffect, FakeTransport, issue
 from automation.tests.support import make_git_repo, write_policy
 from automation.unattended.backlog import take_snapshot
 from automation.unattended.coordinator import Coordinator, git_worktree_check
 from automation.unattended.errors import UnattendedError
 from automation.unattended.github import Comment, IssueRecord, ProjectItem, PullRequestRecord
 from automation.unattended.policy import load_policy
-from automation.unattended.state import Store, utcnow
+from automation.unattended.state import Store, atomic_write_text, utcnow
 
 STORY = "OM-99.01"
 EPIC = "E99"
@@ -67,16 +74,24 @@ class PersistedFakeTransport(FakeTransport):
             self._ticks = iter(range(raw["next_tick"], 10**9))
 
     def save(self) -> None:
+        """Atomic and durable (temp file, fsync, rename): an interrupted write leaves the
+        previous complete file, never a truncated one."""
         next_id, next_tick = next(self._ids), next(self._ticks)
         self._ids, self._ticks = iter(range(next_id, 10**9)), iter(range(next_tick, 10**9))
         raw = {"issues": {k: asdict(v) for k, v in self.issues.items()}, "items": {k: asdict(v) for k, v in self.items.items()},
                "comments": {k: [asdict(c) for c in v] for k, v in self.comments.items()}, "pull_requests": {k: asdict(v) for k, v in self.pull_requests.items()},
                "next_id": next_id, "next_tick": next_tick}
-        self.path.write_text(json.dumps(raw, indent=1, sort_keys=True), encoding="utf-8")
+        atomic_write_text(self.path, json.dumps(raw, indent=1, sort_keys=True))
 
     def post_comment(self, number: int, body: str) -> Comment:
+        """The landed effect is persisted before any simulated after-effect crash, so a reload
+        after such a crash sees the comment that GitHub would also still hold."""
+        crash = self.crash_after_post
+        self.crash_after_post = False
         comment = super().post_comment(number, body)
         self.save()
+        if crash:
+            raise CrashAfterEffect("process died after posting")
         return comment
 
 
@@ -158,8 +173,14 @@ class Smoke:
         return out
 
     def check(self, sha: str) -> dict:
-        meta = json.loads((self.dir / "smoke.json").read_text(encoding="utf-8"))
-        state = self.coordinator().run_checks(STORY, sha, meta["worktree"])
+        """Checks run in the worktree bound at ``bind`` (the claim is authoritative), not in
+        whatever ``prepare`` suggested: the real T3 checkout path is only known after launch."""
+        c = self.coordinator()
+        state = c.store.load_story(STORY)
+        bound = (state.claim or {}).get("worktree_path") if state else None
+        if not bound:
+            raise UnattendedError("check: no worktree is bound to the story yet; bind the implementer receipt first")
+        state = c.run_checks(STORY, sha, bound)
         out = {"phase": state.phase, "checks": state.checks[-1]}
         self.log("check", out)
         return out

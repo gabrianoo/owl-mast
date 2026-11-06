@@ -116,6 +116,105 @@ class LifecycleSmokeHelperTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
 
+class RepairRound1Tests(unittest.TestCase):
+    """Findings of the fresh review of 92c42d51: durable persistence, bound worktree, syntax."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name) / "smoke"
+        self.files = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write(self, name, payload) -> str:
+        path = self.files / name
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return str(path)
+
+    def test_interrupted_save_leaves_the_previous_complete_file(self):
+        run("--dir", self.dir, "prepare")
+        path = self.dir / "transport.json"
+        before = path.read_text(encoding="utf-8")
+        transport = smoke.PersistedFakeTransport(path)
+        import os
+
+        original = os.replace
+
+        def interrupted(src, dst):
+            raise OSError("simulated power loss before rename")
+
+        os.replace = interrupted
+        try:
+            with self.assertRaises(OSError):
+                transport.post_comment(9901, "lost")
+        finally:
+            os.replace = original
+        self.assertEqual(path.read_text(encoding="utf-8"), before)  # never truncated, never partial
+        self.assertEqual([p.name for p in self.dir.glob("transport.json*")], ["transport.json"])  # no temp file left behind
+        reloaded = smoke.PersistedFakeTransport(path)
+        self.assertEqual(len(reloaded.comments[9901]), 1)  # the claim marker from prepare
+
+    def test_landed_comment_survives_a_crash_after_post(self):
+        run("--dir", self.dir, "prepare")
+        path = self.dir / "transport.json"
+        transport = smoke.PersistedFakeTransport(path)
+        transport.crash_after_post = True
+        with self.assertRaises(smoke.CrashAfterEffect):
+            transport.post_comment(9901, "<!-- unattended kind=probe op=x run=r story=OM-99.01 -->\nlanded")
+        reloaded = smoke.PersistedFakeTransport(path)
+        self.assertEqual([c.body.splitlines()[-1] for c in reloaded.comments[9901]][-1], "landed")  # persisted before the crash, like GitHub
+        self.assertFalse(reloaded.crash_after_post)
+
+    def test_check_uses_the_bound_worktree_not_the_prepared_one(self):
+        from automation.tests.support import make_git_repo
+
+        code, out = run("--dir", self.dir, "prepare")  # prepare creates a synthetic worktree …
+        auth = out["authorization"]
+        actual = self.files / "actual-checkout"  # … but the real T3 checkout is elsewhere
+        sha = make_git_repo(actual, "smoke/om-99-01")
+        code, out = run("--dir", self.dir, "bind", "--receipt", self.write("impl.json", IMPLEMENTER), "--worktree", str(actual), "--branch", "smoke/om-99-01", "--authorization", auth, "--source", "fixture")
+        self.assertEqual((code, out["phase"]), (0, "claimed"))
+        run("--dir", self.dir, "head", "--sha", sha, "--task-evidence", self.write("e.json", {"taskId": "task-impl-1", "status": "result_available"}), "--source", "fixture")
+        code, out = run("--dir", self.dir, "check", "--sha", sha)
+        self.assertEqual((code, out["phase"]), (0, "checks-passed"), out)
+        self.assertEqual(out["checks"]["head_before"], sha)
+        meta = json.loads((self.dir / "smoke.json").read_text(encoding="utf-8"))
+        self.assertNotEqual(meta["worktree"], str(actual))  # the prepared path was not used
+
+    def test_check_before_bind_is_refused(self):
+        code, out = run("--dir", self.dir, "prepare")
+        code, out = run("--dir", self.dir, "check", "--sha", out["baseline"])
+        self.assertEqual(code, 3)
+        self.assertIn("bind the implementer receipt first", out["error"]["message"])
+
+    def test_documented_syntax_matches_the_parser(self):
+        doc = smoke.__doc__
+        examples = [line.strip() for line in doc.splitlines() if line.strip().startswith("python3 -m automation.tests.lifecycle_smoke")]
+        self.assertGreaterEqual(len(examples), 11)
+        parser = smoke.build_parser()
+        for example in examples:
+            argv = example.split("python3 -m automation.tests.lifecycle_smoke", 1)[1].split("(")[0].split()
+            self.assertEqual(argv[:2], ["--dir", "D"], example)
+            # the operation must be a known subcommand and --dir must precede it
+            self.assertIn(argv[2], parser._subparsers._group_actions[0].choices, example)
+            with self.assertRaises(SystemExit) as ctx:  # argparse exits 2 only for a syntax error; a parse error on the sample args is what we check next
+                parser.parse_args([argv[2], "--dir", "D"])  # the old (wrong) order must not parse
+            self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("evidence_class", doc)
+        self.assertIn("declared", doc)
+
+    def test_evidence_class_is_declared_provenance_not_success(self):
+        code, out = run("--dir", self.dir, "prepare")
+        # a rejected input declared "real" still counts as declared provenance only
+        code, out = run("--dir", self.dir, "bind", "--receipt", self.write("bad.json", {"taskId": "x"}), "--worktree", str(self.dir / "worktree"), "--branch", "smoke/om-99-01", "--source", "real")
+        self.assertEqual(code, 3)
+        code, status = run("--dir", self.dir, "status")
+        self.assertEqual(status["evidence_class"], "real")
+        self.assertEqual(status["story"]["phase"], "reserved")  # nothing advanced
+        self.assertEqual(status["log"][-1]["refused"]["code"], "receipt-invalid")
+
+
 class LiveGateWordingTests(unittest.TestCase):
     def test_gate_reasons_state_the_agreement_not_superseded_prerequisites(self):
         from automation.tests.fake_transport import small_backlog

@@ -4,7 +4,7 @@ type: 'feature'
 created: '2026-11-06'
 status: 'in-review'
 route: 'dispatch'
-review_loop_iteration: 0
+review_loop_iteration: 1
 baseline_commit: '93df46e0833c26c035d38b706b0586013d7e0d8e'
 context:
   - 'docs/engineering-tracking.md'
@@ -69,11 +69,18 @@ Implementation (2026-11-06, implementation task, stopped before 23:15:17Z):
 - Smoke helper: `automation/tests/lifecycle_smoke.py` (one operation per invocation; JSON-persisted fixture transport with no network; fixture-only `E99`/`OM-99.01`; policy allowing only that story; `prepare`/`bind`/`head`/`check`/`authorize-review`/`review`/`cancel`/`terminal`/`restart`/`status`; every supplied receipt, terminal evidence and attestation is kept verbatim under `inputs/` with its declared `--source real|fixture`; `status.evidence_class` is `real` only when every input was declared real). It never fabricates inputs and contains no delegation or wait loop; the coordinator supplies real T3 results.
 - Tests: `test_lifecycle_smoke.py` (7): full fixture lifecycle with two restarts, cancel refused without terminal evidence and `cancel_requested` not terminal, release replayed after restart, unlaunched authorization owned until attested, product identities and live transport out of reach, prepare refuses reuse, gate wording states the agreement and not the superseded prerequisites, permission report keeps facts separate from acceptance. Full suite: 219 pass (212 baseline + 7), none skipped; `git diff --check` clean; `backend/`, product specs, planning artifacts, `.github/workflows/ci.yml` (`ubuntu-26.04`) and `.java-version` unchanged against `93df46e0`.
 - Docs: `docs/unattended-execution.md` (dated supersession, status table with tested controls vs accepted residual risks vs pending real smoke vs disabled activation, smoke helper section, activation section), `docs/engineering-tracking.md` pointer, dated supersession notes at the top of `design.md`, `permissions.md`, `evidence.md`, and the foundation spec's Implementation Notes/Change Log. Historical results keep their labels; nothing is rewritten as if the real smoke passed.
+- Repair round 1 (2026-11-06/07): the three findings above fixed in `automation/tests/lifecycle_smoke.py` with six new tests (13 in the file); no gate, binding, budget or refusal changed.
 - Not done here (coordinator's part): the real lifecycle smoke with real T3 receipts, its publication, ENG-01/GitHub/Notion updates, review, push.
 
 ## Spec Change Log
 
 ## Review Triage Log
+
+- TO-R1-1 (fresh Astra review of 92c42d51, 2026-11-06): `PersistedFakeTransport.save` overwrote `transport.json` in place (an interrupted write truncates the JSON and restart cannot load it) and `post_comment` raised the simulated after-effect crash before saving, so a landed comment vanished on reload — **high** (restart fidelity and fault model), confirmed; patch; fixed: save uses the store's atomic durable write (temp file, fsync, rename) and the landed effect is persisted before the simulated crash (`test_interrupted_save_leaves_the_previous_complete_file`, `test_landed_comment_survives_a_crash_after_post`).
+- TO-R1-2: `check` used the `prepare`-time `smoke.json` worktree instead of the authoritative bound claim worktree, so a real T3 checkout bound at a different path made checks refuse — **high**, confirmed; patch; fixed: `check` reads the bound claim path and refuses before any bind (`test_check_uses_the_bound_worktree_not_the_prepared_one`, `test_check_before_bind_is_refused`).
+- TO-R1-3: module docstring examples placed `--dir` after the operation although the parser requires it before — **medium** (misleading docs), confirmed; patch; fixed: every example corrected and `test_documented_syntax_matches_the_parser` parses the documented order and rejects the old one.
+- Reviewer note on `evidence_class`: it summarizes declared input provenance only; a rejected input declared `real` still yields `real`. Clarified in the docstring and pinned by `test_evidence_class_is_declared_provenance_not_success`; no qualification claim is attached to it (patch, documentation).
+- Operational observation (parent, not a code finding): resuming this implementation owner through `t3_thread_send` returned a run id but no fresh task id despite the tool contract; the parent keeps the pending repair authorization `eng01-trusted-20261106:OM-99.01:3` unresolved rather than inventing a task id. Receipt freshness is not weakened and no bridge is added; this remains a narrow operational qualification gap of the installed T3 for resumed cross-parent children.
 
 ## Verification
 
