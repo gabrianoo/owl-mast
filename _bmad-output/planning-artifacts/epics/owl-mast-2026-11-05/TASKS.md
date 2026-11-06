@@ -4,7 +4,7 @@
 
 [Full scope, requirements, sequencing and decision gates](../../epics.md) · [Validation and story coverage](VALIDATION.md)
 
-The epic files are authoritative for acceptance criteria, prerequisites and task state. This index is a generated navigation view. Implementation tasks inherit their story's prerequisites; tasks within a story are ordered unless explicitly independent. The full plan's explicit qualification/contract-design exception permits only the designated design portion to run early against documentation or synthetic fixtures; production implementation and story completion retain their prerequisites. E19 is planned later evolution; E17 is optional T3 enrichment. Full native standalone and T3-hosted Claude/Codex support is planned in E07/E08, independently of E17.
+The epic files are authoritative for acceptance criteria, prerequisites and task definitions. GitHub owns execution progress and task completion; see the [tracking contract](../../../../docs/engineering-tracking.md). This index is a generated navigation view. Implementation tasks inherit their story's prerequisites; tasks within a story are ordered unless explicitly independent. The full plan's explicit qualification/contract-design exception permits only the designated design portion to run early against documentation or synthetic fixtures; production implementation and story completion retain their prerequisites. E19 is planned later evolution; E17 is optional T3 enrichment. Full native standalone and T3-hosted Claude/Codex support is planned in E07/E08, independently of E17.
 
 ## E01 — Install and operate a reproducible Owl Mast workspace
 

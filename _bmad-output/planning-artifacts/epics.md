@@ -17,11 +17,13 @@ inputDocuments:
 
 # Owl Mast — full feature epic and task plan
 
+Engineering execution status and priority are maintained in GitHub; see the [tracking contract](../../docs/engineering-tracking.md). Planning status fields and unchecked tasks below remain baseline specifications, not a live progress board.
+
 ## Scope and decision status
 
 The full agreed feature scope is planned now and implemented in dependency-ordered slices. Native Claude Code and Codex work directly from the executing machine through MCP, plugins/hooks and OpenTelemetry, both standalone and when hosted by T3. T3 is an optional evidence source. The earlier proposal to defer full standalone reporting is superseded. This is a reviewable planning draft, not implementation, completed integration qualification, or approval of unresolved product assumptions.
 
-The [architecture spine](architecture/architecture-owl-mast-2026-11-05/ARCHITECTURE-SPINE.md) is finalized as the implementation consistency contract after source reconciliation and independent review. This full backlog remains a planning draft for owner review and uses the explicit qualification gates below. The authoritative PRD/UX details remain binding when the inventories below abbreviate them. Separate frontend/backend builds and deployments and Testcontainers integration testing were adopted on 2026-11-06. Other UI proposals retain their original proposal status; separate deployment does not decide browser origins or authentication. No external tickets or live schedules are created.
+The [architecture spine](architecture/architecture-owl-mast-2026-11-05/ARCHITECTURE-SPINE.md) is finalized as the implementation consistency contract after source reconciliation and independent review. This full backlog remains a planning draft for owner review and uses the explicit qualification gates below. The authoritative PRD/UX details remain binding when the inventories below abbreviate them. Separate frontend/backend builds and deployments and Testcontainers integration testing were adopted on 2026-11-06. Other UI proposals retain their original proposal status; separate deployment does not decide browser origins or authentication. This planning phase created no external tickets or live schedules.
 
 The [native integration contract](architecture/architecture-owl-mast-2026-11-05/AGENT-INTEGRATION.md) describes the direct MCP/OTLP/plugin paths and distinguishes them from optional T3 enrichment. Detailed stories are split into one file per epic so separate implementation agents can work against bounded inputs. The [task index](epics/owl-mast-2026-11-05/TASKS.md) carries stable local story/task IDs and dependencies; these are planning IDs, not issued Jira tickets.
 
@@ -353,7 +355,7 @@ The plan does not add agent execution controls, a replacement tracker/harness, s
 
 ## Stories and task navigation
 
-The full plan contains **19 epics, 85 stories and 335 concrete tasks**. Each linked story includes its user outcome, requirement IDs, prerequisites, Given/When/Then acceptance criteria and implementation/verification tasks. All remain planned.
+The full plan contains **19 epics, 85 stories and 340 concrete tasks**. Each linked story includes its user outcome, requirement IDs, prerequisites, Given/When/Then acceptance criteria and implementation/verification tasks. All remain planned.
 
 ### E01 — Install and operate a reproducible Owl Mast workspace
 
