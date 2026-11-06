@@ -12,19 +12,31 @@ Phases (``state.PHASES``)::
     checks-failed | changes-requested ──authorize-repair (round ≤ 2, implementer authorization)──> repair-authorized ; otherwise ──> blocked
     repair-authorized ──bind-receipt──> claimed                                                     active task: implementer
     checks-failed | changes-requested ──record-head──> REFUSED (repair-required)
-    review-authorized | review-requested | review-approved ──record-head(new sha) | unreported worktree change──> implemented (evidence invalidated; pending proposal abandoned)
+    review-authorized | review-requested | review-approved ──record-head(new sha) | unreported worktree change──> implemented (evidence invalidated; pending proposal abandoned; pending review authorization revoked, still owned)
+    any phase with an unresolved authorization ──cancel | block | cancel-run | run-checks | authorize-* | propose──> REFUSED (authorization-unresolved); its late receipt binds for cleanup only; record-no-launch resolves it
     review-approved ──propose-evidence (revisions unchanged, worktree re-read, PR head/reviews/checks)──> proposed
     any active | conflict ──block | cancel (terminal evidence for the active task)──> blocked | cancelled (pending advancing intents abandoned)
     duplicate marker ──> conflict
 
 Task capacity is authorized durably BEFORE a launch (``reserve``, ``authorize-review``,
 ``authorize-repair``); every issued authorization counts against ``max_delegated_tasks``
-whether or not it is ever bound, ``bind-receipt`` consumes exactly one pending authorization,
-and budgets are derived from the story files under the lock, never from cached counters. A
-receipt is fresh only if its task id was never bound anywhere in the run (any story, any
-role, terminal or not). The active task (id and role) is tracked independently of the phase:
-HEAD recording, review verdicts and evidence invalidation never release ownership; only
-terminal task evidence does.
+whether or not it is ever bound, ``bind-receipt`` consumes exactly one authorization — the
+exact one named by its id (or the single unresolved one) — and budgets are derived from the
+story files under the lock, never from cached counters. A receipt is fresh only if its task id
+was never bound anywhere in the run (any story, any role, terminal or not).
+
+An issued authorization is an ownership obligation until it is resolved: a launch is invisible
+to this tool, so an unbound authorization may already have a running task behind it. It is
+resolved only by the exact receipt of its task followed by that task's terminal evidence, or by
+a positive no-launch reconciliation: the coordinator's explicit attestation
+(``record-no-launch`` naming the authorization id) or the structural proof that the operation
+which issued it never returned (a reservation still in ``claim-incomplete``). Cancelling or
+blocking the story, invalidating the evidence and stopping the run do not resolve it: they
+*revoke* it (no work is authorized any more), its late receipt binds for cleanup only, and the
+claim, the concurrency slot and the story stay owned — no release, no replacement authorization
+— until the obligation is resolved. The active task (id and role) is likewise independent of
+the phase: HEAD recording, review verdicts and evidence invalidation never release ownership;
+only terminal task evidence does.
 
 The wall-clock budget is a local expiry of the run: once exceeded (or once the run is
 cancelled) no authorization is issued or returned, every advancing operation refuses, and a
@@ -39,9 +51,10 @@ their preconditions (local phase, exact-SHA approval, revisions, worktree, PR) f
 terminal phase, its cleanup intent and the abandonment of every pending advancing intent
 persist in one write; a cancelled run or a terminal story never replays an advancing intent.
 On resume, a completed advancing intent whose transition did not persist is reconciled only
-behind the same guards as a fresh attempt (run not cancelled, matching phase, exact-SHA
-approval, no active task); otherwise its effect stays recorded as history and the phase is
-not advanced. A reservation whose revisions changed before it was checkpointed is cancelled
+behind the same gates as a fresh attempt (run neither cancelled nor past its wall clock,
+matching phase, exact-SHA approval, no active task or unresolved authorization, then fresh
+revisions with unique identities, the re-read worktree and the PR); otherwise its effect stays
+recorded as history and the phase is not advanced. A reservation whose revisions changed before it was checkpointed is cancelled
 together with the release it owes (when its claim comment landed) in one write.
 
 Every operation refuses a live transport (``live-execution-disabled``) and a run's state is
@@ -64,7 +77,7 @@ from .github import PullRequestRecord, Transport, render_marker
 from .policy import Policy, Target
 from .probes import run_commands
 from .receipts import validate_receipt
-from .state import ACTIVE_PHASES, Intent, Store, StoryState, utcnow
+from .state import ACTIVE_PHASES, UNRESOLVED_AUTHORIZATION_STATUSES, Intent, Store, StoryState, utcnow
 
 WorktreeCheck = Callable[[str, str], tuple[bool, str]]
 
@@ -75,7 +88,7 @@ WorktreeCheck = Callable[[str, str], tuple[bool, str]]
 LIVE_EXECUTION_GAPS = (
     "no hard deadline or resource bound on a delegated child: delegate_task timeoutMs limits the wait in mode=wait only and does not cancel the child",
     "credential confinement of a delegated child is not established: the child runs with the coordinator's credentials and runtime mode",
-    "pre-launch task authorization, receipt binding and terminal task evidence (task_status workState result_available; task_cancel reporting a terminal state) are implemented as protocol but not qualified with an actual bounded worker; launches themselves are invisible to this tool, which bounds only what can be bound",
+    "pre-launch task authorization, receipt binding, terminal task evidence (task_status workState result_available; task_cancel reporting a terminal state) and the no-launch attestation are implemented as protocol but not qualified with an actual bounded worker; launches themselves are invisible to this tool, which bounds only what can be bound, and receipts, terminal evidence and no-launch attestations are the coordinator's reports",
     "no bounded GitHub credential has passed the permission probe (denial of forbidden operations untested)",
 )
 TERMINAL_TASK_STATES = ("result_available", "completed", "failed", "cancelled", "terminal")
@@ -86,6 +99,7 @@ AUTHORIZATION_FLOW = {
     "review": ("review-authorized", "review-requested", "reviewer"),
     "repair": ("repair-authorized", "claimed", "implementer"),
 }
+STOP_REASONS = {"run-cancelled": "run is cancelled", "wall-clock-exceeded": "run wall clock budget exceeded"}
 
 
 def git_worktree_check(path: str, branch: str) -> tuple[bool, str]:
@@ -258,11 +272,13 @@ class Coordinator:
         authorization is counted from the moment it is saved, bound or not."""
         role = AUTHORIZATION_FLOW[purpose][2]
         self._wall_clock()  # an expired run returns no authorization, pending or new; the pending slot stays spent
-        pending = state.pending_authorization()
-        if pending is not None:
-            if (pending["purpose"], pending["sha"], pending["round"]) == (purpose, sha, round_):
-                return pending  # idempotent: the same unconsumed slot, no second count
-            raise Refused(f"{state.story} already has a pending {pending['purpose']} authorization {pending['id']}; bind or abandon it first", code="authorization-pending", authorization=pending)
+        unresolved = state.unresolved_authorization()
+        if unresolved is not None:
+            if unresolved["status"] == "pending" and (unresolved["purpose"], unresolved["sha"], unresolved["round"]) == (purpose, sha, round_):
+                return unresolved  # idempotent: the same unconsumed slot, no second count
+            if unresolved["status"] == "pending":
+                raise Refused(f"{state.story} already has a pending {unresolved['purpose']} authorization {unresolved['id']}; bind it or attest no launch (record-no-launch) first", code="authorization-pending", authorization=unresolved)
+            raise self._unresolved_refusal(state, f"authorize {purpose}", unresolved)  # revoked: a task may run for it; no replacement until it is resolved
         counts = self._counts()
         if counts["delegated_tasks"] + 1 > self.policy.max_delegated_tasks:
             raise BudgetExhausted(f"delegated task budget {self.policy.max_delegated_tasks} exhausted ({counts['delegated_tasks']} authorizations issued); no task may be launched", issued=counts["delegated_tasks"])
@@ -271,11 +287,72 @@ class Coordinator:
         state.authorizations.append(auth)
         return auth
 
-    def _abandon_authorization(self, state: StoryState, reason: str) -> dict | None:
+    def _revoke_authorization(self, state: StoryState, reason: str) -> dict | None:
+        """The pending authorization no longer authorizes work, but it stays an unresolved
+        obligation (a task may have been launched for it): its receipt binds for cleanup only
+        and nothing is released or re-issued until it is resolved. Stays counted."""
         pending = state.pending_authorization()
         if pending is not None:
-            pending["status"], pending["reason"] = "abandoned", reason  # stays counted: the slot was issued
+            pending["status"], pending["reason"], pending["revoked_at"] = "revoked", reason, self.now()
         return pending
+
+    def _resolve_not_launched(self, state: StoryState, auth: dict, reason: str, source: str) -> dict:
+        """Positive no-launch reconciliation of an unresolved authorization (in memory; the
+        caller saves and journals). The slot stays counted: an issued slot is spent."""
+        auth["status"], auth["reason"], auth["resolved_at"], auth["resolution"] = "not-launched", reason, self.now(), source
+        return auth
+
+    def _unreturned_authorization(self, state: StoryState) -> dict | None:
+        """The one structural no-launch proof this tool has: the implementation authorization
+        of a reservation that never returned (phase still ``claim-incomplete``, or ``conflict``
+        entered from it). The protocol launches only after ``reserve`` reports ``reserved``, so
+        no task can exist for it. Resolved in memory; the caller saves and journals."""
+        auth = state.unresolved_authorization()
+        if auth is None or auth["purpose"] != "implementation":
+            return None
+        never_returned = state.phase == "claim-incomplete" or (state.phase == "conflict" and (state.blocked or {}).get("from_phase") == "claim-incomplete")
+        if not never_returned:
+            return None
+        return self._resolve_not_launched(state, auth, "reservation never returned to the coordinator (claim-incomplete); the protocol launches only after reserve reports reserved", "structural")
+
+    def _apply_no_launch(self, state: StoryState, no_launch: dict, operation: str) -> dict:
+        """The coordinator's explicit attestation that no task was launched for exactly the
+        named authorization. It is a report, like a receipt or terminal evidence, and the only
+        positive no-launch evidence besides the structural proof; it never applies to a
+        consumed or already resolved authorization. In memory; the caller saves and journals."""
+        if not isinstance(no_launch, dict) or not no_launch.get("authorization"):
+            raise Refused(f'{operation}: a no-launch attestation names the exact authorization id: {{"authorization": "<id>", "reason": "..."}}', code="no-launch-invalid")
+        auth = state.authorization(str(no_launch["authorization"]))
+        if auth is None:
+            raise Refused(f"{operation}: {state.story} has no authorization {no_launch['authorization']}", code="no-launch-invalid", authorization=str(no_launch["authorization"]))
+        if auth["status"] not in UNRESOLVED_AUTHORIZATION_STATUSES:
+            raise Refused(f"{operation}: authorization {auth['id']} is {auth['status']} (task {auth.get('task_id')}); a no-launch attestation applies only to an unresolved authorization", code="no-launch-invalid", authorization=auth["id"], status=auth["status"], task_id=auth.get("task_id"))
+        return self._resolve_not_launched(state, auth, f"coordinator attested no launch: {no_launch.get('reason') or 'no reason given'}", "attested")
+
+    def _unresolved_refusal(self, state: StoryState, operation: str, unresolved: dict) -> Refused:
+        return Refused(f"{operation}: {unresolved['role']} authorization {unresolved['id']} of {state.story} ({unresolved['purpose']}, sha {unresolved['sha']}) is {unresolved['status']} and unresolved; a task may have been launched for it. "
+                       f"Bind its receipt (bind-receipt --authorization {unresolved['id']}) and present that task's terminal evidence, or attest that no task was launched (record-no-launch), before anything is released or re-issued",
+                       code="authorization-unresolved", authorization=unresolved["id"], role=unresolved["role"], purpose=unresolved["purpose"], sha=unresolved["sha"], status=unresolved["status"], task_id=None)
+
+    def _settle_authorizations(self, state: StoryState, operation: str, reason: str, no_launch: dict | None) -> list[str]:
+        """Before a story can be released: resolve the structurally unlaunched authorization,
+        apply an explicit no-launch attestation, then refuse while an authorization is still
+        unresolved — revoking a pending one durably so that its late receipt binds for
+        cleanup only. Returns the ids resolved here."""
+        resolved = []
+        unreturned = self._unreturned_authorization(state)
+        if unreturned is not None:
+            resolved.append(unreturned["id"])
+        if no_launch is not None:
+            resolved.append(self._apply_no_launch(state, no_launch, operation)["id"])
+        unresolved = state.unresolved_authorization()
+        if unresolved is None:
+            return resolved
+        if unresolved["status"] == "pending":
+            self._revoke_authorization(state, f"story {operation} requested: {reason}")
+            self.store.save_story(state)  # the revocation is durable even though the release is refused
+            self.store.journal(state.story, "authorization-revoked", {"authorization": unresolved["id"], "role": unresolved["role"], "purpose": unresolved["purpose"], "sha": unresolved["sha"], "operation": operation, "reason": reason})
+        raise self._unresolved_refusal(state, operation, unresolved)
 
     def _apply_task_evidence(self, state: StoryState, task_evidence: dict | None, operation: str) -> dict | None:
         """Terminal task evidence (task_status workState result_available or a terminal
@@ -289,7 +366,7 @@ class Coordinator:
         if (not isinstance(task_evidence, dict) or task_evidence.get("taskId") != active["taskId"]
                 or task_evidence.get("status") not in TERMINAL_TASK_STATES):
             raise Refused(f"{operation}: {active['role']} task {active['taskId']} of {state.story} is still owned; present terminal task evidence for exactly that task (task_status workState result_available or a terminal task_cancel result) before releasing it",
-                          code="worker-not-terminal", task_id=active["taskId"], role=active["role"])
+                          code="worker-not-terminal", task_id=active["taskId"], role=active["role"], authorization=active.get("authorization"))
         record = {"taskId": active["taskId"], "role": active["role"], "status": task_evidence["status"], "at": self.now(), "operation": operation, "authorization": active.get("authorization")}
         state.task_history.append(record)
         state.active_task = None
@@ -298,7 +375,14 @@ class Coordinator:
     def _require_no_active_task(self, state: StoryState, operation: str) -> None:
         if state.active_task is not None:
             raise Refused(f"{operation}: {state.active_task['role']} task {state.active_task['taskId']} of {state.story} is still active; present its terminal evidence (record-task-terminal) first",
-                          code="worker-not-terminal", task_id=state.active_task["taskId"], role=state.active_task["role"])
+                          code="worker-not-terminal", task_id=state.active_task["taskId"], role=state.active_task["role"], authorization=state.active_task.get("authorization"))
+
+    def _require_no_obligation(self, state: StoryState, operation: str) -> None:
+        """No active task and no unresolved authorization: nothing may run for the story."""
+        self._require_no_active_task(state, operation)
+        unresolved = state.unresolved_authorization()
+        if unresolved is not None:
+            raise self._unresolved_refusal(state, operation, unresolved)
 
     def _fresh_snapshot(self) -> Snapshot:
         return take_snapshot(self.transport, self.policy.repo_slug, self.now())
@@ -321,10 +405,11 @@ class Coordinator:
 
     def _invalidate_evidence(self, state: StoryState, head: str | None, reason: str) -> list[str]:
         """Check and review evidence no longer describe the source: phase ``implemented``,
-        approval cleared, pending proposal intents and a pending review authorization
-        abandoned. The active task is untouched (ownership is not evidence)."""
+        approval cleared, pending proposal intents abandoned and a pending review
+        authorization revoked (it stays an unresolved obligation: its reviewer may have been
+        launched for the old commit). The active task is untouched (ownership is not evidence)."""
         abandoned = state.abandon_advancing_intents(reason)
-        self._abandon_authorization(state, reason)
+        self._revoke_authorization(state, reason)
         state.phase, state.head_sha, state.approved_sha = "implemented", head, None
         return abandoned
 
@@ -446,30 +531,42 @@ class Coordinator:
             self._post_intent(state, intent, phase_after="reserved")
             return state
 
-    def bind_receipt(self, story: str, receipt: dict, worktree_path: str | None = None, branch: str | None = None, worktree_check: WorktreeCheck = git_worktree_check) -> StoryState:
-        """Bind the delegated task's receipt to the story's pending authorization, consuming
+    def bind_receipt(self, story: str, receipt: dict, worktree_path: str | None = None, branch: str | None = None, worktree_check: WorktreeCheck = git_worktree_check, authorization: str | None = None) -> StoryState:
+        """Bind the delegated task's receipt to the story's unresolved authorization, consuming
         it: implementation (needs the worktree identity), review or repair (re-check the
-        bound worktree). Exactly one bind per authorization; no authorization ⇒ refused. The
-        task id must be fresh run-wide (never bound in any story or role, terminal or not).
+        bound worktree). The receipt binds to the exact authorization its task was launched
+        for: ``authorization`` names its id and must match; without it the single unresolved
+        authorization is the only candidate (none is ever issued while one is unresolved, so a
+        late receipt can never land on a successor). A reviewer receipt carries the exact SHA
+        of its authorization, never the current head. Exactly one bind per authorization; no
+        unresolved authorization ⇒ refused. The task id must be fresh run-wide.
 
-        If the run stopped (cancelled or past its wall clock) after the authorization was
-        issued, the task may already have been launched: the receipt still binds, but for
-        cleanup only. The slot stays spent, the task id stays bound, the task becomes the
-        story's active task (released only by its terminal evidence) and the phase does not
-        advance; the call then refuses with ``bound_for_cleanup`` so the coordinator cancels
-        the task instead of working it. Nothing is refunded."""
+        If the authorization was revoked (story cancel/block requested, evidence invalidated)
+        or the run stopped (cancelled or past its wall clock) after it was issued, the task may
+        already have been launched: the receipt still binds, but for cleanup only. The slot
+        stays spent, the task id stays bound, the task becomes the story's active task
+        (released only by its terminal evidence) and the phase does not advance; the call then
+        refuses with ``bound_for_cleanup`` so the coordinator cancels the task instead of
+        working it. Nothing is refunded."""
         with self.store.locked(self):
             self.require_not_live("bind-receipt")
             self._reload_run()
             state = self._story(story)
             stop = self._run_stop()
-            auth = state.pending_authorization()
+            auth = state.unresolved_authorization()
             if auth is None:
                 if stop:
                     raise BudgetExhausted(f"bind-receipt: {self._stop_message(stop)}; nothing is authorized for {story}", code=stop, stop_reason=self.run.stop_reason)
-                raise Refused(f"{story} has no pending task authorization; reserve / authorize-review / authorize-repair must precede every launch, and each authorization binds once", code="no-authorization")
+                raise Refused(f"{story} has no unresolved task authorization; reserve / authorize-review / authorize-repair must precede every launch, and each authorization binds once", code="no-authorization")
+            if authorization is not None and str(authorization) != auth["id"]:
+                raise Refused(f"bind-receipt: authorization {authorization} is not the unresolved authorization of {story} ({auth['id']}: {auth['purpose']}, sha {auth['sha']}, {auth['status']}); a receipt binds only to the exact authorization its task was launched for",
+                              code="authorization-mismatch", expected=auth["id"], given=str(authorization))
             issued_phase, next_phase, role = AUTHORIZATION_FLOW[auth["purpose"]]
-            self._require_phase(state, issued_phase)
+            revoked = auth["status"] == "revoked"
+            if revoked:
+                self._require_phase(state, *ACTIVE_PHASES)  # the phase may have moved on (evidence invalidated); the story is still owned
+            else:
+                self._require_phase(state, issued_phase)
             self._require_no_active_task(state, "bind-receipt")
             target: Target = self.policy.implementer if role == "implementer" else self.policy.reviewer
             receipt = validate_receipt(receipt, target, role, self.store.bound_task_ids())  # run-wide freshness, every story and role, kept through terminal phases
@@ -483,28 +580,34 @@ class Coordinator:
                 raise Refused(f"worktree identity check failed: {why}", code="worktree-mismatch")
             if auth["purpose"] == "implementation":
                 state.claim.update({"worktree_path": worktree_path, "branch": branch, "claimed_at": self.now()})
-            auth["status"], auth["task_id"] = "consumed", receipt["taskId"]
+            auth["status"], auth["task_id"], auth["bound_at"] = "consumed", receipt["taskId"], self.now()
+            record = {**receipt, "authorization": auth["id"]}
             if role == "implementer":
-                state.implementer_receipts.append(receipt)
+                state.implementer_receipts.append(record)
             else:
-                state.reviewer_receipts.append({**receipt, "sha": auth["sha"]})
+                state.reviewer_receipts.append({**record, "sha": auth["sha"]})  # the exact commit this reviewer was authorized for
             state.active_task = {"taskId": receipt["taskId"], "role": role, "authorization": auth["id"], "bound_at": self.now()}
-            if stop:
-                # Authorized before the run stopped, possibly launched: keep the slot spent, the id bound
-                # and the task owned; authorize no work and leave the phase where the authorization was issued.
-                auth["cleanup_only"] = stop
-                state.active_task["cleanup_only"] = stop
+            cleanup = stop or ("authorization-revoked" if revoked else None)
+            if cleanup:
+                # Authorized before the stop or the revocation, possibly launched: keep the slot spent, the id bound
+                # and the task owned; authorize no work and leave the phase where it is.
+                auth["cleanup_only"] = cleanup
+                state.active_task["cleanup_only"] = cleanup
                 self.store.save_story(state)
                 self._counts()
                 self.store.save_run(self.run)
-                self.store.journal(story, "receipt-bound-cleanup-only", {"task": receipt["taskId"], "role": role, "purpose": auth["purpose"], "authorization": auth["id"], "stop": stop, "phase": state.phase})
-                raise BudgetExhausted(f"bind-receipt: {self._stop_message(stop)}; {role} task {receipt['taskId']} is bound to {story} for cleanup only (slot spent, ownership kept, phase {state.phase} unchanged, no work authorized): cancel it and present its terminal evidence",
-                                      code=stop, task_id=receipt["taskId"], role=role, bound_for_cleanup=True, stop_reason=self.run.stop_reason)
+                self.store.journal(story, "receipt-bound-cleanup-only", {"task": receipt["taskId"], "role": role, "purpose": auth["purpose"], "authorization": auth["id"], "sha": auth["sha"], "cleanup": cleanup, "revoked_reason": auth.get("reason") if revoked else None, "phase": state.phase})
+                why = self._stop_message(stop) if stop else f"authorization {auth['id']} was revoked ({auth.get('reason')})"
+                message = f"bind-receipt: {why}; {role} task {receipt['taskId']} is bound to {story} for cleanup only (slot spent, ownership kept, phase {state.phase} unchanged, no work authorized): cancel it and present its terminal evidence"
+                detail = {"task_id": receipt["taskId"], "role": role, "bound_for_cleanup": True, "authorization": auth["id"], "sha": auth["sha"]}
+                if stop:
+                    raise BudgetExhausted(message, code=stop, stop_reason=self.run.stop_reason, **detail)
+                raise Refused(message, code="authorization-revoked", reason=auth.get("reason"), **detail)
             state.phase = next_phase
             self.store.save_story(state)
             self._counts()
             self.store.save_run(self.run)
-            self.store.journal(story, "receipt-bound", {"task": receipt["taskId"], "role": role, "purpose": auth["purpose"], "authorization": auth["id"], "branch": branch, "worktree": worktree_path})
+            self.store.journal(story, "receipt-bound", {"task": receipt["taskId"], "role": role, "purpose": auth["purpose"], "authorization": auth["id"], "sha": auth["sha"], "branch": branch, "worktree": worktree_path})
             return state
 
     def record_task_terminal(self, story: str, task_evidence: dict) -> StoryState:
@@ -517,6 +620,21 @@ class Coordinator:
             record = self._apply_task_evidence(state, task_evidence, "record-task-terminal")
             self.store.save_story(state)
             self.store.journal(story, "task-terminal", record or {})
+            return state
+
+    def record_no_launch(self, story: str, no_launch: dict) -> StoryState:
+        """Positive no-launch reconciliation: the coordinator attests that no task was ever
+        launched for exactly the named unresolved authorization (``delegate_task`` was never
+        called, or returned no task). Resolves the obligation (status ``not-launched``), keeps
+        the slot counted and changes nothing else. Allowed on a stopped run (it is cleanup).
+        Like receipts and terminal evidence it is the coordinator's report; a false
+        attestation is not detectable."""
+        with self.store.locked(self):
+            self.require_not_live("record-no-launch")
+            state = self._story(story)
+            auth = self._apply_no_launch(state, no_launch, "record-no-launch")
+            self.store.save_story(state)
+            self.store.journal(story, "authorization-not-launched", {"authorization": auth["id"], "role": auth["role"], "purpose": auth["purpose"], "sha": auth["sha"], "reason": auth["reason"], "resolution": auth["resolution"]})
             return state
 
     # -- implementation ---------------------------------------------------------------------
@@ -554,7 +672,7 @@ class Coordinator:
             self._require_run_active("run-checks")
             state = self._story(story)
             self._require_phase(state, "implemented", "checks-passed", "checks-failed")
-            self._require_no_active_task(state, "run-checks")
+            self._require_no_obligation(state, "run-checks")  # a reviewer launched for an invalidated commit may still be running
             if not state.claim or not state.claim.get("worktree_path") or Path(cwd).resolve() != Path(state.claim["worktree_path"]).resolve():
                 raise Refused(f"checks must run in the claimed worktree {state.claim and state.claim.get('worktree_path')}")
             if state.head_sha != sha:
@@ -619,6 +737,7 @@ class Coordinator:
             pending = state.pending_authorization()
             if pending is not None and pending["purpose"] == "repair":
                 return state
+            self._require_no_obligation(state, "authorize-repair")  # before the round is counted or the block fallback runs
             if state.repair_rounds + 1 > self.policy.max_repair_rounds:
                 self.store.journal(story, "repair-refused", {"rounds": state.repair_rounds})
                 return self.block(story, f"repair rounds exhausted ({self.policy.max_repair_rounds}); unresolved after {state.phase}")
@@ -682,7 +801,7 @@ class Coordinator:
         self._require_phase(state, "review-approved")
         if state.head_sha != sha or state.approved_sha != sha:
             raise Refused(f"{operation}: approval is for {state.approved_sha}, head is {state.head_sha}, proposal names {sha}", code="approval-mismatch")
-        self._require_no_active_task(state, operation)
+        self._require_no_obligation(state, operation)
 
     def propose_evidence(self, story: str, sha: str, pr_number: int, tasks: list[str], summary: str) -> StoryState:
         with self.store.locked(self):
@@ -712,18 +831,19 @@ class Coordinator:
             return state
 
     # -- terminal -------------------------------------------------------------------------
-    def _terminal(self, story: str, phase: str, reason: str, op: str, kind: str, body: str, task_evidence: dict | None) -> StoryState:
+    def _terminal(self, story: str, phase: str, reason: str, op: str, kind: str, body: str, task_evidence: dict | None, no_launch: dict | None = None) -> StoryState:
         state = self._story(story)
         self._require_phase(state, *ACTIVE_PHASES, "conflict")
-        # refuses while a task is owned without its terminal evidence; evidence for no active task releases nothing
+        # refuses while an authorization is unresolved (revoking it) or a task is owned without its terminal evidence;
+        # evidence for no active task releases nothing
+        resolved = self._settle_authorizations(state, phase, reason, no_launch)
         evidence = self._apply_task_evidence(state, task_evidence, phase) if state.active_task is not None else None
         abandoned = state.abandon_advancing_intents(f"story {phase}: {reason}")
-        self._abandon_authorization(state, f"story {phase}: {reason}")
-        state.blocked = {"reason": reason, "at": self.now(), "from_phase": state.phase, "cancelled": phase == "cancelled", "task_evidence": task_evidence, "abandoned_intents": abandoned}
+        state.blocked = {"reason": reason, "at": self.now(), "from_phase": state.phase, "cancelled": phase == "cancelled", "task_evidence": task_evidence, "no_launch": no_launch, "abandoned_intents": abandoned, "authorizations_resolved": resolved}
         state.phase = phase
         intent = self._new_intent(state, op, kind, body)
-        self.store.save_story(state)  # terminal phase, cleanup intent and abandonments persist together
-        self.store.journal(story, phase, {"reason": reason, "abandoned_intents": abandoned, "task_evidence": evidence})
+        self.store.save_story(state)  # terminal phase, cleanup intent, abandonments and authorization resolutions persist together
+        self.store.journal(story, phase, {"reason": reason, "abandoned_intents": abandoned, "task_evidence": evidence, "authorizations_resolved": resolved})
         try:
             self._post_intent(state, intent)
         except UnattendedError as exc:
@@ -732,20 +852,21 @@ class Coordinator:
             self.store.journal(story, f"{phase}-github-write-failed", exc.as_dict())
         return state
 
-    def block(self, story: str, reason: str, task_evidence: dict | None = None) -> StoryState:
+    def block(self, story: str, reason: str, task_evidence: dict | None = None, no_launch: dict | None = None) -> StoryState:
         with self.store.locked(self):
             self.require_not_live("block")
-            return self._terminal(story, "blocked", reason, "block", "block", f"Blocked by run `{self.store.run_id}`: {reason}. Owner decision or new evidence required; nothing advanced. Project Status is owner-maintained.", task_evidence)
+            return self._terminal(story, "blocked", reason, "block", "block", f"Blocked by run `{self.store.run_id}`: {reason}. Owner decision or new evidence required; nothing advanced. Project Status is owner-maintained.", task_evidence, no_launch)
 
-    def cancel(self, story: str, reason: str, task_evidence: dict | None = None) -> StoryState:
+    def cancel(self, story: str, reason: str, task_evidence: dict | None = None, no_launch: dict | None = None) -> StoryState:
         with self.store.locked(self):
             self.require_not_live("cancel")
-            return self._terminal(story, "cancelled", reason, "release", "release", f"Claim released by run `{self.store.run_id}`: {reason}. No completion is implied. Project Status is owner-maintained.", task_evidence)
+            return self._terminal(story, "cancelled", reason, "release", "release", f"Claim released by run `{self.store.run_id}`: {reason}. No completion is implied. Project Status is owner-maintained.", task_evidence, no_launch)
 
-    def cancel_run(self, reason: str, task_evidence: dict[str, dict] | None = None) -> dict:
-        """Stop admissions and release every story whose task is terminal. Stories with an
-        active task and no terminal evidence stay owned and are reported; a cancelled run
-        never advances or replays an advancing intent for them."""
+    def cancel_run(self, reason: str, task_evidence: dict[str, dict] | None = None, no_launch: dict[str, dict] | None = None) -> dict:
+        """Stop admissions and release every story that owes nothing. Stories with an active
+        task and no terminal evidence, or with an unresolved authorization and no no-launch
+        attestation, stay owned (their pending authorization is revoked) and are reported; a
+        cancelled run never advances or replays an advancing intent for them."""
         with self.store.locked(self):
             self.require_not_live("cancel-run")
             self._reload_run()
@@ -757,11 +878,11 @@ class Coordinator:
                 if not (s.active or s.phase == "conflict"):
                     continue
                 try:
-                    released.append(self.cancel(s.story, reason, (task_evidence or {}).get(s.story)).to_dict())
+                    released.append(self.cancel(s.story, reason, (task_evidence or {}).get(s.story), (no_launch or {}).get(s.story)).to_dict())
                 except Refused as exc:
-                    if exc.code != "worker-not-terminal":
+                    if exc.code not in ("worker-not-terminal", "authorization-unresolved"):
                         raise
-                    awaiting.append({"story": s.story, "task_id": exc.detail.get("task_id"), "role": exc.detail.get("role")})
+                    awaiting.append({"story": s.story, "task_id": exc.detail.get("task_id"), "role": exc.detail.get("role"), "authorization": exc.detail.get("authorization"), "code": exc.code})
             return {"cancelled": released, "awaiting_worker_termination": awaiting}
 
     # -- recovery -------------------------------------------------------------------------
@@ -774,11 +895,11 @@ class Coordinator:
         owed. A done claim keeps its ``done`` record (history); a pending one is abandoned."""
         reason = f"revisions changed before the reservation completed: {sorted(changed)}"
         found = [c for c in self.transport.list_comments(state.issue) if c.marker == claim.marker]
+        resolved = self._settle_authorizations(state, "cancelled", reason, None)  # the reservation never returned: structurally no launch
         abandoned = state.abandon_advancing_intents(reason)
-        self._abandon_authorization(state, reason)
         state.phase = "cancelled"
         state.blocked = {"reason": reason, "at": self.now(), "from_phase": "claim-incomplete", "cancelled": True, "changed": sorted(changed),
-                         "claim_comment_ids": [c.comment_id for c in found], "release_owed": bool(found), "abandoned_intents": abandoned}
+                         "claim_comment_ids": [c.comment_id for c in found], "release_owed": bool(found), "abandoned_intents": abandoned, "authorizations_resolved": resolved}
         release = self._new_intent(state, "release", "release", f"Claim released by run `{self.store.run_id}`: {reason}. No completion is implied. Project Status is owner-maintained.") if found else None
         self.store.save_story(state)  # cancellation and the owed cleanup persist together
         self.store.journal(state.story, "resume-claim-abandoned", {"changed": sorted(changed), "claim_markers": len(found), "release_owed": release is not None})
@@ -801,13 +922,15 @@ class Coordinator:
     def resume(self, story: str, worktree_check: WorktreeCheck = git_worktree_check) -> StoryState:
         """Restart recovery. Order: live gate, ownership identity, cleanups replayed
         unconditionally, completed advancing intents reconciled with their transition only
-        behind the guards of a fresh attempt (run not cancelled; for a claim: unchanged
-        revisions, otherwise cancelled with its release; for a proposal: phase
-        ``review-approved``, exact-SHA approval and head, no active task), then pending
-        advancing replays only for an active story in a run that is neither cancelled nor past
-        its wall clock and only after their preconditions (local phase and exact-SHA approval,
-        revisions, worktree, PR) re-verify; otherwise they are abandoned. Finally the revision
-        verification."""
+        behind the gates of a fresh attempt (run neither cancelled nor past its wall clock; for
+        a claim: unchanged revisions, otherwise cancelled with its release; for a proposal:
+        phase ``review-approved``, exact-SHA approval and head, no active task or unresolved
+        authorization, then fresh revisions with unique identities, the re-read worktree and the
+        PR — a failing gate withholds the transition, keeps the posted effect as history and
+        has the same consequence as on a fresh attempt), then pending advancing replays only for
+        an active story in a run that is neither cancelled nor past its wall clock and only
+        after their preconditions (local phase and exact-SHA approval, revisions, worktree, PR)
+        re-verify; otherwise they are abandoned. Finally the revision verification."""
         with self.store.locked(self):
             self.require_not_live("resume")
             self._reload_run()
@@ -822,11 +945,12 @@ class Coordinator:
             stop = self._run_stop()
             # Completed advancing intents whose transition did not persist (legacy or partial state):
             # the effect is history and stays recorded; the transition applies only where a fresh
-            # attempt would be allowed. A cancelled run advances nothing (cancel-run finishes the story).
+            # attempt would be allowed. A stopped run (cancelled or past its wall clock) advances
+            # nothing (cancel-run finishes the story).
             claim = state.intent("claim")
             if claim is not None and claim.status == "done" and state.phase == "claim-incomplete":
-                if self.run.cancelled:
-                    self._withhold_reconciliation(state, claim, "run is cancelled")
+                if stop:
+                    self._withhold_reconciliation(state, claim, STOP_REASONS[stop])
                 else:
                     fresh, current = self._current_revisions(story)
                     changed = revision_diff(claim.preconditions.get("revisions", state.revisions), current)
@@ -836,16 +960,25 @@ class Coordinator:
             for intent in state.intents:
                 if intent.kind != "proposal" or intent.status != "done" or state.phase == "proposed":
                     continue
-                sha = intent.preconditions.get("sha")
-                if self.run.cancelled:
-                    self._withhold_reconciliation(state, intent, "run is cancelled")
-                elif state.phase != "review-approved" or state.approved_sha != sha or state.head_sha != sha or state.active_task is not None:
-                    self._withhold_reconciliation(state, intent, f"no current approval for {sha}: phase {state.phase}, approved {state.approved_sha}, head {state.head_sha}, active task {state.active_task}")
-                else:
-                    self._post_intent(state, intent, phase_after="proposed")
+                sha, pr = intent.preconditions.get("sha"), intent.preconditions.get("pr")
+                unresolved = state.unresolved_authorization()
+                if stop:
+                    self._withhold_reconciliation(state, intent, STOP_REASONS[stop])
+                    continue
+                if state.phase != "review-approved" or state.approved_sha != sha or state.head_sha != sha or state.active_task is not None or unresolved is not None or pr is None:
+                    self._withhold_reconciliation(state, intent, f"no current approval for {sha}: phase {state.phase}, approved {state.approved_sha}, head {state.head_sha}, active task {state.active_task}, unresolved authorization {unresolved and unresolved['id']}, pr {pr}")
+                    continue
+                try:  # the same current-evidence gates as a fresh proposal, with the same consequences (stale ⇒ refused, dirty ⇒ invalidated, objection ⇒ regression)
+                    self._check_revisions(state)  # fresh read, unique identities, revisions of the closure
+                    self._verify_worktree(state, sha, "resume-reconcile-proposal")
+                    self._validate_pr(state, sha, int(pr))
+                except UnattendedError as exc:
+                    self._withhold_reconciliation(state, intent, f"current evidence refused the transition: {exc.code}: {exc}")
+                    raise
+                self._post_intent(state, intent, phase_after="proposed")
             pending_advancing = state.pending_advancing_intents()
             if pending_advancing and (not state.active or stop):
-                why = {"run-cancelled": "run is cancelled", "wall-clock-exceeded": "run wall clock budget exceeded"}.get(stop) if stop else f"story is {state.phase}"
+                why = STOP_REASONS[stop] if stop else f"story is {state.phase}"
                 abandoned = state.abandon_advancing_intents(f"not replayed on resume: {why}")
                 self.store.save_story(state)
                 self.store.journal(story, "resume-advancing-abandoned", {"reason": why, "ops": abandoned})
@@ -860,8 +993,9 @@ class Coordinator:
                     self.store.journal(story, "reservation-completed-on-resume", {})
                 elif intent.kind == "proposal":
                     sha = intent.preconditions["sha"]
-                    if state.phase != "review-approved" or state.approved_sha != sha or state.head_sha != sha or state.active_task is not None:
-                        intent.status, intent.reason = "abandoned", f"no current approval for {sha}: phase {state.phase}, approved {state.approved_sha}, head {state.head_sha}, active task {state.active_task}"
+                    unresolved = state.unresolved_authorization()
+                    if state.phase != "review-approved" or state.approved_sha != sha or state.head_sha != sha or state.active_task is not None or unresolved is not None:
+                        intent.status, intent.reason = "abandoned", f"no current approval for {sha}: phase {state.phase}, approved {state.approved_sha}, head {state.head_sha}, active task {state.active_task}, unresolved authorization {unresolved and unresolved['id']}"
                         self.store.save_story(state)
                         self.store.journal(story, "resume-proposal-abandoned", {"op": intent.op, "reason": intent.reason})
                         continue

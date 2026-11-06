@@ -67,18 +67,21 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_help = "JSON {taskId, status} from task_status (workState result_available) or a terminal task_cancel result for the active task"
     rv0 = sub.add_parser("reserve", help="admit a dispatchable story and authorize its implementer task BEFORE delegating it")
     rv0.add_argument("story"); rv0.add_argument("--baseline", required=True)
-    bd = sub.add_parser("bind-receipt", help="bind the delegated task receipt to the pending authorization (implementation needs --worktree/--branch)")
+    bd = sub.add_parser("bind-receipt", help="bind the delegated task receipt to the exact authorization its task was launched for (implementation needs --worktree/--branch)")
     bd.add_argument("story"); bd.add_argument("--receipt", required=True); bd.add_argument("--worktree", default=None); bd.add_argument("--branch", default=None)
+    bd.add_argument("--authorization", default=None, help="id of the authorization the task was launched for (from reserve / authorize-review / authorize-repair); must match the story's unresolved authorization")
     rt = sub.add_parser("record-task-terminal", help="release the active task with its terminal evidence; changes nothing else"); rt.add_argument("story"); rt.add_argument("--task-evidence", required=True, help=evidence_help)
+    no_launch_help = 'JSON {"authorization": "<id>", "reason": "..."}: the coordinator attests that no task was launched for exactly that unresolved authorization'
+    nl = sub.add_parser("record-no-launch", help="resolve an unresolved authorization by attesting that no task was launched for it; changes nothing else"); nl.add_argument("story"); nl.add_argument("--no-launch", required=True, help=no_launch_help)
     rh = sub.add_parser("record-head", help="record the implementer's exact commit (its terminal evidence is required while it is active)"); rh.add_argument("story"); rh.add_argument("--sha", required=True); rh.add_argument("--task-evidence", default=None, help=evidence_help)
     rc = sub.add_parser("run-checks", help="execute the full configured check set on the exact claimed HEAD and record it"); rc.add_argument("story"); rc.add_argument("--sha", required=True); rc.add_argument("--cwd", required=True)
     ar = sub.add_parser("authorize-review", help="authorize the reviewer task at the checked commit BEFORE delegating it"); ar.add_argument("story"); ar.add_argument("--sha", required=True)
     rv = sub.add_parser("record-review", help="record the reviewer's verdict (its terminal evidence is required while it is active)"); rv.add_argument("story"); rv.add_argument("--sha", required=True); rv.add_argument("--verdict", choices=["approved", "changes-requested"], required=True); rv.add_argument("--report", required=True); rv.add_argument("--task-evidence", default=None, help=evidence_help)
     rp = sub.add_parser("authorize-repair", help="authorize a budgeted repair task BEFORE delegating it (blocks when rounds are exhausted)"); rp.add_argument("story")
     pe = sub.add_parser("propose-evidence"); pe.add_argument("story"); pe.add_argument("--sha", required=True); pe.add_argument("--pr", type=int, required=True); pe.add_argument("--task", action="append", default=[]); pe.add_argument("--summary", required=True)
-    b = sub.add_parser("block"); b.add_argument("story"); b.add_argument("--reason", required=True); b.add_argument("--task-evidence", default=None, help=evidence_help)
-    ca = sub.add_parser("cancel"); ca.add_argument("story"); ca.add_argument("--reason", required=True); ca.add_argument("--task-evidence", default=None, help=evidence_help)
-    cr = sub.add_parser("cancel-run"); cr.add_argument("--reason", required=True); cr.add_argument("--task-evidence", default=None, help="JSON {story: {taskId, status}}")
+    b = sub.add_parser("block"); b.add_argument("story"); b.add_argument("--reason", required=True); b.add_argument("--task-evidence", default=None, help=evidence_help); b.add_argument("--no-launch", default=None, help=no_launch_help)
+    ca = sub.add_parser("cancel"); ca.add_argument("story"); ca.add_argument("--reason", required=True); ca.add_argument("--task-evidence", default=None, help=evidence_help); ca.add_argument("--no-launch", default=None, help=no_launch_help)
+    cr = sub.add_parser("cancel-run"); cr.add_argument("--reason", required=True); cr.add_argument("--task-evidence", default=None, help="JSON {story: {taskId, status}}"); cr.add_argument("--no-launch", default=None, help='JSON {story: {"authorization": "<id>", "reason": "..."}}')
     rs = sub.add_parser("resume"); rs.add_argument("story")
     rb = sub.add_parser("rebase-revisions", help="explicitly accept changed GitHub revisions after human verification"); rb.add_argument("story"); rb.add_argument("--reason", required=True)
     sub.add_parser("status")
@@ -130,9 +133,11 @@ def main(argv: list[str] | None = None) -> int:
             coordinator.require_not_live("reserve")  # before any GitHub read on a live transport
             state = coordinator.reserve(args.story, _snapshot(args, transport, policy), args.baseline)
         elif args.command == "bind-receipt":
-            state = coordinator.bind_receipt(args.story, _load_json_arg(args.receipt), args.worktree, args.branch)
+            state = coordinator.bind_receipt(args.story, _load_json_arg(args.receipt), args.worktree, args.branch, authorization=args.authorization)
         elif args.command == "record-task-terminal":
             state = coordinator.record_task_terminal(args.story, _load_json_arg(args.task_evidence))
+        elif args.command == "record-no-launch":
+            state = coordinator.record_no_launch(args.story, _load_json_arg(args.no_launch))
         elif args.command == "record-head":
             state = coordinator.record_head(args.story, args.sha, _load_json_arg(args.task_evidence) if args.task_evidence else None)
         elif args.command == "run-checks":
@@ -146,11 +151,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "propose-evidence":
             state = coordinator.propose_evidence(args.story, args.sha, args.pr, args.task, args.summary)
         elif args.command == "block":
-            state = coordinator.block(args.story, args.reason, _load_json_arg(args.task_evidence) if args.task_evidence else None)
+            state = coordinator.block(args.story, args.reason, _load_json_arg(args.task_evidence) if args.task_evidence else None, _load_json_arg(args.no_launch) if args.no_launch else None)
         elif args.command == "cancel":
-            state = coordinator.cancel(args.story, args.reason, _load_json_arg(args.task_evidence) if args.task_evidence else None)
+            state = coordinator.cancel(args.story, args.reason, _load_json_arg(args.task_evidence) if args.task_evidence else None, _load_json_arg(args.no_launch) if args.no_launch else None)
         elif args.command == "cancel-run":
-            _json(coordinator.cancel_run(args.reason, _load_json_arg(args.task_evidence) if args.task_evidence else None))
+            _json(coordinator.cancel_run(args.reason, _load_json_arg(args.task_evidence) if args.task_evidence else None, _load_json_arg(args.no_launch) if args.no_launch else None))
             return 0
         elif args.command == "resume":
             state = coordinator.resume(args.story)

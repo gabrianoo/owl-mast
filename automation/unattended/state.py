@@ -37,7 +37,15 @@ PHASES = ("claim-incomplete", "reserved", "claimed", "implemented", "checks-pass
 ACTIVE_PHASES = ("claim-incomplete", "reserved", "claimed", "implemented", "checks-passed", "checks-failed", "review-authorized", "review-requested", "review-approved", "changes-requested", "repair-authorized")
 TERMINAL_PHASES = ("proposed", "blocked", "cancelled", "conflict")
 ADVANCING_KINDS = ("claim", "proposal")  # intents that move a story forward; never replayed from a terminal story or a cancelled run
-STORY_SCHEMA = 2
+# A task authorization is an ownership obligation from the moment it is issued until it is resolved:
+#   pending      issued, may be launched, its receipt binds into work
+#   revoked      no longer authorizes work (story stopped, evidence invalidated) but a launch may have
+#                happened: its receipt binds for cleanup only; UNRESOLVED
+#   consumed     a receipt was bound (task_id set); ownership continues as the active task
+#   not-launched the coordinator attested, or the state proves, that no task was launched for it
+UNRESOLVED_AUTHORIZATION_STATUSES = ("pending", "revoked")
+AUTHORIZATION_STATUSES = UNRESOLVED_AUTHORIZATION_STATUSES + ("consumed", "not-launched")
+STORY_SCHEMA = 3  # 3: authorization statuses above (2 used "abandoned", which hid a possibly launched task)
 
 
 def utcnow() -> str:
@@ -117,8 +125,8 @@ class StoryState:
     intents: list[Intent] = field(default_factory=list)
     proposal: dict | None = None
     # Task capacity and ownership, independent of ``phase`` and of HEAD notifications.
-    authorizations: list[dict] = field(default_factory=list)  # {id, role, purpose, sha, round, issued_at, status: pending|consumed|abandoned, task_id, reason}
-    active_task: dict | None = None  # {taskId, role, authorization, bound_at}; cleared only by terminal task evidence
+    authorizations: list[dict] = field(default_factory=list)  # {id, role, purpose, sha, round, issued_at, status (AUTHORIZATION_STATUSES), task_id, reason, ...}
+    active_task: dict | None = None  # {taskId, role, authorization, bound_at[, cleanup_only]}; cleared only by terminal task evidence
     task_history: list[dict] = field(default_factory=list)  # terminal evidence records {taskId, role, status, at, operation}
     schema: int = STORY_SCHEMA
     updated_at: str = field(default_factory=utcnow)
@@ -137,7 +145,16 @@ class StoryState:
         return next((i for i in self.intents if i.op == op), None)
 
     def pending_authorization(self) -> dict | None:
+        """The authorization that still authorizes work (a receipt binds into work)."""
         return next((a for a in self.authorizations if a["status"] == "pending"), None)
+
+    def unresolved_authorization(self) -> dict | None:
+        """The authorization that is still an ownership obligation: pending or revoked. At most
+        one exists per story, because no authorization is issued while one is unresolved."""
+        return next((a for a in self.authorizations if a["status"] in UNRESOLVED_AUTHORIZATION_STATUSES), None)
+
+    def authorization(self, auth_id: str) -> dict | None:
+        return next((a for a in self.authorizations if a["id"] == auth_id), None)
 
     def abandon_advancing_intents(self, reason: str) -> list[str]:
         """Mark every pending advancing intent abandoned (in memory; the caller saves)."""
@@ -156,6 +173,9 @@ class StoryState:
         expected = {f.name for f in fields(cls)}
         if raw.get("schema") != STORY_SCHEMA or set(raw) != expected:
             raise Refused(f"story state for {raw.get('story')!r} has schema {raw.get('schema')!r} / keys {sorted(set(raw) ^ expected)}; expected schema {STORY_SCHEMA} (no silent migration)", code="state-schema-mismatch")
+        bad = [a.get("status") for a in raw.get("authorizations", []) if a.get("status") not in AUTHORIZATION_STATUSES]
+        if bad:
+            raise Refused(f"story state for {raw.get('story')!r} carries authorization statuses {bad}; expected {list(AUTHORIZATION_STATUSES)} (no silent migration)", code="state-schema-mismatch")
         raw["intents"] = [Intent(**i) for i in raw.get("intents", [])]
         return cls(**raw)
 

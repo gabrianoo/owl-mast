@@ -394,7 +394,7 @@ class DenialOutageAndLiveGateTests(unittest.TestCase):
         self.assertEqual(self.h.store.load_story("OM-01.02").phase, "claimed")
         self.assertEqual(markers(self.h.fake, 21, "release"), [])
         result = self.h.coordinator.cancel_run("stop")
-        self.assertEqual(result["awaiting_worker_termination"], [{"story": "OM-01.02", "task_id": "task-impl-1", "role": "implementer"}])
+        self.assertEqual(result["awaiting_worker_termination"], [{"story": "OM-01.02", "task_id": "task-impl-1", "role": "implementer", "authorization": "run-1:OM-01.02:1", "code": "worker-not-terminal"}])
         self.assertTrue(self.h.store.load_run().cancelled)
         state = self.h.coordinator.cancel("OM-01.02", "stop", {"taskId": "task-impl-1", "status": "cancelled"})
         self.assertEqual(state.phase, "cancelled")

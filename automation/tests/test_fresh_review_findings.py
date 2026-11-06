@@ -144,7 +144,7 @@ class F1StaleClaimCancellationReleasesTheClaim(unittest.TestCase):
         self.h.fake.set_status_externally(21, "Blocked")
         state = fresh(self.h).resume(S, ok_worktree)
         self.assertEqual((state.phase, state.intent("claim").status, state.intent("release").status), ("cancelled", "done", "done"))
-        self.assertEqual(state.authorizations[0]["status"], "abandoned")
+        self.assertEqual((state.authorizations[0]["status"], state.authorizations[0]["resolution"]), ("not-launched", "structural"))  # reserve never returned: no launch could follow
         self.assertEqual((len(markers(self.h.fake, 21, "claim")), len(markers(self.h.fake, 21, "release"))), (1, 1))
         self.assertEqual(self.h.store.story_counts()["delegated_tasks"], 1)
         self.assertEqual(other_run(self.h)._active_foreign_claims(21, S), [])
@@ -242,7 +242,7 @@ class F2ReconciliationNeverAdvancesCancelledWork(unittest.TestCase):
         result = fresh(self.h).cancel_run("finish")
         self.assertEqual([s["phase"] for s in result["cancelled"]], ["cancelled"])
         state = self.h.store.load_story(S)
-        self.assertEqual((state.phase, state.intent("claim").status, state.authorizations[0]["status"]), ("cancelled", "done", "abandoned"))
+        self.assertEqual((state.phase, state.intent("claim").status, state.authorizations[0]["status"]), ("cancelled", "done", "not-launched"))
         self.assertEqual((len(markers(self.h.fake, 21, "claim")), len(markers(self.h.fake, 21, "release"))), (1, 1))
         self.assertEqual(self.h.store.story_counts()["delegated_tasks"], 1)
 
@@ -469,7 +469,7 @@ class F4ExpiredAuthorizationsBindForCleanupOnly(unittest.TestCase):
         state = self.h.store.load_story(S)
         self.assertEqual((state.phase, state.active_task["taskId"], state.active_task["cleanup_only"]), ("reserved", "task-impl-1", "run-cancelled"))
         result = fresh(self.h).cancel_run("finish")
-        self.assertEqual(result["awaiting_worker_termination"], [{"story": S, "task_id": "task-impl-1", "role": "implementer"}])
+        self.assertEqual(result["awaiting_worker_termination"], [{"story": S, "task_id": "task-impl-1", "role": "implementer", "authorization": "run-1:OM-01.02:1", "code": "worker-not-terminal"}])
         self.assertEqual(fresh(self.h).cancel(S, "finish", {"taskId": "task-impl-1", "status": "cancelled"}).phase, "cancelled")
         self.assertEqual(self.h.store.story_counts()["delegated_tasks"], 1)
         raw = json.loads(self.h.store.story_path(S).read_text())

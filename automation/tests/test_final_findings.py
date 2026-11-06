@@ -311,7 +311,7 @@ class D3ActiveTaskOwnershipIsIndependent(unittest.TestCase):
         c2 = fresh(self.h)
         with self.assertRaises(Refused) as ctx:
             c2.cancel("OM-01.02", "stop")
-        self.assertEqual(ctx.exception.detail, {"task_id": "task-impl-1", "role": "implementer"})
+        self.assertEqual(ctx.exception.detail, {"task_id": "task-impl-1", "role": "implementer", "authorization": "run-1:OM-01.02:1"})
         self.assertEqual(c2.status()["stories"][0]["active_task"]["taskId"], "task-impl-1")
         c2.record_head("OM-01.02", self.h.sha, {"taskId": "task-impl-1", "status": "result_available"})
         c2.run_checks("OM-01.02", self.h.sha, str(self.h.worktree), passing_runner)
@@ -328,7 +328,21 @@ class D3ActiveTaskOwnershipIsIndependent(unittest.TestCase):
         with self.assertRaises(Refused) as ctx:
             fresh(self.h).resume("OM-01.02", ok_worktree)
         self.assertEqual(ctx.exception.code, "state-schema-mismatch")
-        self.assertEqual(STORY_SCHEMA, 2)
+        self.assertEqual(STORY_SCHEMA, 3)
+        # schema 2 recorded a stopped-but-maybe-launched authorization as "abandoned"; such a file is refused, not reinterpreted as resolved
+        self.h.close(); self.h = Harness(small_backlog()); self.h.reserve()
+        path = self.h.store.story_path("OM-01.02")
+        raw = json.loads(path.read_text())
+        raw["schema"], raw["authorizations"][0]["status"] = 2, "abandoned"
+        path.write_text(json.dumps(raw))
+        with self.assertRaises(Refused) as ctx:
+            fresh(self.h).resume("OM-01.02", ok_worktree)
+        self.assertEqual(ctx.exception.code, "state-schema-mismatch")
+        raw["schema"] = STORY_SCHEMA  # right schema number, unknown status: still refused
+        path.write_text(json.dumps(raw))
+        with self.assertRaises(Refused) as ctx:
+            fresh(self.h).resume("OM-01.02", ok_worktree)
+        self.assertEqual(ctx.exception.code, "state-schema-mismatch")
 
 
 class D4ClaimCompletionIsAtomic(unittest.TestCase):
@@ -576,9 +590,12 @@ class D6CapacityIsAuthorizedBeforeLaunch(unittest.TestCase):
     def test_an_unbound_authorization_stays_spent_after_cancel(self):
         h = Harness(small_backlog(), allow='["OM-01.02", "OM-01.04"]', max_stories_per_run="2", max_delegated_tasks="2")
         try:
-            h.reserve("OM-01.02")  # slot 1 issued, never bound
-            h.coordinator.cancel("OM-01.02", "operator stop before launch")
-            self.assertEqual(h.store.load_story("OM-01.02").authorizations[0]["status"], "abandoned")
+            auth = h.reserve("OM-01.02").pending_authorization()  # slot 1 issued, never bound
+            with self.assertRaises(Refused) as ctx:  # the tool cannot see launches: an unbound slot is an obligation until it is resolved
+                h.coordinator.cancel("OM-01.02", "operator stop before launch")
+            self.assertEqual((ctx.exception.code, h.store.load_story("OM-01.02").authorizations[0]["status"]), ("authorization-unresolved", "revoked"))
+            h.coordinator.cancel("OM-01.02", "operator stop before launch", no_launch={"authorization": auth["id"], "reason": "delegate_task was never called"})
+            self.assertEqual(h.store.load_story("OM-01.02").authorizations[0]["status"], "not-launched")
             h.claim("OM-01.04")  # slot 2
             h.coordinator.record_head("OM-01.04", h.sha, h.terminal("OM-01.04"))
             h.coordinator.run_checks("OM-01.04", h.sha, str(h.worktree), passing_runner)
