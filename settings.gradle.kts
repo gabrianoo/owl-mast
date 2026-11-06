@@ -21,4 +21,24 @@ dependencyResolutionManagement {
 
 rootProject.name = "owl-mast"
 
+// The daemon JVM criteria (gradle/gradle-daemon-jvm.properties) only constrain major version and
+// vendor, so an installed Temurin 27 of another patch would satisfy them. Enforce the qualified
+// full version here; the backend build enforces the compiler and test launcher the same way.
+run {
+    val qualifiedRuntime = providers.gradleProperty("owlmast.qualified.jdk.runtime").get()
+    val qualifiedVendor = providers.gradleProperty("owlmast.qualified.jdk.vendor").get()
+    val actualRuntime = System.getProperty("java.runtime.version")
+    val actualVendor = System.getProperty("java.vendor")
+    if (actualRuntime != qualifiedRuntime || actualVendor != qualifiedVendor) {
+        throw GradleException(
+            "Gradle daemon JVM '$actualVendor $actualRuntime' is not the qualified JDK" +
+                " '$qualifiedVendor $qualifiedRuntime' (docs/toolchain-qualification.md)." +
+                " Install Eclipse Temurin $qualifiedRuntime, or run with" +
+                " -Porg.gradle.java.installations.auto-detect=false so Gradle provisions the pinned" +
+                " archive from gradle/gradle-daemon-jvm.properties instead of reusing another" +
+                " installation."
+        )
+    }
+}
+
 include("backend")

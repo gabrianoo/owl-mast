@@ -95,6 +95,11 @@ JAVA
 expect_gate_failure module-rules 'platform must not depend on feature packages|PlatformLeak' \
   :backend:test --tests com.aisquad.owlmast.architecture.FeatureModuleRulesTest
 
+echo "== qualified JDK gate (exact runtime version enforced on the daemon JVM)"
+fresh_copy
+expect_gate_failure jdk-pin 'is not the qualified JDK.*Eclipse Adoptium 27\.0\.0\+35' \
+  help -Powlmast.qualified.jdk.runtime=27.0.0+35
+
 if [ "$failures" -ne 0 ]; then
   echo "$failures gate check(s) did not behave as required"
   exit 1

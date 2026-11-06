@@ -1,3 +1,4 @@
+import com.aisquad.owlmast.buildlogic.QualifiedJdk
 import net.ltgt.gradle.errorprone.errorprone
 
 plugins {
@@ -23,6 +24,11 @@ java {
 dependencyLocking {
     lockAllConfigurations()
 }
+
+// Toolchains select major version and vendor only; the qualified patch is enforced on the actual
+// compiler and launchers by QualifiedJdk (buildSrc) using the pins in gradle.properties.
+val qualifiedJdkRuntime = providers.gradleProperty("owlmast.qualified.jdk.runtime")
+val qualifiedJdkVendor = providers.gradleProperty("owlmast.qualified.jdk.vendor")
 
 dependencies {
     implementation(platform(libs.spring.boot.bom))
@@ -87,7 +93,21 @@ tasks.named("check") {
     dependsOn(testing.suites.named("integrationTest"))
 }
 
+tasks.withType<JavaExec>().configureEach {
+    val runtimePin = qualifiedJdkRuntime
+    val vendorPin = qualifiedJdkVendor
+    doFirst {
+        QualifiedJdk.require(
+            javaLauncher.get().metadata, "Application launcher", runtimePin.get(), vendorPin.get())
+    }
+}
+
 tasks.withType<JavaCompile>().configureEach {
+    val runtimePin = qualifiedJdkRuntime
+    val vendorPin = qualifiedJdkVendor
+    doFirst {
+        QualifiedJdk.require(javaCompiler.get().metadata, "Compiler", runtimePin.get(), vendorPin.get())
+    }
     options.encoding = "UTF-8"
     options.compilerArgs.addAll(
         listOf(
@@ -107,6 +127,14 @@ tasks.withType<JavaCompile>().configureEach {
 }
 
 tasks.withType<Test>().configureEach {
+    val runtimePin = qualifiedJdkRuntime
+    val vendorPin = qualifiedJdkVendor
+    doFirst {
+        QualifiedJdk.require(javaLauncher.get().metadata, "Test launcher", runtimePin.get(), vendorPin.get())
+    }
+    // QualifiedJdkTest verifies the JVM that actually runs the tests against the same pin.
+    systemProperty("owlmast.qualified.jdk.runtime", qualifiedJdkRuntime.get())
+    systemProperty("owlmast.qualified.jdk.vendor", qualifiedJdkVendor.get())
     // Netty loads native libraries; JDK 24+ warns (and will block) without explicit native access.
     jvmArgs("--enable-native-access=ALL-UNNAMED")
     if (providers.gradleProperty("reactorDebug").isPresent) {

@@ -6,7 +6,7 @@ Qualified on 2026-11-06 for GitHub issue #20 (story OM-01.01, epic E01). Every p
 
 | Component | Pin | Where it is pinned | Primary source consulted |
 | --- | --- | --- | --- |
-| Java language/runtime | 27 (Eclipse Temurin 27.0.1+1, `jdk-27.0.1.0.2+1`) | `gradle/gradle-daemon-jvm.properties`, `backend/build.gradle.kts` toolchain, CI `setup-java` | https://api.adoptium.net/v3/info/release_versions?version=%5B27%2C28%29&release_type=ga (GA builds 27+35 and 27.0.1+1); https://api.adoptium.net/v3/assets/feature_releases/27/ga |
+| Java language/runtime | 27 (Eclipse Temurin 27.0.1+1, `jdk-27.0.1.0.2+1`; `java.runtime.version` `27.0.1.0.2+1`) | `gradle.properties` (`owlmast.qualified.jdk.runtime`/`vendor`, enforced on daemon, compiler, test and application launchers), `gradle/gradle-daemon-jvm.properties`, `backend/build.gradle.kts` toolchain, CI `setup-java` `27.0.1` | https://api.adoptium.net/v3/info/release_versions?version=%5B27%2C28%29&release_type=ga (GA builds 27+35 and 27.0.1+1); https://api.adoptium.net/v3/assets/feature_releases/27/ga |
 | Spring Boot | 4.1.2 | `gradle/libs.versions.toml` | https://docs.spring.io/spring-boot/system-requirements.html: "Spring Boot 4.1.2 requires at least Java 17 and is compatible with versions up to and including Java 27 … Gradle 8.x (8.14 or later) and 9.x"; BOM on Maven Central (`spring-boot-dependencies/4.1.2`) |
 | Gradle | 9.8.2 wrapper, `distributionSha256Sum` 21bd5da2de49b642904077f38c0efdc7778e92b3ed0889392dca61b97e389607, wrapper jar sha256 3b8a25775a69158b5ad2b1d17a80a88dc7b40a352a73eb27d06c612a7ce68e98 | `gradle/wrapper/gradle-wrapper.properties` | https://services.gradle.org/versions/current; https://docs.gradle.org/9.8.2/release-notes.html: "Java 27 is supported for both the Gradle daemon and Java toolchains" |
 | Toolchain provisioning | Foojay resolver convention plugin 1.0.0 | `settings.gradle.kts` | https://plugins.gradle.org/m2/org/gradle/toolchains/foojay-resolver-convention/…/maven-metadata.xml |
@@ -39,14 +39,22 @@ Gradle 9.8.2 … Daemon JVM: Compatible with Java 27, Eclipse Temurin (from grad
 
 ### JDK
 
-`./gradlew updateDaemonJvm --jvm-version=27 --jvm-vendor=adoptium` generated Foojay redirect ids; those ids resolved to the 27+35 GA build, so the properties file was rewritten with direct Adoptium release assets for 27.0.1+1 (Linux x64/aarch64, macOS aarch64) and 27+35 for Windows x64, the only Windows asset published at qualification time. Adoptium checksums for the pinned assets:
+`./gradlew updateDaemonJvm --jvm-version=27 --jvm-vendor=adoptium` generated Foojay redirect ids; those ids resolved to the 27+35 GA build, so the properties file was rewritten with direct Adoptium release assets for 27.0.1+1. Daemon criteria and toolchains only constrain the major version and vendor, so the exact runtime is enforced separately (review finding F3):
+
+- `settings.gradle.kts` fails the build unless the daemon JVM reports `java.runtime.version` `27.0.1.0.2+1` and `java.vendor` `Eclipse Adoptium`;
+- `backend/build.gradle.kts` checks the resolved compiler, test launcher and application launcher metadata (`javaRuntimeVersion`, vendor `Eclipse Temurin`) before each compile, test and run task;
+- `QualifiedJdkTest` checks the JVM that actually executes the tests against the pin the build passes in;
+- CI requests `java-version: '27.0.1'` with `check-latest: false`.
+
+Supported platforms are bounded by executable qualification: Linux x86_64 (this machine and GitHub `ubuntu-latest`). Linux aarch64 and macOS aarch64 have provisioning URLs for the same build but no executed build. Windows x86_64 and macOS x86_64 had no 27.0.1+1 asset on 2026-11-06 and are unsupported until one is pinned and qualified; an installed 27+35 is rejected by the guard. Adoptium checksums for the pinned assets:
 
 | Asset | sha256 |
 | --- | --- |
 | OpenJDK27U-jdk_x64_linux_hotspot_27.0.1.0.2_1.tar.gz | 30cb129f6cf299c852cec0feca9ea2a596d2ee9f26d8605d3a253951f6c8b20f |
 | OpenJDK27U-jdk_aarch64_linux_hotspot_27.0.1.0.2_1.tar.gz | 5ddacf925244a00b60cac828b61ff2f67a68cd32b8dfe5cee1405e333b4589e5 |
 | OpenJDK27U-jdk_aarch64_mac_hotspot_27.0.1.0.2_1.tar.gz | c2619cb73ff1d296edd0644d92ae8ed94039bc1bdd43282398835b7f88134fb6 |
-| OpenJDK27U-jdk_x64_windows_hotspot_27_35.zip | 2031c9c5c624737ed29a0624caaf5bcc25e74235834c28b4bfa88f7ba7a40e4a |
+
+`-Dorg.gradle.java.home=<JDK 21>` was probed and does not override the daemon criteria (the daemon stayed on Temurin 27), so a mismatched daemon cannot be forced that way; the deterministic negative check runs the real JVM against a different pin (`scripts/verify-quality-gates.sh`, case `jdk-pin`). The bypass for a machine with another Temurin 27 patch installed is `-Porg.gradle.java.installations.auto-detect=false`, which makes Gradle provision the pinned archive.
 
 On the qualification machine Gradle detected a system Temurin package rather than downloading: `/usr/lib/jvm/temurin-27-jdk-amd64/release` reports `IMPLEMENTOR_VERSION="Temurin-27.0.1.0.2+1"`, and the daemon process runs on that JDK (`ps` shows `/usr/lib/jvm/temurin-27-jdk-amd64/bin/java`). CI installs the same distribution through `actions/setup-java` (`distribution: temurin`, `java-version: '27'`).
 
@@ -72,6 +80,7 @@ ok   [formatting]:   ':backend:spotlessJavaCheck' failed with diagnostic matchin
 ok   [error-prone]:  ':backend:compileJava' failed with diagnostic matching /\[DeadException\]…DeadExceptionViolation\.java/
 ok   [lombok]:       ':backend:compileJava' failed with diagnostic matching /DataViolation\.java.*@Data|Use of @Data is flagged/
 ok   [module-rules]: ':backend:test --tests …FeatureModuleRulesTest' failed with diagnostic matching /platform must not depend on feature packages|PlatformLeak/
+ok   [jdk-pin]:      'help -Powlmast.qualified.jdk.runtime=27.0.0+35' failed with diagnostic matching /is not the qualified JDK.*Eclipse Adoptium 27\.0\.0\+35/
 all gates fail correctly on deliberate violations
 ```
 
@@ -109,7 +118,7 @@ From `backend/build/test-results/integrationTest` after the clean build:
 | --- | --- | --- |
 | `HealthEndpointIT` | 2 | Application starts against the container; `GET /actuator/health` → 200 `{"status":"UP"}` without component details; readiness probe exposed |
 | `BootstrapMigrationIT` | 4 | Flyway applied `V001` successfully; `vchord 1.1.1` and `vector 0.8.2` installed and preloaded; schema baseline readable through the feature API; only bootstrap-owned and extension-owned relations exist |
-| `ScopedTransactionsIT` | 4 | Tenant bound to the real transaction survives `publishOn` and a bounded blocking hop; commit persists; failure rolls back; missing scope fails closed before work runs; concurrent transactions keep their own tenant |
+| `ScopedTransactionsIT` | 8 | Tenant bound to the real transaction survives `publishOn` and a bounded blocking hop; commit persists; failure rolls back; missing scope fails closed before work runs; concurrent transactions keep their own tenant; same-scope nesting joins the same connection and keeps the binding; a nested call with another tenant or principal is rejected before any effect and the joined transaction rolls back; the outer binding survives a caught rejection and the transaction cannot commit |
 | `MissingExtensionIT` | 1 | Startup against plain PostgreSQL fails with `extension "vchord" is not available` naming `V001__bootstrap_infrastructure.sql`, without leaking credentials |
 
 Container cleanup: after each run only the Testcontainers reaper (`testcontainers-ryuk`) remains for a few seconds; no PostgreSQL containers are left (`docker ps -a --filter label=org.testcontainers=true`).
@@ -135,7 +144,7 @@ $ curl -s http://localhost:18080/actuator/health
 
 ## Open items carried forward
 
-- Windows x64 and macOS x64 daemon-JVM assets pin the 27+35 GA build until Adoptium publishes 27.0.1 for those platforms; re-run `updateDaemonJvm` or edit the properties file when they appear.
+- Windows x86_64 and macOS x86_64 are unsupported until Adoptium publishes 27.0.1+1 for them; add the asset URL and qualify a build before claiming support.
 - Lombok's `Unsafe` notice will become an error in a future JDK; track Lombok releases before moving past JDK 27.
 - Netty prints a JDK native-access notice unless `--enable-native-access=ALL-UNNAMED` is passed; tests pass it, and the runtime image (OM-01.02) must do the same.
 - CI on GitHub `ubuntu-latest` (Docker preinstalled) passed both jobs in run https://github.com/gabrianoo/owl-mast/actions/runs/42203046822 (build 1m47s, gate negatives 1m27s). The repository has `core.fileMode=false`, so executable bits for `gradlew` and `scripts/verify-quality-gates.sh` must be recorded with `git update-index --chmod=+x` when such files are added.

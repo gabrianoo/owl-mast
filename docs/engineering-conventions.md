@@ -22,7 +22,7 @@ Gate: `FeatureModuleRulesTest` (ArchUnit, runs in `./gradlew :backend:test`). It
 
 - Request and job composition is Reactor based (`Mono`/`Flux`). `api`, `application` and `domain` code never calls `block*()`, `toFuture()` or `toStream()` on a publisher (ArchUnit gate).
 - Tenant/security scope is an explicit `ScopeContext` carried in the Reactor Context (`Scopes.bind`, `Scopes.current`). There is no default scope; a missing scope raises `MissingScopeException` before any work runs. `ThreadLocal` must not carry authorization or tenant state anywhere in production code (ArchUnit gate).
-- Database work that needs tenant scope goes through `ScopedTransactions.inTransaction`, which opens the R2DBC transaction and binds the tenant to that transaction with a transaction-local PostgreSQL setting (`owlmast.tenant_id`), so the scope is attached to the real connection rather than to a thread.
+- Database work that needs tenant scope goes through `ScopedTransactions.inTransaction`, which opens the R2DBC transaction and binds the tenant to that transaction with a transaction-local PostgreSQL setting (`owlmast.tenant_id`), so the scope is attached to the real connection rather than to a thread. A transaction carries exactly one scope: nested calls with an equal tenant and principal join it; a different scope is rejected with `IncompatibleScopeException` before any effect and the transaction becomes rollback-only.
 - Unavoidable blocking SDK calls run through `BoundedBlocking.call(operation, callable)`: bounded threads, bounded per-thread queue and a deadline (`owlmast.blocking.*`). Pass what the blocking code needs as explicit arguments; it has no Reactor Context.
 - Flyway migrations are the one accepted startup-time blocking path; runtime access is R2DBC only.
 
@@ -31,7 +31,7 @@ Gate: `FeatureModuleRulesTest` (ArchUnit, runs in `./gradlew :backend:test`). It
 - Values are Java records with compact constructors for validation (`TenantId`, `ScopeContext`, `SchemaBaseline`). Prefer immutable collections and `Optional` return types over nulls at boundaries.
 - Lombok is focused on boilerplate only: `@RequiredArgsConstructor` on Spring components, `@Slf4j` for loggers, `@Builder`/`@With` where a record would be unwieldy. `@Data`, `@Value`, `@Setter`, `@EqualsAndHashCode`, `@ToString`, `@SneakyThrows`, `val`/`var` and experimental features are rejected at compile time by `backend/lombok.config` (gate: `compileJava`).
 - Prefer functional composition (streams, `Optional`, Reactor operators, small strategy records) over nested `if`/`else` or `switch` for business variation. Keep straightforward guard clauses (`if (value == null) throw …`) and exhaustive `switch` over sealed types when they are the clearest expression.
-- Errors are typed exceptions with safe messages (`MissingScopeException`, `BlockingDeadlineExceededException`); never put credentials, connection strings or protected payloads into messages, logs, health details or metrics labels.
+- Errors are typed exceptions with safe messages (`MissingScopeException`, `BlockingDeadlineExceededException`); never put credentials, connection strings or protected payloads into messages, logs, health details or metrics labels. When logging a caught failure, log `SafeFailure.describe(failure)` (exception class names only), never the throwable itself; tests that cover a failure path capture the log output and assert markers from the message and its causes are absent.
 
 ## Formatting and static analysis
 

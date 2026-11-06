@@ -2,6 +2,7 @@ package com.aisquad.owlmast.bootstrap.adapter.health;
 
 import com.aisquad.owlmast.bootstrap.api.SchemaBaseline;
 import com.aisquad.owlmast.bootstrap.api.SchemaBaselineQuery;
+import com.aisquad.owlmast.platform.diagnostics.SafeFailure;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.health.contributor.Health;
@@ -24,7 +25,9 @@ class SchemaBaselineHealthIndicator implements ReactiveHealthIndicator {
         .map(SchemaBaselineHealthIndicator::up)
         .defaultIfEmpty(Health.down().withDetail("reason", "schema baseline not recorded").build())
         .onErrorResume(failure -> {
-          log.warn("Schema baseline health check failed", failure);
+          // Diagnostic safety (NFR-6): log bounded class names only, never the message or cause
+          // chain, because driver exceptions can carry connection details or payload fragments.
+          log.warn("Schema baseline health check failed: {}", SafeFailure.describe(failure));
           return Mono.just(
               Health.down().withDetail("reason", "schema baseline query failed").build());
         });

@@ -5,12 +5,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.aisquad.owlmast.bootstrap.api.SchemaBaseline;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.health.contributor.Health;
 import org.springframework.boot.health.contributor.Status;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 /** Component-level check of the bootstrap health contribution without a database. */
+@ExtendWith(OutputCaptureExtension.class)
 class SchemaBaselineHealthIndicatorTest {
 
   private static final SchemaBaseline BASELINE =
@@ -37,15 +41,25 @@ class SchemaBaselineHealthIndicatorTest {
   }
 
   @Test
-  void reportsDownWithoutLeakingTheFailureWhenTheQueryFails() {
-    Mono<SchemaBaseline> failing = Mono.error(new IllegalStateException("host=db password=secret"));
+  void reportsDownWithoutLeakingTheFailureIntoTheResponseOrTheLogs(CapturedOutput output) {
+    Mono<SchemaBaseline> failing =
+        Mono.error(
+            new IllegalStateException(
+                "host=db password=OUTER_SECRET_MARKER",
+                new java.io.IOException("token=NESTED_SECRET_MARKER")));
 
     StepVerifier.create(new SchemaBaselineHealthIndicator(() -> failing).health())
         .assertNext(health -> {
           assertDown(health, "schema baseline query failed");
-          assertThat(health.getDetails().toString()).doesNotContain("secret");
+          assertThat(health.getDetails().toString())
+              .doesNotContain("OUTER_SECRET_MARKER", "NESTED_SECRET_MARKER");
         })
         .verifyComplete();
+
+    assertThat(output)
+        .as("the log line stays useful (class names) but carries no message or cause text")
+        .contains("Schema baseline health check failed: IllegalStateException <- IOException")
+        .doesNotContain("OUTER_SECRET_MARKER", "NESTED_SECRET_MARKER", "host=", "token=", "\tat ");
   }
 
   private static void assertDown(Health health, String reason) {

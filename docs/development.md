@@ -4,7 +4,7 @@
 
 | Requirement | Why |
 | --- | --- |
-| Any JDK 17+ on `PATH` (to launch the Gradle wrapper) | The wrapper provisions the pinned Eclipse Temurin 27 daemon/toolchain automatically (`gradle/gradle-daemon-jvm.properties`); an installed Temurin 27 is reused. |
+| Any JDK 17+ on `PATH` (to launch the Gradle wrapper) | The wrapper provisions the pinned Eclipse Temurin 27.0.1+1 daemon/toolchain automatically (`gradle/gradle-daemon-jvm.properties`) on Linux x86_64/aarch64 and macOS aarch64. The build fails explicitly if the daemon, compiler or test JVM is any other build; with another Temurin 27 patch installed, run with `-Porg.gradle.java.installations.auto-detect=false` to use the pinned archive. Only Linux x86_64 is executably qualified. |
 | Docker Engine or Docker Desktop reachable by Testcontainers | Integration tests, the gate script's CI parity and `bootTestRun` start disposable PostgreSQL/VectorChord containers. |
 | Network access to Maven Central, the Gradle plugin portal and Docker Hub on first build | Dependencies are locked; nothing is vendored. |
 
@@ -20,7 +20,7 @@ No other tool is installed globally. Pins and the evidence behind them are in [t
 | `./gradlew :backend:spotlessApply` | Reformat sources. |
 | `./gradlew :backend:bootTestRun --args='--server.port=8080'` | Run the application locally against a disposable VectorChord container; `GET http://localhost:8080/actuator/health` answers `{"status":"UP"}`. Stop with Ctrl-C; the container is removed. |
 | `./gradlew :backend:bootRun` | Run against an existing database; see below. |
-| `scripts/verify-quality-gates.sh` | Prove that formatting, Error Prone, Lombok and module-rule gates each fail with a useful diagnostic on an injected violation. |
+| `scripts/verify-quality-gates.sh` | Prove that formatting, Error Prone, Lombok, module-rule and qualified-JDK gates each fail with a useful diagnostic on an injected violation. |
 | `./gradlew :backend:dependencies --write-locks` | Refresh `backend/gradle.lockfile` after changing pins. |
 
 ## Running against your own PostgreSQL

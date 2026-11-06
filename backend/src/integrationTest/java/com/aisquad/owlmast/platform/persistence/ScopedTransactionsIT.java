@@ -8,6 +8,7 @@ import com.aisquad.owlmast.platform.scope.ScopeContext;
 import com.aisquad.owlmast.platform.scope.Scopes;
 import com.aisquad.owlmast.testing.ContainersConfiguration;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -102,6 +103,112 @@ class ScopedTransactionsIT {
     StepVerifier.create(Mono.zip(first, second).map(pair -> pair.getT1() + "," + pair.getT2()))
         .expectNext("tenant-a,tenant-b")
         .verifyComplete();
+  }
+
+  @Test
+  void sameScopeNestingJoinsTheSameTransactionAndKeepsTheBinding() {
+    ScopeContext scope = ScopeContext.of("aisquad", "person-1");
+
+    Mono<String> flow =
+        transactions
+            .inTransaction(outer ->
+                insert(outer, "outer")
+                    .then(backendPid())
+                    .flatMap(outerPid ->
+                        transactions
+                            .inTransaction(inner ->
+                                insert(inner, "inner")
+                                    .then(backendPid())
+                                    .map(innerPid -> assertSameConnection(outerPid, innerPid))
+                                    .then(transactions.boundTenant()))
+                            .contextWrite(Scopes.bind(scope)))
+                    .flatMap(
+                        innerTenant -> transactions.boundTenant().map(t -> innerTenant + "/" + t)))
+            .contextWrite(Scopes.bind(scope));
+
+    StepVerifier.create(flow).expectNext("aisquad/aisquad").verifyComplete();
+    assertThat(notes()).containsExactly("inner", "outer");
+  }
+
+  @Test
+  void nestedTransactionWithAnotherTenantIsRejectedBeforeAnyEffectAndRollsBack() {
+    AtomicInteger innerInvocations = new AtomicInteger();
+
+    Mono<String> flow =
+        transactions
+            .inTransaction(outer ->
+                insert(outer, "outer-before")
+                    .then(
+                        transactions
+                            .inTransaction(inner -> {
+                              innerInvocations.incrementAndGet();
+                              return insert(inner, "inner").thenReturn("inner");
+                            })
+                            .contextWrite(Scopes.bind(ScopeContext.of("tenant-b", "person-b")))))
+            .contextWrite(Scopes.bind(ScopeContext.of("tenant-a", "person-a")));
+
+    StepVerifier.create(flow).expectError(IncompatibleScopeException.class).verify();
+    assertThat(innerInvocations).hasValue(0);
+    assertThat(notes())
+        .as("outer work is rolled back, nothing commits under a confused scope")
+        .isEmpty();
+  }
+
+  @Test
+  void nestedTransactionWithAnotherPrincipalIsRejected() {
+    AtomicBoolean innerInvoked = new AtomicBoolean();
+
+    Mono<String> flow =
+        transactions
+            .inTransaction(outer ->
+                transactions
+                    .inTransaction(inner -> {
+                      innerInvoked.set(true);
+                      return Mono.just("inner");
+                    })
+                    .contextWrite(Scopes.bind(ScopeContext.of("aisquad", "person-2"))))
+            .contextWrite(Scopes.bind(ScopeContext.of("aisquad", "person-1")));
+
+    StepVerifier.create(flow).expectError(IncompatibleScopeException.class).verify();
+    assertThat(innerInvoked).isFalse();
+  }
+
+  @Test
+  void outerBindingSurvivesARejectedNestedScopeAndTheTransactionCannotCommit() {
+    Mono<String> flow =
+        transactions
+            .inTransaction(outer ->
+                insert(outer, "outer")
+                    .then(
+                        transactions
+                            .inTransaction(inner -> transactions.boundTenant())
+                            .contextWrite(Scopes.bind(ScopeContext.of("tenant-b", "person-b")))
+                            .onErrorResume(
+                                IncompatibleScopeException.class,
+                                rejected -> transactions.boundTenant()))
+                    .doOnNext(tenant -> assertThat(tenant).isEqualTo("tenant-a")))
+            .contextWrite(Scopes.bind(ScopeContext.of("tenant-a", "person-a")));
+
+    StepVerifier.create(flow)
+        .expectErrorSatisfies(error ->
+            assertThat(error)
+                .as("a rejected nested scope poisons the shared transaction even when caught")
+                .isInstanceOf(IncompatibleScopeException.class)
+                .hasMessageContaining("cannot commit"))
+        .verify();
+    assertThat(notes()).isEmpty();
+  }
+
+  private Mono<Integer> backendPid() {
+    return databaseClient
+        .sql("select pg_backend_pid() as pid")
+        .map(row -> row.get("pid", Integer.class))
+        .one();
+  }
+
+  private static Integer assertSameConnection(Integer outerPid, Integer innerPid) {
+    assertThat(innerPid).as("nested call joins the outer connection").isEqualTo(outerPid);
+    return innerPid;
   }
 
   private Mono<String> tenantSeenInside(ScopeContext scope) {
