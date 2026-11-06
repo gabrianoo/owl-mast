@@ -1,10 +1,12 @@
 # Engineering progress lives in GitHub
 
-GitHub Issues own engineering progress. The GitHub Project owns status and priority. Repository specifications define acceptance; Git history records their revisions. Notion retains decisions and pointers, without a second task list.
+GitHub Issues own engineering progress. The GitHub Project is designated to own status and priority. Repository specifications define acceptance; Git history records their revisions. Notion retains decisions and pointers, without a second task list.
 
 Browse the [epic issues](https://github.com/gabrianoo/owl-mast/issues?q=is%3Aissue%20label%3Aepic) and [story issues](https://github.com/gabrianoo/owl-mast/issues?q=is%3Aissue%20label%3Astory). [E01](https://github.com/gabrianoo/owl-mast/issues/1) contains the foundation stories, beginning with [OM-01.01](https://github.com/gabrianoo/owl-mast/issues/20).
 
 The [specification](../_bmad-output/specs/spec-owl-mast/SPEC.md) adopts the existing architecture, PRD, UX and backlog. AD-1 through AD-16 and all OM story/task IDs remain stable. The import baseline is commit `b156ad5bb870a0f4cb8659f869ce0e3d8e234113`.
+
+Project setup was blocked on 2026-11-06: the owner credential allowed repository writes but lacked Projects scope. No existing project could be inspected or new project created. Authorize `project` scope using `gh auth refresh --hostname github.com --scopes project` as `gabrianoo`, then inspect owner and repository projects before reusing or creating one. [GitHub documents the required Projects scopes](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-api-to-manage-projects#authentication). Until setup completes, issue state and checklists hold progress; no Project status or priority fields have been initialized.
 
 ## Tracking rules
 
