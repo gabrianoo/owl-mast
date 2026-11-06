@@ -1,0 +1,4594 @@
+{
+ "entries": [
+  {
+   "body_sha256": "9aaa431d043c648f05ec99b77e8b5d4b8dde2d934bf4a1d10f405e19a766ba0c",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhLyI",
+   "item_stable_id": "E01",
+   "item_updated_at": "2026-11-06T09:14:18Z",
+   "kind": "epic",
+   "labels": [
+    "epic",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pTOA",
+   "number": 1,
+   "parent_number": null,
+   "stable_id": "E01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [],
+   "title": "E01 \u2014 Install and operate a reproducible Owl Mast workspace",
+   "updated_at": "2026-11-06T07:29:15Z"
+  },
+  {
+   "body_sha256": "c8a6fb743c185956f04bbb75dde49772e5e16ec99b504392ab32b7cb078ac4b5",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [
+    "E01"
+   ],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhLyc",
+   "item_stable_id": "E02",
+   "item_updated_at": "2026-11-06T09:14:21Z",
+   "kind": "epic",
+   "labels": [
+    "epic",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pT5Q",
+   "number": 2,
+   "parent_number": null,
+   "stable_id": "E02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [],
+   "title": "E02 \u2014 Manage tenants, personal accounts and authorized project access",
+   "updated_at": "2026-11-06T07:29:16Z"
+  },
+  {
+   "body_sha256": "880dfab6f52bc7bbc64a8800d392fb638d0d35195c079c823fb82b1bd84c0006",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [
+    "E02"
+   ],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhLy4",
+   "item_stable_id": "E03",
+   "item_updated_at": "2026-11-06T09:14:24Z",
+   "kind": "epic",
+   "labels": [
+    "epic",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pUqA",
+   "number": 3,
+   "parent_number": null,
+   "stable_id": "E03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [],
+   "title": "E03 \u2014 Capture and maintain versioned project knowledge",
+   "updated_at": "2026-11-06T07:29:17Z"
+  },
+  {
+   "body_sha256": "39271ec626e7cae9c8f38a6abe692e191e2afab9e85cc4e1c2f3cbf7a9c9eca1",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [
+    "E03"
+   ],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhLzQ",
+   "item_stable_id": "E04",
+   "item_updated_at": "2026-11-06T09:14:27Z",
+   "kind": "epic",
+   "labels": [
+    "epic",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pVWg",
+   "number": 4,
+   "parent_number": null,
+   "stable_id": "E04",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [],
+   "title": "E04 \u2014 Retrieve authorized knowledge through MCP",
+   "updated_at": "2026-11-06T07:29:18Z"
+  },
+  {
+   "body_sha256": "bf140d364afcce264816f83a28e9dc3b8fd304b7d4bbc6966194a4b8da074c28",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [
+    "E02",
+    "E04"
+   ],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL0I",
+   "item_stable_id": "E05",
+   "item_updated_at": "2026-11-06T09:14:30Z",
+   "kind": "epic",
+   "labels": [
+    "epic",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pWGQ",
+   "number": 5,
+   "parent_number": null,
+   "stable_id": "E05",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [],
+   "title": "E05 \u2014 Enroll executing machines and native agent clients",
+   "updated_at": "2026-11-06T07:29:19Z"
+  },
+  {
+   "body_sha256": "4d5f8719c95fd0092d1a1c78036387321277c162f3146fa3c209847b163ef8d7",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [
+    "E05"
+   ],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL0k",
+   "item_stable_id": "E06",
+   "item_updated_at": "2026-11-06T09:14:33Z",
+   "kind": "epic",
+   "labels": [
+    "epic",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pWxA",
+   "number": 6,
+   "parent_number": null,
+   "stable_id": "E06",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [],
+   "title": "E06 \u2014 Receive and normalize native telemetry reliably",
+   "updated_at": "2026-11-06T07:29:20Z"
+  },
+  {
+   "body_sha256": "380682496154965344b90952270ff613c9e34dee162932e302ffb490f195fb03",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [
+    "E06"
+   ],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL1A",
+   "item_stable_id": "E07",
+   "item_updated_at": "2026-11-06T09:14:37Z",
+   "kind": "epic",
+   "labels": [
+    "epic",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pXXw",
+   "number": 7,
+   "parent_number": null,
+   "stable_id": "E07",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [],
+   "title": "E07 \u2014 Use Claude Code with Owl Mast in every supported execution mode",
+   "updated_at": "2026-11-06T07:29:21Z"
+  },
+  {
+   "body_sha256": "cfabd7ecf304a5655c9ce19e0f4c4e9d140331bae626c49407440cb0da9d3fa6",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [
+    "E06"
+   ],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMWI",
+   "item_stable_id": "E08",
+   "item_updated_at": "2026-11-06T09:14:39Z",
+   "kind": "epic",
+   "labels": [
+    "epic",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pYFg",
+   "number": 8,
+   "parent_number": null,
+   "stable_id": "E08",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [],
+   "title": "E08 \u2014 Use Codex with Owl Mast in every supported execution mode",
+   "updated_at": "2026-11-06T07:29:22Z"
+  },
+  {
+   "body_sha256": "c011e6048e3c359e2918fd28a729e5989083589e2ce19a1433fc7be0b3cfdcc9",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [
+    "E02",
+    "E06"
+   ],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMXI",
+   "item_stable_id": "E09",
+   "item_updated_at": "2026-11-06T09:14:42Z",
+   "kind": "epic",
+   "labels": [
+    "epic",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pY4Q",
+   "number": 9,
+   "parent_number": null,
+   "stable_id": "E09",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [],
+   "title": "E09 \u2014 Connect both customer work environments",
+   "updated_at": "2026-11-06T07:29:23Z"
+  },
+  {
+   "body_sha256": "9e5811b079959500a6339889d9f1a78e08c6e270b6c4246f503cf8a14743a960",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [
+    "E06",
+    "E09"
+   ],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMXk",
+   "item_stable_id": "E10",
+   "item_updated_at": "2026-11-06T09:14:45Z",
+   "kind": "epic",
+   "labels": [
+    "epic",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pZig",
+   "number": 10,
+   "parent_number": null,
+   "stable_id": "E10",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [],
+   "title": "E10 \u2014 Trace work, runs, contributions and dependencies",
+   "updated_at": "2026-11-06T07:29:24Z"
+  },
+  {
+   "body_sha256": "91ee359cde507f3ac460ccfb99c184b3092ca13e7416e6c99a800bd9052e2ab0",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [
+    "E03",
+    "E04"
+   ],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMYQ",
+   "item_stable_id": "E11",
+   "item_updated_at": "2026-11-06T09:14:48Z",
+   "kind": "epic",
+   "labels": [
+    "epic",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9paKA",
+   "number": 11,
+   "parent_number": null,
+   "stable_id": "E11",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [],
+   "title": "E11 \u2014 Publish and revoke company-safe learning",
+   "updated_at": "2026-11-06T07:29:25Z"
+  },
+  {
+   "body_sha256": "7da4c3eee66ce0cd205243db4c58eea1d2918663f47f39fd647bc2ce1143e898",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [
+    "E04",
+    "E07",
+    "E08"
+   ],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMZE",
+   "item_stable_id": "E12",
+   "item_updated_at": "2026-11-06T09:14:51Z",
+   "kind": "epic",
+   "labels": [
+    "epic",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pa7Q",
+   "number": 12,
+   "parent_number": null,
+   "stable_id": "E12",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [],
+   "title": "E12 \u2014 Demonstrate skill and memory use and useful reuse",
+   "updated_at": "2026-11-06T07:29:26Z"
+  },
+  {
+   "body_sha256": "debc87c82d43e531a3e045342c63ff31e45427ada98909fba27204480b96e619",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [
+    "E10"
+   ],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMc4",
+   "item_stable_id": "E13",
+   "item_updated_at": "2026-11-06T09:14:54Z",
+   "kind": "epic",
+   "labels": [
+    "epic",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pbuA",
+   "number": 13,
+   "parent_number": null,
+   "stable_id": "E13",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [],
+   "title": "E13 \u2014 Understand daily work and personal focus",
+   "updated_at": "2026-11-06T07:29:27Z"
+  },
+  {
+   "body_sha256": "cf1ba43de8b1ba447130439ef2ba7249172deb7f01917f31ac360ee48cedb227",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [
+    "E06",
+    "E07",
+    "E08",
+    "E10"
+   ],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMew",
+   "item_stable_id": "E14",
+   "item_updated_at": "2026-11-06T09:14:56Z",
+   "kind": "epic",
+   "labels": [
+    "epic",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pcbQ",
+   "number": 14,
+   "parent_number": null,
+   "stable_id": "E14",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [],
+   "title": "E14 \u2014 Understand usage and cost with defensible attribution",
+   "updated_at": "2026-11-06T07:29:28Z"
+  },
+  {
+   "body_sha256": "a21d670f3b3cfbf7ba9f36aea1edccd82cbd969f9b5b633e7ef94f2b3c175f75",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [
+    "E10",
+    "E11"
+   ],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMf4",
+   "item_stable_id": "E15",
+   "item_updated_at": "2026-11-06T09:15:00Z",
+   "kind": "epic",
+   "labels": [
+    "epic",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pdBg",
+   "number": 15,
+   "parent_number": null,
+   "stable_id": "E15",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [],
+   "title": "E15 \u2014 Receive every eligible work update and return safely",
+   "updated_at": "2026-11-06T07:29:29Z"
+  },
+  {
+   "body_sha256": "b707d803c9479b5924d51bdcc0c79b29f437b07ff081e606660dcdced0e88f43",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [
+    "E02",
+    "E06",
+    "E11"
+   ],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMhA",
+   "item_stable_id": "E16",
+   "item_updated_at": "2026-11-06T09:15:03Z",
+   "kind": "epic",
+   "labels": [
+    "epic",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pdsQ",
+   "number": 16,
+   "parent_number": null,
+   "stable_id": "E16",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [],
+   "title": "E16 \u2014 Inspect full-system audit and govern retained data",
+   "updated_at": "2026-11-06T07:29:29Z"
+  },
+  {
+   "body_sha256": "b2e8f95796f46a5ee51278a971a1bc018d3870193d9a4d6928cb2e2258e6a09e",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [
+    "E06",
+    "E10"
+   ],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM8M",
+   "item_stable_id": "E17",
+   "item_updated_at": "2026-11-06T09:15:07Z",
+   "kind": "epic",
+   "labels": [
+    "epic",
+    "scope:optional"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9peSw",
+   "number": 17,
+   "parent_number": null,
+   "stable_id": "E17",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [],
+   "title": "E17 \u2014 Enrich native observations with optional T3 context",
+   "updated_at": "2026-11-06T07:29:30Z"
+  },
+  {
+   "body_sha256": "e9e8d6f5ffc85fc9f781d6b53bf5210d11e7ab3cb44c56baea000d680854b6e8",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [
+    "E01",
+    "E02",
+    "E03",
+    "E04",
+    "E05",
+    "E06",
+    "E07",
+    "E08",
+    "E09",
+    "E10",
+    "E11",
+    "E12",
+    "E13",
+    "E14",
+    "E15",
+    "E16"
+   ],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM9Y",
+   "item_stable_id": "E18",
+   "item_updated_at": "2026-11-06T09:15:11Z",
+   "kind": "epic",
+   "labels": [
+    "epic",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pfBA",
+   "number": 18,
+   "parent_number": null,
+   "stable_id": "E18",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [],
+   "title": "E18 \u2014 Prove the complete pilot and publish a reproducible release",
+   "updated_at": "2026-11-06T07:29:31Z"
+  },
+  {
+   "body_sha256": "4d0b40354c803c1d94b1266dda8b4357ae35301a6f98032b5080ca7ff079143b",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [
+    "E18"
+   ],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM-8",
+   "item_stable_id": "E19",
+   "item_updated_at": "2026-11-06T09:15:15Z",
+   "kind": "epic",
+   "labels": [
+    "epic",
+    "scope:later-evolution"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pfyA",
+   "number": 19,
+   "parent_number": null,
+   "stable_id": "E19",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [],
+   "title": "E19 \u2014 Evolve tenant scale, permissions and availability",
+   "updated_at": "2026-11-06T07:29:32Z"
+  },
+  {
+   "body_sha256": "e9ed11905df4651bd263a16dbb786907729bc5795366f5b80bc2a9dc9698b765",
+   "closed_at": "2026-11-06T11:24:39Z",
+   "depends_on": [],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL4c",
+   "item_stable_id": "OM-01.01",
+   "item_updated_at": "2026-11-06T11:24:40Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pgaQ",
+   "number": 20,
+   "parent_number": 1,
+   "stable_id": "OM-01.01",
+   "state": "CLOSED",
+   "state_reason": "COMPLETED",
+   "status": "Done",
+   "tasks": [
+    {
+     "checked": true,
+     "task_id": "OM-01.01-T1",
+     "text": "Qualify and pin Gradle/JDK/Lombok/formatter/analyzer/Testcontainers compatibility and the local/CI container runtime; record evidence and dependency locks without copying stale ConvaDesk pins."
+    },
+    {
+     "checked": true,
+     "task_id": "OM-01.01-T2",
+     "text": "Create the minimal Spring application and feature/module convention with explicit ports; create only bootstrap-owned schema objects."
+    },
+    {
+     "checked": true,
+     "task_id": "OM-01.01-T3",
+     "text": "Configure formatting, static analysis, dependency/architecture verification and CI build gates; document focused Lombok/records and functional composition conventions."
+    },
+    {
+     "checked": true,
+     "task_id": "OM-01.01-T4",
+     "text": "Establish reusable Testcontainers PostgreSQL/VectorChord fixtures with pinned images and required extension configuration; exercise clean build/start, actual migrations and a representative reactive transaction/context test, and publish developer/CI commands."
+    }
+   ],
+   "title": "OM-01.01 \u2014 Bootstrap the supported Java application",
+   "updated_at": "2026-11-06T11:24:39Z"
+  },
+  {
+   "body_sha256": "021d56d1adcbafb185a54a1eef7e17824807bad97497f315ace6d793bd6c1bee",
+   "closed_at": null,
+   "depends_on": [
+    "OM-01.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL48",
+   "item_stable_id": "OM-01.02",
+   "item_updated_at": "2026-11-06T09:15:21Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9phEw",
+   "number": 21,
+   "parent_number": 1,
+   "stable_id": "OM-01.02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-01.02-T1",
+     "text": "Select and document the installation packaging and compatible immutable image/chart pins; validate optional-dependency values and existing-secret references."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-01.02-T2",
+     "text": "Package the backend and independently optional PostgreSQL/VectorChord and Keycloak with probes, resources and external connection settings; define separate frontend deployment/image/routing values for the shell artifact delivered by OM-01.04."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-01.02-T3",
+     "text": "Configure persistent-volume ownership and safe upgrade/uninstall retention behavior; leave snapshot cadence/provider decisions explicit."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-01.02-T4",
+     "text": "Validate bundled/bundled, bundled/external, external/bundled and external/external configurations using synthetic data; check independent frontend/backend image and routing values, then publish secret-free examples. Complete the real frontend artifact smoke check in OM-01.04."
+    }
+   ],
+   "title": "OM-01.02 \u2014 Install optional state and identity dependencies",
+   "updated_at": "2026-11-06T07:29:34Z"
+  },
+  {
+   "body_sha256": "5f6c9cb5091fb8aed1dbc8c73da61daf644dbe14e920aa7f75702b7cf89fa40d",
+   "closed_at": null,
+   "depends_on": [
+    "OM-01.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL5w",
+   "item_stable_id": "OM-01.03",
+   "item_updated_at": "2026-11-06T09:15:25Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9phtw",
+   "number": 22,
+   "parent_number": 1,
+   "stable_id": "OM-01.03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-01.03-T1",
+     "text": "Define the durable-work and minimal audit-envelope contracts, owner APIs and versioning rules consumed by later modules."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-01.03-T2",
+     "text": "Implement only the work/audit infrastructure tables, atomic business-change/work/audit-intent commit through module APIs and reactive transaction integration; keep failed-attempt audit independent of rolled-back business writes."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-01.03-T3",
+     "text": "Implement bounded claiming, lease recovery, retry/backoff, failure visibility and authorization recheck hooks; schedule wakeups without an external job service."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-01.03-T4",
+     "text": "Exercise rollback-before-enqueue, crash-after-commit-before-audit-publication, failed-attempt recording, stale-owner completion, concurrent claims and duplicate effect recovery."
+    }
+   ],
+   "title": "OM-01.03 \u2014 Recover accepted background work and record mutation evidence",
+   "updated_at": "2026-11-06T07:29:35Z"
+  },
+  {
+   "body_sha256": "62a1be8e16f1600d000aaa4cc37ab32adb2e01e7325014c93f339a2e17e17884",
+   "closed_at": null,
+   "depends_on": [
+    "OM-01.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL6I",
+   "item_stable_id": "OM-01.04",
+   "item_updated_at": "2026-11-06T09:15:28Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pihg",
+   "number": 23,
+   "parent_number": 1,
+   "stable_id": "OM-01.04",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-01.04-T1",
+     "text": "Qualify the recommended React/TypeScript/Vite seed and pins; create the independent frontend build/test/image pipeline and API compatibility policy, retaining browser authentication/origin and push support as explicit qualification gates."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-01.04-T2",
+     "text": "Implement shell navigation, scope/period context, accepted logo, theme/tokens and common settings/state/action/link primitives."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-01.04-T3",
+     "text": "Implement focus restoration, accessible loading/error/empty patterns and stable New updates interaction primitives."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-01.04-T4",
+     "text": "Validate component behavior, API contract compatibility, independent frontend/backend build artifacts and a focused browser-to-backend smoke path; check contrast, keyboard flow, screen-reader labels, reduced motion and responsive layouts against DESIGN.md. Real authenticated journeys follow in E02/E18."
+    }
+   ],
+   "title": "OM-01.04 \u2014 Open an accessible workspace shell",
+   "updated_at": "2026-11-06T07:29:36Z"
+  },
+  {
+   "body_sha256": "b6bd1519fa85ee89cd390f7e68d818fca754d1f1816dae8c9561fc2d20ed721b",
+   "closed_at": null,
+   "depends_on": [
+    "E01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhLzw",
+   "item_stable_id": "OM-02.01",
+   "item_updated_at": "2026-11-06T09:15:31Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pjMA",
+   "number": 24,
+   "parent_number": 2,
+   "stable_id": "OM-02.01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-02.01-T1",
+     "text": "Resolve realm/client, account invitation/registration and browser login/session/recovery policy for separate frontend/backend deployments; explicitly select the public-origin/routing boundary without inferring it from deployment separation."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-02.01-T2",
+     "text": "Configure Keycloak and reactive resource-server/login integration for the selected browser model, including redirect/proxy handling, cookie/token boundaries, applicable CSRF/CORS controls and revocation; keep native enrolled credentials separate."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-02.01-T3",
+     "text": "Implement principal lifecycle and safe sign-in/out/error states in the shell; preserve source-account separation."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-02.01-T4",
+     "text": "Use Testcontainers with a pinned Keycloak image and synthetic realm/users to exercise browser login/return across separately packaged services, wrong issuer/audience, expiration, logout/revocation and recovery; ensure diagnostics exclude credentials and apply the selected origin/CSRF policy."
+    }
+   ],
+   "title": "OM-02.01 \u2014 Sign in with a personal Owl Mast identity",
+   "updated_at": "2026-11-06T07:29:37Z"
+  },
+  {
+   "body_sha256": "89e4721301ad8374cef133f04280bc4f81c3a278e9ad08e639cd482b5ed66afc",
+   "closed_at": null,
+   "depends_on": [
+    "OM-02.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL0Y",
+   "item_stable_id": "OM-02.02",
+   "item_updated_at": "2026-11-06T09:15:35Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pj3Q",
+   "number": 25,
+   "parent_number": 2,
+   "stable_id": "OM-02.02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-02.02-T1",
+     "text": "Define tenant/project/member identity and schema constraints; qualify transaction-bound PostgreSQL isolation for reactive access."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-02.02-T2",
+     "text": "Implement authorized project/tenant administration APIs and S8 scope management with audit events."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-02.02-T3",
+     "text": "Propagate trusted scope across HTTP, MCP, jobs and connection boundaries; reject client-asserted scope escalation."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-02.02-T4",
+     "text": "Exercise synthetic two-tenant, cross-project, revoked membership and identical-key isolation cases."
+    }
+   ],
+   "title": "OM-02.02 \u2014 Create tenant and project membership boundaries",
+   "updated_at": "2026-11-06T07:29:38Z"
+  },
+  {
+   "body_sha256": "6211bc7940ec59e9bae7730205f88f9d5b2794b31069e40a1aa2aad64706d3da",
+   "closed_at": null,
+   "depends_on": [
+    "OM-02.02"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL0o",
+   "item_stable_id": "OM-02.03",
+   "item_updated_at": "2026-11-06T09:15:38Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pkkg",
+   "number": 26,
+   "parent_number": 2,
+   "stable_id": "OM-02.03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-02.03-T1",
+     "text": "Implement source-qualified external-account bindings with purpose, authority, effective times and provenance."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-02.03-T2",
+     "text": "Keep connector credential references separate from user mapping and project visibility grants."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-02.03-T3",
+     "text": "Provide audited mapping administration and clear shared-account/unknown attribution presentation."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-02.03-T4",
+     "text": "Verify same visibility for explicitly granted users without granting all connector-visible records to all members."
+    }
+   ],
+   "title": "OM-02.03 \u2014 Map shared external accounts without merging people",
+   "updated_at": "2026-11-06T07:29:39Z"
+  },
+  {
+   "body_sha256": "e1f467342877b34472b2a00e5a38c64f3da5cd17c25d3a89bc93111391982dd2",
+   "closed_at": null,
+   "depends_on": [
+    "OM-02.02"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL1M",
+   "item_stable_id": "OM-02.04",
+   "item_updated_at": "2026-11-06T09:15:42Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9plTA",
+   "number": 27,
+   "parent_number": 2,
+   "stable_id": "OM-02.04",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-02.04-T1",
+     "text": "Define the authorization port and initial membership/source-resource grant model with a documented owner of authoritative grants."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-02.04-T2",
+     "text": "Implement policy checks and revocation invalidation boundaries for feature APIs, jobs, MCP and query projections."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-02.04-T3",
+     "text": "Add reusable negative fixtures for both project directions, unauthorized third user, revoked user and restricted same-project source."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-02.04-T4",
+     "text": "Verify no permission fallback to company scope, no hidden counters/filter options and no execution capability in public contracts."
+    }
+   ],
+   "title": "OM-02.04 \u2014 Enforce resource and source permissions through one boundary",
+   "updated_at": "2026-11-06T07:29:40Z"
+  },
+  {
+   "body_sha256": "8aa27d5ffd29945a552f443969f99c19ccec01618d4d155ce8fe95ac36ab392e",
+   "closed_at": null,
+   "depends_on": [
+    "OM-02.04"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL18",
+   "item_stable_id": "OM-02.05",
+   "item_updated_at": "2026-11-06T09:15:44Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pmBQ",
+   "number": 28,
+   "parent_number": 2,
+   "stable_id": "OM-02.05",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-02.05-T1",
+     "text": "Record the adopted full-conversation default and resolve A-3's remaining actual-environment permissions, destinations and archive/other-record policies before live customer ingestion; do not invent retention durations."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-02.05-T2",
+     "text": "Implement versioned collection policy and activation gates shared by connectors, native telemetry and knowledge ingestion."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-02.05-T3",
+     "text": "Implement default-on conversation capture with project disable/narrow controls for prompts, responses, tool arguments/results and query/context fields; distinguish configured capture from live-source activation and verified coverage."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-02.05-T4",
+     "text": "Exercise default-on capture, project opt-out and deny/redact behavior through logs, receipts, queues, caches and derived summaries; emit safe policy audit events without conversation bodies."
+    }
+   ],
+   "title": "OM-02.05 \u2014 Approve collection boundaries before enabling live sources",
+   "updated_at": "2026-11-06T07:29:41Z"
+  },
+  {
+   "body_sha256": "86ccac581fbb1969a979e99b4d0ed6e8578167759a75483c87e46923b095baf5",
+   "closed_at": null,
+   "depends_on": [
+    "E02"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL6A",
+   "item_stable_id": "OM-03.01",
+   "item_updated_at": "2026-11-06T09:15:48Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pmwg",
+   "number": 29,
+   "parent_number": 3,
+   "stable_id": "OM-03.01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-03.01-T1",
+     "text": "Add only knowledge item/version, source-qualified submission identity and typed exact-version source/derivation lineage needed for capture; preserve source ownership, applicability, actor/time/evidence basis and explicit missing lineage."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-03.01-T2",
+     "text": "Implement the authorized submission boundary, collection exclusions and transactional deduplication/version creation through the selected persistence adapters."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-03.01-T3",
+     "text": "Emit safe creation/failure/correction audit events with actor, project, exact version, outcome and both timestamps for later audit consumption."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-03.01-T4",
+     "text": "Verify same-key cross-source isolation, duplicate replay, corrected versions, revoked source access and excluded-content handling; record the A-3 pre-live gate."
+    }
+   ],
+   "title": "OM-03.01 \u2014 Submit project knowledge with immutable version identity",
+   "updated_at": "2026-11-06T07:29:42Z"
+  },
+  {
+   "body_sha256": "3d624edf36d1fbbde2e845bddef60c12cc0b356029035542b21f7ae4b6955dda",
+   "closed_at": null,
+   "depends_on": [
+    "OM-03.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL6k",
+   "item_stable_id": "OM-03.02",
+   "item_updated_at": "2026-11-06T09:15:51Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pnXg",
+   "number": 30,
+   "parent_number": 3,
+   "stable_id": "OM-03.02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-03.02-T1",
+     "text": "Implement package manifest/file/checksum records and the exact-version association to knowledge records, without adding schemas for unrelated future artifacts."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-03.02-T2",
+     "text": "Implement completeness, path, content-policy and integrity validation; store supplied scripts as data without executing them."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-03.02-T3",
+     "text": "Qualify and record storage for large/binary package files against the selected PostgreSQL deployment and permitted external-storage option if needed, including removal and restore boundaries."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-03.02-T4",
+     "text": "Verify complete packages, changed assets, incomplete imports, corrupt checksums, prohibited content and cross-project package denial."
+    }
+   ],
+   "title": "OM-03.02 \u2014 Preserve complete versioned skill packages",
+   "updated_at": "2026-11-06T07:29:43Z"
+  },
+  {
+   "body_sha256": "4f43aa3cb9d4648ca8f28eb340925a2424a4c460666e2d44e349ef35f6196fe4",
+   "closed_at": null,
+   "depends_on": [
+    "OM-03.01",
+    "OM-03.02"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL7M",
+   "item_stable_id": "OM-03.03",
+   "item_updated_at": "2026-11-06T09:15:54Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pn-g",
+   "number": 31,
+   "parent_number": 3,
+   "stable_id": "OM-03.03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-03.03-T1",
+     "text": "Inspect the real permitted Hermes-to-Notion capture and source schema, document ownership/write responsibilities and qualify the available Notion synchronization interface before connector implementation."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-03.03-T2",
+     "text": "Implement the scoped Notion adapter with protected credential references, durable synchronization/reconciliation jobs, source-version conflict handling and safe connection health."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-03.03-T3",
+     "text": "Map authorized source lessons and complete skills to the existing knowledge/package contracts, preserving source links without bulk migration or duplicate manual capture."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-03.03-T4",
+     "text": "Verify authorized Hermes capture continuity and Claude/Codex page creation separately from skill reading, plus restart, duplicate, late-edit and source-revocation cases; gate live content on A-3."
+    }
+   ],
+   "title": "OM-03.03 \u2014 Synchronize permitted Notion knowledge and preserve Hermes capture",
+   "updated_at": "2026-11-06T07:29:44Z"
+  },
+  {
+   "body_sha256": "c2cc040241e256995b646b18c059a580344bf8127fa6a43e142392cc6f38e48a",
+   "closed_at": null,
+   "depends_on": [
+    "OM-03.01",
+    "OM-03.02"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL7s",
+   "item_stable_id": "OM-03.04",
+   "item_updated_at": "2026-11-06T09:15:57Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9poxQ",
+   "number": 32,
+   "parent_number": 3,
+   "stable_id": "OM-03.04",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-03.04-T1",
+     "text": "Implement exact-version evaluation, conflict, supersession, withdrawal and quarantine records with permission-checked transitions and append-linked corrections; preserve distinct validation/policy, derivation and supersession lineage rather than rewriting prior versions."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-03.04-T2",
+     "text": "Expose a current-eligibility query and lifecycle-change event contract usable by retrieval/publication adapters without depending on those later consumers."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-03.04-T3",
+     "text": "Implement concurrent-version guards and safe audit events for requested, successful, denied and failed lifecycle changes."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-03.04-T4",
+     "text": "Verify conflicting versions, stale decisions, revoked maintainer/source access, correction history and the adopted A-1 default/explicit-client opt-in; verify adopted A-2 withdrawal/derivative behavior and preserved restricted lineage."
+    }
+   ],
+   "title": "OM-03.04 \u2014 Evaluate and correct project knowledge lifecycle states",
+   "updated_at": "2026-11-06T07:29:45Z"
+  },
+  {
+   "body_sha256": "dd1d7610c4bd669a648d78c6679e16dc3c1a9086d9917184e7186eabe2d6f236",
+   "closed_at": null,
+   "depends_on": [
+    "OM-03.03",
+    "OM-03.04"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL8M",
+   "item_stable_id": "OM-03.05",
+   "item_updated_at": "2026-11-06T09:16:00Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9ppbg",
+   "number": 33,
+   "parent_number": 3,
+   "stable_id": "OM-03.05",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-03.05-T1",
+     "text": "Build authorized catalog/detail read models and bounded filters from the knowledge module, including source lineage, exact versions and package completeness."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-03.05-T2",
+     "text": "Implement S3/S4 submission, lifecycle review and history presentation using the shared accessible components and explicit save/result behavior."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-03.05-T3",
+     "text": "Add permission-safe loading, empty, stale, unsupported, failure and revoked-content states, retaining authorized route/filter context."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-03.05-T4",
+     "text": "Verify submission and maintenance journeys, restricted conflicts, duplicate privacy, keyboard/screen-reader access, both themes and phone reflow without relying on future statistics or promotion modules."
+    }
+   ],
+   "title": "OM-03.05 \u2014 Browse and maintain knowledge in the scoped catalog and detail UI",
+   "updated_at": "2026-11-06T07:29:45Z"
+  },
+  {
+   "body_sha256": "7f3c448a2c87867f9f2b58a8e459a8fb31dbd4cd88140ac4de2808af7a140d04",
+   "closed_at": null,
+   "depends_on": [
+    "E03"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL2Y",
+   "item_stable_id": "OM-04.01",
+   "item_updated_at": "2026-11-06T09:16:03Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pqHg",
+   "number": 34,
+   "parent_number": 4,
+   "stable_id": "OM-04.01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-04.01-T1",
+     "text": "Qualify VectorChord/type/operator versions, R2DBC query/codec support and query plans on the selected PostgreSQL stack; record any bounded blocking adapter rather than assuming a JDBC Spring AI vector store is reactive."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-04.01-T2",
+     "text": "Implement only the lexical/chunk/embedding/index-status records needed for exact-version knowledge, including model/index version and current-eligibility/source bindings."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-04.01-T3",
+     "text": "Add durable index/update/invalidation jobs and scoped hybrid retrieval with declared freshness and lexical-degradation behavior; qualify any embedding destination before sending content."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-04.01-T4",
+     "text": "Verify restricted-source exclusion, post-index revocation, withdrawn versions, duplicate/late jobs, embedding failure and authorization before any downstream model receives retrieved context."
+    }
+   ],
+   "title": "OM-04.01 \u2014 Build lexical and VectorChord retrieval over eligible knowledge",
+   "updated_at": "2026-11-06T07:29:46Z"
+  },
+  {
+   "body_sha256": "f0b6714f26a1c2dd76c499a3ac89da9418d15f112d221b33a88a7f73cdd9dd8e",
+   "closed_at": null,
+   "depends_on": [
+    "OM-04.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL24",
+   "item_stable_id": "OM-04.02",
+   "item_updated_at": "2026-11-06T09:16:06Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pq1g",
+   "number": 35,
+   "parent_number": 4,
+   "stable_id": "OM-04.02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-04.02-T1",
+     "text": "Implement Knowledge-owned versioned bounded search-summary and selected-version load contracts, delegating derived index/query work to Retrieval, with trusted scope, an explicit client-controlled unvalidated flag defaulting off, validation/provenance labels, pagination/coverage and safe empty/failure semantics."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-04.02-T2",
+     "text": "Apply current project/source/purpose authorization, validation opt-in and lifecycle eligibility consistently to search, exact-version reads, caches and UI adapters; scope cached results by eligibility mode and recheck current state."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-04.02-T3",
+     "text": "Emit minimal retrieval evidence and diagnostic/audit events through owned module contracts, preserving recipient disclosure and A-3 collection limits."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-04.02-T4",
+     "text": "Verify validated-only defaults, explicit unvalidated opt-in, direct-ID/cache bypass attempts, candidate/conflict labels, bounded search/load, no unsolicited context injection and existing cross-project/revocation/hidden-match privacy cases."
+    }
+   ],
+   "title": "OM-04.02 \u2014 Return authorized exact-version knowledge with honest coverage",
+   "updated_at": "2026-11-06T07:29:47Z"
+  },
+  {
+   "body_sha256": "cdcc5b795bf19ee424238dfdef404a79ef201fb151162c735869d148a3b74995",
+   "closed_at": null,
+   "depends_on": [
+    "OM-04.02"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL3Q",
+   "item_stable_id": "OM-04.03",
+   "item_updated_at": "2026-11-06T09:16:09Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9prmw",
+   "number": 36,
+   "parent_number": 4,
+   "stable_id": "OM-04.03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-04.03-T1",
+     "text": "Qualify the Java/Spring MCP server transport and Keycloak OAuth integration with actual Claude/Codex clients, including discovery, registration, token validation and token lifecycle; record any missing supported capability explicitly."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-04.03-T2",
+     "text": "Implement authenticated remote MCP search and selected-version load adapters in the reactive Spring backend, exposing the client eligibility flag and bounded responses while isolating blocking calls and preserving request context."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-04.03-T3",
+     "text": "Define the client-facing setup contract using endpoint and credential references; document direct-network requirements, reconnect limits and the boundary to later enrollment/client packaging."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-04.03-T4",
+     "text": "Verify issuer/audience/scope failures, revocation, cross-project access and supported-client knowledge calls; keep standalone and T3-hosted native adapter qualification in their own dependent epics without requiring T3 here."
+    }
+   ],
+   "title": "OM-04.03 \u2014 Expose authenticated remote MCP in the Spring backend",
+   "updated_at": "2026-11-06T07:29:48Z"
+  },
+  {
+   "body_sha256": "9baeabd27b1ffc50f6edb4f7becf4b5466b4fc7c60a07ba68d6d8a8e930321b5",
+   "closed_at": null,
+   "depends_on": [
+    "OM-04.02",
+    "OM-04.03"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL34",
+   "item_stable_id": "OM-04.04",
+   "item_updated_at": "2026-11-06T09:16:12Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9psSw",
+   "number": 37,
+   "parent_number": 4,
+   "stable_id": "OM-04.04",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-04.04-T1",
+     "text": "Implement authorized manifest/file delivery through the knowledge contract with exact-version checksums, bounded responses and explicit partial/corrupt-transfer outcomes."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-04.04-T2",
+     "text": "Add Knowledge-owned recipient-bound delivery acknowledgment and idempotent receipt records, keeping retrieval, delivery and client-reported native loading as separate evidence types."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-04.04-T3",
+     "text": "Specify the client package-verification/native-activation boundary and current-eligibility/cache behavior consumed by the native Claude/Codex adapters; do not introduce remote execution tools."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-04.04-T4",
+     "text": "Verify multi-file completeness, replayed receipts, unsupported acknowledgments, concurrent permission loss and withdrawn cached versions; verify adopted A-2 lineage-preserving withdrawal and managed-cache behavior."
+    }
+   ],
+   "title": "OM-04.04 \u2014 Deliver complete exact-version packages with explicit receipts",
+   "updated_at": "2026-11-06T07:29:49Z"
+  },
+  {
+   "body_sha256": "cdc4d04ecb4ab4f13aa2f7b086de110315364ba94859400f223554a64dd94bff",
+   "closed_at": null,
+   "depends_on": [
+    "E02",
+    "E04"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL1o",
+   "item_stable_id": "OM-05.01",
+   "item_updated_at": "2026-11-06T09:16:15Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9ptFg",
+   "number": 38,
+   "parent_number": 5,
+   "stable_id": "OM-05.01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-05.01-T1",
+     "text": "Define separate machine/client/enrollment identifiers, required personal owner, configured-location fields and observation-reference contracts; distinguish responsible owner from evidenced initiator and preserve source namespaces."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-05.01-T2",
+     "text": "Implement authorized idempotent enrollment/update APIs and transactionally reliable audit events."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-05.01-T3",
+     "text": "Build S5 registration and configured-versus-observed location presentation, including Unknown and Stale states."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-05.01-T4",
+     "text": "Verify retry, duplicate-name, changed-location, cross-tenant/revocation and shared-machine personal isolation; reject ownerless/service-only native enrollment without inventing initiator attribution."
+    }
+   ],
+   "title": "OM-05.01 \u2014 Register a machine and client without conflating identities",
+   "updated_at": "2026-11-06T07:29:50Z"
+  },
+  {
+   "body_sha256": "096e52e034709987ef4f35cdda8b08ac3b40b0c58c316f69773b22e6bef65bb6",
+   "closed_at": null,
+   "depends_on": [
+    "OM-05.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL2M",
+   "item_stable_id": "OM-05.02",
+   "item_updated_at": "2026-11-06T09:16:18Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9ptrQ",
+   "number": 39,
+   "parent_number": 5,
+   "stable_id": "OM-05.02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-05.02-T1",
+     "text": "Qualify person-bound Keycloak authentication/delegation across MCP, hooks and OTLP; document enrollment, rotation, expiry and revocation without unattended service-account enrollment or assuming every exporter refreshes OAuth credentials."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-05.02-T2",
+     "text": "Implement personal-owner/project/purpose bindings, secret-reference configuration and credential lifecycle endpoints; enforce the intersection of current user permissions and enrollment grants."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-05.02-T3",
+     "text": "Add project selection, repair/revoke and explicit save/error states to S5 without exposing credential values."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-05.02-T4",
+     "text": "Test forged project attributes, shared source accounts/machines, owner suspension, expired/revoked grants and audit/redaction across MCP/hooks/OTLP; deny service-identity fallback and keep ownership separate from observed actor evidence."
+    }
+   ],
+   "title": "OM-05.02 \u2014 Bind enrolled clients to authorized projects and revocable credentials",
+   "updated_at": "2026-11-06T07:29:51Z"
+  },
+  {
+   "body_sha256": "7c18feffede431074a274a0061cf42c8fcd1e8aefb61723f46344ec9715dda5f",
+   "closed_at": null,
+   "depends_on": [
+    "OM-05.02"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL2k",
+   "item_stable_id": "OM-05.03",
+   "item_updated_at": "2026-11-06T09:16:21Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pudA",
+   "number": 40,
+   "parent_number": 5,
+   "stable_id": "OM-05.03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-05.03-T1",
+     "text": "Define capability and evidence-receipt status contracts consumed later by ingestion and native adapters; include configured/unknown/unsupported/stale states."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-05.03-T2",
+     "text": "Implement independent knowledge-connectivity probes and observation-status projection with declared freshness configuration."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-05.03-T3",
+     "text": "Build the connection-readiness component and S5 per-client/project details with configured and observed location labels."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-05.03-T4",
+     "text": "Verify status transitions with contract fixtures, partial source failures, expired authorization and absence of execution side effects."
+    }
+   ],
+   "title": "OM-05.03 \u2014 Show observation and knowledge readiness independently",
+   "updated_at": "2026-11-06T07:29:52Z"
+  },
+  {
+   "body_sha256": "2fcbfb3ef5eb77e8e720803f259b283478878fbb1172b1e0cd4aa26af1162012",
+   "closed_at": null,
+   "depends_on": [
+    "OM-05.02",
+    "OM-05.03"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL28",
+   "item_stable_id": "OM-05.04",
+   "item_updated_at": "2026-11-06T09:16:25Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pvJw",
+   "number": 41,
+   "parent_number": 5,
+   "stable_id": "OM-05.04",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-05.04-T1",
+     "text": "Specify versioned enrollment/package manifests and the MCP, hook and OTLP configuration contracts implemented separately in E07/E08."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-05.04-T2",
+     "text": "Build secret-free generated setup/readiness instructions and a runtime capability matrix for standalone and T3-hosted modes."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-05.04-T3",
+     "text": "Define scoped configuration merge, repair, disable/revoke and compatibility checks without editing live user environments during development."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-05.04-T4",
+     "text": "Validate generated fixtures against existing-settings, unavailable endpoint, unsupported capability and A-3-gated scenarios."
+    }
+   ],
+   "title": "OM-05.04 \u2014 Define portable native configuration packages and safe repair",
+   "updated_at": "2026-11-06T07:29:53Z"
+  },
+  {
+   "body_sha256": "6f022fe10b076fcb44b53bfdfb9100681b91de68439399b218a4214b4781736f",
+   "closed_at": null,
+   "depends_on": [
+    "OM-05.01",
+    "OM-05.02"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL3s",
+   "item_stable_id": "OM-05.05",
+   "item_updated_at": "2026-11-06T09:16:28Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pvyA",
+   "number": 42,
+   "parent_number": 5,
+   "stable_id": "OM-05.05",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-05.05-T1",
+     "text": "Record the proposed alias validation/personal ownership rules and keep any shared-alias policy as an explicit unresolved decision."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-05.05-T2",
+     "text": "Implement viewer/client-scoped appearance persistence, validation, save/reset and audit events."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-05.05-T3",
+     "text": "Build named color selection and alias preview in S5; retain fixed provider/type labeling and accessible agent chips."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-05.05-T4",
+     "text": "Test duplicate names, validation, failed saves, cross-viewer isolation, contrast and revocation."
+    }
+   ],
+   "title": "OM-05.05 \u2014 Personalize agent appearance without changing identity",
+   "updated_at": "2026-11-06T07:29:54Z"
+  },
+  {
+   "body_sha256": "14fd309e0a8b55f16b0efdf5bc456d60cb17d427b68e99ddd8ec04d0f9cc478a",
+   "closed_at": null,
+   "depends_on": [
+    "E05"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL5Q",
+   "item_stable_id": "OM-06.01",
+   "item_updated_at": "2026-11-06T09:16:30Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pwfg",
+   "number": 43,
+   "parent_number": 6,
+   "stable_id": "OM-06.01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-06.01-T1",
+     "text": "Define the versioned ingress authentication, enrollment binding and purpose-scoping contract for OTLP and semantic observations."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-06.01-T2",
+     "text": "Implement the pre-persistence field allowlist/redaction pipeline and collection-policy gate, including A-3 decision evidence and protected credential references."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-06.01-T3",
+     "text": "Add fixtures for default-on conversation capture, project opt-out, scope forgery, revoked enrollment, secret-bearing fields, excluded content and diagnostic leakage."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-06.01-T4",
+     "text": "Record permitted receipt/rejection audit fields and a policy-change contract that prevents queued processing from restoring excluded content."
+    }
+   ],
+   "title": "OM-06.01 \u2014 Bind collection to enrollment and the approved content policy",
+   "updated_at": "2026-11-06T07:29:55Z"
+  },
+  {
+   "body_sha256": "869fe1dd202fa4d1cc1b8c7e23bbc0d4fcbf68ed6a8090e31884dd6bd8f9ea25",
+   "closed_at": null,
+   "depends_on": [
+    "OM-06.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL-M",
+   "item_stable_id": "OM-06.02",
+   "item_updated_at": "2026-11-06T09:16:33Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pxIQ",
+   "number": 44,
+   "parent_number": 6,
+   "stable_id": "OM-06.02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-06.02-T1",
+     "text": "Implement the three proposed OTLP WebFlux routes using pinned official message definitions, content negotiation, gzip handling and configurable resource bounds; implement `/api/v1/observations` separately against the versioned semantic contract."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-06.02-T2",
+     "text": "Commit redacted acceptance records and scoped durable processing jobs atomically through the owning module's transaction boundary."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-06.02-T3",
+     "text": "Implement signal-specific success, partial-success and failure responses, including rate/backpressure handling and safe error messages."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-06.02-T4",
+     "text": "Verify all three signals with binary/JSON, compressed/uncompressed, empty, malformed, oversized and storage-failure fixtures; document full versus base endpoint URL rules."
+    }
+   ],
+   "title": "OM-06.02 \u2014 Accept the native OTLP wire protocols in Spring",
+   "updated_at": "2026-11-06T07:29:56Z"
+  },
+  {
+   "body_sha256": "95f3b94ff8800daff4a2b27b84cf5b4649a69f13efc52740d1a5bb6e6c5d83ca",
+   "closed_at": null,
+   "depends_on": [
+    "OM-06.02"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL-o",
+   "item_stable_id": "OM-06.03",
+   "item_updated_at": "2026-11-06T09:16:36Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pyDg",
+   "number": 45,
+   "parent_number": 6,
+   "stable_id": "OM-06.03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-06.03-T1",
+     "text": "Define Ingestion-owned normalized observation-envelope, metric-sample, trace-link, conversation-message and semantic-evidence input contracts with source-qualified IDs, roles, turn/tool relationships and explicit capability/content coverage."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-06.03-T2",
+     "text": "Implement adapter routing, schema/version compatibility and normalization into owned PostgreSQL records, including authorized conversation content and ordered references, without direct cross-module table writes."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-06.03-T3",
+     "text": "Preserve original units, accounting semantics, time windows and configured-versus-observed values for downstream usage calculations."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-06.03-T4",
+     "text": "Verify missing fields, identity collisions, model/location changes, unknown schemas, duplicate/out-of-order conversation messages, tool pairing and redacted/truncated/unavailable content using synthetic fixtures."
+    }
+   ],
+   "title": "OM-06.03 \u2014 Normalize evidence without inventing missing identity or capability",
+   "updated_at": "2026-11-06T07:29:57Z"
+  },
+  {
+   "body_sha256": "155e997c008e8fb9dd3cba2c36482ca108c4414dc00a9b5d7911c83e4a8abd20",
+   "closed_at": null,
+   "depends_on": [
+    "OM-06.03"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL_I",
+   "item_stable_id": "OM-06.04",
+   "item_updated_at": "2026-11-06T09:16:39Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pytQ",
+   "number": 46,
+   "parent_number": 6,
+   "stable_id": "OM-06.04",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-06.04-T1",
+     "text": "Implement one durable retry owner, lease recovery, bounded backoff, idempotent normalization and explicit terminal failure in the existing backend."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-06.04-T2",
+     "text": "Define per-signal source identity, replay detection and cross-channel reconciliation rules, including unknown identity and overlap behavior."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-06.04-T3",
+     "text": "Exercise crash-after-acceptance, crash-before-acknowledgment, duplicate batches, late samples, concurrent claims and revoked-scope recovery."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-06.04-T4",
+     "text": "Document native exporter limits, receiver guarantees and the evidence threshold for an optional persistent Collector, without making it a prerequisite."
+    }
+   ],
+   "title": "OM-06.04 \u2014 Recover accepted observations and suppress repeated accounting",
+   "updated_at": "2026-11-06T07:29:58Z"
+  },
+  {
+   "body_sha256": "38c015ebece243ae7f575a36700878a69babd40231bd5993f1d0ca05d0904d41",
+   "closed_at": null,
+   "depends_on": [
+    "OM-06.04"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL_o",
+   "item_stable_id": "OM-06.05",
+   "item_updated_at": "2026-11-06T09:16:43Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9pzXg",
+   "number": 47,
+   "parent_number": 6,
+   "stable_id": "OM-06.05",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-06.05-T1",
+     "text": "Expose authorized health and bounded receipt/processing history APIs with declared cadence and stale-state configuration."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-06.05-T2",
+     "text": "Implement connection-readiness and activity-list integration with separate signal and delivery coverage and persistent safe failure states."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-06.05-T3",
+     "text": "Verify per-signal failure isolation, field-level revocation, source/recorded times, accessible update handling and secret-free recovery diagnostics."
+    }
+   ],
+   "title": "OM-06.05 \u2014 Make ingestion health and coverage inspectable",
+   "updated_at": "2026-11-06T07:29:59Z"
+  },
+  {
+   "body_sha256": "02a4f9e7cc757d7128d3cf189d1bd00886b3ff1c779c52e069bc9d0060ae825c",
+   "closed_at": null,
+   "depends_on": [
+    "E06"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL4U",
+   "item_stable_id": "OM-07.01",
+   "item_updated_at": "2026-11-06T09:16:45Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9p0WQ",
+   "number": 48,
+   "parent_number": 7,
+   "stable_id": "OM-07.01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-07.01-T1",
+     "text": "Define the supported Claude versions/modes and package manifest, configuration merge/repair contract and owned-file inventory."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-07.01-T2",
+     "text": "Build the native package/configuration integration with enrollment-bound credentials, secret references and reversible preservation of existing settings."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-07.01-T3",
+     "text": "Qualify actual standalone and installed T3 execution paths for MCP availability, hooks, exporter settings, supported fields and credential handling."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-07.01-T4",
+     "text": "Add setup failure/repair checks and document transport reachability and native offline-buffering limits without installing a mandatory daemon."
+    }
+   ],
+   "title": "OM-07.01 \u2014 Package and qualify native Claude integration",
+   "updated_at": "2026-11-06T07:30:00Z"
+  },
+  {
+   "body_sha256": "1b28f4957f9079759b1a1f4473cfdac0175a0b38b0ba69f6b1cf7c01e8ca4a3c",
+   "closed_at": null,
+   "depends_on": [
+    "OM-07.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL4s",
+   "item_stable_id": "OM-07.02",
+   "item_updated_at": "2026-11-06T09:16:48Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9p1Bg",
+   "number": 49,
+   "parent_number": 7,
+   "stable_id": "OM-07.02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-07.02-T1",
+     "text": "Implement the Claude MCP knowledge adapter and project-context selection using existing authorization and versioned knowledge contracts."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-07.02-T2",
+     "text": "Implement qualified native skill-package materialization/refresh with manifest validation, ownership boundaries and explicit eligibility/cache behavior."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-07.02-T3",
+     "text": "Preserve and verify authorized Notion creation/read paths independently of Owl Mast knowledge receipts and native skill activation."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-07.02-T4",
+     "text": "Verify client-driven bounded search/selected load, validated default and explicit unvalidated opt-in in both modes, plus empty/denied/conflicting results, package corruption, withdrawal, interrupted delivery and receipts; no unsolicited lesson injection or inference that managed revocation prevents independent use of retained copies."
+    }
+   ],
+   "title": "OM-07.02 \u2014 Deliver exact knowledge and native skill packages to Claude",
+   "updated_at": "2026-11-06T07:30:01Z"
+  },
+  {
+   "body_sha256": "d9551ea07b1a357b20a58a27063f440ab02d28824f21cf59a2b12d82fb12e2c5",
+   "closed_at": null,
+   "depends_on": [
+    "OM-07.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL6U",
+   "item_stable_id": "OM-07.03",
+   "item_updated_at": "2026-11-06T09:16:51Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9p1nQ",
+   "number": 50,
+   "parent_number": 7,
+   "stable_id": "OM-07.03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-07.03-T1",
+     "text": "Implement non-controlling lifecycle/knowledge hooks with bounded failure behavior and supported native correlation fields."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-07.03-T2",
+     "text": "Generate separate log/metric/trace exporter configuration with protocol, endpoint semantics and trace opt-in; apply the adopted prompt/response/tool-content capture default, project overrides and secret exclusions across supported content channels."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-07.03-T3",
+     "text": "Map Claude events and token categories into E06 contracts, preserving counter windows, cost provenance and capability/version coverage."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-07.03-T4",
+     "text": "Verify default-on capture and project opt-out, duplicate hook/OTLP evidence, partial/truncated content, shared accounts, redaction, failed connections and uncertain offline delivery; document content gaps explicitly."
+    }
+   ],
+   "title": "OM-07.03 \u2014 Send Claude observations directly without controlling execution",
+   "updated_at": "2026-11-06T07:30:01Z"
+  },
+  {
+   "body_sha256": "23fb1680dd0036041c652a32162611a46a2c48d1b7b12331136eeb4918e1bda7",
+   "closed_at": null,
+   "depends_on": [
+    "OM-07.02",
+    "OM-07.03"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL64",
+   "item_stable_id": "OM-07.04",
+   "item_updated_at": "2026-11-06T09:16:54Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9p3AQ",
+   "number": 51,
+   "parent_number": 7,
+   "stable_id": "OM-07.04",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-07.04-T1",
+     "text": "Build the four-cell project/mode qualification procedure and reproducible fixtures, including current installed T3/native versions."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-07.04-T2",
+     "text": "Exercise real authorized knowledge/reporting paths only after content-policy gates, retaining redacted outcome and capability evidence."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-07.04-T3",
+     "text": "Validate repair, refresh, rotation, withdrawal, project isolation, revoked access and disconnection behavior in both modes."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-07.04-T4",
+     "text": "Publish contributor setup/repair instructions and truthful readiness results with recurring enrollment measurements and unresolved gaps."
+    }
+   ],
+   "title": "OM-07.04 \u2014 Prove Claude works across both projects and execution modes",
+   "updated_at": "2026-11-06T07:30:03Z"
+  },
+  {
+   "body_sha256": "a3891373327edd9b311f3d4bf7a0318ee2f0c9e1f32635e18a40f2eb948831d0",
+   "closed_at": null,
+   "depends_on": [
+    "E06"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMcM",
+   "item_stable_id": "OM-08.01",
+   "item_updated_at": "2026-11-06T09:16:57Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9p3-Q",
+   "number": 52,
+   "parent_number": 8,
+   "stable_id": "OM-08.01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-08.01-T1",
+     "text": "Define the versioned Codex package manifest, supported modes, owned settings and managed-policy-compatible merge/repair behavior."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-08.01-T2",
+     "text": "Implement enrollment-bound MCP, hook and OTLP configuration with secret references and preservation of unrelated user configuration."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-08.01-T3",
+     "text": "Qualify the actual standalone and T3-hosted configurations and retain a capability matrix covering native settings, hooks and fields."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-08.01-T4",
+     "text": "Add failure/repair checks for unsupported clients, missing secrets, managed overrides and endpoint conflicts without changing execution authority."
+    }
+   ],
+   "title": "OM-08.01 \u2014 Package and qualify the native Codex connection",
+   "updated_at": "2026-11-06T07:30:04Z"
+  },
+  {
+   "body_sha256": "5b223203e9639d5b7c32235c2ff666724ca0e622c35c65534982eae6453c10df",
+   "closed_at": null,
+   "depends_on": [
+    "OM-08.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMdA",
+   "item_stable_id": "OM-08.02",
+   "item_updated_at": "2026-11-06T09:17:00Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9p43g",
+   "number": 53,
+   "parent_number": 8,
+   "stable_id": "OM-08.02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-08.02-T1",
+     "text": "Implement the Codex MCP knowledge adapter using current authorization and exact-version delivery contracts."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-08.02-T2",
+     "text": "Implement qualified native package discovery/materialization with manifest validation, preserved unrelated skills and explicit cache/withdrawal handling."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-08.02-T3",
+     "text": "Verify Notion page creation, source-authorized reading, skill activation and delivery receipts as separate paths in both modes."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-08.02-T4",
+     "text": "Verify client-driven bounded search/selected load, validated default, explicit unvalidated opt-in and no unsolicited lesson injection in both modes; retain restricted/empty/conflicting-result, invalid-manifest, interrupted-refresh and revoked-version tests and distinguish independent retained-copy use."
+    }
+   ],
+   "title": "OM-08.02 \u2014 Deliver exact-version memory and complete Codex skills",
+   "updated_at": "2026-11-06T07:30:05Z"
+  },
+  {
+   "body_sha256": "7a438bb718c0bb627ceb517cfc76380edae56084b4365fe82487552acb56b9bc",
+   "closed_at": null,
+   "depends_on": [
+    "OM-08.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMdw",
+   "item_stable_id": "OM-08.03",
+   "item_updated_at": "2026-11-06T09:17:03Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9p5Yg",
+   "number": 54,
+   "parent_number": 8,
+   "stable_id": "OM-08.03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-08.03-T1",
+     "text": "Implement qualified observational command/MCP hooks, including supported model-attempt evidence and bounded shutdown/startup behavior."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-08.03-T2",
+     "text": "Generate independent logs/metrics/traces configuration using native Codex keys, binary/JSON options, exact endpoints and protected authentication references."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-08.03-T3",
+     "text": "Map available conversation messages, roles, turn/agent/tool IDs and tool argument/result pairs into E06 alongside request tokens and usage semantics; preserve content gaps and do not assume metrics carry session-level detail."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-08.03-T4",
+     "text": "Apply default-on prompt/response/tool-content capture and project overrides; verify redaction, missing/truncated content, retries, null counts, startup races, background-hook cancellation and duplicate cross-signal records."
+    }
+   ],
+   "title": "OM-08.03 \u2014 Observe native Codex work with its actual event contracts",
+   "updated_at": "2026-11-06T07:30:06Z"
+  },
+  {
+   "body_sha256": "7115ce38556b0b4307d4e3748bbc3e7c196f0f708e1cff347c40417140b71dcc",
+   "closed_at": null,
+   "depends_on": [
+    "OM-08.02",
+    "OM-08.03"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMfo",
+   "item_stable_id": "OM-08.04",
+   "item_updated_at": "2026-11-06T09:17:06Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9p6Kg",
+   "number": 55,
+   "parent_number": 8,
+   "stable_id": "OM-08.04",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-08.04-T1",
+     "text": "Build and run the four-cell native/T3 project matrix against supported installed versions using safe fixtures before live-content gates."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-08.04-T2",
+     "text": "Validate authorized Notion, MCP, native skill and telemetry paths separately, retaining redacted capability evidence."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-08.04-T3",
+     "text": "Verify cross-project denial, revoked source access, withdrawn versions, startup/shutdown losses and repaired configurations."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-08.04-T4",
+     "text": "Publish contributor instructions and measured recurring setup/readiness outcomes without claiming unverified historical coverage."
+    }
+   ],
+   "title": "OM-08.04 \u2014 Prove Codex integration and recovery in all pilot combinations",
+   "updated_at": "2026-11-06T07:30:07Z"
+  },
+  {
+   "body_sha256": "1339357358cc24c6e9ff45efc2f5664615418d8bd47cec852d6935fb3ad33716",
+   "closed_at": null,
+   "depends_on": [
+    "E02",
+    "E06"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMas",
+   "item_stable_id": "OM-09.01",
+   "item_updated_at": "2026-11-06T09:17:09Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9p7Dw",
+   "number": 56,
+   "parent_number": 9,
+   "stable_id": "OM-09.01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-09.01-T1",
+     "text": "Inventory both Jira sites and the actual GitHub/Bitbucket instances with source-qualified identities, versions, owners and permitted resource selections."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-09.01-T2",
+     "text": "Qualify authentication, user/source entitlement, revocation and restricted-record behavior using approved minimal probes or redacted fixtures."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-09.01-T3",
+     "text": "Record edition-specific event/history/pagination/limit capabilities and accepted connector contracts before implementing the provider adapters."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-09.01-T4",
+     "text": "Record A-3, retention/removal and destination decisions as live-ingestion gates with unresolved items and owners; keep secrets in protected configuration only."
+    }
+   ],
+   "title": "OM-09.01 \u2014 Qualify actual source editions and permission contracts",
+   "updated_at": "2026-11-06T07:30:08Z"
+  },
+  {
+   "body_sha256": "5423ac9957b3c98d44c4fa98d51da27d0203c1fba7e02401d1421192887b235a",
+   "closed_at": null,
+   "depends_on": [
+    "OM-09.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMbc",
+   "item_stable_id": "OM-09.02",
+   "item_updated_at": "2026-11-06T09:17:12Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9p7rA",
+   "number": 57,
+   "parent_number": 9,
+   "stable_id": "OM-09.02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-09.02-T1",
+     "text": "Implement the qualified Jira edition adapter or adapters for both sites behind source ports, with independently scoped secret references and configuration."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-09.02-T2",
+     "text": "Collect supported issue/history/criteria/relationship evidence using bounded pagination and authenticated webhooks or qualified polling."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-09.02-T3",
+     "text": "Implement checkpoints, rate-limit handling, incremental reconciliation and source-access refresh without direct tracker mutations."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-09.02-T4",
+     "text": "Verify colliding keys, record restrictions, source permission removal, reopened progress, pagination interruption and isolated site failure."
+    }
+   ],
+   "title": "OM-09.02 \u2014 Observe both qualified Jira sites independently",
+   "updated_at": "2026-11-06T07:30:09Z"
+  },
+  {
+   "body_sha256": "85302ea4cfbc22cdbc231cf4dee79f0413ca7a63e0d0f4fa3d22525adc3a6ed5",
+   "closed_at": null,
+   "depends_on": [
+    "OM-09.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM6g",
+   "item_stable_id": "OM-09.03",
+   "item_updated_at": "2026-11-06T09:17:16Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9p8WQ",
+   "number": 58,
+   "parent_number": 9,
+   "stable_id": "OM-09.03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-09.03-T1",
+     "text": "Implement the qualified GitHub authentication and repository-scoped read adapter with protected credential references."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-09.03-T2",
+     "text": "Normalize contribution, review, check and supported deployment/acceptance-reference records with provenance and stable navigation identities."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-09.03-T3",
+     "text": "Implement verified webhook handling where permitted plus bounded incremental reconciliation, checkpointing and rate-limit/backoff behavior."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-09.03-T4",
+     "text": "Verify restricted repositories, revocation, duplicates, missing webhooks, renamed repositories and separate merge/check/acceptance facts."
+    }
+   ],
+   "title": "OM-09.03 \u2014 Observe Syntelligence contributions from GitHub",
+   "updated_at": "2026-11-06T07:30:10Z"
+  },
+  {
+   "body_sha256": "b1a05c312ff8d2c7922c4242d99ed3fc9f8626c3e8b1779d7e106ebc935f1bf1",
+   "closed_at": null,
+   "depends_on": [
+    "OM-09.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM68",
+   "item_stable_id": "OM-09.04",
+   "item_updated_at": "2026-11-06T09:17:21Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9p9KQ",
+   "number": 59,
+   "parent_number": 9,
+   "stable_id": "OM-09.04",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-09.04-T1",
+     "text": "Implement the qualified Bitbucket Cloud or Data Center adapter for the actual installation, authentication and permission model."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-09.04-T2",
+     "text": "Map native contribution/review/build and supported deployment-reference semantics with source-qualified identities and documented capability gaps."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-09.04-T3",
+     "text": "Implement approved webhook/poll paths, durable checkpoints, bounded reconciliation and edition-specific rate-limit handling."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-09.04-T4",
+     "text": "Verify provider/name collisions, denied repositories, permission changes, out-of-order updates and recovery independent of GitHub/Jira availability."
+    }
+   ],
+   "title": "OM-09.04 \u2014 Observe Movesion contributions from Bitbucket",
+   "updated_at": "2026-11-06T07:30:11Z"
+  },
+  {
+   "body_sha256": "8c790293ba7a32953883571e46539e37d85cbda829d47e3b0d438ec68aed8548",
+   "closed_at": null,
+   "depends_on": [
+    "OM-09.02",
+    "OM-09.03",
+    "OM-09.04"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM7U",
+   "item_stable_id": "OM-09.05",
+   "item_updated_at": "2026-11-06T09:17:25Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9p98Q",
+   "number": 60,
+   "parent_number": 9,
+   "stable_id": "OM-09.05",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-09.05-T1",
+     "text": "Implement unified connection-health/readiness views with independent scopes, selected resources, collection cadence and safe remediation."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-09.05-T2",
+     "text": "Exercise a cross-provider recovery suite covering webhook gaps, checkpoint interruption, duplicates, reordering and source-access removal."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-09.05-T3",
+     "text": "Supply E10 with verified source-qualified work/contribution relationships and acceptance references, preserving ambiguous/unlinked records."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-09.05-T4",
+     "text": "Demonstrate simultaneous two-site Jira plus GitHub/Bitbucket operation using authorized samples after the live-content gates and record remaining coverage gaps."
+    }
+   ],
+   "title": "OM-09.05 \u2014 Reconcile both environments and explain connection coverage",
+   "updated_at": "2026-11-06T07:30:12Z"
+  },
+  {
+   "body_sha256": "a75a4f8618ab11e6657ad9fb04793d28ae6907ce5c546fa94f690489558459b3",
+   "closed_at": null,
+   "depends_on": [
+    "E06",
+    "E09"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMac",
+   "item_stable_id": "OM-10.01",
+   "item_updated_at": "2026-11-06T09:17:28Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9p-vA",
+   "number": 61,
+   "parent_number": 10,
+   "stable_id": "OM-10.01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-10.01-T1",
+     "text": "Define Evidence-owned source-qualified work/run/contribution identifiers and typed correlation/assertion contracts consuming the Ingestion observation envelope with provenance and correction links."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-10.01-T2",
+     "text": "Implement deterministic correlation policies and authorized correction/mapping operations with reliable audit emission."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-10.01-T3",
+     "text": "Expose permission-filtered evidence-chain queries including unlinked, ambiguous and contradictory records."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-10.01-T4",
+     "text": "Verify duplicate keys, shared credentials, late corrections, conflicting mappings and revocation across chained results."
+    }
+   ],
+   "title": "OM-10.01 \u2014 Correlate source records without inventing attribution",
+   "updated_at": "2026-11-06T07:30:13Z"
+  },
+  {
+   "body_sha256": "b7435d4244b9c03d1b4c5f53a8b15238b0a0804153cb09c65db4ce96fcf31750",
+   "closed_at": null,
+   "depends_on": [
+    "OM-10.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMbA",
+   "item_stable_id": "OM-10.02",
+   "item_updated_at": "2026-11-06T09:17:32Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9p_jQ",
+   "number": 62,
+   "parent_number": 10,
+   "stable_id": "OM-10.02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-10.02-T1",
+     "text": "Define the per-task/per-run read projection with provider-native effort labels, time segments and independent coverage fields."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-10.02-T2",
+     "text": "Implement current-authorization run-history and permitted full-ID retrieval APIs without flattening parent/child records."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-10.02-T3",
+     "text": "Build responsive task cards, accessible disclosures and copy feedback using existing evidence-detail primitives."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-10.02-T4",
+     "text": "Test multiple models/locations, role uncertainty, missing counters, long IDs and revocation during detail/copy use."
+    }
+   ],
+   "title": "OM-10.02 \u2014 Inspect each observed task and run independently",
+   "updated_at": "2026-11-06T07:30:14Z"
+  },
+  {
+   "body_sha256": "1edb73c2192ca6890ed64ad2e18a524bbf891a0774dc5cc9d4aa31d5554b66c9",
+   "closed_at": null,
+   "depends_on": [
+    "OM-10.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMbw",
+   "item_stable_id": "OM-10.03",
+   "item_updated_at": "2026-11-06T09:17:35Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qAQA",
+   "number": 63,
+   "parent_number": 10,
+   "stable_id": "OM-10.03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-10.03-T1",
+     "text": "Implement pure ticket-progress policies for measurable, empty, changed and conflicting denominators."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-10.03-T2",
+     "text": "Implement the proposed epic child-closure projection with named set, deduplication and independent acceptance evidence."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-10.03-T3",
+     "text": "Build progress-evidence drill-down with basis/source/time and accessible Unknown/conflict states."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-10.03-T4",
+     "text": "Verify denominator changes, inconsistent checklists, partial collection, permission changes and independent completion dimensions."
+    }
+   ],
+   "title": "OM-10.03 \u2014 Calculate progress from explicit evidence",
+   "updated_at": "2026-11-06T07:30:15Z"
+  },
+  {
+   "body_sha256": "b6f26dccc4382b788230dd93f3d565bfc939a503689ab6676b7b53e57ce2be96",
+   "closed_at": null,
+   "depends_on": [
+    "OM-10.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMeM",
+   "item_stable_id": "OM-10.04",
+   "item_updated_at": "2026-11-06T09:17:38Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qA_Q",
+   "number": 64,
+   "parent_number": 10,
+   "stable_id": "OM-10.04",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-10.04-T1",
+     "text": "Define bounded relation query/paging contracts and graph/list parity rules over PostgreSQL typed assertions."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-10.04-T2",
+     "text": "Implement authorization-aware expansion and cycle/gap classification without requiring a graph database."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-10.04-T3",
+     "text": "Build labeled directed graph interactions and the equivalent keyboard/phone relationship list."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-10.04-T4",
+     "text": "Test contradictory edges, multiple PRs, visible cycles, bounded traversal, graph/list parity and revoked-node suppression."
+    }
+   ],
+   "title": "OM-10.04 \u2014 Inspect the authorized dependency graph and equivalent list",
+   "updated_at": "2026-11-06T07:30:16Z"
+  },
+  {
+   "body_sha256": "88bcd4d988a58d19f49929d6dbf984b1e3fa1c1beecac7603f079683a4c741f3",
+   "closed_at": null,
+   "depends_on": [
+    "OM-10.02",
+    "OM-10.03",
+    "OM-10.04"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMfU",
+   "item_stable_id": "OM-10.05",
+   "item_updated_at": "2026-11-06T09:17:41Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qBmQ",
+   "number": 65,
+   "parent_number": 10,
+   "stable_id": "OM-10.05",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-10.05-T1",
+     "text": "Compose the S2 query model from the earlier bounded projections without adding a second owner for work or run facts."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-10.05-T2",
+     "text": "Implement source-qualified ticket chips, work records, evidence sections and safe descriptive source links."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-10.05-T3",
+     "text": "Add independent acceptance/check/deployment evidence, explicit blocker/request-policy states and a source-status-versus-evidenced-stage slot with mapping provenance."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-10.05-T4",
+     "text": "Verify authorized deep links, missing links, stale/partial evidence, return context and absence of execution controls."
+    }
+   ],
+   "title": "OM-10.05 \u2014 Follow work evidence into source tools safely",
+   "updated_at": "2026-11-06T07:30:17Z"
+  },
+  {
+   "body_sha256": "b519178305e90c95c10c3e06a5f7db4f87abac41d946c0f2eb7de3d860c8d064",
+   "closed_at": null,
+   "depends_on": [
+    "E03",
+    "E04"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMho",
+   "item_stable_id": "OM-11.01",
+   "item_updated_at": "2026-11-06T09:17:44Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qCYg",
+   "number": 66,
+   "parent_number": 11,
+   "stable_id": "OM-11.01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-11.01-T1",
+     "text": "Implement project promotion policy/audience versions and maintainer/permitted-use ownership bindings behind current authorization."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-11.01-T2",
+     "text": "Implement concurrency-safe policy save and mode-change events that invalidate work carrying the prior policy revision."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-11.01-T3",
+     "text": "Add mode-specific explanations and validation, including automatic candidate evaluation and adopted A-4: disabled mode stops new publication while existing eligible publications remain available until separately withdrawn, superseded or otherwise ineligible."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-11.01-T4",
+     "text": "Verify unauthorized policy changes, missing permitted-use ownership, stale saves, automatic/manual/disabled transitions and queued/in-flight publication rejection after disabling; existing eligible publications and lineage remain readable with safe audit evidence."
+    }
+   ],
+   "title": "OM-11.01 \u2014 Configure project promotion policy and permitted audiences",
+   "updated_at": "2026-11-06T07:30:17Z"
+  },
+  {
+   "body_sha256": "8e2c9b599c6b4fdeba66396981db1cb5205608fa9b72997116e09a045c885f20",
+   "closed_at": null,
+   "depends_on": [
+    "OM-11.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMiY",
+   "item_stable_id": "OM-11.02",
+   "item_updated_at": "2026-11-06T09:17:47Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qDJA",
+   "number": 67,
+   "parent_number": 11,
+   "stable_id": "OM-11.02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-11.02-T1",
+     "text": "Add only publication-candidate/version, restricted lineage and check-result records required for company-safe publication."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-11.02-T2",
+     "text": "Implement durable evaluation jobs with current policy/content bindings and explicit passed/failed/uncertain check evidence; qualify any optional Spring AI processing destination before use."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-11.02-T3",
+     "text": "Produce separate company-reader and maintainer projections, excluding source keys, private links, named actors or detailed reasons without their own authorization."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-11.02-T4",
+     "text": "Verify sensitive-content failures, unresolved contradiction, missing permitted-use approval, changed sanitized text and hidden-origin disclosure cases."
+    }
+   ],
+   "title": "OM-11.02 \u2014 Evaluate an exact company-safe publication candidate",
+   "updated_at": "2026-11-06T07:30:19Z"
+  },
+  {
+   "body_sha256": "9bd863c1033f0c349a872f58739469be9b1ea8aeb5f34b9fb7eb25f99c473fd6",
+   "closed_at": null,
+   "depends_on": [
+    "OM-11.01",
+    "OM-11.02"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMi8",
+   "item_stable_id": "OM-11.03",
+   "item_updated_at": "2026-11-06T09:17:50Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qD1w",
+   "number": 68,
+   "parent_number": 11,
+   "stable_id": "OM-11.03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-11.03-T1",
+     "text": "Implement the publication commit boundary with exact content/policy/audience revision guards and fresh maintainer/source/use authorization."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-11.03-T2",
+     "text": "Wire automatic durable jobs and manual exact-version decisions to the same guarded publication operation; ensure disabled mode cannot enqueue or commit new publication."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-11.03-T3",
+     "text": "Emit idempotent publication/lifecycle/audit events and expose authorized operation outcomes without depending on notification or audit UI epics."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-11.03-T4",
+     "text": "Verify concurrent edits, pending automatic-to-manual/disabled changes, permission revocation, stale human approval, retry-after-commit and restart failure cases."
+    }
+   ],
+   "title": "OM-11.03 \u2014 Publish safely in automatic and manual modes under races",
+   "updated_at": "2026-11-06T07:30:19Z"
+  },
+  {
+   "body_sha256": "f6ca2339ac26059e2c7d4784951a7fa48ac71e5a49e1c59868fed6769f604b64",
+   "closed_at": null,
+   "depends_on": [
+    "OM-11.03"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMjg",
+   "item_stable_id": "OM-11.04",
+   "item_updated_at": "2026-11-06T09:17:53Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qEjw",
+   "number": 69,
+   "parent_number": 11,
+   "stable_id": "OM-11.04",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-11.04-T1",
+     "text": "Implement transitive derivation/publication-aware eligibility invalidation and immediate delivery guards using exact-version lineage, with durable idempotent index/cache cleanup; ordinary retrieval stays denied while cleanup is pending."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-11.04-T2",
+     "text": "Implement supersession and fresh-evaluation republication paths while distinguishing source ACL changes from publication permission and reliability changes."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-11.04-T3",
+     "text": "Preserve permission-filtered lifecycle/receipt history and append-linked corrections with explicit external-copy and retention limits."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-11.04-T4",
+     "text": "Verify withdrawn cached versions, derivative chains, stalled cleanup jobs, independent company-publication access and lost publication permission; verify A-2 lineage preservation and A-4 disabled-mode behavior without conflating stopping publication with withdrawal."
+    }
+   ],
+   "title": "OM-11.04 \u2014 Withdraw or quarantine guidance and its promoted derivatives",
+   "updated_at": "2026-11-06T07:30:20Z"
+  },
+  {
+   "body_sha256": "6b5108f20fa8a30a559ed5ed8c418b42d85a8157b95709c178095eee909a7dc3",
+   "closed_at": null,
+   "depends_on": [
+    "OM-11.01",
+    "OM-11.02",
+    "OM-11.03",
+    "OM-11.04"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMkU",
+   "item_stable_id": "OM-11.05",
+   "item_updated_at": "2026-11-06T09:17:56Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qFOg",
+   "number": 70,
+   "parent_number": 11,
+   "stable_id": "OM-11.05",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-11.05-T1",
+     "text": "Build S6 policy controls, exact-version preview, manual decisions and automatic exception views using the existing authorized application contracts."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-11.05-T2",
+     "text": "Add lifecycle/history navigation and separate company-reader presentation with field-level source, actor and recipient authorization."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-11.05-T3",
+     "text": "Implement accessible pending/save/conflict/error/offline behavior and explanations for policy changes, changed content and unavailable source authority."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-11.05-T4",
+     "text": "Verify manual and automatic journeys, all bounded exception paths, stale/revoked decisions, keyboard/phone use and restricted-history disclosure."
+    }
+   ],
+   "title": "OM-11.05 \u2014 Review promotion policy, exceptions and lifecycle in S6",
+   "updated_at": "2026-11-06T07:30:21Z"
+  },
+  {
+   "body_sha256": "555499831f523b7b56e3b90b4589c4534b7d3fe345e35a471239c9016a7f663b",
+   "closed_at": null,
+   "depends_on": [
+    "E04",
+    "E07",
+    "E08"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMdU",
+   "item_stable_id": "OM-12.01",
+   "item_updated_at": "2026-11-06T09:17:58Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qF7A",
+   "number": 71,
+   "parent_number": 12,
+   "stable_id": "OM-12.01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-12.01-T1",
+     "text": "Add Evidence-owned native load/application/reuse assertion and link records consuming Ingestion observations and referencing Knowledge-owned exact versions/delivery receipts; do not duplicate receipt or lifecycle authority, preserving exact versions, event identity, independent states and coverage provenance."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-12.01-T2",
+     "text": "Implement event validation, idempotency, late-arrival handling and explicit unassigned/unsupported classification without reconstructing facts from conversation text."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-12.01-T3",
+     "text": "Apply recipient/item/source/purpose authorization and A-3 collection limits before storing evidence or emitting safe audit events; keep raw queries/conversations unnecessary."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-12.01-T4",
+     "text": "Verify both native clients' supported read/load/use signals, fetch-without-load, partial receipts, unknown versions, duplicate transport and genuinely repeated cached loads."
+    }
+   ],
+   "title": "OM-12.01 \u2014 Preserve distinct exact-version knowledge evidence",
+   "updated_at": "2026-11-06T07:30:22Z"
+  },
+  {
+   "body_sha256": "84e4e9f1979ed8bc617b3f9056ff7a06fce3879a9a4aad29054ec1f3aec4b87c",
+   "closed_at": null,
+   "depends_on": [
+    "OM-12.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM54",
+   "item_stable_id": "OM-12.02",
+   "item_updated_at": "2026-11-06T09:18:02Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qGhQ",
+   "number": 72,
+   "parent_number": 12,
+   "stable_id": "OM-12.02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-12.02-T1",
+     "text": "Implement the exact-version/task-artifact human verification contract and scoped persistence with explicit evidence and verifier authorization."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-12.02-T2",
+     "text": "Add idempotent verification, correction/retraction and permitted audit history without overwriting earlier recorded claims."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-12.02-T3",
+     "text": "Expose a permission-checked Record verified reuse action from an eligible receipt/detail record with honest missing-evidence validation."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-12.02-T4",
+     "text": "Verify positive and missing/denied-evidence cases, duplicate verification, corrections and recipient revocation; prepare the unresolved A-6 sample-selection checkpoint."
+    }
+   ],
+   "title": "OM-12.02 \u2014 Record human-verified useful reuse against task evidence",
+   "updated_at": "2026-11-06T07:30:23Z"
+  },
+  {
+   "body_sha256": "2d7b09c05852d29bbf4857aed712f85846894554bee9197aa869c4e405dc3caa",
+   "closed_at": null,
+   "depends_on": [
+    "OM-12.01",
+    "OM-12.02"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM6I",
+   "item_stable_id": "OM-12.03",
+   "item_updated_at": "2026-11-06T09:18:06Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qHbA",
+   "number": 73,
+   "parent_number": 12,
+   "stable_id": "OM-12.03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-12.03-T1",
+     "text": "Implement bounded authorized aggregate queries for distinct Skills/Memory metrics and supported dimensions, using event identity and exact-version links."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-12.03-T2",
+     "text": "Encode period selection, event-time/fallback rules, coverage completeness and zero/partial/unavailable semantics in the statistics contract."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-12.03-T3",
+     "text": "Implement matching authorized drill-down and filter-option queries with current recipient/source/item permissions and revocation invalidation."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-12.03-T4",
+     "text": "Verify replay versus reload counting, multi-item inclusion, late events, unknown attribution, complete/partial windows and permission-safe unique counts."
+    }
+   ],
+   "title": "OM-12.03 \u2014 Aggregate Skills and Memory measurements without false completeness",
+   "updated_at": "2026-11-06T07:30:24Z"
+  },
+  {
+   "body_sha256": "f82621e10dcdd3d1011c461af7857e402b027841441fb273260a266605f786f3",
+   "closed_at": null,
+   "depends_on": [
+    "OM-12.02",
+    "OM-12.03"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM6s",
+   "item_stable_id": "OM-12.04",
+   "item_updated_at": "2026-11-06T09:18:10Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qIPQ",
+   "number": 74,
+   "parent_number": 12,
+   "stable_id": "OM-12.04",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-12.04-T1",
+     "text": "Add item/version knowledge statistics to S3/S4 and the separate Skills/Memory section of S7 using the shared metrics contract and equivalent accessible chart/table representations."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-12.04-T2",
+     "text": "Implement receipt/event drill-down and contextual verification flows with stable project/period/version filters and explicit source/recipient disclosure boundaries."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-12.04-T3",
+     "text": "Provide honest empty, partial, unavailable, pending, failure and revoked-access states, including distinctions among delivery, load, use and verified reuse."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-12.04-T4",
+     "text": "Verify the J9 knowledge-measurement journey and FR-11 verification flow with both native clients, keyboard/screen-reader navigation, both themes and phone layouts; keep A-6 acceptance approval pending."
+    }
+   ],
+   "title": "OM-12.04 \u2014 Inspect knowledge receipts, statistics and reuse evidence",
+   "updated_at": "2026-11-06T07:30:25Z"
+  },
+  {
+   "body_sha256": "ee9bc8a8bc9c768121dcb1c83986fbf96257e16aa68de0978453dbfb130c3b0c",
+   "closed_at": null,
+   "depends_on": [
+    "E10"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMgY",
+   "item_stable_id": "OM-13.01",
+   "item_updated_at": "2026-11-06T09:18:13Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qI4g",
+   "number": 75,
+   "parent_number": 13,
+   "stable_id": "OM-13.01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-13.01-T1",
+     "text": "Define S1 query composition and person/project/period filters over the established work-evidence read contracts."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-13.01-T2",
+     "text": "Build the proposed overview layout with summary, attention, progress, work/agent chips, updates and collection coverage components."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-13.01-T3",
+     "text": "Connect each summary/count to its exact permitted detail set and preserve source/time/coverage labels."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-13.01-T4",
+     "text": "Verify own/colleague views, partial outages, source identity ambiguity and permission-filtered drill-down consistency."
+    }
+   ],
+   "title": "OM-13.01 \u2014 Understand own and colleague work from Daily Work",
+   "updated_at": "2026-11-06T07:30:26Z"
+  },
+  {
+   "body_sha256": "135890c6373727a3efb77a5198214096e8cb32b755f693ef5f3dcbafeb5d87b9",
+   "closed_at": null,
+   "depends_on": [
+    "OM-13.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMhQ",
+   "item_stable_id": "OM-13.02",
+   "item_updated_at": "2026-11-06T09:18:16Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qJrg",
+   "number": 76,
+   "parent_number": 13,
+   "stable_id": "OM-13.02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-13.02-T1",
+     "text": "Define authorized company aggregate queries with per-project coverage and independent disclosure checks."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-13.02-T2",
+     "text": "Build explicit company scope selection, project summaries and safe project drill-down/return navigation."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-13.02-T3",
+     "text": "Add stable basis/coverage labels and contract-level entry points for knowledge and usage capabilities as they become available."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-13.02-T4",
+     "text": "Test inaccessible projects, restricted same-project sources, partial collection and unchanged project-default knowledge scope."
+    }
+   ],
+   "title": "OM-13.02 \u2014 Compare authorized project context in a company view",
+   "updated_at": "2026-11-06T07:30:27Z"
+  },
+  {
+   "body_sha256": "a6755742591253da0308aa0fa83d61344a6f802d133a2f5914882db850f858f7",
+   "closed_at": null,
+   "depends_on": [
+    "OM-13.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMiE",
+   "item_stable_id": "OM-13.03",
+   "item_updated_at": "2026-11-06T09:18:20Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qKZQ",
+   "number": 77,
+   "parent_number": 13,
+   "stable_id": "OM-13.03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-13.03-T1",
+     "text": "Implement assignment queries using confirmed identity mappings, with explicit shared/unknown source-identity states."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-13.03-T2",
+     "text": "Build the separate Focus route and proposed stacked-epic/combined views with persistent project and person context."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-13.03-T3",
+     "text": "Integrate unique-work/run grouping, explicit ungrouped areas and E10 detail/dependency navigation."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-13.03-T4",
+     "text": "Verify simultaneous epics, shared runs, unconfirmed identity, partial mappings and cross-project disclosure boundaries."
+    }
+   ],
+   "title": "OM-13.03 \u2014 Follow assigned work across concurrent epics",
+   "updated_at": "2026-11-06T07:30:28Z"
+  },
+  {
+   "body_sha256": "043cc0d50bad132404f169e3d58d3393baf232b985cf759f4fff12f1635a9201",
+   "closed_at": null,
+   "depends_on": [
+    "OM-13.03"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMio",
+   "item_stable_id": "OM-13.04",
+   "item_updated_at": "2026-11-06T09:18:23Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qLUA",
+   "number": 78,
+   "parent_number": 13,
+   "stable_id": "OM-13.04",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-13.04-T1",
+     "text": "Implement versioned authorized project-stage mapping configuration and provenance projection, auditing mapping changes."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-13.04-T2",
+     "text": "Build six-stage kanban, Stage not mapped area, blocker badges and distinct concurrent-contribution indicators."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-13.04-T3",
+     "text": "Provide phone/keyboard grouped-list parity and links to the same E10 evidence/dependency records."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-13.04-T4",
+     "text": "Verify nonlinear movement, absent/changed mappings, original status preservation, unique counts and revocation during view changes."
+    }
+   ],
+   "title": "OM-13.04 \u2014 Inspect work through the six observed SDLC stages",
+   "updated_at": "2026-11-06T07:30:29Z"
+  },
+  {
+   "body_sha256": "27e82eb4901a3ad3075049dd7da6c707137d74578351d7fa19a004061ef6a008",
+   "closed_at": null,
+   "depends_on": [
+    "OM-13.01",
+    "OM-13.02",
+    "OM-13.03",
+    "OM-13.04"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMjM",
+   "item_stable_id": "OM-13.05",
+   "item_updated_at": "2026-11-06T09:18:27Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qL9A",
+   "number": 79,
+   "parent_number": 13,
+   "stable_id": "OM-13.05",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-13.05-T1",
+     "text": "Apply shared update-buffering, scope-change and safe-return behavior to S1, company, S2 entry and S10 views."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-13.05-T2",
+     "text": "Add coalesced announcements, accessible paging and route/dialog focus behavior using the foundation components."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-13.05-T3",
+     "text": "Implement immediate protected-content removal and explicit offline/reconnect states without duplicating observation projections."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-13.05-T4",
+     "text": "Run meaningful keyboard, screen-reader, zoom/reflow, reduced-motion and revoked-focus scenarios across the completed work views."
+    }
+   ],
+   "title": "OM-13.05 \u2014 Keep live work views accessible and stable during change",
+   "updated_at": "2026-11-06T07:30:30Z"
+  },
+  {
+   "body_sha256": "a0d6f54cdbcb670bc965ac4c0e0addbd522ed5a7f6a50ee50b0244656ec74fe8",
+   "closed_at": null,
+   "depends_on": [
+    "E06",
+    "E07",
+    "E08",
+    "E10"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMj0",
+   "item_stable_id": "OM-14.01",
+   "item_updated_at": "2026-11-06T09:18:30Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qM3A",
+   "number": 80,
+   "parent_number": 14,
+   "stable_id": "OM-14.01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-14.01-T1",
+     "text": "Define canonical usage portions, source precedence, input/output/cache semantics and provenance for each qualified runtime/version."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-14.01-T2",
+     "text": "Implement temporality-aware aggregation with stream/epoch identity, replay suppression, ordered reconciliation and explicit gaps/conflicts."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-14.01-T3",
+     "text": "Implement parent/child and cross-signal overlap handling without adding telemetry sources that describe the same consumption."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-14.01-T4",
+     "text": "Verify cumulative resets, delta duplicates, late windows, missing directions, cache subsets, retries and inaccessible measurements with independent expected totals."
+    }
+   ],
+   "title": "OM-14.01 \u2014 Calculate unique observed usage with correct counter semantics",
+   "updated_at": "2026-11-06T07:30:31Z"
+  },
+  {
+   "body_sha256": "4b7b0c01e655b48be64c6022994c24384e9d0eff91476fe11bebba3b311e3143",
+   "closed_at": null,
+   "depends_on": [
+    "OM-14.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMl0",
+   "item_stable_id": "OM-14.02",
+   "item_updated_at": "2026-11-06T09:18:33Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qNdg",
+   "number": 81,
+   "parent_number": 14,
+   "stable_id": "OM-14.02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-14.02-T1",
+     "text": "Implement source-backed work/person/context attribution rules and explicit unassigned states using E10 relationship evidence."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-14.02-T2",
+     "text": "Preserve execution segments and distinct configured/requested/observed values in attribution APIs and permitted drill-downs."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-14.02-T3",
+     "text": "Implement correction-aware recomputation and deduplicated epic/project rollups with field-level authorization."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-14.02-T4",
+     "text": "Verify shared sessions/accounts, ambiguous roles, concurrent children, historical machine changes and revoked-field aggregate behavior."
+    }
+   ],
+   "title": "OM-14.02 \u2014 Attribute usage only to evidenced work and execution segments",
+   "updated_at": "2026-11-06T07:30:32Z"
+  },
+  {
+   "body_sha256": "64d28be50fa8734c9e2198a24dab36cf1f57c4be26c5953ce4971462aba8f4ec",
+   "closed_at": null,
+   "depends_on": [
+    "OM-14.02"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMmc",
+   "item_stable_id": "OM-14.03",
+   "item_updated_at": "2026-11-06T09:18:36Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qOKQ",
+   "number": 82,
+   "parent_number": 14,
+   "stable_id": "OM-14.03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-14.03-T1",
+     "text": "Define separate observed-unit, API-equivalent estimate, subscription-allocation and actual-bill records with source/date/currency and access controls."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-14.03-T2",
+     "text": "Implement versioned price matching and estimation, plus authorized recording of allocation/billing evidence without an unsolicited payment integration."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-14.03-T3",
+     "text": "Implement class-specific aggregation, unpriced/unassigned handling and revision-aware recalculation."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-14.03-T4",
+     "text": "Verify wrong/missing prices, currency mixtures, changed price dates, inaccessible allocation inputs and non-additive measurement classes."
+    }
+   ],
+   "title": "OM-14.03 \u2014 Keep observed units, estimates, allocations and bills separate",
+   "updated_at": "2026-11-06T07:30:32Z"
+  },
+  {
+   "body_sha256": "2756b65826de7e36c3eaad6bed42a4a24215ae5fe7143c8e4705ba233cc8a2ec",
+   "closed_at": null,
+   "depends_on": [
+    "OM-14.03"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMnM",
+   "item_stable_id": "OM-14.04",
+   "item_updated_at": "2026-11-06T09:18:39Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qPDw",
+   "number": 83,
+   "parent_number": 14,
+   "stable_id": "OM-14.04",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-14.04-T1",
+     "text": "Build authorized S7 breakdown APIs and the chart/table UI with shared query semantics, period/scope retention and explicit measurement classes."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-14.04-T2",
+     "text": "Add ticket/epic usage summaries and run-segment drill-down with model/effort/session/machine provenance and independent In/Out states."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-14.04-T3",
+     "text": "Add accessible loading/error/empty/unsupported/stale behavior and links to separately scoped Skill/Memory statistics."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-14.04-T4",
+     "text": "Verify chart/table parity, phone/keyboard navigation, mixed-class display, hidden-record inference and mid-session revocation against expected calculations."
+    }
+   ],
+   "title": "OM-14.04 \u2014 Present S7 and contextual work usage with honest coverage",
+   "updated_at": "2026-11-06T07:30:33Z"
+  },
+  {
+   "body_sha256": "d2fcfd631f71ed8d8319b8bb361f65b1fdaa54f23086f6ddbf00bd88fadc6eaf",
+   "closed_at": null,
+   "depends_on": [
+    "E10",
+    "E11"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMlU",
+   "item_stable_id": "OM-15.01",
+   "item_updated_at": "2026-11-06T09:18:42Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qP6A",
+   "number": 84,
+   "parent_number": 15,
+   "stable_id": "OM-15.01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-15.01-T1",
+     "text": "Inventory actual pilot devices/browser versions and research current push, installability and background constraints from primary documentation."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-15.01-T2",
+     "text": "Build a bounded qualification harness for consent/subscription, background arrival and authorized deep-link return using synthetic data."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-15.01-T3",
+     "text": "Record the supported platform matrix, failure limits and a reviewable browser/PWA packaging recommendation, retaining owner approval as a gate."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-15.01-T4",
+     "text": "Validate denied/unsupported/revoked-session behavior and the proposed generic-preview policy before transport implementation."
+    }
+   ],
+   "title": "OM-15.01 \u2014 Qualify the notification platform and choose supported packaging",
+   "updated_at": "2026-11-06T07:30:34Z"
+  },
+  {
+   "body_sha256": "213458f89df1a43b4b12fc0a98b3744f4b9f92297c0680a2990d2670c85442e7",
+   "closed_at": null,
+   "depends_on": [
+    "OM-15.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMm0",
+   "item_stable_id": "OM-15.02",
+   "item_updated_at": "2026-11-06T09:18:45Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qQkA",
+   "number": 85,
+   "parent_number": 15,
+   "stable_id": "OM-15.02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-15.02-T1",
+     "text": "Define product notification event kinds, replay identity and explicit preference defaults, separating product changes from raw telemetry packets."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-15.02-T2",
+     "text": "Implement authorized per-person/project/kind preferences and audit emission without coupling them to view filters."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-15.02-T3",
+     "text": "Build S9 consent explanation, permission states, explicit save/error behavior and access-safe event/project selectors."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-15.02-T4",
+     "text": "Verify initial all-update eligibility, opt-outs, failed saves, proposal labeling and revoked-project removal."
+    }
+   ],
+   "title": "OM-15.02 \u2014 Control notification preferences without hiding work updates",
+   "updated_at": "2026-11-06T07:30:35Z"
+  },
+  {
+   "body_sha256": "0302ca9add1cef696471c1d20f034afb699fa7194c1e62d951d03136407c2bcf",
+   "closed_at": null,
+   "depends_on": [
+    "OM-15.01",
+    "OM-15.02"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMng",
+   "item_stable_id": "OM-15.03",
+   "item_updated_at": "2026-11-06T09:18:47Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qRjw",
+   "number": 86,
+   "parent_number": 15,
+   "stable_id": "OM-15.03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-15.03-T1",
+     "text": "Implement the event-to-recipient eligibility projection and atomic notification job creation using the existing PostgreSQL job module."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-15.03-T2",
+     "text": "Implement the selected platform subscription/transport adapter, credential references, revoke/expiry handling and permission rechecks at dispatch."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-15.03-T3",
+     "text": "Persist dispatch attempts and distinct outcomes with retry/backoff, replay deduplication and safe audit/diagnostic metadata."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-15.03-T4",
+     "text": "Test duplicate source events, bursts, changed preferences, revoked/ended sessions, pod restart, transport failure and ambiguous external delivery outcomes."
+    }
+   ],
+   "title": "OM-15.03 \u2014 Dispatch distinct updates through durable authorized work",
+   "updated_at": "2026-11-06T07:30:36Z"
+  },
+  {
+   "body_sha256": "475e7701eff9701dfe5bce189fb01e557e293f90c698d057236055df3d082c82",
+   "closed_at": null,
+   "depends_on": [
+    "OM-15.03"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMoM",
+   "item_stable_id": "OM-15.04",
+   "item_updated_at": "2026-11-06T09:18:50Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qSQg",
+   "number": 87,
+   "parent_number": 15,
+   "stable_id": "OM-15.04",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-15.04-T1",
+     "text": "Implement notification-reference resolution with current per-target authorization and lifecycle-aware destinations."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-15.04-T2",
+     "text": "Build safe route/focus/return behavior and current-state explanations for resolved, superseded, withdrawn and unavailable targets."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-15.04-T3",
+     "text": "Integrate a scoped updates link without changing notification preferences or exposing hidden event counts."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-15.04-T4",
+     "text": "Verify old alerts, revoked rights, unavailable projects, offline opening and accessible phone/keyboard return flows."
+    }
+   ],
+   "title": "OM-15.04 \u2014 Open the current authorized state from a notification",
+   "updated_at": "2026-11-06T07:30:37Z"
+  },
+  {
+   "body_sha256": "c6514b89d056d8df3f963b2649b084a83f217f0b2dcaf00727920be40cb3cd0f",
+   "closed_at": null,
+   "depends_on": [
+    "E02",
+    "E06",
+    "E11"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMkw",
+   "item_stable_id": "OM-16.01",
+   "item_updated_at": "2026-11-06T09:18:53Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qS5A",
+   "number": 88,
+   "parent_number": 16,
+   "stable_id": "OM-16.01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-16.01-T1",
+     "text": "Inventory every producer/object class against the shared audit event contract and define testable coverage/completeness reporting."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-16.01-T2",
+     "text": "Implement bounded tenant/project/object/action/actor/time audit queries with independent field and causal-link authorization."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-16.01-T3",
+     "text": "Add explicit delayed/unsupported/failed/unknown projections and correction links without rewriting authoritative business history."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-16.01-T4",
+     "text": "Verify producer contract fixtures for all required classes, replay/correction behavior and inference-resistant filtered counts/IDs."
+    }
+   ],
+   "title": "OM-16.01 \u2014 Query full-system audit with explicit coverage",
+   "updated_at": "2026-11-06T07:30:38Z"
+  },
+  {
+   "body_sha256": "26aa21b8e3531c0eb1b004a2183a08f50845f33a2d125c0114b678102e8f8d69",
+   "closed_at": null,
+   "depends_on": [
+    "OM-16.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMls",
+   "item_stable_id": "OM-16.02",
+   "item_updated_at": "2026-11-06T09:18:56Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qT9w",
+   "number": 89,
+   "parent_number": 16,
+   "stable_id": "OM-16.02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-16.02-T1",
+     "text": "Build S11 filters, bounded activity-list rows, coverage labels and object-history navigation using the existing components."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-16.02-T2",
+     "text": "Implement accessible authorized diff/version/causal disclosures and stable source/recorded-time presentation."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-16.02-T3",
+     "text": "Apply safe empty/error/offline/revoked states, route focus and scoped return behavior."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-16.02-T4",
+     "text": "Test mobile/keyboard timelines, independently restricted actors/diffs, delayed producers and revocation during expanded history."
+    }
+   ],
+   "title": "OM-16.02 \u2014 Inspect audit timelines and object changes accessibly",
+   "updated_at": "2026-11-06T07:30:39Z"
+  },
+  {
+   "body_sha256": "e8efa44a7966c1448a4aa83aa453bf04d5e74502a159810252f564f90e3bf75a",
+   "closed_at": null,
+   "depends_on": [
+    "OM-16.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMmE",
+   "item_stable_id": "OM-16.03",
+   "item_updated_at": "2026-11-06T09:18:59Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qUkw",
+   "number": 90,
+   "parent_number": 16,
+   "stable_id": "OM-16.03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-16.03-T1",
+     "text": "Model Governance-owned versioned collection/retention policies, including backup retention, responsible owners and A-3 live-ingestion gates for source and client paths."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-16.03-T2",
+     "text": "Define and integrate pre-persistence field allowlists/redaction decisions with ingestion, knowledge, audit and diagnostic contracts."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-16.03-T3",
+     "text": "Build authorized policy configuration and audited activation showing 30 active days then archive, no automatic archive purge and preserved project knowledge; keep other record-class and backup policy choices explicit."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-16.03-T4",
+     "text": "Test default-on conversation capture, project opt-out, secret redaction, changed policies during queued work and unauthorized/failed policy saves; distinguish stopping new capture from deleting already retained content."
+    }
+   ],
+   "title": "OM-16.03 \u2014 Approve collection and retention policy before live ingestion",
+   "updated_at": "2026-11-06T07:30:40Z"
+  },
+  {
+   "body_sha256": "7bc3a7f3e6df0d7c6dc280ac175919c5b28bfa4a88e41480b42bdb83e9e14cad",
+   "closed_at": null,
+   "depends_on": [
+    "OM-16.03",
+    "E11"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMn0",
+   "item_stable_id": "OM-16.04",
+   "item_updated_at": "2026-11-06T09:19:02Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qVTA",
+   "number": 91,
+   "parent_number": 16,
+   "stable_id": "OM-16.04",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-16.04-T1",
+     "text": "Define the authorized removal/revocation event and target inventory with separate immediate disclosure denial and asynchronous cleanup outcomes."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-16.04-T2",
+     "text": "Implement idempotent PostgreSQL-backed propagation jobs and per-target adapters/contracts for primary and derived storage."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-16.04-T3",
+     "text": "Add inspectable safe progress/failure/audit records and ensure query/dispatch paths consult current eligibility during cleanup."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-16.04-T4",
+     "text": "Test index/cache/summary/history leakage, interrupted cleanup, duplicate commands, source-authority boundaries and unrecoverable external copies."
+    }
+   ],
+   "title": "OM-16.04 \u2014 Propagate removal and revocation through derived records",
+   "updated_at": "2026-11-06T07:30:41Z"
+  },
+  {
+   "body_sha256": "97fee3d767e37148166f25165860d5eff28cfa0f2b154814a410a5c129427aeb",
+   "closed_at": null,
+   "depends_on": [
+    "OM-16.03",
+    "OM-16.04"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMok",
+   "item_stable_id": "OM-16.05",
+   "item_updated_at": "2026-11-06T09:19:06Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qWNQ",
+   "number": 92,
+   "parent_number": 16,
+   "stable_id": "OM-16.05",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-16.05-T1",
+     "text": "Specify Governance-owned replay ordering/current-policy rules and the shared restore quarantine/reconciliation/release contract consumed by protected reads, dispatch and readiness, including state newer than the selected snapshot."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-16.05-T2",
+     "text": "Implement the single Governance-owned recovery quarantine/release gate and idempotent reconciliation of lifecycle/removal/permission state and effect outcomes via owner APIs; reads and external dispatch consume this gate before resuming. OM-18.02 qualifies this implementation rather than creating a second release authority."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-16.05-T3",
+     "text": "Document governed snapshot retention/expiry and removal-reporting limits alongside the operational restore runbook."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-16.05-T4",
+     "text": "Verify synthetic restore-before-revocation, replay-before-withdrawal, missing policy evidence and incomplete cleanup cases without creating live backup schedules."
+    }
+   ],
+   "title": "OM-16.05 \u2014 Preserve governance during replay and snapshot recovery",
+   "updated_at": "2026-11-06T07:30:42Z"
+  },
+  {
+   "body_sha256": "adc197cae22d2684cea1e17044f7fcffda903eccf9427fb4db6b9677ca211861",
+   "closed_at": null,
+   "depends_on": [
+    "OM-16.05"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMpA",
+   "item_stable_id": "OM-16.06",
+   "item_updated_at": "2026-11-06T09:19:09Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qW5g",
+   "number": 93,
+   "parent_number": 16,
+   "stable_id": "OM-16.06",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-16.06-T1",
+     "text": "Define the archive contract through the evidence-owning module API: immutable content/version identity, checksum, locator/status, policy version and the 30-day clock for late arrivals and long-running sessions; qualify storage without adding a mandatory separate service."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-16.06-T2",
+     "text": "Implement database-backed idempotent archive jobs with write/verify/publish transitions, integrity/readback checks and safe active-copy release only after a durable archive is reachable; preserve recovery checkpoints and audit outcomes."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-16.06-T3",
+     "text": "Preserve searchable authorized metadata and stable evidence links; implement permission-checked archive read/restore and archived/retrieving/unavailable presentation in existing detail views without treating archival as knowledge approval."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-16.06-T4",
+     "text": "Propagate revocation/removal/policy changes across archive metadata and payloads; cover archive inventory, credentials/configuration references and integrity checks in recovery procedures without promising unsupported snapshot erasure."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-16.06-T5",
+     "text": "Verify the 30-day boundary, late data, duplicate jobs, failed/corrupt archive writes, crash between verification and locator publication, retrieval denial and restore; assert project knowledge and its evidence links survive archiving and no age-only archive purge occurs."
+    }
+   ],
+   "title": "OM-16.06 \u2014 Archive conversations after 30 days without losing knowledge",
+   "updated_at": "2026-11-06T07:30:43Z"
+  },
+  {
+   "body_sha256": "f85717836af886b7b41f6085cc39d8ede0c2d49b7ac2c27a0a86205b60b29f91",
+   "closed_at": null,
+   "depends_on": [
+    "E06",
+    "E10"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM-g",
+   "item_stable_id": "OM-17.01",
+   "item_updated_at": "2026-11-06T09:19:14Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:optional"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qX0A",
+   "number": 94,
+   "parent_number": 17,
+   "stable_id": "OM-17.01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-17.01-T1",
+     "text": "Qualify the actual T3 version/interface and record a capability/permission contract including unsupported native usage and exact-effort fields."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-17.01-T2",
+     "text": "Implement enrollment-bound read-only connection configuration with protected credentials and no execution-capable port methods."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-17.01-T3",
+     "text": "Apply A-3 and source-authorization gates to requested/received fields and verify safe handling of conversation-bearing responses."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-17.01-T4",
+     "text": "Verify absent/revoked/unreachable T3 leaves direct native reporting and knowledge delivery operational."
+    }
+   ],
+   "title": "OM-17.01 \u2014 Qualify a minimal read-only T3 connection",
+   "updated_at": "2026-11-06T07:30:44Z"
+  },
+  {
+   "body_sha256": "8bccc3a0bfe37c73a99e81805ef01a86f72c374ac1d8b9179f5d81a2c80dfdc9",
+   "closed_at": null,
+   "depends_on": [
+    "OM-17.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM_U",
+   "item_stable_id": "OM-17.02",
+   "item_updated_at": "2026-11-06T09:19:18Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:optional"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qYsQ",
+   "number": 95,
+   "parent_number": 17,
+   "stable_id": "OM-17.02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-17.02-T1",
+     "text": "Implement bounded read collection and source-qualified context normalization through E06/E10 interfaces."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-17.02-T2",
+     "text": "Implement evidence-based identity matching and typed enrichment links with explicit ambiguous/unlinked states."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-17.02-T3",
+     "text": "Integrate overlap detection with the shared accounting/evidence contract rather than creating a separate T3 usage total."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-17.02-T4",
+     "text": "Verify ID collisions, shared threads, conflicting context, duplicate native/T3 evidence, missing effort and revoked linked records."
+    }
+   ],
+   "title": "OM-17.02 \u2014 Reconcile T3 context with existing native evidence",
+   "updated_at": "2026-11-06T07:30:45Z"
+  },
+  {
+   "body_sha256": "1a07bc2a8fa9116f205c674ef38d77bab0b4264b29722520cf3edbee74d4d31b",
+   "closed_at": null,
+   "depends_on": [
+    "OM-17.02"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM_s",
+   "item_stable_id": "OM-17.03",
+   "item_updated_at": "2026-11-06T09:19:22Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:optional"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qZWg",
+   "number": 96,
+   "parent_number": 17,
+   "stable_id": "OM-17.03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-17.03-T1",
+     "text": "Add independent connection-health and evidence-detail integration with supported-field coverage and safe remediation."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-17.03-T2",
+     "text": "Implement qualified checkpoint/reconciliation and scoped durable retry behavior using the existing PostgreSQL job boundary."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-17.03-T3",
+     "text": "Verify outage/replay/revocation behavior with native paths still active, including cross-project denial and protected historical context."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-17.03-T4",
+     "text": "Document optional setup/repair/removal effects, current installed-version qualification and unresolved capability gaps without requiring T3 for native operation."
+    }
+   ],
+   "title": "OM-17.03 \u2014 Inspect and recover optional enrichment independently",
+   "updated_at": "2026-11-06T07:30:46Z"
+  },
+  {
+   "body_sha256": "acd7d3f470332222126202d66bf48558e5b2cc0576b16bce93aae8f9a1b55aba",
+   "closed_at": null,
+   "depends_on": [
+    "E01",
+    "E02",
+    "E03",
+    "E04",
+    "E05",
+    "E06",
+    "E07",
+    "E08",
+    "E09",
+    "E10",
+    "E11",
+    "E12",
+    "E13",
+    "E14",
+    "E15",
+    "E16"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhNAs",
+   "item_stable_id": "OM-18.01",
+   "item_updated_at": "2026-11-06T09:19:26Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qaHw",
+   "number": 97,
+   "parent_number": 18,
+   "stable_id": "OM-18.01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-18.01-T1",
+     "text": "Create the Claude/Codex \u00d7 standalone/T3-hosted \u00d7 both-project capability matrix, including current machine/sandbox and optional signal restrictions."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-18.01-T2",
+     "text": "Exercise model/effort changes, subagents/retries, native skill load/use, shared sessions and exporter configuration inheritance."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-18.01-T3",
+     "text": "Validate direct Notion creation/reading separately from Owl Mast MCP and preserve Hermes capture without a second save."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-18.01-T4",
+     "text": "Resolve A-5 and set source cadence/stale thresholds and measured latency/setup budgets before the acceptance run; publish limitations."
+    }
+   ],
+   "title": "OM-18.01 \u2014 Qualify the full runtime and source capability matrix",
+   "updated_at": "2026-11-06T07:30:47Z"
+  },
+  {
+   "body_sha256": "ce8987980ecfaa18611745d129c345603e485bcc01763b086ca926a9a7b17edb",
+   "closed_at": null,
+   "depends_on": [
+    "OM-18.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhNBM",
+   "item_stable_id": "OM-18.02",
+   "item_updated_at": "2026-11-06T09:19:30Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qa8Q",
+   "number": 98,
+   "parent_number": 18,
+   "stable_id": "OM-18.02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-18.02-T1",
+     "text": "Choose snapshot support, consistency procedure, failure coverage and recovery targets with the operator; implement and qualify the backup-retention policy owned by OM-16.03 before relying on live backups."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-18.02-T2",
+     "text": "Document and test restore into an isolated synthetic environment including database WAL, archived conversation payloads with their metadata/evidence links and separately stored artifacts; preserve encryption/secret references and consume and qualify the single Governance-owned OM-16.05 recovery quarantine/reconciliation/release gate before reads or external effects resume; do not implement a competing readiness/release authority."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-18.02-T3",
+     "text": "Run bounded receiver saturation, partial acceptance, late/duplicate input, pod termination and stale-lease recovery; restore snapshots preceding revocation, withdrawal and a sent notification to verify fail-closed reconciliation and safe effect replay."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-18.02-T4",
+     "text": "Publish measured RPO/RTO and native telemetry loss limits; propose an optional persistent collector only if measured requirements justify it, without deploying one automatically."
+    }
+   ],
+   "title": "OM-18.02 \u2014 Restore the installation and survive processing failures",
+   "updated_at": "2026-11-06T07:30:48Z"
+  },
+  {
+   "body_sha256": "6a655472375d4491916ebf9fb4751aae837e13bf05f29a86d776b6b2b0082e5b",
+   "closed_at": null,
+   "depends_on": [
+    "OM-18.02"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhNBw",
+   "item_stable_id": "OM-18.03",
+   "item_updated_at": "2026-11-06T09:19:33Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qb4A",
+   "number": 99,
+   "parent_number": 18,
+   "stable_id": "OM-18.03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-18.03-T1",
+     "text": "Verify adopted A-1 client-driven validated-default/explicit-candidate behavior at knowledge-quality acceptance; verify adopted A-2 derivative withdrawal/lineage and A-4 disabled-mode behavior before live promotion, resolve A-6 before sample selection, and name permitted-use/maintainer authorities."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-18.03-T2",
+     "text": "Capture SM-1\u2013SM-5 plus SM-C1\u2013SM-C4 with predeclared samples, failures/help/unknown coverage and source-verifiable acceptance artifacts."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-18.03-T3",
+     "text": "Trace exact-version source-to-lesson-to-validation-to-publication-to-delivery/use lineage through archive/restore and withdrawal; exercise derivative chains, mode/version races, restricted ancestors, post-index revocation and recipient/aggregate leakage."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-18.03-T4",
+     "text": "Run all named UX journeys and accessibility/device checks against separately packaged frontend/backend artifacts; reuse Testcontainers dependencies for synthetic integration cases, distinguish those from actual live proofs and obtain recorded owner acceptance."
+    }
+   ],
+   "title": "OM-18.03 \u2014 Demonstrate observation-to-reuse and every access boundary",
+   "updated_at": "2026-11-06T07:30:49Z"
+  },
+  {
+   "body_sha256": "4b78c0be20ccecf06aeb8052a3654e6e245a1cd585821bd6ce1a9edf832bab0e",
+   "closed_at": null,
+   "depends_on": [
+    "OM-18.03"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhNCM",
+   "item_stable_id": "OM-18.04",
+   "item_updated_at": "2026-11-06T09:19:37Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:v1"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qctw",
+   "number": 100,
+   "parent_number": 18,
+   "stable_id": "OM-18.04",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-18.04-T1",
+     "text": "Produce versioned independent frontend/backend build/install/upgrade instructions with supported API version pairs, plus restore, native client enrollment, source connector and Testcontainers test runbooks with sanitized examples."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-18.04-T2",
+     "text": "Complete dependency/license and distributable artifact review; obtain the owner license decision before public release."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-18.04-T3",
+     "text": "Check that public artifacts exclude credentials, live screenshots, private telemetry and real source payloads."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-18.04-T4",
+     "text": "Record internal acceptance and separate public-release checklist; do not publish, push releases or create external tickets in this planning work."
+    }
+   ],
+   "title": "OM-18.04 \u2014 Package a reproducible internal and public-ready release",
+   "updated_at": "2026-11-06T07:30:50Z"
+  },
+  {
+   "body_sha256": "6865227458ae86eccb6e53feacf42a00a17d7e135fdf687552c8821ab32a8227",
+   "closed_at": null,
+   "depends_on": [
+    "E18"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhNBA",
+   "item_stable_id": "OM-19.01",
+   "item_updated_at": "2026-11-06T09:19:41Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:later-evolution"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qdVQ",
+   "number": 101,
+   "parent_number": 19,
+   "stable_id": "OM-19.01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-19.01-T1",
+     "text": "Define operator-led tenant onboarding/offboarding and per-tenant configuration over the existing tenant model; leave monetization outside scope."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-19.01-T2",
+     "text": "Exercise two-real-tenant-equivalent synthetic workloads across all stores, jobs, MCP/OTLP, notifications and audit views."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-19.01-T3",
+     "text": "Qualify per-tenant quotas/fair processing and export/removal boundaries before external tenant onboarding."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-19.01-T4",
+     "text": "Document migration from the AISQUAD-only profile and verify the independent single-tenant installation remains supported."
+    }
+   ],
+   "title": "OM-19.01 \u2014 Operate multiple active tenants",
+   "updated_at": "2026-11-06T07:30:50Z"
+  },
+  {
+   "body_sha256": "7d90f40d7e06e9ca2204896615d1e684630386bcb5dce2ca83e80b7a3ea8cce9",
+   "closed_at": null,
+   "depends_on": [
+    "OM-19.01"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhNBg",
+   "item_stable_id": "OM-19.02",
+   "item_updated_at": "2026-11-06T09:19:45Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:later-evolution"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qeKA",
+   "number": 102,
+   "parent_number": 19,
+   "stable_id": "OM-19.02",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-19.02-T1",
+     "text": "Model tenant/project/resource and permitted-use relationships; review how source revocation combines with internal grants."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-19.02-T2",
+     "text": "Implement the optional OpenFGA adapter and idempotent versioned grant synchronization without bypassing source authorization."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-19.02-T3",
+     "text": "Run shadow comparisons and all original/new negative cases before switching enforcement."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-19.02-T4",
+     "text": "Document rollback, model migration and outage behavior; add the optional deployment only when this later capability is selected."
+    }
+   ],
+   "title": "OM-19.02 \u2014 Introduce fine-grained OpenFGA authorization",
+   "updated_at": "2026-11-06T07:30:51Z"
+  },
+  {
+   "body_sha256": "d7a9a985efd76353a94cf93b825e1fcbd9c5257f1a63d3ac0551aeafd72d8e3a",
+   "closed_at": null,
+   "depends_on": [
+    "E18"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhNCA",
+   "item_stable_id": "OM-19.03",
+   "item_updated_at": "2026-11-06T09:19:49Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:later-evolution"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qe6A",
+   "number": 103,
+   "parent_number": 19,
+   "stable_id": "OM-19.03",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-19.03-T1",
+     "text": "Qualify multi-pod sessions/MCP behavior, any blob-volume access-mode constraints and cross-node placement/capacity."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-19.03-T2",
+     "text": "Implement rolling-update readiness/drain settings and backward-compatible schema/event migration procedures."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-19.03-T3",
+     "text": "Run overlapping-version, duplicate-worker and connection-drain scenarios with two replicas."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-19.03-T4",
+     "text": "Define separately scoped PostgreSQL/Keycloak/storage failover decisions if the availability target requires them; preserve the simple POC profile."
+    }
+   ],
+   "title": "OM-19.03 \u2014 Run multiple application pods with compatible upgrades",
+   "updated_at": "2026-11-06T07:30:52Z"
+  },
+  {
+   "body_sha256": "fa8c254330017e82db7737a6b286af2e4c17ed6d7ee234b022fa4d49f55d70c7",
+   "closed_at": null,
+   "depends_on": [
+    "E18"
+   ],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhNCs",
+   "item_stable_id": "OM-19.04",
+   "item_updated_at": "2026-11-06T09:19:53Z",
+   "kind": "story",
+   "labels": [
+    "story",
+    "scope:later-evolution"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABc9qfuA",
+   "number": 104,
+   "parent_number": 19,
+   "stable_id": "OM-19.04",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog",
+   "tasks": [
+    {
+     "checked": false,
+     "task_id": "OM-19.04-T1",
+     "text": "Instrument and measure queue age, workload fairness, recovery burden and resource bottlenecks against agreed targets."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-19.04-T2",
+     "text": "Compare separating the existing worker adapter with workflow-engine options only for demonstrated needs."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-19.04-T3",
+     "text": "Produce a concrete migration design including in-flight work, duplicate effects, version compatibility and rollback."
+    },
+    {
+     "checked": false,
+     "task_id": "OM-19.04-T4",
+     "text": "Create implementation stories for the chosen later solution after that decision; keep this story a bounded evaluation deliverable."
+    }
+   ],
+   "title": "OM-19.04 \u2014 Extract components only when measurements justify them",
+   "updated_at": "2026-11-06T07:30:53Z"
+  },
+  {
+   "body_sha256": "87f8c7f4bff90e473bddec2384f5b18c31922ca7331f3d107bad7331570aa043",
+   "closed_at": null,
+   "depends_on": [],
+   "epic_prerequisites": [],
+   "item_id": "PVTI_lAHOACHLt84Bqc0UzhGkALs",
+   "item_stable_id": "ENG-01",
+   "item_updated_at": "2026-11-06T12:43:55Z",
+   "kind": "other",
+   "labels": [
+    "engineering-automation"
+   ],
+   "node_id": "I_kwDOVjxExc8AAAABdBqKaA",
+   "number": 106,
+   "parent_number": null,
+   "stable_id": "ENG-01",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "In progress",
+   "tasks": [],
+   "title": "ENG-01 \u2014 Unattended execution foundation (GitHub-authoritative dispatch, sync and T3 coordination)",
+   "updated_at": "2026-11-06T12:43:42Z"
+  }
+ ],
+ "repo": "gabrianoo/owl-mast",
+ "taken_at": "2026-11-06T12:55:04Z"
+}
