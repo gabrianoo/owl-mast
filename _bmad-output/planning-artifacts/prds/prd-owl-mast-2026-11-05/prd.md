@@ -2,7 +2,7 @@
 title: Owl Mast Product Requirements Document
 status: final
 created: 2026-11-05
-updated: 2026-11-05
+updated: 2026-11-06
 ---
 
 # Owl Mast Product Requirements Document
@@ -126,6 +126,8 @@ Knowledge must be useful to a new session, attributable, and bounded to its inte
 An authorized contributor or configured learning flow can submit a lesson, skill, or memory to its project with supporting evidence.
 
 - Each knowledge item records origin, project, contributor/agent when known, creation/update time, applicability, and links to permitted evidence.
+- Preserve exact-version lineage from source evidence (including conversation turns, tool results, Jira/Git or other permitted records) through lesson versions, validation decisions, company publications and delivery/use evidence. Distinguish derived-from, supersedes, validated-by, published-as, delivered-to and used-in relationships; a usage link alone does not prove derivation or usefulness. Record actor/policy, source and recorded times and evidence basis when available; missing lineage stays explicit.
+- Archiving, supersession and withdrawal preserve stable lineage and permitted history. Lineage browsing obeys current project/source/recipient permissions; protected nodes, labels and relationship details are not disclosed through a visible descendant.
 - Raw transcripts or extracted suggestions are not automatically labeled validated. An item without sufficient evidence can remain a candidate with uncertainty visible.
 - Duplicate submissions can be recognized and linked to the existing item; ingestion retries cannot create independent approved copies.
 
@@ -135,7 +137,7 @@ A knowledge maintainer can distinguish candidate, approved, superseded, withdraw
 
 - Approval records which person or validation policy evaluated which version, the basis, and when. Automatically evaluated guidance is distinguishable from human-reviewed guidance. A correction preserves provenance and identifies the version it replaces.
 - Conflicting guidance is exposed to the recipient instead of silently choosing the newest text as fact. An owner can identify items needing review.
-- **[ASSUMPTION A-1]** Approved guidance is the default delivery set; candidates or unresolved conflicts require an explicitly labeled diagnostic request. Automated validation may approve guidance when configured checks pass. Product owner revisits this default during the pilot's knowledge-quality walkthrough.
+- **[ADOPTED A-1, 2026-11-06]** Validated/approved guidance is the default delivery set. The client/agent can explicitly request unvalidated candidates through an inclusion flag that defaults off; returned candidates and unresolved conflicts retain clear validation/provenance labels. The flag does not bypass project/source permissions or lifecycle restrictions. Automated validation may approve an exact version when configured checks pass; human review is not mandatory for every item.
 
 #### FR-10 — Scoped knowledge delivery
 
@@ -144,6 +146,8 @@ An enrolled agent or authorized contributor can retrieve applicable project know
 - Delivery uses an explicit, authorized project context. Requests with missing or unauthorized scope fail without returning another project’s content.
 - Results include the knowledge version, scope, applicability, freshness/review information, and permitted source references. If no relevant knowledge is found, delivery returns an empty result.
 - Retrieval favors the requested task/project over loading every project’s history. The client contract must expose any truncation or omitted results relevant to interpreting the response.
+- Retrieval is client-driven and on demand: agents decide when to search and which lessons to load. Discovery returns bounded summaries/metadata with exact-version references; a separate explicit load returns selected content or package files. Do not automatically inject a lesson library or conversation history into agent context at startup, each turn or when knowledge changes. Work-update notifications remain a separate feature.
+- The client-controlled unvalidated inclusion choice applies consistently to search and exact-version loads. Omitting the choice uses validated-only behavior; knowing an item ID does not bypass eligibility. Bound/paginate results and content responses so the client can control context size without silent truncation.
 
 #### FR-11 — Delivery and reuse evidence
 
@@ -163,13 +167,13 @@ A knowledge maintainer can select automatic, manual-approval, or disabled promot
 - Company-wide content must be usable without exposing restricted customer text, credentials, source snippets, or private links to unauthorized recipients. Provenance remains available only to authorized readers.
 - Promotion records the publishing person/automation identity, evaluated version, policy version, date, and decision basis. Company ownership alone never authorizes promotion.
 - Policy changes are limited to authorized knowledge maintainers and audited. Switching to manual or disabled mode prevents an in-flight automatic publication from completing under the old mode; enabling automatic mode evaluates existing candidates against the current policy before publishing.
-- **[ASSUMPTION A-4]** Disabling promotion stops new publication; already published versions remain retrievable until superseded or withdrawn. This separates a publication switch from revoking existing knowledge; product owner verifies the behavior during the policy walkthrough.
+- **[ADOPTED A-4, 2026-11-06]** Disabling promotion stops all new publications, including pending automatic or manual work, but does not withdraw existing publications. Already published versions remain retrievable under current audience/access and lifecycle rules until withdrawn, superseded or otherwise ineligible. Publication commits atomically recheck the current mode and policy; disabling promotion preserves existing versions and lineage.
 
 #### FR-13 — Withdrawal and supersession
 
 A knowledge maintainer can withdraw guidance, and the system can quarantine a version when it detects unreliable or conflicting evidence. Earlier deliveries remain traceable.
 
-- **[ASSUMPTION A-2]** Withdrawal or quarantine prevents future ordinary retrieval of the affected version and its promoted derivatives, while retaining a restricted audit record. Recipients can recognize the withdrawn/superseded version on their next knowledge request. Re-publication requires fresh evaluation under the current policy.
+- **[ADOPTED A-2, 2026-11-06]** Withdrawal or quarantine prevents future ordinary retrieval of the affected version and its promoted derivatives, while retaining a restricted audit record. Recipients can recognize the withdrawn/superseded version on their next knowledge request. Re-publication requires fresh evaluation under the current policy.
 - Owl Mast does not claim it can erase context already delivered to an external client or undo an agent’s past actions. Cache/recipient handling must be specified in the delivery contract.
 - Cached content must be checked against current eligibility before a new delivery; if eligibility cannot be checked, the item is withheld. This cannot revoke copies already held inside an external agent session.
 
@@ -214,7 +218,9 @@ Every viewer and agent receives only data authorized for the requested purpose a
 
 A project administrator can identify and limit what content a connection collects and retains.
 
-- **[ASSUMPTION A-3]** The pilot defaults to necessary metadata, permitted evidence references, and deliberately submitted knowledge; raw chat/transcript capture requires explicit project-level enablement and a stated retention policy.
+- **[ADOPTED A-3 defaults, 2026-11-06]** Collect full agent conversation history by default, including prompts, responses, tool arguments and tool results, alongside activity metadata, permitted evidence references and submitted knowledge. Keep conversation/tool content in active storage for 30 days, then archive it rather than delete it. A project administrator can disable or narrow capture. This supersedes the metadata-only/default-off transcript proposal and the interpretation of 30 days as a deletion deadline. Credential-secret exclusion and current project/source permissions remain mandatory; archive implementation and permissible processing destinations still require qualification before live customer ingestion.
+- Archived conversations remain discoverable and retrievable under current permissions, retaining original identities, provenance and work/knowledge links. Archiving must verify durable content and recovery before releasing an active copy; a failed archive operation must not cause data loss. No automatic archive expiry is selected. Skills, memories, lessons and other project knowledge do not expire under the 30-day conversation window; authorized withdrawal/removal remains a separate lifecycle operation.
+- Record source/runtime versions, available session/turn/tool correlation and content coverage. Missing, redacted, excluded or truncated content must be distinguishable; a configured default is not proof that a client exposed or delivered complete history. Captured conversation content is evidence, not automatically approved guidance or company-wide knowledge.
 - Credential secrets are excluded from persisted observation payloads, knowledge, indexes, logs, and generated summaries; integration credentials remain in designated protected configuration. Project administrators apply equivalent exclusion rules to restricted content. Redaction or access denial cannot leave excluded content in snippets, caches, exports, or derived summaries.
 - Retention, removal, and propagation behavior for derived content must be documented and verified before live customer content is ingested. This PRD does not claim a legal compliance certification.
 
@@ -263,7 +269,7 @@ The MVP proves one complete observation-to-reuse workflow in each required envir
 | Movesion | Separate Jira account/site and Bitbucket | The same end-to-end proof with Claude and Codex, without relying on Syntelligence credentials or identifiers |
 | Shared learning context | Existing Hermes→Notion flow | Learning still captured; authorized retrieval works; restricted knowledge stays in its project |
 
-Claude and Codex are required; Hermes continuity covers the established learning flow, not a requirement to ship a third full client adapter. Other tools and separate AWS accounts are known context, not a commitment to additional v1 connectors. Exact provider editions, permissions, client integration contracts, and knowledge contracts are implementation discovery tasks; no stack has been selected.
+Claude and Codex are required; Hermes continuity covers the established learning flow, not a requirement to ship a third full client adapter. Other tools and separate AWS accounts are known context, not a commitment to additional v1 connectors. Exact provider editions, permissions, client integration contracts, and knowledge contracts remain owned implementation qualification tasks. The subsequent architecture coaching selected the backend, data/identity and deployment direction recorded in the architecture workspace; dependency compatibility and live integrations are not yet qualified.
 
 **Excluded from v1:** agent execution controls; a replacement tracker or coding harness; merge/deployment enforcement; autonomous remediation; predictive budget allocation; proof of causal ROI; universal connector support; public operational data; unconditional company promotion; monetization and sandbox hosting. These exclusions protect the first observation-and-reuse outcome. Future consideration is not a delivery commitment.
 
@@ -296,12 +302,12 @@ Customer content access, collection permission, and acceptable processing destin
 
 ## 8. Assumptions index
 
-| ID | Proposal | Owner and revisit condition |
+| ID | Decision or remaining proposal | Owner and revisit condition |
 | --- | --- | --- |
-| A-1 | Approved guidance is the default delivery set; candidates/conflicts require a diagnostic request (FR-9). | Product owner; revisit during the pilot knowledge-quality walkthrough. |
-| A-2 | Withdrawal/quarantine stops new delivery, including promoted derivatives, with restricted audit history and explicit limits on previous copies (FR-13). | Product owner; revisit during the lifecycle walkthrough before live promotion. |
-| A-3 | Metadata/references/submitted knowledge by default; raw transcripts require explicit enablement and retention (FR-18). | Product owner and project data owners; resolve before live-content ingestion. |
-| A-4 | Disabling promotion stops new publications; withdrawing existing published versions is a separate action (FR-12). | Product owner; revisit during the policy walkthrough before live promotion. |
+| A-1 | Adopted 2026-11-06: on-demand, client-driven search then selected load; validated guidance by default, with an explicit client flag to include labelled unvalidated candidates (FR-9/FR-10). | Decision settled; verify default/opt-in and context-size behavior during pilot knowledge-quality acceptance. |
+| A-2 | Adopted 2026-11-06: withdrawal/quarantine stops new delivery of the affected version and promoted derivatives; restricted history and lineage remain, with explicit limits on prior external copies (FR-13). | Decision settled; verify derivative propagation, current-eligibility checks and restricted-history behavior before live promotion. |
+| A-3 | Full conversation capture by default and 30 days of active storage followed by retained, retrievable archive adopted on 2026-11-06 (FR-18). No automatic archive expiry; project knowledge does not expire at 30 days. | Defaults settled; qualify archive implementation/recovery, other record-class policies and actual-environment permissions/destinations before live use. |
+| A-4 — adopted 2026-11-06 | Disabling promotion stops new publications, including queued/in-flight work; existing published versions remain available subject to current permissions and lifecycle rules. Withdrawal remains a separate action (FR-12). | Verify mode changes at publication commit and continued eligible retrieval in the policy walkthrough; no further policy selection required. |
 | A-5 | One client connection/profile plus authorized project selection; no repeated source setup or manual context copying (FR-2). | Product owner with pilot participants; revisit during enrollment trials before the acceptance run. |
 | A-6 | One verified reuse per project and one company-safe cross-project reuse are minimum proof cases (SM-3). | Product owner with pilot participants; confirm sample selection before the acceptance run. |
 
