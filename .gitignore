@@ -3,3 +3,16 @@
 .bmad-loop/policy.toml
 _bmad/render/
 __pycache__/
+
+# Gradle / JVM build outputs
+.gradle/
+.kotlin/
+build/
+**/build/
+*.class
+*.log
+
+# IDE
+.idea/
+*.iml
+.vscode/

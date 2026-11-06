@@ -1,0 +1,32 @@
+# Runtime configuration. Database settings come from the environment; no credentials live here.
+spring:
+  application:
+    name: owl-mast
+  r2dbc:
+    url: ${OWLMAST_DATABASE_R2DBC_URL:r2dbc:postgresql://localhost:5432/owlmast}
+    username: ${OWLMAST_DATABASE_USERNAME:owlmast}
+    password: ${OWLMAST_DATABASE_PASSWORD:}
+  flyway:
+    # Migrations run once at startup over JDBC (bounded, startup-only blocking); runtime is R2DBC.
+    url: ${OWLMAST_DATABASE_JDBC_URL:jdbc:postgresql://localhost:5432/owlmast}
+    user: ${OWLMAST_DATABASE_USERNAME:owlmast}
+    password: ${OWLMAST_DATABASE_PASSWORD:}
+    locations: classpath:db/migration
+    fail-on-missing-locations: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+
+owlmast:
+  blocking:
+    max-concurrency: 8
+    max-queued-per-thread: 16
+    deadline: 10s
