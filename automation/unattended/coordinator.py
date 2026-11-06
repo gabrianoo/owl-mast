@@ -76,7 +76,7 @@ from .errors import BudgetExhausted, Conflict, Refused, StaleRevision, Unattende
 from .github import PullRequestRecord, Transport, render_marker
 from .policy import Policy, Target
 from .probes import run_commands
-from .receipts import validate_receipt
+from .receipts import execution_run_id, validate_receipt
 from .state import ACTIVE_PHASES, UNRESOLVED_AUTHORIZATION_STATUSES, Intent, Store, StoryState, utcnow
 
 WorktreeCheck = Callable[[str, str], tuple[bool, str]]
@@ -149,6 +149,46 @@ def outstanding_objections(pr: PullRequestRecord) -> list[str]:
         if review.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
             effective[review.get("author") or "?"] = review["state"]
     return sorted(a for a, s in effective.items() if s == "CHANGES_REQUESTED")
+
+
+def normalize_task_evidence(task_evidence) -> dict:
+    """Canonical terminal evidence ``{taskId, runId, status, shape}`` from either shape the
+    coordinator can report:
+
+    - normalized: ``{"taskId", "runId", "status"}`` with a terminal status;
+    - task_status-shaped: ``{"taskId", "workState": "result_available", "hasPendingChildRuns": false,
+      "latestTerminalRunId", "latestTerminalStatus"}``. The run and status come ONLY from the
+      latest terminal fields; ``childRunId``, ``status`` and ``summary`` are the stale first-run
+      fields and are ignored. Live or pending child work, a missing latest terminal run, a
+      non-terminal or ``cancel_requested`` status, or a disagreement between the two shapes
+      refuses; nothing is inferred."""
+    if not isinstance(task_evidence, dict) or not task_evidence.get("taskId"):
+        raise Refused("terminal evidence must be a JSON object naming taskId", code="worker-not-terminal")
+    task_id = str(task_evidence["taskId"])
+    has_status_shape = any(k in task_evidence for k in ("workState", "latestTerminalRunId", "latestTerminalStatus", "hasPendingChildRuns"))
+    if has_status_shape:
+        if task_evidence.get("workState") != "result_available":
+            raise Refused(f"task_status reports workState {task_evidence.get('workState')!r}; the task is not terminal", code="worker-not-terminal", work_state=task_evidence.get("workState"))
+        if task_evidence.get("hasPendingChildRuns") not in (False, 0):
+            raise Refused("task_status reports pending child work; the task is not terminal", code="worker-not-terminal", pending_children=task_evidence.get("hasPendingChildRuns"))
+        run_id, status = task_evidence.get("latestTerminalRunId"), task_evidence.get("latestTerminalStatus")
+        if not run_id or not status:
+            raise Refused("task_status carries no latestTerminalRunId/latestTerminalStatus; the terminal execution cannot be identified (childRunId/status/summary are stale first-run fields and are not used)", code="run-identity-missing")
+        declared = task_evidence.get("runId")
+        if declared and str(declared) != str(run_id):
+            raise Refused(f"evidence declares runId {declared} but task_status's latest terminal run is {run_id}; ambiguous", code="run-identity-ambiguous")
+        declared_status = task_evidence.get("status")
+        if declared_status and declared_status != status and "workState" in task_evidence:
+            # a plain `status` next to task_status fields is the stale first-run status; ignored, but it must not be the only terminal claim
+            pass
+        shape = "task_status"
+    else:
+        run_id, status, shape = task_evidence.get("runId"), task_evidence.get("status"), "normalized"
+    if status == "cancel_requested" or status not in TERMINAL_TASK_STATES:
+        raise Refused(f"status {status!r} is not terminal (cancel_requested is a request, not an acknowledgement)", code="worker-not-terminal", status=status)
+    if not run_id:
+        raise Refused("terminal evidence carries no runId; the execution cannot be identified and is not inferred", code="run-identity-missing")
+    return {"taskId": task_id, "runId": str(run_id), "status": str(status), "shape": shape}
 
 
 def closure(snapshot: Snapshot, entry: Entry) -> list[Entry]:
@@ -361,19 +401,29 @@ class Coordinator:
         raise self._unresolved_refusal(state, operation, unresolved)
 
     def _apply_task_evidence(self, state: StoryState, task_evidence: dict | None, operation: str) -> dict | None:
-        """Terminal task evidence (task_status workState result_available or a terminal
-        task_cancel result) for the active task clears ownership; anything else refuses.
-        Returns the history record, or None when no task is active and no evidence given."""
+        """Terminal task evidence for exactly the active execution ``(taskId, runId)`` clears
+        ownership; anything else refuses. Returns the history record, or None when no task is
+        active and no evidence given. A legacy active task without a run id cannot be matched
+        and stays owned: the missing fact is reported, never inferred."""
         active = state.active_task
         if active is None:
             if task_evidence is not None:
                 raise Refused(f"{operation}: {state.story} has no active task; task evidence {task_evidence} matches nothing", code="no-active-task")
             return None
-        if (not isinstance(task_evidence, dict) or task_evidence.get("taskId") != active["taskId"]
-                or task_evidence.get("status") not in TERMINAL_TASK_STATES):
-            raise Refused(f"{operation}: {active['role']} task {active['taskId']} of {state.story} is still owned; present terminal task evidence for exactly that task (task_status workState result_available or a terminal task_cancel result) before releasing it",
+        try:
+            evidence = normalize_task_evidence(task_evidence)
+        except Refused as exc:
+            raise Refused(f"{operation}: {active['role']} task {active['taskId']} of {state.story} is still owned; {exc}", code=exc.code, task_id=active["taskId"], role=active["role"], authorization=active.get("authorization"), **exc.detail) from exc
+        if evidence["taskId"] != active["taskId"]:
+            raise Refused(f"{operation}: {active['role']} task {active['taskId']} of {state.story} is still owned; the evidence names task {evidence['taskId']}",
                           code="worker-not-terminal", task_id=active["taskId"], role=active["role"], authorization=active.get("authorization"))
-        record = {"taskId": active["taskId"], "role": active["role"], "status": task_evidence["status"], "at": self.now(), "operation": operation, "authorization": active.get("authorization")}
+        if not active.get("runId"):
+            raise Refused(f"{operation}: {active['role']} task {active['taskId']} of {state.story} was bound without a run identity (legacy task-only record); its execution cannot be matched to terminal evidence for run {evidence['runId']} and is not inferred; it stays owned",
+                          code="run-identity-missing", task_id=active["taskId"], role=active["role"], authorization=active.get("authorization"), evidence_run=evidence["runId"])
+        if evidence["runId"] != active["runId"]:
+            raise Refused(f"{operation}: {active['role']} task {active['taskId']} of {state.story} is still owned; the evidence is for run {evidence['runId']}, the bound execution is run {active['runId']}",
+                          code="run-mismatch", task_id=active["taskId"], role=active["role"], authorization=active.get("authorization"), bound_run=active["runId"], evidence_run=evidence["runId"])
+        record = {"taskId": active["taskId"], "runId": active["runId"], "role": active["role"], "status": evidence["status"], "at": self.now(), "operation": operation, "authorization": active.get("authorization"), "evidence_shape": evidence["shape"]}
         state.task_history.append(record)
         state.active_task = None
         return record
@@ -575,7 +625,10 @@ class Coordinator:
                 self._require_phase(state, issued_phase)
             self._require_no_active_task(state, "bind-receipt")
             target: Target = self.policy.implementer if role == "implementer" else self.policy.reviewer
-            receipt = validate_receipt(receipt, target, role, self.store.bound_task_ids())  # run-wide freshness, every story and role, kept through terminal phases
+            retained = state.owner_task() if auth["purpose"] == "repair" else None  # only the story's own implementer may be re-run, only for a repair
+            if retained and str(receipt.get("taskId", "")) == retained and not state.predecessor_terminal(retained):
+                raise Refused(f"bind-receipt: retained task {retained} has no terminal predecessor execution recorded for {story}; a new run of it cannot be bound", code="predecessor-not-terminal", task_id=retained)
+            receipt = validate_receipt(receipt, target, role, self.store.bound_task_ids(), self.store.bound_executions(), retained)  # run-wide freshness of task ids (reviewers always fresh) and of (task, run) pairs
             if auth["purpose"] == "implementation":
                 if not worktree_path or not branch:
                     raise Refused("bind-receipt for the implementation task needs --worktree and --branch")
@@ -586,13 +639,13 @@ class Coordinator:
                 raise Refused(f"worktree identity check failed: {why}", code="worktree-mismatch")
             if auth["purpose"] == "implementation":
                 state.claim.update({"worktree_path": worktree_path, "branch": branch, "claimed_at": self.now()})
-            auth["status"], auth["task_id"], auth["bound_at"] = "consumed", receipt["taskId"], self.now()
+            auth["status"], auth["task_id"], auth["run_id"], auth["bound_at"] = "consumed", receipt["taskId"], receipt["runId"], self.now()
             record = {**receipt, "authorization": auth["id"]}
             if role == "implementer":
                 state.implementer_receipts.append(record)
             else:
                 state.reviewer_receipts.append({**record, "sha": auth["sha"]})  # the exact commit this reviewer was authorized for
-            state.active_task = {"taskId": receipt["taskId"], "role": role, "authorization": auth["id"], "bound_at": self.now()}
+            state.active_task = {"taskId": receipt["taskId"], "runId": receipt["runId"], "role": role, "authorization": auth["id"], "bound_at": self.now(), "retained": receipt["retained"]}
             cleanup = stop or ("authorization-revoked" if revoked else None)
             if cleanup:
                 # Authorized before the stop or the revocation, possibly launched: keep the slot spent, the id bound
@@ -641,6 +694,90 @@ class Coordinator:
             auth = self._apply_no_launch(state, no_launch, "record-no-launch")
             self.store.save_story(state)
             self.store.journal(story, "authorization-not-launched", {"authorization": auth["id"], "role": auth["role"], "purpose": auth["purpose"], "sha": auth["sha"], "reason": auth["reason"], "resolution": auth["resolution"]})
+            return state
+
+    def reconcile_retained_execution(self, story: str, authorization: str, receipt: dict, task_evidence: dict, reason: str, provenance: str) -> StoryState:
+        """Audited cleanup of a historical obligation: a revoked (or pending) repair
+        authorization whose task WAS launched as a new run of the story's retained owner task
+        but was never bound, because the resumption returned no fresh task id. Resolves only
+        that obligation, for cleanup: the authorization becomes ``consumed`` with the exact
+        execution pair, the receipt and the terminal record are appended, nothing is
+        re-authorized, approved or admitted, the run stays cancelled, budgets are unchanged
+        and no no-launch attestation is created. Identical evidence is idempotent;
+        conflicting evidence refuses. A backup of the story file is written first."""
+        with self.store.locked(self):
+            self.require_not_live("reconcile-retained-execution")
+            state = self._story(story)
+            if not reason or not provenance:
+                raise Refused("reconcile-retained-execution needs --reason and --provenance (who observed the terminal evidence, and how)", code="provenance-missing")
+            auth = state.authorization(str(authorization))
+            if auth is None:
+                raise Refused(f"{story} has no authorization {authorization}", code="authorization-mismatch", given=str(authorization))
+            owner = state.owner_task()
+            if auth["purpose"] != "repair" or auth["role"] != "implementer":
+                raise Refused(f"authorization {auth['id']} is a {auth['purpose']} authorization; only an implementer repair of the retained owner can be reconciled this way", code="authorization-mismatch", authorization=auth["id"])
+            if owner is None:
+                raise Refused(f"{story} has no retained owner task (no bound implementation authorization); nothing can be reconciled", code="run-identity-missing")
+            evidence = normalize_task_evidence(task_evidence)
+            if not isinstance(receipt, dict) or str(receipt.get("taskId", "")) != owner:
+                raise Refused(f"the receipt names task {receipt.get('taskId') if isinstance(receipt, dict) else receipt!r}; the retained owner of {story} is {owner}", code="owner-mismatch", owner=owner)
+            run_id = execution_run_id(receipt, retained=True)
+            if evidence["taskId"] != owner or evidence["runId"] != run_id:
+                raise Refused(f"terminal evidence is for ({evidence['taskId']}, {evidence['runId']}); the receipt is for ({owner}, {run_id})", code="run-mismatch", evidence_run=evidence["runId"], receipt_run=run_id)
+            # Explicit correlation of THIS run with THIS authorization: the dispatch record of the resumed
+            # run must name the same run, and the run must have started at or after the authorization was
+            # issued. Legacy task-only history carries no run ids, so an older completed run of the same task
+            # (started before the authorization) can never settle a later authorization by task match alone.
+            dispatch = receipt.get("dispatch")
+            if not isinstance(dispatch, dict) or not dispatch.get("runId"):
+                raise Refused("the receipt needs the dispatch record of the resumed run ({\"dispatch\": {\"runId\": …, \"messageId\": …}}) to correlate it with the authorization", code="correlation-missing")
+            if str(dispatch["runId"]) != run_id:
+                raise Refused(f"dispatch record names run {dispatch['runId']}; the receipt names run {run_id}", code="run-mismatch", dispatch_run=str(dispatch["runId"]), receipt_run=run_id)
+            started = receipt.get("startedAt") or task_evidence.get("startedAt") if isinstance(task_evidence, dict) else None
+            completed = receipt.get("completedAt") or task_evidence.get("completedAt") if isinstance(task_evidence, dict) else None
+            if not started:
+                raise Refused("the receipt needs startedAt of the resumed run to correlate it with the authorization's issued_at", code="correlation-missing")
+            try:
+                started_dt = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
+                issued_dt = datetime.fromisoformat(str(auth["issued_at"]).replace("Z", "+00:00"))
+                completed_dt = datetime.fromisoformat(str(completed).replace("Z", "+00:00")) if completed else None
+            except ValueError as exc:
+                raise Refused(f"unparseable timestamps for correlation: {exc}", code="correlation-missing") from exc
+            if started_dt < issued_dt:
+                raise Refused(f"run {run_id} started at {started}, before authorization {auth['id']} was issued at {auth['issued_at']}; an earlier run of the retained task cannot settle a later authorization", code="run-precedes-authorization", started_at=str(started), issued_at=auth["issued_at"])
+            if completed_dt is not None and completed_dt < started_dt:
+                raise Refused(f"run {run_id} completedAt {completed} precedes startedAt {started}", code="correlation-missing")
+            if auth["status"] == "consumed":
+                if auth.get("task_id") == owner and auth.get("run_id") == run_id:
+                    self.store.journal(story, "retained-execution-already-reconciled", {"authorization": auth["id"], "task": owner, "run": run_id})
+                    return state
+                raise Refused(f"authorization {auth['id']} is already consumed by ({auth.get('task_id')}, {auth.get('run_id')}); conflicting evidence refused", code="conflicting-evidence", authorization=auth["id"], bound_task=auth.get("task_id"), bound_run=auth.get("run_id"))
+            if auth["status"] not in UNRESOLVED_AUTHORIZATION_STATUSES:
+                raise Refused(f"authorization {auth['id']} is {auth['status']}; only an unresolved (pending or revoked) authorization can be reconciled", code="authorization-mismatch", status=auth["status"])
+            if (owner, run_id) in self.store.bound_executions():
+                raise Refused(f"execution ({owner}, {run_id}) is already bound; a replayed pair cannot resolve {auth['id']}", code="execution-replayed", run_id=run_id)
+            if not state.predecessor_terminal(owner):
+                raise Refused(f"retained task {owner} has no terminal predecessor execution recorded; its new run cannot be reconciled", code="predecessor-not-terminal")
+            if state.active_task is not None:
+                raise Refused(f"{story} has an active task {state.active_task['taskId']}; reconcile after it is terminal", code="worker-not-terminal", task_id=state.active_task["taskId"])
+            target = self.policy.implementer
+            probe = {**receipt, "taskId": owner}
+            normalized = validate_receipt(probe, target, "implementer", set(), self.store.bound_executions(), owner)  # provider/model/effort/isolation of the retained owner revalidated
+            worktree = receipt.get("worktree") or (state.claim or {}).get("worktree_path")
+            branch = receipt.get("branch") or (state.claim or {}).get("branch")
+            if not state.claim or worktree != state.claim.get("worktree_path") or branch != state.claim.get("branch"):
+                raise Refused(f"the receipt's worktree/branch ({worktree}, {branch}) do not match the bound claim ({(state.claim or {}).get('worktree_path')}, {(state.claim or {}).get('branch')})", code="worktree-mismatch")
+            backup = self.store.story_path(story).with_name(f"{story}.json.bak-{self.now().replace(':', '')}")
+            backup.write_text(self.store.story_path(story).read_text(encoding="utf-8"), encoding="utf-8")
+            auth.update({"status": "consumed", "task_id": owner, "run_id": run_id, "bound_at": self.now(), "cleanup_only": "retained-execution-reconciled",
+                         "reconciliation": {"reason": reason, "provenance": provenance, "evidence_shape": evidence["shape"], "status": evidence["status"], "at": self.now(), "previous_status": "revoked" if auth.get("revoked_at") else "pending",
+                                            "dispatch": {"runId": str(dispatch["runId"]), "messageId": dispatch.get("messageId")}, "startedAt": str(started), "completedAt": str(completed) if completed else None}})
+            state.implementer_receipts.append({**normalized, "authorization": auth["id"], "reconciled": True})
+            state.task_history.append({"taskId": owner, "runId": run_id, "role": "implementer", "status": evidence["status"], "at": self.now(), "operation": "reconcile-retained-execution", "authorization": auth["id"], "evidence_shape": evidence["shape"], "provenance": provenance})
+            self.store.save_story(state)
+            self._counts()
+            self.store.save_run(self.run)
+            self.store.journal(story, "retained-execution-reconciled", {"authorization": auth["id"], "task": owner, "run": run_id, "status": evidence["status"], "reason": reason, "provenance": provenance, "backup": backup.name, "phase": state.phase, "run_cancelled": self.run.cancelled})
             return state
 
     # -- implementation ---------------------------------------------------------------------

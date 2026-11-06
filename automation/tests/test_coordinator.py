@@ -199,7 +199,7 @@ class LifecycleTests(unittest.TestCase):
         self.h.checks()
         self.c.authorize_review("OM-01.02", self.h.sha)
         with self.assertRaises(ReceiptInvalid):
-            self.c.bind_receipt("OM-01.02", {**REVIEWER, "taskId": "task-impl-1"}, worktree_check=ok_worktree)
+            self.c.bind_receipt("OM-01.02", {**REVIEWER, "taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1"}, worktree_check=ok_worktree)
         with self.assertRaises(ReceiptInvalid):  # an implementer receipt cannot consume a reviewer authorization
             self.c.bind_receipt("OM-01.02", receipt(IMPLEMENTER, "task-impl-2"), worktree_check=ok_worktree)
         self.assertEqual(self.h.store.load_story("OM-01.02").phase, "review-authorized")

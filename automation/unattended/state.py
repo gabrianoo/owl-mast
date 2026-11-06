@@ -156,6 +156,34 @@ class StoryState:
     def authorization(self, auth_id: str) -> dict | None:
         return next((a for a in self.authorizations if a["id"] == auth_id), None)
 
+    def owner_task(self) -> str | None:
+        """The implementer task that owns this story: the one bound to its implementation
+        authorization. Only it may be re-run for a repair."""
+        auth = next((a for a in self.authorizations if a["purpose"] == "implementation" and a.get("task_id")), None)
+        return auth["task_id"] if auth else None
+
+    def executions(self) -> set[tuple[str, str]]:
+        """Every (taskId, runId) pair this story has bound or recorded. Legacy task-only
+        records (no run id) contribute nothing here; they are never completed by inference."""
+        pairs = set()
+        for r in self.implementer_receipts + self.reviewer_receipts + self.task_history:
+            if r.get("taskId") and r.get("runId"):
+                pairs.add((r["taskId"], r["runId"]))
+        for a in self.authorizations:
+            if a.get("task_id") and a.get("run_id"):
+                pairs.add((a["task_id"], a["run_id"]))
+        if self.active_task and self.active_task.get("runId"):
+            pairs.add((self.active_task["taskId"], self.active_task["runId"]))
+        return pairs
+
+    def predecessor_terminal(self, task_id: str) -> bool:
+        """True when every recorded execution of ``task_id`` is terminal: it is not the active
+        task and at least one terminal record exists for it (a legacy task-only record counts
+        as terminal for its own, unidentified run)."""
+        if self.active_task and self.active_task.get("taskId") == task_id:
+            return False
+        return any(r.get("taskId") == task_id and r.get("status") in ("completed", "cancelled", "failed", "result_available", "terminal") for r in self.task_history)
+
     def abandon_advancing_intents(self, reason: str) -> list[str]:
         """Mark every pending advancing intent abandoned (in memory; the caller saves)."""
         ops = []
@@ -271,6 +299,13 @@ class Store:
         if not folder.exists():
             return []
         return [StoryState.from_dict(json.loads(p.read_text(encoding="utf-8"))) for p in sorted(folder.glob("*.json"))]
+
+    def bound_executions(self) -> set[tuple[str, str]]:
+        """Every (taskId, runId) pair bound anywhere in the run."""
+        pairs = set()
+        for story in self.list_stories():
+            pairs |= story.executions()
+        return pairs
 
     def bound_task_ids(self) -> set[str]:
         """Every T3 task id ever bound anywhere in the run: receipts of both roles, active

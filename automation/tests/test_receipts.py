@@ -43,6 +43,6 @@ class ReceiptTests(unittest.TestCase):
 
     def test_actual_t3_receipt_shape_from_orchestrator_capabilities(self):
         """The shape T3 reported for this very task (inherited target), see evidence."""
-        receipt = {"taskId": "owl-unattended-foundation-implementation-20261106", "providerInstanceId": "claudeAgent", "model": "claude-fable-5-1",
+        receipt = {"taskId": "owl-unattended-foundation-implementation-20261106", "childRunId": "run:…:ordinal:1", "providerInstanceId": "claudeAgent", "model": "claude-fable-5-1",
                    "options": [{"id": "effort", "value": "high"}], "isolation": "worktree"}
         self.assertEqual(validate_receipt(receipt, IMPL, "implementer")["model"], "claude-fable-5-1")

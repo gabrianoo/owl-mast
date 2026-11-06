@@ -248,7 +248,7 @@ class D3ActiveTaskOwnershipIsIndependent(unittest.TestCase):
         self.h.request_review()
         state = self.c.record_head("OM-01.02", self.h.sha)  # same sha, no evidence
         self.assertEqual((state.phase, state.active_task["taskId"], state.active_task["role"]), ("review-requested", "task-review-1", "reviewer"))
-        for evidence in (None, {"taskId": "task-impl-1", "status": "result_available"}, {"taskId": "task-review-1", "status": "cancel_requested"}):
+        for evidence in (None, {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "result_available"}, {"taskId": "task-review-1", "runId": "task-review-1" + ":run:1", "status": "cancel_requested"}):
             with self.assertRaises(Refused) as ctx:
                 self.c.cancel("OM-01.02", "stop", evidence)
             self.assertEqual(ctx.exception.code, "worker-not-terminal")
@@ -256,7 +256,7 @@ class D3ActiveTaskOwnershipIsIndependent(unittest.TestCase):
                 fresh(self.h).block("OM-01.02", "stop", evidence)
         self.assertEqual(self.h.store.load_story("OM-01.02").phase, "review-requested")
         self.assertEqual(markers(self.h.fake, 21, "release") + markers(self.h.fake, 21, "block"), [])
-        state = fresh(self.h).cancel("OM-01.02", "stop", {"taskId": "task-review-1", "status": "cancelled"})
+        state = fresh(self.h).cancel("OM-01.02", "stop", {"taskId": "task-review-1", "runId": "task-review-1" + ":run:1", "status": "cancelled"})
         self.assertEqual((state.phase, state.active_task, state.task_history[-1]["taskId"]), ("cancelled", None, "task-review-1"))
 
     def test_new_sha_during_review_invalidates_evidence_but_keeps_reviewer_ownership(self):
@@ -267,11 +267,11 @@ class D3ActiveTaskOwnershipIsIndependent(unittest.TestCase):
         state = self.c.record_head("OM-01.02", new)
         self.assertEqual((state.phase, state.approved_sha, state.active_task["role"]), ("implemented", None, "reviewer"))
         for op in (lambda: self.c.run_checks("OM-01.02", new, str(self.h.worktree), passing_runner), lambda: self.c.cancel("OM-01.02", "x"),
-                   lambda: self.c.block("OM-01.02", "x", {"taskId": "task-impl-1", "status": "result_available"})):
+                   lambda: self.c.block("OM-01.02", "x", {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "result_available"})):
             with self.assertRaises(Refused) as ctx:
                 op()
             self.assertEqual(ctx.exception.code, "worker-not-terminal")
-        state = fresh(self.h).record_task_terminal("OM-01.02", {"taskId": "task-review-1", "status": "result_available"})
+        state = fresh(self.h).record_task_terminal("OM-01.02", {"taskId": "task-review-1", "runId": "task-review-1" + ":run:1", "status": "result_available"})
         self.assertEqual(state.active_task, None)
         self.assertEqual(self.c.run_checks("OM-01.02", new, str(self.h.worktree), passing_runner).phase, "checks-passed")
         self.assertEqual(self.c.authorize_review("OM-01.02", new).phase, "review-authorized")
@@ -285,7 +285,7 @@ class D3ActiveTaskOwnershipIsIndependent(unittest.TestCase):
             self.c.record_review("OM-01.02", self.h.sha, "approved", "r")  # no evidence: refused before the worktree is even read
         self.assertEqual(ctx.exception.code, "worker-not-terminal")
         with self.assertRaises(Refused):
-            self.c.record_review("OM-01.02", self.h.sha, "approved", "r", {"taskId": "task-impl-1", "status": "result_available"})
+            self.c.record_review("OM-01.02", self.h.sha, "approved", "r", {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "result_available"})
         self.assertEqual(self.h.store.load_story("OM-01.02").phase, "review-requested")
         with self.assertRaises(Refused) as ctx:
             self.c.record_review("OM-01.02", self.h.sha, "approved", "r", self.h.terminal())
@@ -295,15 +295,15 @@ class D3ActiveTaskOwnershipIsIndependent(unittest.TestCase):
 
     def test_record_head_requires_the_implementer_terminal_evidence(self):
         self.h.claim()
-        for evidence in (None, {"taskId": "other", "status": "result_available"}, {"taskId": "task-impl-1", "status": "working"}, {"taskId": "task-impl-1"}):
+        for evidence in (None, {"taskId": "other", "runId": "other" + ":run:1", "status": "result_available"}, {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "working"}, {"taskId": "task-impl-1"}):
             with self.assertRaises(Refused) as ctx:
                 self.c.record_head("OM-01.02", self.h.sha, evidence)
             self.assertEqual(ctx.exception.code, "worker-not-terminal")
         self.assertEqual(self.h.store.load_story("OM-01.02").head_sha, None)
-        state = self.c.record_head("OM-01.02", self.h.sha, {"taskId": "task-impl-1", "status": "result_available"})
+        state = self.c.record_head("OM-01.02", self.h.sha, {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "result_available"})
         self.assertEqual((state.phase, state.active_task, state.task_history[-1]["status"]), ("implemented", None, "result_available"))
         with self.assertRaises(Refused) as ctx:
-            self.c.record_task_terminal("OM-01.02", {"taskId": "task-impl-1", "status": "result_available"})
+            self.c.record_task_terminal("OM-01.02", {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "result_available"})
         self.assertEqual(ctx.exception.code, "no-active-task")
 
     def test_ownership_survives_restart_and_reviewer_launch_waits_for_implementer(self):
@@ -313,7 +313,7 @@ class D3ActiveTaskOwnershipIsIndependent(unittest.TestCase):
             c2.cancel("OM-01.02", "stop")
         self.assertEqual(ctx.exception.detail, {"task_id": "task-impl-1", "role": "implementer", "authorization": "run-1:OM-01.02:1"})
         self.assertEqual(c2.status()["stories"][0]["active_task"]["taskId"], "task-impl-1")
-        c2.record_head("OM-01.02", self.h.sha, {"taskId": "task-impl-1", "status": "result_available"})
+        c2.record_head("OM-01.02", self.h.sha, {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "result_available"})
         c2.run_checks("OM-01.02", self.h.sha, str(self.h.worktree), passing_runner)
         state = c2.authorize_review("OM-01.02", self.h.sha)
         state = c2.bind_receipt("OM-01.02", REVIEWER, worktree_check=ok_worktree)
@@ -615,7 +615,7 @@ class D6CapacityIsAuthorizedBeforeLaunch(unittest.TestCase):
             self.assertEqual((state.phase, state.repair_rounds), ("repair-authorized", 1))
             self.assertEqual(fresh(h).authorize_repair("OM-01.02").repair_rounds, 1)  # idempotent, not a second round
             with self.assertRaises(Refused) as ctx:
-                c.record_head("OM-01.02", h.sha, {"taskId": "task-impl-9", "status": "result_available"})  # nothing bound: no head without a bound task
+                c.record_head("OM-01.02", h.sha, {"taskId": "task-impl-9", "runId": "task-impl-9" + ":run:1", "status": "result_available"})  # nothing bound: no head without a bound task
             self.assertEqual(ctx.exception.code, "repair-required")
             c.bind_receipt("OM-01.02", receipt(IMPLEMENTER, "task-impl-2"), worktree_check=ok_worktree)
             h.checks(runner=failing_runner)

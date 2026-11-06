@@ -64,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     pw = sub.add_parser("probe-write", help="bounded live write probe on an engineering-automation issue")
     pw.add_argument("--issue", type=int, required=True)
 
-    evidence_help = "JSON {taskId, status} from task_status (workState result_available) or a terminal task_cancel result for the active task"
+    evidence_help = "JSON for the ACTIVE execution: normalized {taskId, runId, status} or task_status-shaped {taskId, workState: result_available, hasPendingChildRuns: false, latestTerminalRunId, latestTerminalStatus} (childRunId/status/summary are stale and ignored)"
     rv0 = sub.add_parser("reserve", help="admit a dispatchable story and authorize its implementer task BEFORE delegating it")
     rv0.add_argument("story"); rv0.add_argument("--baseline", required=True)
     bd = sub.add_parser("bind-receipt", help="bind the delegated task receipt to the exact authorization its task was launched for (implementation needs --worktree/--branch)")
@@ -82,6 +82,8 @@ def build_parser() -> argparse.ArgumentParser:
     b = sub.add_parser("block"); b.add_argument("story"); b.add_argument("--reason", required=True); b.add_argument("--task-evidence", default=None, help=evidence_help); b.add_argument("--no-launch", default=None, help=no_launch_help)
     ca = sub.add_parser("cancel"); ca.add_argument("story"); ca.add_argument("--reason", required=True); ca.add_argument("--task-evidence", default=None, help=evidence_help); ca.add_argument("--no-launch", default=None, help=no_launch_help)
     cr = sub.add_parser("cancel-run"); cr.add_argument("--reason", required=True); cr.add_argument("--task-evidence", default=None, help="JSON {story: {taskId, status}}"); cr.add_argument("--no-launch", default=None, help='JSON {story: {"authorization": "<id>", "reason": "..."}}')
+    rr = sub.add_parser("reconcile-retained-execution", help="audited cleanup: resolve a revoked repair authorization whose task ran as a new run of the retained owner task but was never bound (no re-authorization, approval or admission)")
+    rr.add_argument("story"); rr.add_argument("--authorization", required=True); rr.add_argument("--receipt", required=True, help="JSON receipt of the retained owner task with its runId (and provider/model/options; optional worktree/branch)"); rr.add_argument("--task-evidence", required=True, help=evidence_help); rr.add_argument("--reason", required=True); rr.add_argument("--provenance", required=True, help="who observed the terminal evidence and how (e.g. original coordinator task_status snapshot, user-supplied)")
     rs = sub.add_parser("resume"); rs.add_argument("story")
     rb = sub.add_parser("rebase-revisions", help="explicitly accept changed GitHub revisions after human verification"); rb.add_argument("story"); rb.add_argument("--reason", required=True)
     sub.add_parser("status")
@@ -159,6 +161,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         elif args.command == "resume":
             state = coordinator.resume(args.story)
+        elif args.command == "reconcile-retained-execution":
+            state = coordinator.reconcile_retained_execution(args.story, args.authorization, _load_json_arg(args.receipt), _load_json_arg(args.task_evidence), args.reason, args.provenance)
         elif args.command == "rebase-revisions":
             state = coordinator.rebase_revisions(args.story, args.reason)
         elif args.command == "status":

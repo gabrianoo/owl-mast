@@ -25,6 +25,13 @@ There is no internal delegation, waiting or looping here.
     python3 -m automation.tests.lifecycle_smoke --dir D terminal  --task-evidence E.json --source real|fixture
     python3 -m automation.tests.lifecycle_smoke --dir D restart             (fresh process: reload persisted transport and state, resume)
     python3 -m automation.tests.lifecycle_smoke --dir D status
+    python3 -m automation.tests.lifecycle_smoke --dir D reconcile --authorization ID --receipt R.json --task-evidence E.json --reason R --provenance P --source real|fixture
+
+Receipts and terminal evidence identify an execution as a ``(taskId, runId)`` pair; see
+``automation/unattended/receipts.py`` and ``coordinator.normalize_task_evidence`` for the
+canonical shapes. ``--run-id`` selects the persisted run (default ``smoke-run``); a legacy
+state directory holding ``fixture-transport.pickle`` instead of ``transport.json`` is loaded
+read-only from that pickle (the parent's isolated copy of a historical run).
 
 ``status.evidence_class`` only summarizes the *declared* provenance of the inputs supplied
 so far (``real`` when every input was declared real); it says nothing about whether those
@@ -113,16 +120,37 @@ def _tag(payload, source: str, kind: str) -> dict:
     return dict(payload)
 
 
+def load_legacy_pickle(path: Path) -> FakeTransport:
+    """A historical smoke kept its fixture transport as a pickle of ``FakeTransport``. Loaded
+    only from an explicitly given state directory; comments posted later are persisted back."""
+    import pickle
+
+    with path.open("rb") as fh:
+        transport = pickle.load(fh)
+    if not isinstance(transport, FakeTransport) or transport.live:
+        raise UnattendedError(f"{path} is not a fixture FakeTransport")
+    return transport
+
+
 class Smoke:
-    def __init__(self, directory: Path):
+    def __init__(self, directory: Path, run_id: str = RUN_ID):
         self.dir = directory
-        self.transport = PersistedFakeTransport(self.dir / "transport.json")
+        self.run_id = run_id
+        legacy = self.dir / "fixture-transport.pickle"
+        if not (self.dir / "transport.json").exists() and legacy.exists():
+            self.transport = PersistedFakeTransport(self.dir / "transport.json")
+            source = load_legacy_pickle(legacy)
+            self.transport.issues, self.transport.items, self.transport.comments, self.transport.pull_requests = source.issues, source.items, source.comments, source.pull_requests
+            self.transport._ids, self.transport._ticks = source._ids, source._ticks
+            self.transport.save()
+        else:
+            self.transport = PersistedFakeTransport(self.dir / "transport.json")
         self.policy_path = self.dir / "policy.toml"
         self.log_path = self.dir / "smoke-log.jsonl"
 
     def coordinator(self) -> Coordinator:
         policy = load_policy(self.policy_path)
-        return Coordinator(self.transport, policy, Store(self.dir / "runs", RUN_ID), live=True)
+        return Coordinator(self.transport, policy, Store(self.dir / "runs", self.run_id), live=True)
 
     def keep(self, operation: str, kind: str, payload: dict, source: str) -> None:
         """Persist the supplied input verbatim with its declared source, so the published
@@ -216,6 +244,15 @@ class Smoke:
         self.log("terminal", out)
         return out
 
+    def reconcile(self, authorization: str, receipt: dict, evidence: dict, reason: str, provenance: str, source: str) -> dict:
+        self.keep("reconcile", "receipt", receipt, source)
+        self.keep("reconcile", "terminal-evidence", evidence, source)
+        state = self.coordinator().reconcile_retained_execution(STORY, authorization, receipt, evidence, reason, provenance)
+        auth = state.authorization(authorization)
+        out = {"phase": state.phase, "authorization": auth, "active_task": state.active_task, "source": source}
+        self.log("reconcile", out)
+        return out
+
     def restart(self) -> dict:
         """A fresh coordinator over the persisted transport and store: resume."""
         state = self.coordinator().resume(STORY, git_worktree_check)
@@ -235,6 +272,7 @@ class Smoke:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python3 -m automation.tests.lifecycle_smoke", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--dir", required=True, help="temporary isolated directory for this smoke (transport, policy, state, log)")
+    p.add_argument("--run-id", default=RUN_ID, help="persisted run under <dir>/runs (default smoke-run; a historical copy names its own)")
     sub = p.add_subparsers(dest="command", required=True)
     pr = sub.add_parser("prepare"); pr.add_argument("--worktree"); pr.add_argument("--branch"); pr.add_argument("--check-command", action="append")
     bd = sub.add_parser("bind"); bd.add_argument("--receipt", required=True); bd.add_argument("--worktree"); bd.add_argument("--branch"); bd.add_argument("--authorization"); bd.add_argument("--source", choices=SOURCES, required=True)
@@ -244,6 +282,7 @@ def build_parser() -> argparse.ArgumentParser:
     rv = sub.add_parser("review"); rv.add_argument("--sha", required=True); rv.add_argument("--verdict", choices=["approved", "changes-requested"], required=True); rv.add_argument("--report", required=True); rv.add_argument("--task-evidence", required=True); rv.add_argument("--source", choices=SOURCES, required=True)
     ca = sub.add_parser("cancel"); ca.add_argument("--reason", required=True); ca.add_argument("--task-evidence"); ca.add_argument("--no-launch"); ca.add_argument("--source", choices=SOURCES, required=True)
     te = sub.add_parser("terminal"); te.add_argument("--task-evidence", required=True); te.add_argument("--source", choices=SOURCES, required=True)
+    rc2 = sub.add_parser("reconcile"); rc2.add_argument("--authorization", required=True); rc2.add_argument("--receipt", required=True); rc2.add_argument("--task-evidence", required=True); rc2.add_argument("--reason", required=True); rc2.add_argument("--provenance", required=True); rc2.add_argument("--source", choices=SOURCES, required=True)
     sub.add_parser("restart")
     sub.add_parser("status")
     return p
@@ -251,7 +290,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    smoke = Smoke(Path(args.dir))
+    smoke = Smoke(Path(args.dir), args.run_id)
     try:
         if args.command == "prepare":
             out = smoke.prepare(args.worktree, args.branch, args.check_command)
@@ -269,6 +308,8 @@ def main(argv: list[str] | None = None) -> int:
             out = smoke.cancel(args.reason, _load_json(args.task_evidence), _load_json(args.no_launch), args.source)
         elif args.command == "terminal":
             out = smoke.terminal(_load_json(args.task_evidence), args.source)
+        elif args.command == "reconcile":
+            out = smoke.reconcile(args.authorization, _load_json(args.receipt), _load_json(args.task_evidence), args.reason, args.provenance, args.source)
         elif args.command == "restart":
             out = smoke.restart()
         else:

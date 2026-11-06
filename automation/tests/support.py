@@ -46,12 +46,22 @@ def failing_runner(argv, cwd, timeout):
     return subprocess.CompletedProcess(argv, 1, "", "boom\n")
 
 
-IMPLEMENTER = {"taskId": "task-impl-1", "providerInstanceId": "claudeAgent", "model": "claude-fable-5-1", "options": [{"id": "effort", "value": "high"}], "isolation": "worktree"}
-REVIEWER = {"taskId": "task-review-1", "providerInstanceId": "codex", "model": "gpt-6-astra", "options": {"reasoningEffort": "high"}}
+def run_of(task_id: str, ordinal: int = 1) -> str:
+    """Fixture run identity: executions are (taskId, runId) pairs; the first run of a fixture
+    task is ``<taskId>:run:1``."""
+    return f"{task_id}:run:{ordinal}"
 
 
-def receipt(base: dict, task_id: str) -> dict:
-    return {**base, "taskId": task_id}
+IMPLEMENTER = {"taskId": "task-impl-1", "runId": run_of("task-impl-1"), "providerInstanceId": "claudeAgent", "model": "claude-fable-5-1", "options": [{"id": "effort", "value": "high"}], "isolation": "worktree"}
+REVIEWER = {"taskId": "task-review-1", "runId": run_of("task-review-1"), "providerInstanceId": "codex", "model": "gpt-6-astra", "options": {"reasoningEffort": "high"}}
+
+
+def receipt(base: dict, task_id: str, ordinal: int = 1) -> dict:
+    return {**base, "taskId": task_id, "runId": run_of(task_id, ordinal)}
+
+
+def evidence(task_id: str, status: str = "result_available", ordinal: int = 1) -> dict:
+    return {"taskId": task_id, "runId": run_of(task_id, ordinal), "status": status}
 
 
 def make_git_repo(path: Path, branch: str = "t3/om-01-02") -> str:
@@ -98,7 +108,7 @@ class Harness:
     def terminal(self, story="OM-01.02", status="result_available"):
         """Terminal evidence for the story's active task (whatever its role)."""
         state = self.store.load_story(story)
-        return {"taskId": state.active_task["taskId"], "status": status}
+        return {"taskId": state.active_task["taskId"], "runId": state.active_task["runId"], "status": status}
 
     def checks(self, story="OM-01.02", sha=None, runner=passing_runner):
         """The implementer returned (terminal evidence), its head is recorded, checks run."""

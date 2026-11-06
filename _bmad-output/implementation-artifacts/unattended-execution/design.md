@@ -76,6 +76,10 @@ duplicate marker on any effect (first run or resume) ──> conflict
 - Receipts, terminal evidence and no-launch attestations are the coordinator's reports of `delegate_task`, `task_status` and `task_cancel` results (or of a `delegate_task` never issued); a false report is not detectable.
 - No child deadline, resource bound or credential confinement exists in the installed T3 tools; `timeoutMs` bounds only the coordinator's wait.
 
+## Execution identity (third repair, 2026-11-07)
+
+Executions are `(taskId, runId)` pairs (`receipts.execution_run_id`, `Store.bound_executions`, `StoryState.executions`/`owner_task`/`predecessor_terminal`). `bind_receipt` admits a retained task only for a repair of its own story with a never-bound run after a terminal predecessor; reviewer tasks are never reused. `normalize_task_evidence` accepts the normalized and the `task_status` shapes and derives the terminal run only from `latestTerminalRunId`/`latestTerminalStatus`; `_apply_task_evidence` requires the exact bound pair and refuses legacy task-only active tasks with `run-identity-missing`. `reconcile_retained_execution` is the audited, idempotent, backup-first cleanup of a revoked repair authorization whose run completed under the retained owner, requiring dispatch and time correlation with the authorization. Story schema stays 3 (optional `runId`/`run_id` fields); legacy records are never completed by inference.
+
 ## Why not bmad-loop
 
 `bmad-loop` 0.13.2 dispatches from `sprint-status.yaml`, `stories.yaml` or a `tickets.py` tree, none of which is GitHub; its sprint key grammar `N-M-slug` and the sprint parser's `Epic N`/`Story N.M` headings reject `E01`/`OM-01.01`; `[verify]`/`[environment]` entries are empty; tmux CLI adapters ignore `effort`; its merge-back and cleanup act on local branches. The foundation keeps T3 as the sole coordinator and stores machine state under `.unattended-runs/`, separate from `.bmad-loop/`, which stays untouched.

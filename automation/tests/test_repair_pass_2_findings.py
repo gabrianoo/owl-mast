@@ -108,7 +108,7 @@ class RP2F1UnresolvedAuthorizationsAreOwnershipObligations(unittest.TestCase):
                 self.assertEqual((state.authorizations[0]["status"], state.authorizations[0]["task_id"], state.authorizations[0]["cleanup_only"], state.unresolved_authorization()), ("consumed", "task-impl-1", "authorization-revoked", None))
                 self.assertEqual((state.implementer_receipts[-1]["authorization"], state.claim["worktree_path"]), (AUTH1, str(h.worktree)))
                 self.assertIn("task-impl-1", h.store.bound_task_ids())
-                for advancing in (lambda: fresh(h).record_head(S, h.sha, {"taskId": "task-impl-1", "status": "result_available"}), lambda: fresh(h).run_checks(S, h.sha, str(h.worktree), passing_runner)):
+                for advancing in (lambda: fresh(h).record_head(S, h.sha, {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "result_available"}), lambda: fresh(h).run_checks(S, h.sha, str(h.worktree), passing_runner)):
                     with self.assertRaises(Refused):  # no work was authorized: the phase never advanced
                         advancing()
                 self.assertEqual(h.store.load_story(S).phase, "reserved")
@@ -116,9 +116,9 @@ class RP2F1UnresolvedAuthorizationsAreOwnershipObligations(unittest.TestCase):
                     fresh(h).cancel(S, "finish")
                 self.assertEqual((ctx.exception.code, ctx.exception.detail["task_id"], ctx.exception.detail["authorization"]), ("worker-not-terminal", "task-impl-1", AUTH1))
                 with self.assertRaises(Refused):
-                    fresh(h).cancel(S, "finish", {"taskId": "task-impl-9", "status": "cancelled"})
+                    fresh(h).cancel(S, "finish", {"taskId": "task-impl-9", "runId": "task-impl-9" + ":run:1", "status": "cancelled"})
                 self.assertEqual(markers(h.fake, 21, "release"), [])
-                state = fresh(h).cancel(S, "finish", {"taskId": "task-impl-1", "status": "cancelled"})
+                state = fresh(h).cancel(S, "finish", {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "cancelled"})
                 self.assertEqual((state.phase, state.active_task, state.task_history[-1]["taskId"], state.task_history[-1]["authorization"]), ("cancelled", None, "task-impl-1", AUTH1))
                 self.assertEqual((len(markers(h.fake, 21, "release")), other_run(h)._active_foreign_claims(21, S)), (1, []))
                 self.assertEqual(h.store.story_counts()["delegated_tasks"], 1)
@@ -147,7 +147,7 @@ class RP2F1UnresolvedAuthorizationsAreOwnershipObligations(unittest.TestCase):
             result = fresh(h).cancel_run("finish")
             self.assertEqual(result["awaiting_worker_termination"], [{"story": S, "task_id": "task-impl-1", "role": "implementer", "authorization": AUTH1, "code": "worker-not-terminal"}])
             self.assertEqual(markers(h.fake, 21, "release"), [])
-            result = fresh(h).cancel_run("finish", task_evidence={S: {"taskId": "task-impl-1", "status": "cancelled"}})
+            result = fresh(h).cancel_run("finish", task_evidence={S: {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "cancelled"}})
             self.assertEqual(([s["phase"] for s in result["cancelled"]], result["awaiting_worker_termination"]), (["cancelled"], []))
             self.assertEqual((len(markers(h.fake, 21, "release")), h.store.story_counts()["delegated_tasks"]), (1, 1))
         finally:
@@ -258,15 +258,15 @@ class RP2F1UnresolvedAuthorizationsAreOwnershipObligations(unittest.TestCase):
                     state = h.store.load_story(S)
                     self.assertEqual((state.phase, state.reviewer_receipts[-1]["sha"], state.reviewer_receipts[-1]["authorization"], state.active_task["role"], state.active_task["cleanup_only"]), ("implemented", sha_a, old["id"], "reviewer", "authorization-revoked"))
                     with self.assertRaises(Refused):  # the old reviewer's verdict can approve nothing
-                        fresh(h).record_review(S, sha_b, "approved", "report for A", {"taskId": "task-review-1", "status": "result_available"})
+                        fresh(h).record_review(S, sha_b, "approved", "report for A", {"taskId": "task-review-1", "runId": "task-review-1" + ":run:1", "status": "result_available"})
                     with self.assertRaises(Refused):
-                        fresh(h).record_review(S, sha_a, "approved", "report for A", {"taskId": "task-review-1", "status": "result_available"})
+                        fresh(h).record_review(S, sha_a, "approved", "report for A", {"taskId": "task-review-1", "runId": "task-review-1" + ":run:1", "status": "result_available"})
                     state = h.store.load_story(S)
                     self.assertEqual((state.phase, state.approved_sha, state.reviews, state.active_task["taskId"]), ("implemented", None, [], "task-review-1"))
                     with self.assertRaises(Refused) as ctx:  # B's checks still wait for the old reviewer to leave
                         fresh(h).run_checks(S, sha_b, str(h.worktree), passing_runner)
                     self.assertEqual(ctx.exception.code, "worker-not-terminal")
-                    self.assertEqual(fresh(h).record_task_terminal(S, {"taskId": "task-review-1", "status": "cancelled"}).active_task, None)
+                    self.assertEqual(fresh(h).record_task_terminal(S, {"taskId": "task-review-1", "runId": "task-review-1" + ":run:1", "status": "cancelled"}).active_task, None)
                 else:
                     state = fresh(h).record_no_launch(S, {"authorization": old["id"], "reason": "reviewer never launched"})
                     self.assertEqual((state.authorizations[-1]["status"], state.unresolved_authorization()), ("not-launched", None))
@@ -279,7 +279,7 @@ class RP2F1UnresolvedAuthorizationsAreOwnershipObligations(unittest.TestCase):
                 self.assertEqual(ctx.exception.code, "authorization-mismatch")
                 state = fresh(h).bind_receipt(S, receipt(REVIEWER, "task-review-2"), worktree_check=ok_worktree, authorization=new["id"])
                 self.assertEqual((state.phase, state.reviewer_receipts[-1]["sha"], state.reviewer_receipts[-1]["authorization"]), ("review-requested", sha_b, new["id"]))
-                state = fresh(h).record_review(S, sha_b, "approved", "report for B", {"taskId": "task-review-2", "status": "result_available"})
+                state = fresh(h).record_review(S, sha_b, "approved", "report for B", {"taskId": "task-review-2", "runId": "task-review-2" + ":run:1", "status": "result_available"})
                 self.assertEqual((state.phase, state.approved_sha, [r["sha"] for r in state.reviewer_receipts]), ("review-approved", sha_b, [sha_a, sha_b] if resolve_by == "receipt" else [sha_b]))
                 self.assertEqual(h.store.story_counts()["delegated_tasks"], 3)
             finally:
@@ -306,7 +306,7 @@ class RP2F1UnresolvedAuthorizationsAreOwnershipObligations(unittest.TestCase):
                 fresh(h).bind_receipt(S, REVIEWER, worktree_check=ok_worktree)
             self.assertEqual((ctx.exception.code, ctx.exception.detail["bound_for_cleanup"]), ("authorization-revoked", True))
             self.assertEqual(h.store.load_story(S).phase, "implemented")
-            state = fresh(h).cancel(S, "stop", {"taskId": "task-review-1", "status": "cancelled"})
+            state = fresh(h).cancel(S, "stop", {"taskId": "task-review-1", "runId": "task-review-1" + ":run:1", "status": "cancelled"})
             self.assertEqual((state.phase, len(markers(h.fake, 21, "release"))), ("cancelled", 1))
         finally:
             h.close()
@@ -330,9 +330,9 @@ class RP2F1UnresolvedAuthorizationsAreOwnershipObligations(unittest.TestCase):
             state = h.store.load_story(S)
             self.assertEqual((state.phase, state.active_task["taskId"], state.implementer_receipts[-1]["authorization"]), ("repair-authorized", "task-impl-2", auth["id"]))
             with self.assertRaises(Refused) as ctx:
-                fresh(h).record_head(S, h.sha, {"taskId": "task-impl-2", "status": "result_available"})
+                fresh(h).record_head(S, h.sha, {"taskId": "task-impl-2", "runId": "task-impl-2" + ":run:1", "status": "result_available"})
             self.assertEqual(ctx.exception.code, "repair-required")
-            state = fresh(h).block(S, "owner decision", {"taskId": "task-impl-2", "status": "cancelled"})
+            state = fresh(h).block(S, "owner decision", {"taskId": "task-impl-2", "runId": "task-impl-2" + ":run:1", "status": "cancelled"})
             self.assertEqual((state.phase, len(markers(h.fake, 21, "block")), h.store.story_counts()["delegated_tasks"]), ("blocked", 1, 2))
         finally:
             h.close()
@@ -354,7 +354,7 @@ class RP2F1UnresolvedAuthorizationsAreOwnershipObligations(unittest.TestCase):
                     self.assertEqual((ctx.exception.code, ctx.exception.detail["bound_for_cleanup"]), ("wall-clock-exceeded", True))
                     with self.assertRaises(Refused):
                         c.cancel(S, "wall clock")
-                    state = c.cancel(S, "wall clock", {"taskId": "task-impl-1", "status": "cancelled"})
+                    state = c.cancel(S, "wall clock", {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "cancelled"})
                 else:
                     state = c.cancel(S, "wall clock", no_launch={"authorization": AUTH1, "reason": "never launched"})
                 self.assertEqual((state.phase, len(markers(h.fake, 21, "release")), h.store.story_counts()["delegated_tasks"]), ("cancelled", 1, 1))
@@ -375,7 +375,7 @@ class RP2F1UnresolvedAuthorizationsAreOwnershipObligations(unittest.TestCase):
             self.assertEqual(ctx.exception.code, "no-authorization")
             self.assertEqual(fresh(h).resume(S, ok_worktree).active_task["taskId"], "task-impl-1")
             self.assertEqual((h.store.story_counts()["delegated_tasks"], h.store.bound_task_ids()), (1, {"task-impl-1"}))
-            self.assertEqual(fresh(h).record_task_terminal(S, {"taskId": "task-impl-1", "status": "result_available"}).active_task, None)
+            self.assertEqual(fresh(h).record_task_terminal(S, {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "result_available"}).active_task, None)
             self.assertEqual(fresh(h).cancel(S, "finish").phase, "cancelled")
         finally:
             h.close()

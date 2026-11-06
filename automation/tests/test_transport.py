@@ -182,11 +182,11 @@ class CoordinatorOverTransportTests(unittest.TestCase):
         snap = take_snapshot(self.t, "gabrianoo/owl-mast", "now")
         self.c.reserve("OM-01.02", snap, "base")
         self.c.bind_receipt("OM-01.02", IMPLEMENTER, str(self.worktree), "t3/om-01-02", ok_worktree)
-        self.c.record_head("OM-01.02", self.sha, {"taskId": IMPLEMENTER["taskId"], "status": "result_available"})
+        self.c.record_head("OM-01.02", self.sha, {"taskId": IMPLEMENTER["taskId"], "runId": IMPLEMENTER["taskId"] + ":run:1", "status": "result_available"})
         self.c.run_checks("OM-01.02", self.sha, str(self.worktree), passing_runner)
         self.c.authorize_review("OM-01.02", self.sha)
         self.c.bind_receipt("OM-01.02", REVIEWER, worktree_check=ok_worktree)
-        self.c.record_review("OM-01.02", self.sha, "approved", "r", {"taskId": REVIEWER["taskId"], "status": "result_available"})
+        self.c.record_review("OM-01.02", self.sha, "approved", "r", {"taskId": REVIEWER["taskId"], "runId": REVIEWER["taskId"] + ":run:1", "status": "result_available"})
 
     def test_changes_requested_in_raw_response_refuses_proposal(self):
         self.approved()

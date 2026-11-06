@@ -374,7 +374,7 @@ class DenialOutageAndLiveGateTests(unittest.TestCase):
                    lambda: self.h.coordinator.rebase_revisions("OM-01.02", "x"), lambda: self.h.coordinator.cancel_run("x"),
                    lambda: self.h.coordinator.propose_evidence("OM-01.02", "s", 7, [], "s"), lambda: self.h.coordinator.authorize_repair("OM-01.02"),
                    lambda: self.h.coordinator.authorize_review("OM-01.02", "s"), lambda: self.h.coordinator.record_review("OM-01.02", "s", "approved", "r"),
-                   lambda: self.h.coordinator.record_task_terminal("OM-01.02", {"taskId": "t", "status": "cancelled"}),
+                   lambda: self.h.coordinator.record_task_terminal("OM-01.02", {"taskId": "t", "runId": "t" + ":run:1", "status": "cancelled"}),
                    lambda: self.h.coordinator.run_checks("OM-01.02", "s", str(self.h.worktree)), lambda: self.h.coordinator.bind_receipt("OM-01.02", IMPLEMENTER, str(self.h.worktree), "t3/om-01-02", ok_worktree)):
             with self.assertRaises(Refused) as ctx:
                 op()
@@ -388,15 +388,15 @@ class DenialOutageAndLiveGateTests(unittest.TestCase):
             self.h.coordinator.cancel("OM-01.02", "stop")
         self.assertEqual(ctx.exception.code, "worker-not-terminal")
         with self.assertRaises(Refused):
-            self.h.coordinator.cancel("OM-01.02", "stop", {"taskId": "task-impl-1", "status": "cancel_requested"})
+            self.h.coordinator.cancel("OM-01.02", "stop", {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "cancel_requested"})
         with self.assertRaises(Refused):
-            self.h.coordinator.cancel("OM-01.02", "stop", {"taskId": "other", "status": "cancelled"})
+            self.h.coordinator.cancel("OM-01.02", "stop", {"taskId": "other", "runId": "other" + ":run:1", "status": "cancelled"})
         self.assertEqual(self.h.store.load_story("OM-01.02").phase, "claimed")
         self.assertEqual(markers(self.h.fake, 21, "release"), [])
         result = self.h.coordinator.cancel_run("stop")
         self.assertEqual(result["awaiting_worker_termination"], [{"story": "OM-01.02", "task_id": "task-impl-1", "role": "implementer", "authorization": "run-1:OM-01.02:1", "code": "worker-not-terminal"}])
         self.assertTrue(self.h.store.load_run().cancelled)
-        state = self.h.coordinator.cancel("OM-01.02", "stop", {"taskId": "task-impl-1", "status": "cancelled"})
+        state = self.h.coordinator.cancel("OM-01.02", "stop", {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "cancelled"})
         self.assertEqual(state.phase, "cancelled")
         self.assertEqual(len(markers(self.h.fake, 21, "release")), 1)
 

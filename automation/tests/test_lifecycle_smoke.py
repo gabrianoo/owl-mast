@@ -36,7 +36,7 @@ class LifecycleSmokeHelperTests(unittest.TestCase):
         return str(path)
 
     def evidence(self, task_id, status="result_available"):
-        return self.write(f"ev-{task_id}.json", {"taskId": task_id, "status": status})
+        return self.write(f"ev-{task_id}.json", {"taskId": task_id, "runId": task_id + ":run:1", "status": status})
 
     def test_full_lifecycle_with_fixture_inputs_and_restart(self):
         code, out = run("--dir", self.dir, "prepare")
@@ -175,7 +175,7 @@ class RepairRound1Tests(unittest.TestCase):
         sha = make_git_repo(actual, "smoke/om-99-01")
         code, out = run("--dir", self.dir, "bind", "--receipt", self.write("impl.json", IMPLEMENTER), "--worktree", str(actual), "--branch", "smoke/om-99-01", "--authorization", auth, "--source", "fixture")
         self.assertEqual((code, out["phase"]), (0, "claimed"))
-        run("--dir", self.dir, "head", "--sha", sha, "--task-evidence", self.write("e.json", {"taskId": "task-impl-1", "status": "result_available"}), "--source", "fixture")
+        run("--dir", self.dir, "head", "--sha", sha, "--task-evidence", self.write("e.json", {"taskId": "task-impl-1", "runId": "task-impl-1:run:1", "status": "result_available"}), "--source", "fixture")
         code, out = run("--dir", self.dir, "check", "--sha", sha)
         self.assertEqual((code, out["phase"]), (0, "checks-passed"), out)
         self.assertEqual(out["checks"]["head_before"], sha)

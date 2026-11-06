@@ -335,7 +335,7 @@ class F3TaskIdsAreFreshRunWide(unittest.TestCase):
             h.checks()
             h.coordinator.authorize_review(S, h.sha)
             with self.assertRaises(ReceiptInvalid):
-                h.coordinator.bind_receipt(S, {**REVIEWER, "taskId": "task-impl-1"}, worktree_check=ok_worktree)
+                h.coordinator.bind_receipt(S, {**REVIEWER, "taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1"}, worktree_check=ok_worktree)
         finally:
             h.close()
 
@@ -391,7 +391,7 @@ class F4ExpiredAuthorizationsBindForCleanupOnly(unittest.TestCase):
         self.assertEqual((state.authorizations[-1]["status"], state.authorizations[-1]["task_id"], state.pending_authorization()), ("consumed", "task-review-1", None))
         self.assertEqual(self.h.store.story_counts()["delegated_tasks"], 2)
         self.assertIn("task-review-1", self.h.store.bound_task_ids())
-        for op in (lambda: c.record_review(S, self.h.sha, "approved", "r", {"taskId": "task-review-1", "status": "result_available"}),
+        for op in (lambda: c.record_review(S, self.h.sha, "approved", "r", {"taskId": "task-review-1", "runId": "task-review-1" + ":run:1", "status": "result_available"}),
                    lambda: c.authorize_review(S, self.h.sha), lambda: c.propose_evidence(S, self.h.sha, 7, [], "s")):
             with self.assertRaises(BudgetExhausted) as ctx:
                 op()
@@ -401,12 +401,12 @@ class F4ExpiredAuthorizationsBindForCleanupOnly(unittest.TestCase):
         self.assertEqual(ctx.exception.code, "wall-clock-exceeded")
         self.assertEqual(self.h.store.load_story(S).phase, "review-authorized")
         c2 = self.expired()  # restart: the launched worker is still owned
-        for evidence in (None, {"taskId": "task-impl-1", "status": "result_available"}, {"taskId": "task-review-1", "status": "cancel_requested"}):
+        for evidence in (None, {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "result_available"}, {"taskId": "task-review-1", "runId": "task-review-1" + ":run:1", "status": "cancel_requested"}):
             with self.assertRaises(Refused) as ctx:
                 c2.cancel(S, "budget", evidence)
             self.assertEqual(ctx.exception.code, "worker-not-terminal")
         self.assertEqual(markers(self.h.fake, 21, "release"), [])
-        state = c2.cancel(S, "budget", {"taskId": "task-review-1", "status": "cancelled"})
+        state = c2.cancel(S, "budget", {"taskId": "task-review-1", "runId": "task-review-1" + ":run:1", "status": "cancelled"})
         self.assertEqual((state.phase, state.active_task, state.task_history[-1]["taskId"]), ("cancelled", None, "task-review-1"))
         self.assertEqual(len(markers(self.h.fake, 21, "release")), 1)
         self.assertEqual(self.h.store.story_counts()["delegated_tasks"], 2)
@@ -418,7 +418,7 @@ class F4ExpiredAuthorizationsBindForCleanupOnly(unittest.TestCase):
         c = self.expired()
         with self.assertRaises(BudgetExhausted):
             c.bind_receipt(S, REVIEWER, worktree_check=ok_worktree)
-        self.assertEqual(c.record_task_terminal(S, {"taskId": "task-review-1", "status": "result_available"}).active_task, None)
+        self.assertEqual(c.record_task_terminal(S, {"taskId": "task-review-1", "runId": "task-review-1" + ":run:1", "status": "result_available"}).active_task, None)
         with self.assertRaises(BudgetExhausted) as ctx:
             c.authorize_review(S, self.h.sha)
         self.assertEqual(ctx.exception.code, "wall-clock-exceeded")
@@ -433,7 +433,7 @@ class F4ExpiredAuthorizationsBindForCleanupOnly(unittest.TestCase):
         self.assertEqual((ctx.exception.code, ctx.exception.detail["role"]), ("wall-clock-exceeded", "implementer"))
         state = self.h.store.load_story(S)
         self.assertEqual((state.phase, state.active_task["taskId"], state.claim["worktree_path"]), ("reserved", "task-impl-1", str(self.h.worktree)))
-        for op in (lambda: c.record_head(S, self.h.sha, {"taskId": "task-impl-1", "status": "result_available"}), lambda: c.run_checks(S, self.h.sha, str(self.h.worktree), passing_runner)):
+        for op in (lambda: c.record_head(S, self.h.sha, {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "result_available"}), lambda: c.run_checks(S, self.h.sha, str(self.h.worktree), passing_runner)):
             with self.assertRaises(BudgetExhausted) as ctx:
                 op()
             self.assertEqual(ctx.exception.code, "wall-clock-exceeded")
@@ -441,7 +441,7 @@ class F4ExpiredAuthorizationsBindForCleanupOnly(unittest.TestCase):
             self.expired().resume(S, lambda p, b: (False, "wrong worktree"))  # identity still guards recovery
         self.assertEqual(ctx.exception.code, "worktree-mismatch")
         self.assertEqual(self.expired().resume(S, ok_worktree).active_task["taskId"], "task-impl-1")
-        state = self.expired().cancel(S, "budget", {"taskId": "task-impl-1", "status": "cancelled"})
+        state = self.expired().cancel(S, "budget", {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "cancelled"})
         self.assertEqual((state.phase, len(markers(self.h.fake, 21, "release"))), ("cancelled", 1))
 
     def test_deadline_passing_mid_story_refuses_advancing_operations_but_allows_cleanup(self):
@@ -470,7 +470,7 @@ class F4ExpiredAuthorizationsBindForCleanupOnly(unittest.TestCase):
         self.assertEqual((state.phase, state.active_task["taskId"], state.active_task["cleanup_only"]), ("reserved", "task-impl-1", "run-cancelled"))
         result = fresh(self.h).cancel_run("finish")
         self.assertEqual(result["awaiting_worker_termination"], [{"story": S, "task_id": "task-impl-1", "role": "implementer", "authorization": "run-1:OM-01.02:1", "code": "worker-not-terminal"}])
-        self.assertEqual(fresh(self.h).cancel(S, "finish", {"taskId": "task-impl-1", "status": "cancelled"}).phase, "cancelled")
+        self.assertEqual(fresh(self.h).cancel(S, "finish", {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "cancelled"}).phase, "cancelled")
         self.assertEqual(self.h.store.story_counts()["delegated_tasks"], 1)
         raw = json.loads(self.h.store.story_path(S).read_text())
         self.assertEqual(raw["authorizations"][0]["cleanup_only"], "run-cancelled")

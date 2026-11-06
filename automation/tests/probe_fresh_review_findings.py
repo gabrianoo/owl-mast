@@ -114,10 +114,10 @@ def main() -> None:
     attempt("EXPIRED_AUTHORIZATION_BOUND bind reviewer receipt", lambda: c.bind_receipt(S, REVIEWER, worktree_check=ok_worktree).phase)
     s = h.store.load_story(S)
     print("  phase", s.phase, "active_task", s.active_task, "authorization", {k: s.authorizations[-1][k] for k in ("status", "task_id", "cleanup_only")}, "delegated_tasks", h.store.story_counts()["delegated_tasks"])
-    attempt("record_review after the deadline", lambda: c.record_review(S, h.sha, "approved", "r", {"taskId": "task-review-1", "status": "result_available"}).phase)
+    attempt("record_review after the deadline", lambda: c.record_review(S, h.sha, "approved", "r", {"taskId": "task-review-1", "runId": "task-review-1" + ":run:1", "status": "result_available"}).phase)
     attempt("cancel WITHOUT terminal evidence", lambda: c.cancel(S, "budget").phase)
-    attempt("cancel with implementer evidence", lambda: c.cancel(S, "budget", {"taskId": "task-impl-1", "status": "result_available"}).phase)
-    attempt("cancel with the reviewer's terminal evidence", lambda: c.cancel(S, "budget", {"taskId": "task-review-1", "status": "cancelled"}).phase)
+    attempt("cancel with implementer evidence", lambda: c.cancel(S, "budget", {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "result_available"}).phase)
+    attempt("cancel with the reviewer's terminal evidence", lambda: c.cancel(S, "budget", {"taskId": "task-review-1", "runId": "task-review-1" + ":run:1", "status": "cancelled"}).phase)
     print("  release markers", len(markers(h.fake, 21, "release")), "delegated_tasks", h.store.story_counts()["delegated_tasks"], "bound ids", sorted(h.store.bound_task_ids()))
     h.close()
 
