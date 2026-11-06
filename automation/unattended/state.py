@@ -176,13 +176,20 @@ class StoryState:
             pairs.add((self.active_task["taskId"], self.active_task["runId"]))
         return pairs
 
-    def predecessor_terminal(self, task_id: str) -> bool:
-        """True when every recorded execution of ``task_id`` is terminal: it is not the active
-        task and at least one terminal record exists for it (a legacy task-only record counts
-        as terminal for its own, unidentified run)."""
+    TERMINAL_STATUSES = ("completed", "cancelled", "failed", "result_available", "terminal")
+
+    def predecessor_terminal(self, task_id: str, identified: bool = True) -> bool:
+        """True when ``task_id`` is not the active task and a terminal record exists for it.
+        ``identified`` (the ordinary fresh-execution check) counts only records that carry a
+        run id: a legacy task-only terminal record cannot prove which run ended, so it never
+        admits an ordinary rebind. The audited stopped-run recovery passes ``identified=False``
+        and supplies its own dispatch/time correlation instead."""
         if self.active_task and self.active_task.get("taskId") == task_id:
             return False
-        return any(r.get("taskId") == task_id and r.get("status") in ("completed", "cancelled", "failed", "result_available", "terminal") for r in self.task_history)
+        return any(r.get("taskId") == task_id and r.get("status") in self.TERMINAL_STATUSES and (r.get("runId") or not identified) for r in self.task_history)
+
+    def legacy_task_only_history(self, task_id: str) -> bool:
+        return any(r.get("taskId") == task_id and not r.get("runId") for r in self.task_history + self.implementer_receipts + self.reviewer_receipts)
 
     def abandon_advancing_intents(self, reason: str) -> list[str]:
         """Mark every pending advancing intent abandoned (in memory; the caller saves)."""

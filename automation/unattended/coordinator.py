@@ -626,8 +626,11 @@ class Coordinator:
             self._require_no_active_task(state, "bind-receipt")
             target: Target = self.policy.implementer if role == "implementer" else self.policy.reviewer
             retained = state.owner_task() if auth["purpose"] == "repair" else None  # only the story's own implementer may be re-run, only for a repair
-            if retained and str(receipt.get("taskId", "")) == retained and not state.predecessor_terminal(retained):
-                raise Refused(f"bind-receipt: retained task {retained} has no terminal predecessor execution recorded for {story}; a new run of it cannot be bound", code="predecessor-not-terminal", task_id=retained)
+            if retained and str(receipt.get("taskId", "")) == retained:
+                if state.legacy_task_only_history(retained):
+                    raise Refused(f"bind-receipt: retained task {retained} of {story} has legacy task-only history (no run identity); its previous execution cannot be told from a new one, so an ordinary rebind is refused; a stopped run may be reconciled with reconcile-retained-execution and exact dispatch/time correlation", code="run-identity-missing", task_id=retained)
+                if not state.predecessor_terminal(retained, identified=True):
+                    raise Refused(f"bind-receipt: retained task {retained} has no identified terminal predecessor execution recorded for {story}; a new run of it cannot be bound", code="predecessor-not-terminal", task_id=retained)
             receipt = validate_receipt(receipt, target, role, self.store.bound_task_ids(), self.store.bound_executions(), retained)  # run-wide freshness of task ids (reviewers always fresh) and of (task, run) pairs
             if auth["purpose"] == "implementation":
                 if not worktree_path or not branch:
@@ -707,6 +710,10 @@ class Coordinator:
         conflicting evidence refuses. A backup of the story file is written first."""
         with self.store.locked(self):
             self.require_not_live("reconcile-retained-execution")
+            self._reload_run()  # binding validated and the latest cancellation/budgets read under the lock; never saved from a stale object
+            stop = self._run_stop()
+            if not stop:
+                raise Refused("reconcile-retained-execution is cleanup for a stopped run only (cancelled or past its wall clock); an active run binds a receipt through bind-receipt", code="run-not-stopped")
             state = self._story(story)
             if not reason or not provenance:
                 raise Refused("reconcile-retained-execution needs --reason and --provenance (who observed the terminal evidence, and how)", code="provenance-missing")
@@ -747,26 +754,35 @@ class Coordinator:
                 raise Refused(f"run {run_id} started at {started}, before authorization {auth['id']} was issued at {auth['issued_at']}; an earlier run of the retained task cannot settle a later authorization", code="run-precedes-authorization", started_at=str(started), issued_at=auth["issued_at"])
             if completed_dt is not None and completed_dt < started_dt:
                 raise Refused(f"run {run_id} completedAt {completed} precedes startedAt {started}", code="correlation-missing")
-            if auth["status"] == "consumed":
-                if auth.get("task_id") == owner and auth.get("run_id") == run_id:
-                    self.store.journal(story, "retained-execution-already-reconciled", {"authorization": auth["id"], "task": owner, "run": run_id})
-                    return state
+            already = auth["status"] == "consumed" and auth.get("task_id") == owner and auth.get("run_id") == run_id
+            if auth["status"] == "consumed" and not already:
                 raise Refused(f"authorization {auth['id']} is already consumed by ({auth.get('task_id')}, {auth.get('run_id')}); conflicting evidence refused", code="conflicting-evidence", authorization=auth["id"], bound_task=auth.get("task_id"), bound_run=auth.get("run_id"))
-            if auth["status"] not in UNRESOLVED_AUTHORIZATION_STATUSES:
+            if auth["status"] not in UNRESOLVED_AUTHORIZATION_STATUSES and not already:
                 raise Refused(f"authorization {auth['id']} is {auth['status']}; only an unresolved (pending or revoked) authorization can be reconciled", code="authorization-mismatch", status=auth["status"])
-            if (owner, run_id) in self.store.bound_executions():
+            if not already and (owner, run_id) in self.store.bound_executions():
                 raise Refused(f"execution ({owner}, {run_id}) is already bound; a replayed pair cannot resolve {auth['id']}", code="execution-replayed", run_id=run_id)
-            if not state.predecessor_terminal(owner):
+            if not state.predecessor_terminal(owner, identified=False):
                 raise Refused(f"retained task {owner} has no terminal predecessor execution recorded; its new run cannot be reconciled", code="predecessor-not-terminal")
             if state.active_task is not None:
                 raise Refused(f"{story} has an active task {state.active_task['taskId']}; reconcile after it is terminal", code="worker-not-terminal", task_id=state.active_task["taskId"])
             target = self.policy.implementer
             probe = {**receipt, "taskId": owner}
-            normalized = validate_receipt(probe, target, "implementer", set(), self.store.bound_executions(), owner)  # provider/model/effort/isolation of the retained owner revalidated
+            executions = self.store.bound_executions() - ({(owner, run_id)} if already else set())
+            normalized = validate_receipt(probe, target, "implementer", set(), executions, owner)  # provider/model/effort/isolation of the retained owner revalidated, also on a repeat
             worktree = receipt.get("worktree") or (state.claim or {}).get("worktree_path")
             branch = receipt.get("branch") or (state.claim or {}).get("branch")
             if not state.claim or worktree != state.claim.get("worktree_path") or branch != state.claim.get("branch"):
                 raise Refused(f"the receipt's worktree/branch ({worktree}, {branch}) do not match the bound claim ({(state.claim or {}).get('worktree_path')}, {(state.claim or {}).get('branch')})", code="worktree-mismatch")
+            if already:
+                # Idempotent only for IDENTICAL evidence: the same terminal status, dispatch record, timestamps,
+                # target and worktree as recorded. Anything else is conflicting evidence, not a repeat.
+                rec = auth.get("reconciliation") or {}
+                recorded = {"status": rec.get("status"), "dispatch": rec.get("dispatch"), "startedAt": rec.get("startedAt"), "completedAt": rec.get("completedAt"), "worktree": state.claim.get("worktree_path"), "branch": state.claim.get("branch")}
+                presented = {"status": evidence["status"], "dispatch": {"runId": str(dispatch["runId"]), "messageId": dispatch.get("messageId")}, "startedAt": str(started), "completedAt": str(completed) if completed else None, "worktree": worktree, "branch": branch}
+                if recorded != presented:
+                    raise Refused(f"authorization {auth['id']} was reconciled with different evidence; identical evidence is idempotent, this is conflicting: {presented} vs {recorded}", code="conflicting-evidence", authorization=auth["id"], recorded=recorded, presented=presented)
+                self.store.journal(story, "retained-execution-already-reconciled", {"authorization": auth["id"], "task": owner, "run": run_id})
+                return state
             backup = self.store.story_path(story).with_name(f"{story}.json.bak-{self.now().replace(':', '')}")
             backup.write_text(self.store.story_path(story).read_text(encoding="utf-8"), encoding="utf-8")
             auth.update({"status": "consumed", "task_id": owner, "run_id": run_id, "bound_at": self.now(), "cleanup_only": "retained-execution-reconciled",

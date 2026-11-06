@@ -19,7 +19,10 @@ from automation.unattended.state import Store
 
 S = "OM-01.02"
 OWNER = "task-impl-1"
-HISTORICAL = Path("/home/gabrianoo/.local/state/owlmast-eng01/trusted-20261106")
+# Immutable pre-recovery backup of the historical run (never the mutable live source). The
+# generated legacy tests below are authoritative; this replay is optional and machine-specific.
+HISTORICAL = Path("/home/gabrianoo/.local/state/owlmast-eng01/repair3-20261107/historical-pre-recovery-backup")
+SUPPLIED = Path("/home/gabrianoo/.local/state/owlmast-eng01/repair3-20261107/supplied-original-coordinator-evidence.json")
 
 
 def status_shaped(task_id, run_id, status="completed", **extra):
@@ -126,6 +129,32 @@ class ExecutionPairTests(unittest.TestCase):
         finally:
             h.close()
 
+    def test_legacy_task_only_history_blocks_an_ordinary_rebind_of_the_retained_owner(self):
+        """Second-turn finding 2: a task-only terminal record cannot prove which run ended."""
+        self.to_repair_authorized()
+        state = self.h.store.load_story(S)
+        for rec in state.task_history + state.implementer_receipts:
+            rec.pop("runId", None)
+        for a in state.authorizations:
+            a.pop("run_id", None)
+        self.h.store.save_story(state)
+        with self.assertRaises(Refused) as ctx:
+            self.c.bind_receipt(S, receipt(IMPLEMENTER, OWNER, ordinal=2), worktree_check=ok_worktree)
+        self.assertEqual(ctx.exception.code, "run-identity-missing")
+        self.assertIn("reconcile-retained-execution", str(ctx.exception))
+        state = self.h.store.load_story(S)
+        self.assertEqual((state.phase, state.active_task), ("repair-authorized", None))
+        self.assertEqual(state.unresolved_authorization()["status"], "pending")
+        # an identified predecessor still binds normally
+        h2 = Harness(small_backlog())
+        try:
+            h2.claim(); h2.checks(); h2.request_review()
+            h2.coordinator.record_review(S, h2.sha, "changes-requested", "r", h2.terminal())
+            h2.coordinator.authorize_repair(S)
+            self.assertEqual(h2.coordinator.bind_receipt(S, receipt(IMPLEMENTER, OWNER, ordinal=2), worktree_check=ok_worktree).phase, "claimed")
+        finally:
+            h2.close()
+
     def test_legacy_active_task_without_run_id_stays_owned_and_reports_the_missing_fact(self):
         self.h.claim()
         state = self.h.store.load_story(S)
@@ -213,6 +242,51 @@ class HistoricalReconciliationTests(unittest.TestCase):
             self.reconcile(receipt={**self.receipt, "runId": run_of(OWNER, 6), "dispatch": {"runId": run_of(OWNER, 6)}}, task_evidence=status_shaped(OWNER, run_of(OWNER, 6)))
         self.assertEqual(ctx.exception.code, "conflicting-evidence")
 
+    def test_stale_coordinator_cannot_overwrite_the_cancellation(self):
+        """Second-turn finding 1: the run is reloaded under the lock; a stale object never saves."""
+        stale = Coordinator(self.h.fake, self.h.policy, self.h.store, live=True)
+        self.assertTrue(self.h.store.load_run().cancelled)
+        state = stale.reconcile_retained_execution(S, self.auth["id"], self.receipt, self.evidence, "r", "p")
+        run = self.h.store.load_run()
+        self.assertTrue(run.cancelled)
+        self.assertEqual(run.stop_reason, "qualification stopped: no fresh task id")
+        self.assertEqual(run.delegated_tasks, 3)
+        self.assertEqual(state.authorization(self.auth["id"])["status"], "consumed")
+
+    def test_reconciliation_is_cleanup_for_a_stopped_run_only(self):
+        h = Harness(small_backlog())
+        try:
+            h.claim(); h.checks(); h.request_review()
+            h.coordinator.record_review(S, h.sha, "changes-requested", "r", h.terminal())
+            auth = h.coordinator.authorize_repair(S).unresolved_authorization()
+            rec = {**IMPLEMENTER, "runId": run_of(OWNER, 5), "dispatch": {"runId": run_of(OWNER, 5)}, "startedAt": "2099-01-01T00:00:00Z"}
+            with self.assertRaises(Refused) as ctx:
+                h.coordinator.reconcile_retained_execution(S, auth["id"], rec, status_shaped(OWNER, run_of(OWNER, 5)), "r", "p")
+            self.assertEqual(ctx.exception.code, "run-not-stopped")
+            self.assertEqual(h.store.load_story(S).unresolved_authorization()["status"], "pending")
+        finally:
+            h.close()
+
+    def test_repeat_with_changed_status_dispatch_timestamp_target_or_worktree_is_conflicting(self):
+        """Second-turn finding 3: identical evidence is idempotent; any change is a conflict."""
+        before = self.reconcile()
+        n_hist, n_rec = len(before.task_history), len(before.implementer_receipts)
+        for overrides, code in (
+            ({"task_evidence": status_shaped(OWNER, self.run5, status="failed")}, "conflicting-evidence"),
+            ({"receipt": {**self.receipt, "dispatch": {"runId": self.run5, "messageId": "msg-other"}}}, "conflicting-evidence"),
+            ({"receipt": {**self.receipt, "startedAt": "2099-01-01T00:00:30Z"}}, "conflicting-evidence"),
+            ({"receipt": {**self.receipt, "completedAt": None}}, "conflicting-evidence"),
+            ({"receipt": {**self.receipt, "options": {"effort": "medium"}}}, "receipt-invalid"),
+            ({"receipt": {**self.receipt, "model": "claude-opus-5-5"}}, "receipt-invalid"),
+            ({"receipt": {**self.receipt, "worktree": "/elsewhere"}}, "worktree-mismatch"),
+            ({"task_evidence": status_shaped(OWNER, self.run5, workState="working")}, "worker-not-terminal"),
+        ):
+            with self.assertRaises(Refused) as ctx:
+                self.reconcile(**overrides)
+            self.assertEqual(ctx.exception.code, code, overrides)
+        same = self.reconcile()
+        self.assertEqual((len(same.task_history), len(same.implementer_receipts)), (n_hist, n_rec))  # no second record on the identical repeat
+
     def test_restart_after_reconciliation_keeps_the_resolution(self):
         self.reconcile()
         fresh = Coordinator(self.h.fake, self.h.policy, Store(self.h.state_dir, "run-1"), live=True)
@@ -221,9 +295,10 @@ class HistoricalReconciliationTests(unittest.TestCase):
         self.assertIsNone(state.unresolved_authorization())
 
 
-@unittest.skipUnless(HISTORICAL.exists(), "historical state copy not present on this machine")
+@unittest.skipUnless(HISTORICAL.exists() and SUPPLIED.exists(), "immutable historical pre-recovery backup not present on this machine (optional replay; the generated legacy tests above are authoritative)")
 class HistoricalCopyTests(unittest.TestCase):
-    """Runs the reconciliation against a temporary COPY of the historical run (read-only source)."""
+    """Optional, machine-specific replay against a temporary COPY of the immutable pre-recovery
+    backup. Never reads the mutable live historical run."""
 
     def test_supplied_evidence_reconciles_the_historical_copy(self):
         import io
@@ -234,7 +309,7 @@ class HistoricalCopyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             copy = Path(tmp) / "copy"
             shutil.copytree(HISTORICAL, copy)
-            supplied = json.loads((HISTORICAL.parent / "repair3-20261107" / "supplied-original-coordinator-evidence.json").read_text())
+            supplied = json.loads(SUPPLIED.read_text())
             dispatch = json.loads((HISTORICAL / "repair-dispatch.json").read_text())
             rec = {"taskId": supplied["taskId"], "runId": supplied["runId"], "providerInstanceId": supplied["providerInstanceId"], "model": supplied["model"], "options": supplied["options"], "isolation": "worktree",
                    "dispatch": {"runId": dispatch["runId"], "messageId": dispatch["messageId"]}, "startedAt": supplied["startedAt"], "completedAt": supplied["completedAt"]}
@@ -251,5 +326,5 @@ class HistoricalCopyTests(unittest.TestCase):
             buf = io.StringIO()
             with redirect_stdout(buf):
                 self.assertEqual(smoke.main(argv), 0)  # idempotent
-            # the source was not touched
+            # the immutable backup was not touched
             self.assertEqual(json.loads((HISTORICAL / "runs/eng01-trusted-20261106/stories/OM-99.01.json").read_text())["authorizations"][2]["status"], "revoked")
