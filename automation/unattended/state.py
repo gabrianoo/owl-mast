@@ -252,6 +252,20 @@ class Store:
             return []
         return [StoryState.from_dict(json.loads(p.read_text(encoding="utf-8"))) for p in sorted(folder.glob("*.json"))]
 
+    def bound_task_ids(self) -> set[str]:
+        """Every T3 task id ever bound anywhere in the run: receipts of both roles, active
+        tasks, consumed authorizations and terminal history, across every story and kept
+        through cancellation and terminal phases. A task id is a run-wide identity that binds
+        exactly once; a receipt reusing one is never fresh, whatever story or role presents it."""
+        ids: set[str] = set()
+        for s in self.list_stories():
+            ids.update(str(r["taskId"]) for r in s.implementer_receipts + s.reviewer_receipts if r.get("taskId"))
+            ids.update(str(r["taskId"]) for r in s.task_history if r.get("taskId"))
+            if s.active_task and s.active_task.get("taskId"):
+                ids.add(str(s.active_task["taskId"]))
+            ids.update(str(a["task_id"]) for a in s.authorizations if a.get("task_id"))
+        return ids
+
     def story_counts(self) -> dict[str, int]:
         """Durable budget consumption derived from the story files: stories admitted, task
         authorizations issued (every issued authorization counts, bound or not, so a crash or

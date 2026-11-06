@@ -20,9 +20,17 @@ Phases (``state.PHASES``)::
 Task capacity is authorized durably BEFORE a launch (``reserve``, ``authorize-review``,
 ``authorize-repair``); every issued authorization counts against ``max_delegated_tasks``
 whether or not it is ever bound, ``bind-receipt`` consumes exactly one pending authorization,
-and budgets are derived from the story files under the lock, never from cached counters. The
-active task (id and role) is tracked independently of the phase: HEAD recording, review
-verdicts and evidence invalidation never release ownership; only terminal task evidence does.
+and budgets are derived from the story files under the lock, never from cached counters. A
+receipt is fresh only if its task id was never bound anywhere in the run (any story, any
+role, terminal or not). The active task (id and role) is tracked independently of the phase:
+HEAD recording, review verdicts and evidence invalidation never release ownership; only
+terminal task evidence does.
+
+The wall-clock budget is a local expiry of the run: once exceeded (or once the run is
+cancelled) no authorization is issued or returned, every advancing operation refuses, and a
+receipt for an authorization issued earlier binds for cleanup only (slot spent, task id bound,
+task owned, phase unchanged) so that the launched worker can only leave through its terminal
+evidence. This expiry never stops a child; T3 offers no hard child lifetime bound.
 
 External effects are append-only marker comments only (``claim``, ``release``, ``block``,
 ``proposal``). Each is a write-ahead intent carrying its stable operation identity and its
@@ -30,6 +38,11 @@ complete comment body; a replay posts exactly that body, and advancing replays r
 their preconditions (local phase, exact-SHA approval, revisions, worktree, PR) first. A
 terminal phase, its cleanup intent and the abandonment of every pending advancing intent
 persist in one write; a cancelled run or a terminal story never replays an advancing intent.
+On resume, a completed advancing intent whose transition did not persist is reconciled only
+behind the same guards as a fresh attempt (run not cancelled, matching phase, exact-SHA
+approval, no active task); otherwise its effect stays recorded as history and the phase is
+not advanced. A reservation whose revisions changed before it was checkpointed is cancelled
+together with the release it owes (when its claim comment landed) in one write.
 
 Every operation refuses a live transport (``live-execution-disabled``) and a run's state is
 bound to the environment (fixture or live) it was created in. The live gate stays until the
@@ -185,11 +198,30 @@ class Coordinator:
             raise Refused("run binding changed on disk", code="run-binding-mismatch")
         self.run = run
 
-    def _require_run_active(self, operation: str) -> None:
-        """A cancelled run advances nothing: no admission, authorization, binding, evidence
-        recording or proposal. Terminal operations (cancel/block) and recovery stay allowed."""
+    def _elapsed(self) -> timedelta:
+        return datetime.fromisoformat(self.now().replace("Z", "+00:00")) - datetime.fromisoformat(self.run.started_at.replace("Z", "+00:00"))
+
+    def _run_stop(self) -> str | None:
+        """Why the run admits and advances nothing any more: ``run-cancelled`` or
+        ``wall-clock-exceeded`` (a local expiry; it does not stop a launched child), else None."""
         if self.run.cancelled:
-            raise BudgetExhausted(f"{operation}: run is cancelled ({self.run.stop_reason}); only cancel, block, record-task-terminal, resume and status are allowed", code="run-cancelled", stop_reason=self.run.stop_reason)
+            return "run-cancelled"
+        if self._elapsed() > timedelta(minutes=self.policy.max_wall_clock_minutes):
+            return "wall-clock-exceeded"
+        return None
+
+    def _stop_message(self, code: str) -> str:
+        if code == "run-cancelled":
+            return f"run is cancelled ({self.run.stop_reason})"
+        return f"wall clock budget of {self.policy.max_wall_clock_minutes} minutes exceeded ({int(self._elapsed().total_seconds() // 60)} minutes elapsed since {self.run.started_at})"
+
+    def _require_run_active(self, operation: str) -> None:
+        """A cancelled run, or one past its wall-clock budget, advances nothing: no admission,
+        authorization, binding into work, evidence recording or proposal. Terminal operations
+        (cancel/block/record-task-terminal) and recovery stay allowed."""
+        code = self._run_stop()
+        if code:
+            raise BudgetExhausted(f"{operation}: {self._stop_message(code)}; only cancel, block, record-task-terminal, resume and status are allowed", code=code, stop_reason=self.run.stop_reason)
 
     def _story(self, story: str) -> StoryState:
         state = self.store.load_story(story)
@@ -208,9 +240,8 @@ class Coordinator:
         return counts
 
     def _wall_clock(self) -> None:
-        elapsed = datetime.fromisoformat(self.now().replace("Z", "+00:00")) - datetime.fromisoformat(self.run.started_at.replace("Z", "+00:00"))
-        if elapsed > timedelta(minutes=self.policy.max_wall_clock_minutes):
-            raise BudgetExhausted(f"wall clock budget of {self.policy.max_wall_clock_minutes} minutes exceeded")
+        if self._run_stop() == "wall-clock-exceeded":
+            raise BudgetExhausted(self._stop_message("wall-clock-exceeded"), code="wall-clock-exceeded")
 
     def _budget_admission(self) -> None:
         self._wall_clock()
@@ -226,12 +257,12 @@ class Coordinator:
         Refuses BEFORE any launch when the delegated-task budget would be exceeded. The
         authorization is counted from the moment it is saved, bound or not."""
         role = AUTHORIZATION_FLOW[purpose][2]
+        self._wall_clock()  # an expired run returns no authorization, pending or new; the pending slot stays spent
         pending = state.pending_authorization()
         if pending is not None:
             if (pending["purpose"], pending["sha"], pending["round"]) == (purpose, sha, round_):
                 return pending  # idempotent: the same unconsumed slot, no second count
             raise Refused(f"{state.story} already has a pending {pending['purpose']} authorization {pending['id']}; bind or abandon it first", code="authorization-pending", authorization=pending)
-        self._wall_clock()
         counts = self._counts()
         if counts["delegated_tasks"] + 1 > self.policy.max_delegated_tasks:
             raise BudgetExhausted(f"delegated task budget {self.policy.max_delegated_tasks} exhausted ({counts['delegated_tasks']} authorizations issued); no task may be launched", issued=counts["delegated_tasks"])
@@ -418,21 +449,30 @@ class Coordinator:
     def bind_receipt(self, story: str, receipt: dict, worktree_path: str | None = None, branch: str | None = None, worktree_check: WorktreeCheck = git_worktree_check) -> StoryState:
         """Bind the delegated task's receipt to the story's pending authorization, consuming
         it: implementation (needs the worktree identity), review or repair (re-check the
-        bound worktree). Exactly one bind per authorization; no authorization ⇒ refused."""
+        bound worktree). Exactly one bind per authorization; no authorization ⇒ refused. The
+        task id must be fresh run-wide (never bound in any story or role, terminal or not).
+
+        If the run stopped (cancelled or past its wall clock) after the authorization was
+        issued, the task may already have been launched: the receipt still binds, but for
+        cleanup only. The slot stays spent, the task id stays bound, the task becomes the
+        story's active task (released only by its terminal evidence) and the phase does not
+        advance; the call then refuses with ``bound_for_cleanup`` so the coordinator cancels
+        the task instead of working it. Nothing is refunded."""
         with self.store.locked(self):
             self.require_not_live("bind-receipt")
             self._reload_run()
-            self._require_run_active("bind-receipt")
             state = self._story(story)
+            stop = self._run_stop()
             auth = state.pending_authorization()
             if auth is None:
+                if stop:
+                    raise BudgetExhausted(f"bind-receipt: {self._stop_message(stop)}; nothing is authorized for {story}", code=stop, stop_reason=self.run.stop_reason)
                 raise Refused(f"{story} has no pending task authorization; reserve / authorize-review / authorize-repair must precede every launch, and each authorization binds once", code="no-authorization")
             issued_phase, next_phase, role = AUTHORIZATION_FLOW[auth["purpose"]]
             self._require_phase(state, issued_phase)
             self._require_no_active_task(state, "bind-receipt")
             target: Target = self.policy.implementer if role == "implementer" else self.policy.reviewer
-            used = {r["taskId"] for r in state.reviewer_receipts + state.implementer_receipts}
-            receipt = validate_receipt(receipt, target, role, used)
+            receipt = validate_receipt(receipt, target, role, self.store.bound_task_ids())  # run-wide freshness, every story and role, kept through terminal phases
             if auth["purpose"] == "implementation":
                 if not worktree_path or not branch:
                     raise Refused("bind-receipt for the implementation task needs --worktree and --branch")
@@ -449,6 +489,17 @@ class Coordinator:
             else:
                 state.reviewer_receipts.append({**receipt, "sha": auth["sha"]})
             state.active_task = {"taskId": receipt["taskId"], "role": role, "authorization": auth["id"], "bound_at": self.now()}
+            if stop:
+                # Authorized before the run stopped, possibly launched: keep the slot spent, the id bound
+                # and the task owned; authorize no work and leave the phase where the authorization was issued.
+                auth["cleanup_only"] = stop
+                state.active_task["cleanup_only"] = stop
+                self.store.save_story(state)
+                self._counts()
+                self.store.save_run(self.run)
+                self.store.journal(story, "receipt-bound-cleanup-only", {"task": receipt["taskId"], "role": role, "purpose": auth["purpose"], "authorization": auth["id"], "stop": stop, "phase": state.phase})
+                raise BudgetExhausted(f"bind-receipt: {self._stop_message(stop)}; {role} task {receipt['taskId']} is bound to {story} for cleanup only (slot spent, ownership kept, phase {state.phase} unchanged, no work authorized): cancel it and present its terminal evidence",
+                                      code=stop, task_id=receipt["taskId"], role=role, bound_for_cleanup=True, stop_reason=self.run.stop_reason)
             state.phase = next_phase
             self.store.save_story(state)
             self._counts()
@@ -714,12 +765,49 @@ class Coordinator:
             return {"cancelled": released, "awaiting_worker_termination": awaiting}
 
     # -- recovery -------------------------------------------------------------------------
+    def _cancel_stale_claim(self, state: StoryState, claim: Intent, changed: dict) -> StoryState:
+        """The reservation can no longer complete: its revisions changed before it was
+        checkpointed. The story is cancelled and, when the claim comment reached GitHub (one
+        or more markers), the release it owes is recorded as a cleanup intent in the same
+        write as the cancellation, then posted idempotently; a failed post leaves it pending
+        and the next resume replays it. Zero markers ⇒ the claim never landed, no release is
+        owed. A done claim keeps its ``done`` record (history); a pending one is abandoned."""
+        reason = f"revisions changed before the reservation completed: {sorted(changed)}"
+        found = [c for c in self.transport.list_comments(state.issue) if c.marker == claim.marker]
+        abandoned = state.abandon_advancing_intents(reason)
+        self._abandon_authorization(state, reason)
+        state.phase = "cancelled"
+        state.blocked = {"reason": reason, "at": self.now(), "from_phase": "claim-incomplete", "cancelled": True, "changed": sorted(changed),
+                         "claim_comment_ids": [c.comment_id for c in found], "release_owed": bool(found), "abandoned_intents": abandoned}
+        release = self._new_intent(state, "release", "release", f"Claim released by run `{self.store.run_id}`: {reason}. No completion is implied. Project Status is owner-maintained.") if found else None
+        self.store.save_story(state)  # cancellation and the owed cleanup persist together
+        self.store.journal(state.story, "resume-claim-abandoned", {"changed": sorted(changed), "claim_markers": len(found), "release_owed": release is not None})
+        if len(found) > 1:
+            self.store.journal(state.story, "duplicate-marker-detected", {"op": claim.op, "comment_ids": [c.comment_id for c in found]})
+        if release is not None:
+            try:
+                self._post_intent(state, release)
+            except UnattendedError as exc:
+                state.blocked["github_error"] = exc.as_dict()
+                self.store.save_story(state)
+                self.store.journal(state.story, "cancelled-github-write-failed", exc.as_dict())
+        return state
+
+    def _withhold_reconciliation(self, state: StoryState, intent: Intent, why: str) -> None:
+        """A completed advancing intent whose transition cannot be applied: its effect stays
+        recorded (comment id, status done), the phase is not advanced, the reason is journaled."""
+        self.store.journal(state.story, "reconciliation-withheld", {"op": intent.op, "comment_id": intent.comment_id, "phase": state.phase, "reason": why})
+
     def resume(self, story: str, worktree_check: WorktreeCheck = git_worktree_check) -> StoryState:
         """Restart recovery. Order: live gate, ownership identity, cleanups replayed
-        unconditionally, completed intents reconciled with their transition, then advancing
-        replays only for an active story in a live (not cancelled) run and only after their
-        preconditions (local phase and exact-SHA approval, revisions, worktree, PR) re-verify;
-        otherwise they are abandoned. Finally the revision verification."""
+        unconditionally, completed advancing intents reconciled with their transition only
+        behind the guards of a fresh attempt (run not cancelled; for a claim: unchanged
+        revisions, otherwise cancelled with its release; for a proposal: phase
+        ``review-approved``, exact-SHA approval and head, no active task), then pending
+        advancing replays only for an active story in a run that is neither cancelled nor past
+        its wall clock and only after their preconditions (local phase and exact-SHA approval,
+        revisions, worktree, PR) re-verify; otherwise they are abandoned. Finally the revision
+        verification."""
         with self.store.locked(self):
             self.require_not_live("resume")
             self._reload_run()
@@ -731,16 +819,33 @@ class Coordinator:
             for intent in state.pending_intents():
                 if intent.kind in CLEANUP_KINDS:
                     self._post_intent(state, intent)
-            # completed advancing intents whose transition did not persist (legacy or partial state)
+            stop = self._run_stop()
+            # Completed advancing intents whose transition did not persist (legacy or partial state):
+            # the effect is history and stays recorded; the transition applies only where a fresh
+            # attempt would be allowed. A cancelled run advances nothing (cancel-run finishes the story).
             claim = state.intent("claim")
             if claim is not None and claim.status == "done" and state.phase == "claim-incomplete":
-                self._post_intent(state, claim, phase_after="reserved")
+                if self.run.cancelled:
+                    self._withhold_reconciliation(state, claim, "run is cancelled")
+                else:
+                    fresh, current = self._current_revisions(story)
+                    changed = revision_diff(claim.preconditions.get("revisions", state.revisions), current)
+                    if changed:
+                        return self._cancel_stale_claim(state, claim, changed)
+                    self._post_intent(state, claim, phase_after="reserved")
             for intent in state.intents:
-                if intent.kind == "proposal" and intent.status == "done" and state.phase == "review-approved" and state.approved_sha == intent.preconditions.get("sha"):
+                if intent.kind != "proposal" or intent.status != "done" or state.phase == "proposed":
+                    continue
+                sha = intent.preconditions.get("sha")
+                if self.run.cancelled:
+                    self._withhold_reconciliation(state, intent, "run is cancelled")
+                elif state.phase != "review-approved" or state.approved_sha != sha or state.head_sha != sha or state.active_task is not None:
+                    self._withhold_reconciliation(state, intent, f"no current approval for {sha}: phase {state.phase}, approved {state.approved_sha}, head {state.head_sha}, active task {state.active_task}")
+                else:
                     self._post_intent(state, intent, phase_after="proposed")
             pending_advancing = state.pending_advancing_intents()
-            if pending_advancing and (not state.active or self.run.cancelled):
-                why = "run is cancelled" if self.run.cancelled else f"story is {state.phase}"
+            if pending_advancing and (not state.active or stop):
+                why = {"run-cancelled": "run is cancelled", "wall-clock-exceeded": "run wall clock budget exceeded"}.get(stop) if stop else f"story is {state.phase}"
                 abandoned = state.abandon_advancing_intents(f"not replayed on resume: {why}")
                 self.store.save_story(state)
                 self.store.journal(story, "resume-advancing-abandoned", {"reason": why, "ops": abandoned})
@@ -750,13 +855,7 @@ class Coordinator:
                     fresh, current = self._current_revisions(story)
                     changed = revision_diff(intent.preconditions.get("revisions", state.revisions), current)
                     if changed:
-                        self.store.journal(story, "resume-claim-abandoned", {"changed": sorted(changed)})
-                        intent.status, intent.reason = "abandoned", f"revisions changed before the reservation completed: {sorted(changed)}"
-                        self._abandon_authorization(state, intent.reason)
-                        state.phase = "cancelled"
-                        state.blocked = {"reason": intent.reason, "at": self.now(), "from_phase": "claim-incomplete", "cancelled": True}
-                        self.store.save_story(state)
-                        return state
+                        return self._cancel_stale_claim(state, intent, changed)
                     self._post_intent(state, intent, phase_after="reserved" if state.phase == "claim-incomplete" else None)
                     self.store.journal(story, "reservation-completed-on-resume", {})
                 elif intent.kind == "proposal":

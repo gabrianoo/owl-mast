@@ -56,7 +56,7 @@ def check_permissions(owner: str, repo: str, project_owner: str, project_number:
     report: dict = {
         "minimum": {
             "classic_scopes": list(MINIMUM_CLASSIC_SCOPES),
-            "minimum_note": "classic `repo` is broader than needed; `read:project` is enough for this tool's Project reads",
+            "minimum_note": "classic `repo` is broader than needed and, per GitHub's scope documentation, also grants the ability to manage user-owned Projects; `read:project` alone would be enough for this tool's Project reads, but classic scopes are a union, so no classic token that can post comments is read-only on the Project",
             "fine_grained": ["Issues: read/write", "Pull requests: read", "Contents: read", "Metadata: read", "Projects: read (user-owned Projects are a documented fine-grained PAT limitation)"],
             "implementer_branch_privileges": "separate identity: push to implementation branches and open PRs; not part of this tool's minimum",
         },
@@ -95,7 +95,7 @@ def check_permissions(owner: str, repo: str, project_owner: str, project_number:
         if report["excess"]:
             report["bounded_reasons"].append(f"excess scopes beyond the minimum: {report['excess']}")
         if "repo" in scopes:
-            report["bounded_reasons"].append("classic `repo` grants full repository access; scope names cannot prove a bounded credential")
+            report["bounded_reasons"].append("classic `repo` grants full repository access and manages user-owned Projects (write), whatever other scopes accompany it; scope names cannot prove a bounded credential")
     project = runner(["gh", "api", "graphql", "-f", f'query={{ user(login:"{project_owner}"){{ projectV2(number:{project_number}){{ id title viewerCanUpdate }} }} }}'], None, 60)
     if project.returncode == 0:
         try:
@@ -112,7 +112,7 @@ def check_permissions(owner: str, repo: str, project_owner: str, project_number:
     report["basic_access"] = not report["problems"]
     report["denial_tested"] = False
     report["resource_scope_verified"] = False
-    report["bounded_reasons"].append("denial of forbidden operations not tested")
+    report["bounded_reasons"].append("denial of forbidden operations not tested (a denial probe needs a separately authorized disposable qualification resource; it is never run against the live Project or backlog)")
     report["bounded_reasons"].append("resource scope (single repository, single Project) not verified")
     report["bounded"] = False
     report["unattended_activation_allowed"] = False
