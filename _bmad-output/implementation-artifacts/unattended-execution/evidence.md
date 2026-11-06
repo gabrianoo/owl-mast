@@ -1,6 +1,6 @@
 # ENG-01 evidence: requirements to evidence
 
-All commands were run from the worktree `/home/gabrianoo/.t3/worktrees/owlmast/t3-08a6bd98` (branch `t3/unattended-execution-foundation`, base `c5d9d2eff121423223bf75607c89dd1c55015813`) on 2026-11-06. Fixture coverage and live transport are listed separately; nothing below dispatched a product story or mutated backlog progress.
+Pull request: https://github.com/gabrianoo/owl-mast/pull/107 (ENG-01 issue #106). All commands were run from the worktree `/home/gabrianoo/.t3/worktrees/owlmast/t3-08a6bd98` (branch `t3/unattended-execution-foundation`, base `c5d9d2eff121423223bf75607c89dd1c55015813`) on 2026-11-06. Fixture coverage and live transport are listed separately; nothing below dispatched a product story or mutated backlog progress.
 
 ## Requirements-to-evidence matrix
 
@@ -43,6 +43,8 @@ python3 -m automation.unattended --live --run-id eng01-foundation-2026-11-06 pro
 python3 -m automation.unattended --live --run-id eng01-foundation-2026-11-06 probe-write --issue 21
                                                                 → error refused: not an engineering-automation issue (nothing written)
 ./gradlew build --console=plain                                → BUILD SUCCESSFUL in 21s (backend unchanged; unit + integration suites, gates)
+python3 -m automation.unattended --live --run-id eng01-foundation-2026-11-06 probe-write --issue 106 --status "In review"
+                                                                → Status In progress→In review verified; updatedAt 12:43:55Z→13:02:53Z; marker comment reused (idempotent)
 ```
 
 Failure tests executed and passing inside the suite: stale revision (2), residual-window limitation (1), foreign claim (1), duplicate event (1), transient outage then retry (1), crash after post (1), duplicate marker conflict (1), permission denial (1), outage before effect (1), GitHub failure during block (1), abandoned claim on resume (1), checks missing/failed before review (1), SHA mismatch (2), stale reviewer task (1), repair cap (1), review regression (2), budgets (4), worktree mismatch (2), policy guards (10), write-probe guard (1).
@@ -50,7 +52,7 @@ Failure tests executed and passing inside the suite: stale revision (2), residua
 ## Limitations
 
 - No compare-and-swap on GitHub: an edit inside the pre-write/write window is lost undetected (pinned by test). Exposure is one Status field for one request.
-- Live transport coverage is read-only plus the bounded probe on #106; no live claim/propose cycle has run because no story is `Ready` and activation is not authorized. `updatedAt` change on a real value change is still to be observed live (planned when ENG-01 moves to `In review`).
+- Live transport coverage is read-only plus the bounded probe on #106; no live claim/propose cycle has run because no story is `Ready` and activation is not authorized. Observed live: a real Status change (`In progress`→`In review` on #106) moved `updatedAt` from `2026-11-06T12:43:55Z` to `2026-11-06T13:02:53Z` (`evidence/probe-write-3-in-review-2026-11-06.json`), so `updatedAt` does flag value-changing concurrent edits before the pre-write read; a same-value write does not change it.
 - T3 `delegate_task` is invoked by the coordinator, not by the tool; the tool validates receipts. A coordinator that passes a false receipt defeats the check; this is a trust boundary, not an enforcement point.
 - The credential in use is a full-access user token. A bounded fine-grained token has not been provisioned or tested.
 - Deterministic checks run `./gradlew build` and the gate script; their duration (minutes) and Docker dependence bound the coordinator machine.
