@@ -82,6 +82,39 @@ class EligibilityTests(unittest.TestCase):
         d = decide("OM-01.02", self.snap(), self.policy(allow='["OM-01.02"]'))
         self.assertEqual(d.outcome, "unknown-eligibility")
 
+    def test_unparsed_dependency_text_fails_closed(self):
+        """Reviewer probe B9/E2/V3: malformed declarations are unknown, not empty."""
+        for text in ("TBD pending owner", "OM-01.01 and OM-01.03", "OM-01.01 (pending)", "", "None, OM-01.01"):
+            body = self.fake.issues[21].body.replace("**Depends on:** OM-01.01", f"**Depends on:** {text}")
+            self.fake.issues[21] = IssueRecord(**{**self.fake.issues[21].__dict__, "body": body})
+            snap = self.snap()
+            self.assertFalse(snap.by_id()["OM-01.02"].depends_on_known, text)
+            d = decide("OM-01.02", snap, self.policy(allow='["OM-01.02"]'))
+            self.assertEqual(d.outcome, "unknown-eligibility", text)
+
+    def test_missing_or_duplicated_declaration_fails_closed(self):
+        body = self.fake.issues[21].body.replace("**Depends on:** OM-01.01\n", "")
+        self.fake.issues[21] = IssueRecord(**{**self.fake.issues[21].__dict__, "body": body})
+        self.assertEqual(decide("OM-01.02", self.snap(), self.policy(allow='["OM-01.02"]')).outcome, "unknown-eligibility")
+        body = self.fake.issues[23].body + "**Depends on:** None\n"
+        self.fake.issues[23] = IssueRecord(**{**self.fake.issues[23].__dict__, "body": body})
+        self.assertEqual(decide("OM-01.04", self.snap(), self.policy(allow='["OM-01.04"]')).outcome, "unknown-eligibility")
+
+    def test_unknown_epic_prerequisites_fail_closed(self):
+        body = self.fake.issues[1].body.replace("**Epic prerequisites:** None", "**Epic prerequisites:** see plan")
+        self.fake.issues[1] = IssueRecord(**{**self.fake.issues[1].__dict__, "body": body})
+        self.assertEqual(decide("OM-01.02", self.snap(), self.policy(allow='["OM-01.02"]')).outcome, "unknown-eligibility")
+
+    def test_strict_declaration_grammar_accepts_real_forms(self):
+        from automation.unattended.backlog import parse_declaration
+
+        self.assertEqual(parse_declaration("None"), ((), True))
+        self.assertEqual(parse_declaration("OM-16.03, OM-16.04."), (("OM-16.03", "OM-16.04"), True))
+        self.assertEqual(parse_declaration("E01, E02, E03"), (("E01", "E02", "E03"), True))
+        self.assertEqual(parse_declaration("OM-16.03, E11."), (("OM-16.03", "E11"), True))
+        self.assertEqual(parse_declaration(None), ((), False))
+        self.assertEqual(parse_declaration("none"), ((), False))
+
     def test_active_and_blocked_statuses_are_not_dispatchable(self):
         for status, outcome in (("In progress", "already-active"), ("In review", "already-active"), ("Blocked", "blocked")):
             self.fake.set_status_externally(21, status)

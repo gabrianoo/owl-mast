@@ -4,7 +4,9 @@
    "body_sha256": "9aaa431d043c648f05ec99b77e8b5d4b8dde2d934bf4a1d10f405e19a766ba0c",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhLyI",
    "item_stable_id": "E01",
    "item_updated_at": "2026-11-06T09:14:18Z",
@@ -28,9 +30,11 @@
    "body_sha256": "c8a6fb743c185956f04bbb75dde49772e5e16ec99b504392ab32b7cb078ac4b5",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [
     "E01"
    ],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhLyc",
    "item_stable_id": "E02",
    "item_updated_at": "2026-11-06T09:14:21Z",
@@ -54,9 +58,11 @@
    "body_sha256": "880dfab6f52bc7bbc64a8800d392fb638d0d35195c079c823fb82b1bd84c0006",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [
     "E02"
    ],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhLy4",
    "item_stable_id": "E03",
    "item_updated_at": "2026-11-06T09:14:24Z",
@@ -80,9 +86,11 @@
    "body_sha256": "39271ec626e7cae9c8f38a6abe692e191e2afab9e85cc4e1c2f3cbf7a9c9eca1",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [
     "E03"
    ],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhLzQ",
    "item_stable_id": "E04",
    "item_updated_at": "2026-11-06T09:14:27Z",
@@ -106,10 +114,12 @@
    "body_sha256": "bf140d364afcce264816f83a28e9dc3b8fd304b7d4bbc6966194a4b8da074c28",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [
     "E02",
     "E04"
    ],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL0I",
    "item_stable_id": "E05",
    "item_updated_at": "2026-11-06T09:14:30Z",
@@ -133,9 +143,11 @@
    "body_sha256": "4d5f8719c95fd0092d1a1c78036387321277c162f3146fa3c209847b163ef8d7",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [
     "E05"
    ],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL0k",
    "item_stable_id": "E06",
    "item_updated_at": "2026-11-06T09:14:33Z",
@@ -159,9 +171,11 @@
    "body_sha256": "380682496154965344b90952270ff613c9e34dee162932e302ffb490f195fb03",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [
     "E06"
    ],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL1A",
    "item_stable_id": "E07",
    "item_updated_at": "2026-11-06T09:14:37Z",
@@ -185,9 +199,11 @@
    "body_sha256": "cfabd7ecf304a5655c9ce19e0f4c4e9d140331bae626c49407440cb0da9d3fa6",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [
     "E06"
    ],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMWI",
    "item_stable_id": "E08",
    "item_updated_at": "2026-11-06T09:14:39Z",
@@ -211,10 +227,12 @@
    "body_sha256": "c011e6048e3c359e2918fd28a729e5989083589e2ce19a1433fc7be0b3cfdcc9",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [
     "E02",
     "E06"
    ],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMXI",
    "item_stable_id": "E09",
    "item_updated_at": "2026-11-06T09:14:42Z",
@@ -238,10 +256,12 @@
    "body_sha256": "9e5811b079959500a6339889d9f1a78e08c6e270b6c4246f503cf8a14743a960",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [
     "E06",
     "E09"
    ],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMXk",
    "item_stable_id": "E10",
    "item_updated_at": "2026-11-06T09:14:45Z",
@@ -265,10 +285,12 @@
    "body_sha256": "91ee359cde507f3ac460ccfb99c184b3092ca13e7416e6c99a800bd9052e2ab0",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [
     "E03",
     "E04"
    ],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMYQ",
    "item_stable_id": "E11",
    "item_updated_at": "2026-11-06T09:14:48Z",
@@ -292,11 +314,13 @@
    "body_sha256": "7da4c3eee66ce0cd205243db4c58eea1d2918663f47f39fd647bc2ce1143e898",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [
     "E04",
     "E07",
     "E08"
    ],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMZE",
    "item_stable_id": "E12",
    "item_updated_at": "2026-11-06T09:14:51Z",
@@ -320,9 +344,11 @@
    "body_sha256": "debc87c82d43e531a3e045342c63ff31e45427ada98909fba27204480b96e619",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [
     "E10"
    ],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMc4",
    "item_stable_id": "E13",
    "item_updated_at": "2026-11-06T09:14:54Z",
@@ -346,12 +372,14 @@
    "body_sha256": "cf1ba43de8b1ba447130439ef2ba7249172deb7f01917f31ac360ee48cedb227",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [
     "E06",
     "E07",
     "E08",
     "E10"
    ],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMew",
    "item_stable_id": "E14",
    "item_updated_at": "2026-11-06T09:14:56Z",
@@ -375,10 +403,12 @@
    "body_sha256": "a21d670f3b3cfbf7ba9f36aea1edccd82cbd969f9b5b633e7ef94f2b3c175f75",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [
     "E10",
     "E11"
    ],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMf4",
    "item_stable_id": "E15",
    "item_updated_at": "2026-11-06T09:15:00Z",
@@ -402,11 +432,13 @@
    "body_sha256": "b707d803c9479b5924d51bdcc0c79b29f437b07ff081e606660dcdced0e88f43",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [
     "E02",
     "E06",
     "E11"
    ],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMhA",
    "item_stable_id": "E16",
    "item_updated_at": "2026-11-06T09:15:03Z",
@@ -430,10 +462,12 @@
    "body_sha256": "b2e8f95796f46a5ee51278a971a1bc018d3870193d9a4d6928cb2e2258e6a09e",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [
     "E06",
     "E10"
    ],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM8M",
    "item_stable_id": "E17",
    "item_updated_at": "2026-11-06T09:15:07Z",
@@ -457,6 +491,7 @@
    "body_sha256": "e9e8d6f5ffc85fc9f781d6b53bf5210d11e7ab3cb44c56baea000d680854b6e8",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [
     "E01",
     "E02",
@@ -475,6 +510,7 @@
     "E15",
     "E16"
    ],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM9Y",
    "item_stable_id": "E18",
    "item_updated_at": "2026-11-06T09:15:11Z",
@@ -498,9 +534,11 @@
    "body_sha256": "4d0b40354c803c1d94b1266dda8b4357ae35301a6f98032b5080ca7ff079143b",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [
     "E18"
    ],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM-8",
    "item_stable_id": "E19",
    "item_updated_at": "2026-11-06T09:15:15Z",
@@ -524,7 +562,9 @@
    "body_sha256": "e9ed11905df4651bd263a16dbb786907729bc5795366f5b80bc2a9dc9698b765",
    "closed_at": "2026-11-06T11:24:39Z",
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL4c",
    "item_stable_id": "OM-01.01",
    "item_updated_at": "2026-11-06T11:24:40Z",
@@ -571,7 +611,9 @@
    "depends_on": [
     "OM-01.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL48",
    "item_stable_id": "OM-01.02",
    "item_updated_at": "2026-11-06T09:15:21Z",
@@ -618,7 +660,9 @@
    "depends_on": [
     "OM-01.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL5w",
    "item_stable_id": "OM-01.03",
    "item_updated_at": "2026-11-06T09:15:25Z",
@@ -665,7 +709,9 @@
    "depends_on": [
     "OM-01.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL6I",
    "item_stable_id": "OM-01.04",
    "item_updated_at": "2026-11-06T09:15:28Z",
@@ -712,7 +758,9 @@
    "depends_on": [
     "E01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhLzw",
    "item_stable_id": "OM-02.01",
    "item_updated_at": "2026-11-06T09:15:31Z",
@@ -759,7 +807,9 @@
    "depends_on": [
     "OM-02.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL0Y",
    "item_stable_id": "OM-02.02",
    "item_updated_at": "2026-11-06T09:15:35Z",
@@ -806,7 +856,9 @@
    "depends_on": [
     "OM-02.02"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL0o",
    "item_stable_id": "OM-02.03",
    "item_updated_at": "2026-11-06T09:15:38Z",
@@ -853,7 +905,9 @@
    "depends_on": [
     "OM-02.02"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL1M",
    "item_stable_id": "OM-02.04",
    "item_updated_at": "2026-11-06T09:15:42Z",
@@ -900,7 +954,9 @@
    "depends_on": [
     "OM-02.04"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL18",
    "item_stable_id": "OM-02.05",
    "item_updated_at": "2026-11-06T09:15:44Z",
@@ -947,7 +1003,9 @@
    "depends_on": [
     "E02"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL6A",
    "item_stable_id": "OM-03.01",
    "item_updated_at": "2026-11-06T09:15:48Z",
@@ -994,7 +1052,9 @@
    "depends_on": [
     "OM-03.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL6k",
    "item_stable_id": "OM-03.02",
    "item_updated_at": "2026-11-06T09:15:51Z",
@@ -1042,7 +1102,9 @@
     "OM-03.01",
     "OM-03.02"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL7M",
    "item_stable_id": "OM-03.03",
    "item_updated_at": "2026-11-06T09:15:54Z",
@@ -1090,7 +1152,9 @@
     "OM-03.01",
     "OM-03.02"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL7s",
    "item_stable_id": "OM-03.04",
    "item_updated_at": "2026-11-06T09:15:57Z",
@@ -1138,7 +1202,9 @@
     "OM-03.03",
     "OM-03.04"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL8M",
    "item_stable_id": "OM-03.05",
    "item_updated_at": "2026-11-06T09:16:00Z",
@@ -1185,7 +1251,9 @@
    "depends_on": [
     "E03"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL2Y",
    "item_stable_id": "OM-04.01",
    "item_updated_at": "2026-11-06T09:16:03Z",
@@ -1232,7 +1300,9 @@
    "depends_on": [
     "OM-04.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL24",
    "item_stable_id": "OM-04.02",
    "item_updated_at": "2026-11-06T09:16:06Z",
@@ -1279,7 +1349,9 @@
    "depends_on": [
     "OM-04.02"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL3Q",
    "item_stable_id": "OM-04.03",
    "item_updated_at": "2026-11-06T09:16:09Z",
@@ -1327,7 +1399,9 @@
     "OM-04.02",
     "OM-04.03"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL34",
    "item_stable_id": "OM-04.04",
    "item_updated_at": "2026-11-06T09:16:12Z",
@@ -1375,7 +1449,9 @@
     "E02",
     "E04"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL1o",
    "item_stable_id": "OM-05.01",
    "item_updated_at": "2026-11-06T09:16:15Z",
@@ -1422,7 +1498,9 @@
    "depends_on": [
     "OM-05.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL2M",
    "item_stable_id": "OM-05.02",
    "item_updated_at": "2026-11-06T09:16:18Z",
@@ -1469,7 +1547,9 @@
    "depends_on": [
     "OM-05.02"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL2k",
    "item_stable_id": "OM-05.03",
    "item_updated_at": "2026-11-06T09:16:21Z",
@@ -1517,7 +1597,9 @@
     "OM-05.02",
     "OM-05.03"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL28",
    "item_stable_id": "OM-05.04",
    "item_updated_at": "2026-11-06T09:16:25Z",
@@ -1565,7 +1647,9 @@
     "OM-05.01",
     "OM-05.02"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL3s",
    "item_stable_id": "OM-05.05",
    "item_updated_at": "2026-11-06T09:16:28Z",
@@ -1612,7 +1696,9 @@
    "depends_on": [
     "E05"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL5Q",
    "item_stable_id": "OM-06.01",
    "item_updated_at": "2026-11-06T09:16:30Z",
@@ -1659,7 +1745,9 @@
    "depends_on": [
     "OM-06.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL-M",
    "item_stable_id": "OM-06.02",
    "item_updated_at": "2026-11-06T09:16:33Z",
@@ -1706,7 +1794,9 @@
    "depends_on": [
     "OM-06.02"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL-o",
    "item_stable_id": "OM-06.03",
    "item_updated_at": "2026-11-06T09:16:36Z",
@@ -1753,7 +1843,9 @@
    "depends_on": [
     "OM-06.03"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL_I",
    "item_stable_id": "OM-06.04",
    "item_updated_at": "2026-11-06T09:16:39Z",
@@ -1800,7 +1892,9 @@
    "depends_on": [
     "OM-06.04"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL_o",
    "item_stable_id": "OM-06.05",
    "item_updated_at": "2026-11-06T09:16:43Z",
@@ -1842,7 +1936,9 @@
    "depends_on": [
     "E06"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL4U",
    "item_stable_id": "OM-07.01",
    "item_updated_at": "2026-11-06T09:16:45Z",
@@ -1889,7 +1985,9 @@
    "depends_on": [
     "OM-07.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL4s",
    "item_stable_id": "OM-07.02",
    "item_updated_at": "2026-11-06T09:16:48Z",
@@ -1936,7 +2034,9 @@
    "depends_on": [
     "OM-07.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL6U",
    "item_stable_id": "OM-07.03",
    "item_updated_at": "2026-11-06T09:16:51Z",
@@ -1984,7 +2084,9 @@
     "OM-07.02",
     "OM-07.03"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhL64",
    "item_stable_id": "OM-07.04",
    "item_updated_at": "2026-11-06T09:16:54Z",
@@ -2031,7 +2133,9 @@
    "depends_on": [
     "E06"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMcM",
    "item_stable_id": "OM-08.01",
    "item_updated_at": "2026-11-06T09:16:57Z",
@@ -2078,7 +2182,9 @@
    "depends_on": [
     "OM-08.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMdA",
    "item_stable_id": "OM-08.02",
    "item_updated_at": "2026-11-06T09:17:00Z",
@@ -2125,7 +2231,9 @@
    "depends_on": [
     "OM-08.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMdw",
    "item_stable_id": "OM-08.03",
    "item_updated_at": "2026-11-06T09:17:03Z",
@@ -2173,7 +2281,9 @@
     "OM-08.02",
     "OM-08.03"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMfo",
    "item_stable_id": "OM-08.04",
    "item_updated_at": "2026-11-06T09:17:06Z",
@@ -2221,7 +2331,9 @@
     "E02",
     "E06"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMas",
    "item_stable_id": "OM-09.01",
    "item_updated_at": "2026-11-06T09:17:09Z",
@@ -2268,7 +2380,9 @@
    "depends_on": [
     "OM-09.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMbc",
    "item_stable_id": "OM-09.02",
    "item_updated_at": "2026-11-06T09:17:12Z",
@@ -2315,7 +2429,9 @@
    "depends_on": [
     "OM-09.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM6g",
    "item_stable_id": "OM-09.03",
    "item_updated_at": "2026-11-06T09:17:16Z",
@@ -2362,7 +2478,9 @@
    "depends_on": [
     "OM-09.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM68",
    "item_stable_id": "OM-09.04",
    "item_updated_at": "2026-11-06T09:17:21Z",
@@ -2411,7 +2529,9 @@
     "OM-09.03",
     "OM-09.04"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM7U",
    "item_stable_id": "OM-09.05",
    "item_updated_at": "2026-11-06T09:17:25Z",
@@ -2459,7 +2579,9 @@
     "E06",
     "E09"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMac",
    "item_stable_id": "OM-10.01",
    "item_updated_at": "2026-11-06T09:17:28Z",
@@ -2506,7 +2628,9 @@
    "depends_on": [
     "OM-10.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMbA",
    "item_stable_id": "OM-10.02",
    "item_updated_at": "2026-11-06T09:17:32Z",
@@ -2553,7 +2677,9 @@
    "depends_on": [
     "OM-10.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMbw",
    "item_stable_id": "OM-10.03",
    "item_updated_at": "2026-11-06T09:17:35Z",
@@ -2600,7 +2726,9 @@
    "depends_on": [
     "OM-10.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMeM",
    "item_stable_id": "OM-10.04",
    "item_updated_at": "2026-11-06T09:17:38Z",
@@ -2649,7 +2777,9 @@
     "OM-10.03",
     "OM-10.04"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMfU",
    "item_stable_id": "OM-10.05",
    "item_updated_at": "2026-11-06T09:17:41Z",
@@ -2697,7 +2827,9 @@
     "E03",
     "E04"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMho",
    "item_stable_id": "OM-11.01",
    "item_updated_at": "2026-11-06T09:17:44Z",
@@ -2744,7 +2876,9 @@
    "depends_on": [
     "OM-11.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMiY",
    "item_stable_id": "OM-11.02",
    "item_updated_at": "2026-11-06T09:17:47Z",
@@ -2792,7 +2926,9 @@
     "OM-11.01",
     "OM-11.02"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMi8",
    "item_stable_id": "OM-11.03",
    "item_updated_at": "2026-11-06T09:17:50Z",
@@ -2839,7 +2975,9 @@
    "depends_on": [
     "OM-11.03"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMjg",
    "item_stable_id": "OM-11.04",
    "item_updated_at": "2026-11-06T09:17:53Z",
@@ -2889,7 +3027,9 @@
     "OM-11.03",
     "OM-11.04"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMkU",
    "item_stable_id": "OM-11.05",
    "item_updated_at": "2026-11-06T09:17:56Z",
@@ -2938,7 +3078,9 @@
     "E07",
     "E08"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMdU",
    "item_stable_id": "OM-12.01",
    "item_updated_at": "2026-11-06T09:17:58Z",
@@ -2985,7 +3127,9 @@
    "depends_on": [
     "OM-12.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM54",
    "item_stable_id": "OM-12.02",
    "item_updated_at": "2026-11-06T09:18:02Z",
@@ -3033,7 +3177,9 @@
     "OM-12.01",
     "OM-12.02"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM6I",
    "item_stable_id": "OM-12.03",
    "item_updated_at": "2026-11-06T09:18:06Z",
@@ -3081,7 +3227,9 @@
     "OM-12.02",
     "OM-12.03"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM6s",
    "item_stable_id": "OM-12.04",
    "item_updated_at": "2026-11-06T09:18:10Z",
@@ -3128,7 +3276,9 @@
    "depends_on": [
     "E10"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMgY",
    "item_stable_id": "OM-13.01",
    "item_updated_at": "2026-11-06T09:18:13Z",
@@ -3175,7 +3325,9 @@
    "depends_on": [
     "OM-13.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMhQ",
    "item_stable_id": "OM-13.02",
    "item_updated_at": "2026-11-06T09:18:16Z",
@@ -3222,7 +3374,9 @@
    "depends_on": [
     "OM-13.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMiE",
    "item_stable_id": "OM-13.03",
    "item_updated_at": "2026-11-06T09:18:20Z",
@@ -3269,7 +3423,9 @@
    "depends_on": [
     "OM-13.03"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMio",
    "item_stable_id": "OM-13.04",
    "item_updated_at": "2026-11-06T09:18:23Z",
@@ -3319,7 +3475,9 @@
     "OM-13.03",
     "OM-13.04"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMjM",
    "item_stable_id": "OM-13.05",
    "item_updated_at": "2026-11-06T09:18:27Z",
@@ -3369,7 +3527,9 @@
     "E08",
     "E10"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMj0",
    "item_stable_id": "OM-14.01",
    "item_updated_at": "2026-11-06T09:18:30Z",
@@ -3416,7 +3576,9 @@
    "depends_on": [
     "OM-14.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMl0",
    "item_stable_id": "OM-14.02",
    "item_updated_at": "2026-11-06T09:18:33Z",
@@ -3463,7 +3625,9 @@
    "depends_on": [
     "OM-14.02"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMmc",
    "item_stable_id": "OM-14.03",
    "item_updated_at": "2026-11-06T09:18:36Z",
@@ -3510,7 +3674,9 @@
    "depends_on": [
     "OM-14.03"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMnM",
    "item_stable_id": "OM-14.04",
    "item_updated_at": "2026-11-06T09:18:39Z",
@@ -3558,7 +3724,9 @@
     "E10",
     "E11"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMlU",
    "item_stable_id": "OM-15.01",
    "item_updated_at": "2026-11-06T09:18:42Z",
@@ -3605,7 +3773,9 @@
    "depends_on": [
     "OM-15.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMm0",
    "item_stable_id": "OM-15.02",
    "item_updated_at": "2026-11-06T09:18:45Z",
@@ -3653,7 +3823,9 @@
     "OM-15.01",
     "OM-15.02"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMng",
    "item_stable_id": "OM-15.03",
    "item_updated_at": "2026-11-06T09:18:47Z",
@@ -3700,7 +3872,9 @@
    "depends_on": [
     "OM-15.03"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMoM",
    "item_stable_id": "OM-15.04",
    "item_updated_at": "2026-11-06T09:18:50Z",
@@ -3749,7 +3923,9 @@
     "E06",
     "E11"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMkw",
    "item_stable_id": "OM-16.01",
    "item_updated_at": "2026-11-06T09:18:53Z",
@@ -3796,7 +3972,9 @@
    "depends_on": [
     "OM-16.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMls",
    "item_stable_id": "OM-16.02",
    "item_updated_at": "2026-11-06T09:18:56Z",
@@ -3843,7 +4021,9 @@
    "depends_on": [
     "OM-16.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMmE",
    "item_stable_id": "OM-16.03",
    "item_updated_at": "2026-11-06T09:18:59Z",
@@ -3891,7 +4071,9 @@
     "OM-16.03",
     "E11"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMn0",
    "item_stable_id": "OM-16.04",
    "item_updated_at": "2026-11-06T09:19:02Z",
@@ -3939,7 +4121,9 @@
     "OM-16.03",
     "OM-16.04"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMok",
    "item_stable_id": "OM-16.05",
    "item_updated_at": "2026-11-06T09:19:06Z",
@@ -3986,7 +4170,9 @@
    "depends_on": [
     "OM-16.05"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhMpA",
    "item_stable_id": "OM-16.06",
    "item_updated_at": "2026-11-06T09:19:09Z",
@@ -4039,7 +4225,9 @@
     "E06",
     "E10"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM-g",
    "item_stable_id": "OM-17.01",
    "item_updated_at": "2026-11-06T09:19:14Z",
@@ -4086,7 +4274,9 @@
    "depends_on": [
     "OM-17.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM_U",
    "item_stable_id": "OM-17.02",
    "item_updated_at": "2026-11-06T09:19:18Z",
@@ -4133,7 +4323,9 @@
    "depends_on": [
     "OM-17.02"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhM_s",
    "item_stable_id": "OM-17.03",
    "item_updated_at": "2026-11-06T09:19:22Z",
@@ -4195,7 +4387,9 @@
     "E15",
     "E16"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhNAs",
    "item_stable_id": "OM-18.01",
    "item_updated_at": "2026-11-06T09:19:26Z",
@@ -4242,7 +4436,9 @@
    "depends_on": [
     "OM-18.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhNBM",
    "item_stable_id": "OM-18.02",
    "item_updated_at": "2026-11-06T09:19:30Z",
@@ -4289,7 +4485,9 @@
    "depends_on": [
     "OM-18.02"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhNBw",
    "item_stable_id": "OM-18.03",
    "item_updated_at": "2026-11-06T09:19:33Z",
@@ -4336,7 +4534,9 @@
    "depends_on": [
     "OM-18.03"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhNCM",
    "item_stable_id": "OM-18.04",
    "item_updated_at": "2026-11-06T09:19:37Z",
@@ -4383,7 +4583,9 @@
    "depends_on": [
     "E18"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhNBA",
    "item_stable_id": "OM-19.01",
    "item_updated_at": "2026-11-06T09:19:41Z",
@@ -4430,7 +4632,9 @@
    "depends_on": [
     "OM-19.01"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhNBg",
    "item_stable_id": "OM-19.02",
    "item_updated_at": "2026-11-06T09:19:45Z",
@@ -4477,7 +4681,9 @@
    "depends_on": [
     "E18"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhNCA",
    "item_stable_id": "OM-19.03",
    "item_updated_at": "2026-11-06T09:19:49Z",
@@ -4524,7 +4730,9 @@
    "depends_on": [
     "E18"
    ],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGhNCs",
    "item_stable_id": "OM-19.04",
    "item_updated_at": "2026-11-06T09:19:53Z",
@@ -4569,10 +4777,12 @@
    "body_sha256": "87f8c7f4bff90e473bddec2384f5b18c31922ca7331f3d107bad7331570aa043",
    "closed_at": null,
    "depends_on": [],
+   "depends_on_known": true,
    "epic_prerequisites": [],
+   "epic_prerequisites_known": true,
    "item_id": "PVTI_lAHOACHLt84Bqc0UzhGkALs",
    "item_stable_id": "ENG-01",
-   "item_updated_at": "2026-11-06T12:43:55Z",
+   "item_updated_at": "2026-11-06T13:02:53Z",
    "kind": "other",
    "labels": [
     "engineering-automation"
@@ -4583,12 +4793,12 @@
    "stable_id": "ENG-01",
    "state": "OPEN",
    "state_reason": null,
-   "status": "In progress",
+   "status": "In review",
    "tasks": [],
    "title": "ENG-01 \u2014 Unattended execution foundation (GitHub-authoritative dispatch, sync and T3 coordination)",
-   "updated_at": "2026-11-06T12:43:42Z"
+   "updated_at": "2026-11-06T13:02:55Z"
   }
  ],
  "repo": "gabrianoo/owl-mast",
- "taken_at": "2026-11-06T12:55:04Z"
+ "taken_at": "2026-11-06T13:19:42Z"
 }

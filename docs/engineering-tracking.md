@@ -41,7 +41,7 @@ Before unattended execution, qualify a bridge with these properties:
 
 Manual supervised development can use GitHub directly while the loop stays off. Do not claim the installed BMAD workflows provide automatic GitHub writeback.
 
-The [unattended execution foundation](unattended-execution.md) (ENG-01, [#106](https://github.com/gabrianoo/owl-mast/issues/106)) implements these six properties as a T3-driven tool under `automation/unattended` with fixture and bounded live evidence. It is not activated: dispatching the first story remains a separate owner authorization after independent review, and `bmad-loop` stays unused.
+The [unattended execution foundation](unattended-execution.md) (ENG-01, [#106](https://github.com/gabrianoo/owl-mast/issues/106)) implements a T3-driven tool under `automation/unattended` that is fixture-qualified for properties 1–5 and refuses live product admission in code. It is not qualified for unattended use: T3 cannot yet enforce admission ordering, cancellation acknowledgement or budget termination, no bounded credential exists, and Project Status stays owner-written because GitHub offers no compare-and-swap. `bmad-loop` stays unused.
 
 ## Starting E01
 

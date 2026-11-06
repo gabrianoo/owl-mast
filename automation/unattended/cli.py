@@ -20,7 +20,8 @@ from .policy import load_policy
 from .probes import check_permissions, run_commands, write_probe
 from .state import Store, utcnow
 
-WRITE_COMMANDS = {"claim", "propose-evidence", "block", "cancel", "cancel-run", "resume", "probe-write"}
+# Every command that can reach a GitHub write, directly or through a fallback (repair may block).
+WRITE_COMMANDS = {"claim", "repair", "propose-evidence", "block", "cancel", "cancel-run", "resume", "rebase-revisions", "probe-write"}
 
 
 def _json(obj) -> None:
@@ -40,10 +41,6 @@ def _snapshot(args, transport, policy) -> Snapshot:
         except (OSError, ValueError, KeyError) as exc:
             raise UnattendedError(f"snapshot {args.snapshot} unreadable: {exc}") from exc
     return take_snapshot(transport, policy.repo_slug, utcnow())
-
-
-def _check_runner(commands: list[str], cwd: str, timeout: int) -> list[dict]:
-    return run_commands(commands, cwd, timeout)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,13 +63,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("probe", help="run the policy environment probes")
     pw = sub.add_parser("probe-write", help="bounded live write probe on an engineering-automation issue")
     pw.add_argument("--issue", type=int, required=True)
-    pw.add_argument("--status", default=None)
 
     c = sub.add_parser("claim", help="claim a dispatchable story for one implementer")
     c.add_argument("story"); c.add_argument("--receipt", required=True); c.add_argument("--worktree", required=True); c.add_argument("--branch", required=True); c.add_argument("--baseline", required=True)
     rh = sub.add_parser("record-head"); rh.add_argument("story"); rh.add_argument("--sha", required=True)
-    rc = sub.add_parser("run-checks", help="run policy checks in the claimed worktree and record them"); rc.add_argument("story"); rc.add_argument("--sha", required=True); rc.add_argument("--cwd", required=True)
-    rr = sub.add_parser("record-checks"); rr.add_argument("story"); rr.add_argument("--sha", required=True); rr.add_argument("--result", choices=["pass", "fail"], required=True); rr.add_argument("--detail", default="{}")
+    rc = sub.add_parser("run-checks", help="execute the full configured check set on the exact claimed HEAD and record it"); rc.add_argument("story"); rc.add_argument("--sha", required=True); rc.add_argument("--cwd", required=True)
     rq = sub.add_parser("request-review"); rq.add_argument("story"); rq.add_argument("--sha", required=True); rq.add_argument("--receipt", required=True)
     rv = sub.add_parser("record-review"); rv.add_argument("story"); rv.add_argument("--sha", required=True); rv.add_argument("--verdict", choices=["approved", "changes-requested"], required=True); rv.add_argument("--report", required=True)
     rp = sub.add_parser("repair"); rp.add_argument("story"); rp.add_argument("--receipt", required=True)
@@ -81,6 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     ca = sub.add_parser("cancel"); ca.add_argument("story"); ca.add_argument("--reason", required=True)
     cr = sub.add_parser("cancel-run"); cr.add_argument("--reason", required=True)
     rs = sub.add_parser("resume"); rs.add_argument("story")
+    rb = sub.add_parser("rebase-revisions", help="explicitly accept changed GitHub revisions after human verification"); rb.add_argument("story"); rb.add_argument("--reason", required=True)
     sub.add_parser("status")
     return p
 
@@ -114,26 +110,24 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "check-permissions":
             report = check_permissions(policy.owner, policy.repo, policy.project_owner, policy.project_number)
             _json(report)
-            return 0 if report["minimum_satisfied"] else 2
+            return 0 if report["unattended_activation_allowed"] else 2
         if args.command == "probe":
             results = run_commands(list(policy.probe_commands), args.repo_root, policy.probe_timeout_seconds)
             ok = bool(results) and all(r["returncode"] == 0 for r in results) and len(results) == len(policy.probe_commands)
             _json({"ok": ok, "results": results})
             return 0 if ok else 2
         if args.command == "probe-write":
-            _json(write_probe(transport, args.issue, args.run_id or f"probe-{utcnow()}", args.status, utcnow()))
+            _json(write_probe(transport, args.issue, args.run_id or f"probe-{utcnow()}", utcnow()))
             return 0
         if not args.run_id:
             raise UnattendedError("--run-id is required for state commands")
-        coordinator = Coordinator(transport, policy, Store(Path(args.state_dir), args.run_id))
+        coordinator = Coordinator(transport, policy, Store(Path(args.state_dir), args.run_id), live=bool(args.live))
         if args.command == "claim":
             state = coordinator.claim(args.story, _snapshot(args, transport, policy), _load_json_arg(args.receipt), args.worktree, args.branch, args.baseline)
         elif args.command == "record-head":
             state = coordinator.record_head(args.story, args.sha)
         elif args.command == "run-checks":
-            state = coordinator.run_checks(args.story, args.sha, args.cwd, _check_runner)
-        elif args.command == "record-checks":
-            state = coordinator.record_checks(args.story, args.sha, args.result == "pass", _load_json_arg(args.detail))
+            state = coordinator.run_checks(args.story, args.sha, args.cwd)
         elif args.command == "request-review":
             state = coordinator.request_review(args.story, args.sha, _load_json_arg(args.receipt))
         elif args.command == "record-review":
@@ -151,6 +145,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         elif args.command == "resume":
             state = coordinator.resume(args.story)
+        elif args.command == "rebase-revisions":
+            state = coordinator.rebase_revisions(args.story, args.reason)
         elif args.command == "status":
             _json(coordinator.status())
             return 0

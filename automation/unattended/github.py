@@ -6,13 +6,12 @@ implements it with the ``gh`` CLI, so authentication stays in the operator's ``g
 classified into ``PermissionDenied``, ``Outage``, ``NotFound`` or ``TransportError``; the
 caller treats every one as fail-closed.
 
-Precise guarantee statement: GitHub offers no compare-and-swap on issue comments or
-Project field values. The tool therefore implements *check-then-write-then-verify*: it
-re-reads the target immediately before a write and refuses on any change since the
-snapshot, then re-reads after the write and refuses to proceed unless the observed state is
-exactly the intended one. The window between the pre-write read and the write itself is
-not closed. Comments are append-only and carry a unique marker, so a duplicate is detected
-(and reported) rather than overwritten.
+Precise guarantee statement: GitHub offers no compare-and-swap on issue bodies, Project
+field values or comments. The tool therefore never mutates a field another writer owns:
+the only write it performs is appending an issue comment that carries a unique operation
+marker. Reads (issues, Project items, comments, pull requests) supply revisions that the
+coordinator compares before admission and before every effect; a changed revision is a
+refusal, never something the tool overwrites. Project Status stays owner-written.
 """
 
 from __future__ import annotations
@@ -105,7 +104,6 @@ class Transport(Protocol):
     def project_info(self) -> ProjectInfo: ...
     def list_project_items(self) -> list[ProjectItem]: ...
     def get_project_item(self, item_id: str) -> ProjectItem: ...
-    def set_project_status(self, item_id: str, option_id: str) -> None: ...
     def get_pull_request(self, number: int) -> PullRequestRecord: ...
 
 
@@ -126,7 +124,11 @@ def classify(returncode: int, stderr: str, exc: BaseException | None = None) -> 
 
 
 class GhCliTransport:
-    """Reads and writes through ``gh``. Never touches tokens itself."""
+    """Reads and writes through ``gh``. Never touches tokens itself. ``live`` marks it as the
+    production boundary: the coordinator refuses product-story admission on a live transport
+    until T3 enforcement is qualified (see docs/unattended-execution.md)."""
+
+    live = True
 
     def __init__(self, owner: str, repo: str, project_owner: str, project_number: int, timeout_s: float = 60.0):
         self.owner, self.repo = owner, repo
@@ -247,12 +249,6 @@ class GhCliTransport:
         if not node:
             raise NotFound(f"project item {item_id} not found")
         return self._item(node)
-
-    def set_project_status(self, item_id: str, option_id: str) -> None:
-        info = self.project_info()
-        q = ("mutation{ updateProjectV2ItemFieldValue(input:{projectId:\"%s\", itemId:\"%s\", fieldId:\"%s\", value:{singleSelectOptionId:\"%s\"}}){ projectV2Item{ id } } }"
-             % (info.project_id, item_id, info.status_field_id, option_id))
-        self._graphql(q)
 
     # -- pull requests -----------------------------------------------------------------
     def get_pull_request(self, number: int) -> PullRequestRecord:

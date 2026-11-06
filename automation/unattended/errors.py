@@ -6,8 +6,10 @@ class UnattendedError(Exception):
 
     code = "error"
 
-    def __init__(self, message: str, **detail):
+    def __init__(self, message: str, code: str | None = None, **detail):
         super().__init__(message)
+        if code:
+            self.code = code
         self.detail = detail
 
     def as_dict(self) -> dict:

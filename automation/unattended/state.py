@@ -1,29 +1,37 @@
-"""Machine-owned run state: per-story checkpoints, an append-only journal and write-ahead
-intents for every GitHub effect.
+"""Machine-owned run state: per-story checkpoints, an append-only journal, write-ahead
+intents for every external effect, a cross-process store lock and run binding.
 
-Layout under ``<state_dir>/<run_id>/``::
+Layout under ``<state_dir>/``::
 
-    run.json            budgets, counters, cancellation
-    journal.jsonl       append-only events (seq, at, story, event, detail)
-    stories/<ID>.json   checkpoint per story (phase, claim, head, checks, reviews, intents)
+    .lock                       exclusive advisory lock (fcntl) held for every operation
+    <run_id>/run.json           binding (repo, policy digest), budgets, counters, cancellation
+    <run_id>/journal.jsonl      append-only events (seq, at, story, event, detail)
+    <run_id>/stories/<ID>.json  checkpoint per story (phase, claim, revisions, head, checks,
+                                reviews, intents)
 
-Every file write is atomic (temp file + ``os.replace``). An intent is recorded *before* the
-GitHub effect and completed *after* it; ``resume`` reconciles intents left pending by a
-crash by looking for their marker on GitHub.
+Every file write is atomic (temp file + ``os.replace``). Atomic replacement alone does not
+serialize two processes, so every operation that reads budgets or produces effects runs
+inside :meth:`Store.locked`, which takes the store-wide lock non-blockingly and refuses
+when another process holds it. A run is bound to one repository and one policy digest;
+reopening it with another refuses before any recovery or effect.
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-PHASES = ("claimed", "claim-incomplete", "implemented", "checks-passed", "checks-failed", "review-requested", "review-approved", "changes-requested", "proposed", "blocked", "cancelled")
-ACTIVE_PHASES = ("claimed", "claim-incomplete", "implemented", "checks-passed", "checks-failed", "review-requested", "review-approved", "changes-requested")
-TERMINAL_PHASES = ("proposed", "blocked", "cancelled")
+from .errors import Refused
+
+PHASES = ("claim-incomplete", "claimed", "implemented", "checks-passed", "checks-failed", "review-requested", "review-approved", "changes-requested", "proposed", "blocked", "cancelled", "conflict")
+ACTIVE_PHASES = ("claim-incomplete", "claimed", "implemented", "checks-passed", "checks-failed", "review-requested", "review-approved", "changes-requested")
+TERMINAL_PHASES = ("proposed", "blocked", "cancelled", "conflict")
 
 
 def utcnow() -> str:
@@ -47,6 +55,10 @@ def atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+class StoreBusy(Refused):
+    code = "store-busy"
+
+
 @dataclass
 class RunState:
     run_id: str
@@ -62,7 +74,11 @@ class RunState:
 
 @dataclass
 class Intent:
-    intent_id: str
+    """A write-ahead record of one external effect. ``op`` is the stable operation identity
+    (``claim``, ``release``, ``block``, ``proposal-<sha12>-pr<n>``); a retry of the same
+    operation reuses the same intent and marker instead of allocating a new one."""
+
+    op: str
     kind: str
     marker: dict[str, str]
     status: str = "pending"  # pending | done
@@ -79,6 +95,7 @@ class StoryState:
     phase: str
     run_id: str
     claim: dict | None = None
+    revisions: dict = field(default_factory=dict)  # issue/item revisions verified at admission
     implementer_receipts: list[dict] = field(default_factory=list)
     reviewer_receipts: list[dict] = field(default_factory=list)
     head_sha: str | None = None
@@ -87,9 +104,6 @@ class StoryState:
     reviews: list[dict] = field(default_factory=list)
     repair_rounds: int = 0
     blocked: dict | None = None
-    status_before_claim: str | None = None
-    status_written: str | None = None
-    item_updated_at: str | None = None
     intents: list[Intent] = field(default_factory=list)
     proposal: dict | None = None
     updated_at: str = field(default_factory=utcnow)
@@ -100,6 +114,9 @@ class StoryState:
 
     def pending_intents(self) -> list[Intent]:
         return [i for i in self.intents if i.status == "pending"]
+
+    def intent(self, op: str) -> Intent | None:
+        return next((i for i in self.intents if i.op == op), None)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -113,8 +130,46 @@ class StoryState:
 
 class Store:
     def __init__(self, state_dir: Path, run_id: str):
-        self.root = Path(state_dir) / run_id
+        self.state_dir = Path(state_dir)
+        self.root = self.state_dir / run_id
         self.run_id = run_id
+        self._lock_depth = 0
+        self._lock_fh = None
+        self._lock_owner = None
+
+    # -- locking -------------------------------------------------------------------------
+    @contextmanager
+    def locked(self, owner: object = None):
+        """Exclusive, non-blocking, store-wide (fcntl). Re-entrant only for the same
+        ``owner`` (one Coordinator instance); any other caller, in this process or another,
+        gets :class:`StoreBusy` instead of interleaving."""
+        if self._lock_depth:
+            if owner is not None and owner is self._lock_owner:
+                self._lock_depth += 1
+                try:
+                    yield
+                finally:
+                    self._lock_depth -= 1
+                return
+            raise StoreBusy(f"store {self.state_dir} is locked by another coordinator in this process")
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        fh = open(self.state_dir / ".lock", "a+", encoding="utf-8")
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            fh.close()
+            raise StoreBusy(f"another coordinator holds the store lock {self.state_dir / '.lock'}: {exc}") from exc
+        self._lock_fh, self._lock_depth, self._lock_owner = fh, 1, owner
+        try:
+            yield
+        finally:
+            self._lock_depth = 0
+            self._lock_fh = None
+            self._lock_owner = None
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                fh.close()
 
     # -- run -----------------------------------------------------------------------------
     @property
@@ -130,12 +185,17 @@ class Store:
         atomic_write_text(self.run_path, json.dumps(asdict(run), indent=1, sort_keys=True))
 
     def ensure_run(self, repo: str, policy_digest: str) -> RunState:
-        run = self.load_run()
-        if run is None:
-            run = RunState(self.run_id, repo, policy_digest, utcnow())
-            self.save_run(run)
-            self.journal(None, "run-started", {"repo": repo, "policy_digest": policy_digest})
-        return run
+        """Create the run or validate its binding. A run belongs to exactly one repository
+        and policy digest; any other pairing is refused before recovery or effects."""
+        with self.locked():
+            run = self.load_run()
+            if run is None:
+                run = RunState(self.run_id, repo, policy_digest, utcnow())
+                self.save_run(run)
+                self.journal(None, "run-started", {"repo": repo, "policy_digest": policy_digest})
+            elif (run.repo, run.policy_digest) != (repo, policy_digest):
+                raise Refused(f"run {self.run_id} is bound to {run.repo} / policy {run.policy_digest[:12]}; refusing {repo} / {policy_digest[:12]}", code="run-binding-mismatch")
+            return run
 
     # -- stories -------------------------------------------------------------------------
     def story_path(self, story: str) -> Path:

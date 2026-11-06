@@ -1,0 +1,54 @@
+{
+ "basic_access": true,
+ "bounded": false,
+ "bounded_reasons": [
+  "identity has admin on the repository",
+  "excess scopes beyond the minimum: ['admin:public_key', 'gist', 'read:org', 'workflow']"
+ ],
+ "denial_tested": false,
+ "enforcement": "The policy restricts what the tool writes; the credential boundary is enforced only by the token the operator provisions. basic_access proves the identity can act; bounded proves it cannot act beyond the minimum. Denial of forbidden operations has not been tested.",
+ "excess": [
+  "admin:public_key",
+  "gist",
+  "read:org",
+  "workflow"
+ ],
+ "minimum": {
+  "classic_scopes": [
+   "repo",
+   "project"
+  ],
+  "fine_grained": [
+   "Issues: read/write",
+   "Pull requests: read",
+   "Contents: read",
+   "Metadata: read",
+   "Projects (user account): read/write"
+  ]
+ },
+ "observed": {
+  "gh_auth_status_exit": 0,
+  "project": {
+   "id": "PVT_kwHOACHLt84Bqc0U",
+   "title": "Owl Mast engineering",
+   "viewerCanUpdate": true
+  },
+  "repository_permissions": {
+   "admin": true,
+   "maintain": true,
+   "pull": true,
+   "push": true,
+   "triage": true
+  },
+  "token_scopes": [
+   "admin:public_key",
+   "gist",
+   "project",
+   "read:org",
+   "repo",
+   "workflow"
+  ]
+ },
+ "problems": [],
+ "unattended_activation_allowed": false
+}

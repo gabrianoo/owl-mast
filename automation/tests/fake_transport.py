@@ -1,15 +1,14 @@
 """In-memory GitHub transport with fault injection for the qualification suite.
 
-Faults (``fake.faults``): ``fail_once[op] = exception`` raises on the next call of ``op``
-and then clears; ``fail_always[op]`` raises on every call; ``crash_after_post`` raises
-after a comment has been appended (partial write); ``mutate_before_write`` is called
-right before ``set_project_status`` to simulate a concurrent editor.
+Faults: ``fail_once[op] = exception`` raises on the next call of ``op`` and then clears;
+``fail_always[op]`` raises on every call; ``crash_after_post`` raises after a comment has
+been appended (partial write). ``set_status_externally`` and direct edits of ``issues``
+simulate owner edits. ``live`` marks the transport as a production boundary for the gate test.
 """
 
 from __future__ import annotations
 
 import itertools
-from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from automation.unattended.github import Comment, IssueRecord, ProjectInfo, ProjectItem, PullRequestRecord
@@ -23,6 +22,7 @@ class CrashAfterEffect(RuntimeError):
 
 @dataclass
 class FakeTransport:
+    live: bool = False
     issues: dict[int, IssueRecord] = field(default_factory=dict)
     items: dict[str, ProjectItem] = field(default_factory=dict)
     comments: dict[int, list[Comment]] = field(default_factory=dict)
@@ -30,7 +30,6 @@ class FakeTransport:
     fail_once: dict[str, Exception] = field(default_factory=dict)
     fail_always: dict[str, Exception] = field(default_factory=dict)
     crash_after_post: bool = False
-    mutate_before_write: Callable[["FakeTransport"], None] | None = None
     calls: list[str] = field(default_factory=list)
     _ids: itertools.count = field(default_factory=lambda: itertools.count(1000))
     _ticks: itertools.count = field(default_factory=lambda: itertools.count(1))
@@ -93,15 +92,6 @@ class FakeTransport:
     def get_project_item(self, item_id: str) -> ProjectItem:
         self._fault("get_project_item")
         return self.items[item_id]
-
-    def set_project_status(self, item_id: str, option_id: str) -> None:
-        self._fault("set_project_status")
-        if self.mutate_before_write:
-            hook, self.mutate_before_write = self.mutate_before_write, None
-            hook(self)
-        name = next(n for n, o in STATUS_OPTIONS.items() if o == option_id)
-        item = self.items[item_id]
-        self.items[item_id] = ProjectItem(item_id, item.issue_number, name, item.stable_id, self._tick())
 
     def get_pull_request(self, number: int) -> PullRequestRecord:
         self._fault("get_pull_request")

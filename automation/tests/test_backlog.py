@@ -33,6 +33,10 @@ class RealBacklogMappingTests(unittest.TestCase):
                 dep_entry = by_id[dep]
                 self.assertLessEqual(dep_entry.epic_id, entry.epic_id, f"{entry.stable_id} depends forward on {dep}")
 
+    def test_every_real_declaration_is_understood(self):
+        for entry in self.snapshot.entries:
+            self.assertTrue(entry.depends_on_known and entry.epic_prerequisites_known, entry.stable_id)
+
     def test_derived_bmad_key_is_only_a_projection(self):
         entry = self.snapshot.by_id()["OM-01.02"]
         self.assertTrue(entry.bmad_key.startswith("1-2-"))

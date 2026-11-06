@@ -11,6 +11,7 @@
  "mapping": [
   {
    "bmad_key": null,
+   "declaration_known": true,
    "depends_on": [],
    "issue": 1,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhLyI",
@@ -22,6 +23,7 @@
   },
   {
    "bmad_key": null,
+   "declaration_known": true,
    "depends_on": [],
    "issue": 2,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhLyc",
@@ -33,6 +35,7 @@
   },
   {
    "bmad_key": null,
+   "declaration_known": true,
    "depends_on": [],
    "issue": 3,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhLy4",
@@ -44,6 +47,7 @@
   },
   {
    "bmad_key": null,
+   "declaration_known": true,
    "depends_on": [],
    "issue": 4,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhLzQ",
@@ -55,6 +59,7 @@
   },
   {
    "bmad_key": null,
+   "declaration_known": true,
    "depends_on": [],
    "issue": 5,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhL0I",
@@ -66,6 +71,7 @@
   },
   {
    "bmad_key": null,
+   "declaration_known": true,
    "depends_on": [],
    "issue": 6,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhL0k",
@@ -77,6 +83,7 @@
   },
   {
    "bmad_key": null,
+   "declaration_known": true,
    "depends_on": [],
    "issue": 7,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhL1A",
@@ -88,6 +95,7 @@
   },
   {
    "bmad_key": null,
+   "declaration_known": true,
    "depends_on": [],
    "issue": 8,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhMWI",
@@ -99,6 +107,7 @@
   },
   {
    "bmad_key": null,
+   "declaration_known": true,
    "depends_on": [],
    "issue": 9,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhMXI",
@@ -110,6 +119,7 @@
   },
   {
    "bmad_key": null,
+   "declaration_known": true,
    "depends_on": [],
    "issue": 10,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhMXk",
@@ -121,6 +131,7 @@
   },
   {
    "bmad_key": null,
+   "declaration_known": true,
    "depends_on": [],
    "issue": 11,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhMYQ",
@@ -132,6 +143,7 @@
   },
   {
    "bmad_key": null,
+   "declaration_known": true,
    "depends_on": [],
    "issue": 12,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhMZE",
@@ -143,6 +155,7 @@
   },
   {
    "bmad_key": null,
+   "declaration_known": true,
    "depends_on": [],
    "issue": 13,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhMc4",
@@ -154,6 +167,7 @@
   },
   {
    "bmad_key": null,
+   "declaration_known": true,
    "depends_on": [],
    "issue": 14,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhMew",
@@ -165,6 +179,7 @@
   },
   {
    "bmad_key": null,
+   "declaration_known": true,
    "depends_on": [],
    "issue": 15,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhMf4",
@@ -176,6 +191,7 @@
   },
   {
    "bmad_key": null,
+   "declaration_known": true,
    "depends_on": [],
    "issue": 16,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhMhA",
@@ -187,6 +203,7 @@
   },
   {
    "bmad_key": null,
+   "declaration_known": true,
    "depends_on": [],
    "issue": 17,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhM8M",
@@ -198,6 +215,7 @@
   },
   {
    "bmad_key": null,
+   "declaration_known": true,
    "depends_on": [],
    "issue": 18,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhM9Y",
@@ -209,6 +227,7 @@
   },
   {
    "bmad_key": null,
+   "declaration_known": true,
    "depends_on": [],
    "issue": 19,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhM-8",
@@ -220,6 +239,7 @@
   },
   {
    "bmad_key": "1-1-bootstrap-the-supported-java-application",
+   "declaration_known": true,
    "depends_on": [],
    "issue": 20,
    "item": "PVTI_lAHOACHLt84Bqc0UzhGhL4c",
@@ -231,6 +251,7 @@
   },
   {
    "bmad_key": "1-2-install-optional-state-and-identity-dependencies",
+   "declaration_known": true,
    "depends_on": [
     "OM-01.01"
    ],
@@ -244,6 +265,7 @@
   },
   {
    "bmad_key": "1-3-recover-accepted-background-work-and-record-mutation-evidence",
+   "declaration_known": true,
    "depends_on": [
     "OM-01.01"
    ],
@@ -257,6 +279,7 @@
   },
   {
    "bmad_key": "1-4-open-an-accessible-workspace-shell",
+   "declaration_known": true,
    "depends_on": [
     "OM-01.01"
    ],
@@ -270,6 +293,7 @@
   },
   {
    "bmad_key": "2-1-sign-in-with-a-personal-owl-mast-identity",
+   "declaration_known": true,
    "depends_on": [
     "E01"
    ],
@@ -283,6 +307,7 @@
   },
   {
    "bmad_key": "2-2-create-tenant-and-project-membership-boundaries",
+   "declaration_known": true,
    "depends_on": [
     "OM-02.01"
    ],
@@ -296,6 +321,7 @@
   },
   {
    "bmad_key": "2-3-map-shared-external-accounts-without-merging-people",
+   "declaration_known": true,
    "depends_on": [
     "OM-02.02"
    ],
@@ -309,6 +335,7 @@
   },
   {
    "bmad_key": "2-4-enforce-resource-and-source-permissions-through-one-boundary",
+   "declaration_known": true,
    "depends_on": [
     "OM-02.02"
    ],
@@ -322,6 +349,7 @@
   },
   {
    "bmad_key": "2-5-approve-collection-boundaries-before-enabling-live-sources",
+   "declaration_known": true,
    "depends_on": [
     "OM-02.04"
    ],
@@ -335,6 +363,7 @@
   },
   {
    "bmad_key": "3-1-submit-project-knowledge-with-immutable-version-identity",
+   "declaration_known": true,
    "depends_on": [
     "E02"
    ],
@@ -348,6 +377,7 @@
   },
   {
    "bmad_key": "3-2-preserve-complete-versioned-skill-packages",
+   "declaration_known": true,
    "depends_on": [
     "OM-03.01"
    ],
@@ -361,6 +391,7 @@
   },
   {
    "bmad_key": "3-3-synchronize-permitted-notion-knowledge-and-preserve-hermes-capture",
+   "declaration_known": true,
    "depends_on": [
     "OM-03.01",
     "OM-03.02"
@@ -375,6 +406,7 @@
   },
   {
    "bmad_key": "3-4-evaluate-and-correct-project-knowledge-lifecycle-states",
+   "declaration_known": true,
    "depends_on": [
     "OM-03.01",
     "OM-03.02"
@@ -389,6 +421,7 @@
   },
   {
    "bmad_key": "3-5-browse-and-maintain-knowledge-in-the-scoped-catalog-and-detail-ui",
+   "declaration_known": true,
    "depends_on": [
     "OM-03.03",
     "OM-03.04"
@@ -403,6 +436,7 @@
   },
   {
    "bmad_key": "4-1-build-lexical-and-vectorchord-retrieval-over-eligible-knowledge",
+   "declaration_known": true,
    "depends_on": [
     "E03"
    ],
@@ -416,6 +450,7 @@
   },
   {
    "bmad_key": "4-2-return-authorized-exact-version-knowledge-with-honest-coverage",
+   "declaration_known": true,
    "depends_on": [
     "OM-04.01"
    ],
@@ -429,6 +464,7 @@
   },
   {
    "bmad_key": "4-3-expose-authenticated-remote-mcp-in-the-spring-backend",
+   "declaration_known": true,
    "depends_on": [
     "OM-04.02"
    ],
@@ -442,6 +478,7 @@
   },
   {
    "bmad_key": "4-4-deliver-complete-exact-version-packages-with-explicit-receipts",
+   "declaration_known": true,
    "depends_on": [
     "OM-04.02",
     "OM-04.03"
@@ -456,6 +493,7 @@
   },
   {
    "bmad_key": "5-1-register-a-machine-and-client-without-conflating-identities",
+   "declaration_known": true,
    "depends_on": [
     "E02",
     "E04"
@@ -470,6 +508,7 @@
   },
   {
    "bmad_key": "5-2-bind-enrolled-clients-to-authorized-projects-and-revocable-credentials",
+   "declaration_known": true,
    "depends_on": [
     "OM-05.01"
    ],
@@ -483,6 +522,7 @@
   },
   {
    "bmad_key": "5-3-show-observation-and-knowledge-readiness-independently",
+   "declaration_known": true,
    "depends_on": [
     "OM-05.02"
    ],
@@ -496,6 +536,7 @@
   },
   {
    "bmad_key": "5-4-define-portable-native-configuration-packages-and-safe-repair",
+   "declaration_known": true,
    "depends_on": [
     "OM-05.02",
     "OM-05.03"
@@ -510,6 +551,7 @@
   },
   {
    "bmad_key": "5-5-personalize-agent-appearance-without-changing-identity",
+   "declaration_known": true,
    "depends_on": [
     "OM-05.01",
     "OM-05.02"
@@ -524,6 +566,7 @@
   },
   {
    "bmad_key": "6-1-bind-collection-to-enrollment-and-the-approved-content-policy",
+   "declaration_known": true,
    "depends_on": [
     "E05"
    ],
@@ -537,6 +580,7 @@
   },
   {
    "bmad_key": "6-2-accept-the-native-otlp-wire-protocols-in-spring",
+   "declaration_known": true,
    "depends_on": [
     "OM-06.01"
    ],
@@ -550,6 +594,7 @@
   },
   {
    "bmad_key": "6-3-normalize-evidence-without-inventing-missing-identity-or-capability",
+   "declaration_known": true,
    "depends_on": [
     "OM-06.02"
    ],
@@ -563,6 +608,7 @@
   },
   {
    "bmad_key": "6-4-recover-accepted-observations-and-suppress-repeated-accounting",
+   "declaration_known": true,
    "depends_on": [
     "OM-06.03"
    ],
@@ -576,6 +622,7 @@
   },
   {
    "bmad_key": "6-5-make-ingestion-health-and-coverage-inspectable",
+   "declaration_known": true,
    "depends_on": [
     "OM-06.04"
    ],
@@ -589,6 +636,7 @@
   },
   {
    "bmad_key": "7-1-package-and-qualify-native-claude-integration",
+   "declaration_known": true,
    "depends_on": [
     "E06"
    ],
@@ -602,6 +650,7 @@
   },
   {
    "bmad_key": "7-2-deliver-exact-knowledge-and-native-skill-packages-to-claude",
+   "declaration_known": true,
    "depends_on": [
     "OM-07.01"
    ],
@@ -615,6 +664,7 @@
   },
   {
    "bmad_key": "7-3-send-claude-observations-directly-without-controlling-execution",
+   "declaration_known": true,
    "depends_on": [
     "OM-07.01"
    ],
@@ -628,6 +678,7 @@
   },
   {
    "bmad_key": "7-4-prove-claude-works-across-both-projects-and-execution-modes",
+   "declaration_known": true,
    "depends_on": [
     "OM-07.02",
     "OM-07.03"
@@ -642,6 +693,7 @@
   },
   {
    "bmad_key": "8-1-package-and-qualify-the-native-codex-connection",
+   "declaration_known": true,
    "depends_on": [
     "E06"
    ],
@@ -655,6 +707,7 @@
   },
   {
    "bmad_key": "8-2-deliver-exact-version-memory-and-complete-codex-skills",
+   "declaration_known": true,
    "depends_on": [
     "OM-08.01"
    ],
@@ -668,6 +721,7 @@
   },
   {
    "bmad_key": "8-3-observe-native-codex-work-with-its-actual-event-contracts",
+   "declaration_known": true,
    "depends_on": [
     "OM-08.01"
    ],
@@ -681,6 +735,7 @@
   },
   {
    "bmad_key": "8-4-prove-codex-integration-and-recovery-in-all-pilot-combinations",
+   "declaration_known": true,
    "depends_on": [
     "OM-08.02",
     "OM-08.03"
@@ -695,6 +750,7 @@
   },
   {
    "bmad_key": "9-1-qualify-actual-source-editions-and-permission-contracts",
+   "declaration_known": true,
    "depends_on": [
     "E02",
     "E06"
@@ -709,6 +765,7 @@
   },
   {
    "bmad_key": "9-2-observe-both-qualified-jira-sites-independently",
+   "declaration_known": true,
    "depends_on": [
     "OM-09.01"
    ],
@@ -722,6 +779,7 @@
   },
   {
    "bmad_key": "9-3-observe-syntelligence-contributions-from-github",
+   "declaration_known": true,
    "depends_on": [
     "OM-09.01"
    ],
@@ -735,6 +793,7 @@
   },
   {
    "bmad_key": "9-4-observe-movesion-contributions-from-bitbucket",
+   "declaration_known": true,
    "depends_on": [
     "OM-09.01"
    ],
@@ -748,6 +807,7 @@
   },
   {
    "bmad_key": "9-5-reconcile-both-environments-and-explain-connection-coverage",
+   "declaration_known": true,
    "depends_on": [
     "OM-09.02",
     "OM-09.03",
@@ -763,6 +823,7 @@
   },
   {
    "bmad_key": "10-1-correlate-source-records-without-inventing-attribution",
+   "declaration_known": true,
    "depends_on": [
     "E06",
     "E09"
@@ -777,6 +838,7 @@
   },
   {
    "bmad_key": "10-2-inspect-each-observed-task-and-run-independently",
+   "declaration_known": true,
    "depends_on": [
     "OM-10.01"
    ],
@@ -790,6 +852,7 @@
   },
   {
    "bmad_key": "10-3-calculate-progress-from-explicit-evidence",
+   "declaration_known": true,
    "depends_on": [
     "OM-10.01"
    ],
@@ -803,6 +866,7 @@
   },
   {
    "bmad_key": "10-4-inspect-the-authorized-dependency-graph-and-equivalent-list",
+   "declaration_known": true,
    "depends_on": [
     "OM-10.01"
    ],
@@ -816,6 +880,7 @@
   },
   {
    "bmad_key": "10-5-follow-work-evidence-into-source-tools-safely",
+   "declaration_known": true,
    "depends_on": [
     "OM-10.02",
     "OM-10.03",
@@ -831,6 +896,7 @@
   },
   {
    "bmad_key": "11-1-configure-project-promotion-policy-and-permitted-audiences",
+   "declaration_known": true,
    "depends_on": [
     "E03",
     "E04"
@@ -845,6 +911,7 @@
   },
   {
    "bmad_key": "11-2-evaluate-an-exact-company-safe-publication-candidate",
+   "declaration_known": true,
    "depends_on": [
     "OM-11.01"
    ],
@@ -858,6 +925,7 @@
   },
   {
    "bmad_key": "11-3-publish-safely-in-automatic-and-manual-modes-under-races",
+   "declaration_known": true,
    "depends_on": [
     "OM-11.01",
     "OM-11.02"
@@ -872,6 +940,7 @@
   },
   {
    "bmad_key": "11-4-withdraw-or-quarantine-guidance-and-its-promoted-derivatives",
+   "declaration_known": true,
    "depends_on": [
     "OM-11.03"
    ],
@@ -885,6 +954,7 @@
   },
   {
    "bmad_key": "11-5-review-promotion-policy-exceptions-and-lifecycle-in-s6",
+   "declaration_known": true,
    "depends_on": [
     "OM-11.01",
     "OM-11.02",
@@ -901,6 +971,7 @@
   },
   {
    "bmad_key": "12-1-preserve-distinct-exact-version-knowledge-evidence",
+   "declaration_known": true,
    "depends_on": [
     "E04",
     "E07",
@@ -916,6 +987,7 @@
   },
   {
    "bmad_key": "12-2-record-human-verified-useful-reuse-against-task-evidence",
+   "declaration_known": true,
    "depends_on": [
     "OM-12.01"
    ],
@@ -929,6 +1001,7 @@
   },
   {
    "bmad_key": "12-3-aggregate-skills-and-memory-measurements-without-false-completeness",
+   "declaration_known": true,
    "depends_on": [
     "OM-12.01",
     "OM-12.02"
@@ -943,6 +1016,7 @@
   },
   {
    "bmad_key": "12-4-inspect-knowledge-receipts-statistics-and-reuse-evidence",
+   "declaration_known": true,
    "depends_on": [
     "OM-12.02",
     "OM-12.03"
@@ -957,6 +1031,7 @@
   },
   {
    "bmad_key": "13-1-understand-own-and-colleague-work-from-daily-work",
+   "declaration_known": true,
    "depends_on": [
     "E10"
    ],
@@ -970,6 +1045,7 @@
   },
   {
    "bmad_key": "13-2-compare-authorized-project-context-in-a-company-view",
+   "declaration_known": true,
    "depends_on": [
     "OM-13.01"
    ],
@@ -983,6 +1059,7 @@
   },
   {
    "bmad_key": "13-3-follow-assigned-work-across-concurrent-epics",
+   "declaration_known": true,
    "depends_on": [
     "OM-13.01"
    ],
@@ -996,6 +1073,7 @@
   },
   {
    "bmad_key": "13-4-inspect-work-through-the-six-observed-sdlc-stages",
+   "declaration_known": true,
    "depends_on": [
     "OM-13.03"
    ],
@@ -1009,6 +1087,7 @@
   },
   {
    "bmad_key": "13-5-keep-live-work-views-accessible-and-stable-during-change",
+   "declaration_known": true,
    "depends_on": [
     "OM-13.01",
     "OM-13.02",
@@ -1025,6 +1104,7 @@
   },
   {
    "bmad_key": "14-1-calculate-unique-observed-usage-with-correct-counter-semantics",
+   "declaration_known": true,
    "depends_on": [
     "E06",
     "E07",
@@ -1041,6 +1121,7 @@
   },
   {
    "bmad_key": "14-2-attribute-usage-only-to-evidenced-work-and-execution-segments",
+   "declaration_known": true,
    "depends_on": [
     "OM-14.01"
    ],
@@ -1054,6 +1135,7 @@
   },
   {
    "bmad_key": "14-3-keep-observed-units-estimates-allocations-and-bills-separate",
+   "declaration_known": true,
    "depends_on": [
     "OM-14.02"
    ],
@@ -1067,6 +1149,7 @@
   },
   {
    "bmad_key": "14-4-present-s7-and-contextual-work-usage-with-honest-coverage",
+   "declaration_known": true,
    "depends_on": [
     "OM-14.03"
    ],
@@ -1080,6 +1163,7 @@
   },
   {
    "bmad_key": "15-1-qualify-the-notification-platform-and-choose-supported-packaging",
+   "declaration_known": true,
    "depends_on": [
     "E10",
     "E11"
@@ -1094,6 +1178,7 @@
   },
   {
    "bmad_key": "15-2-control-notification-preferences-without-hiding-work-updates",
+   "declaration_known": true,
    "depends_on": [
     "OM-15.01"
    ],
@@ -1107,6 +1192,7 @@
   },
   {
    "bmad_key": "15-3-dispatch-distinct-updates-through-durable-authorized-work",
+   "declaration_known": true,
    "depends_on": [
     "OM-15.01",
     "OM-15.02"
@@ -1121,6 +1207,7 @@
   },
   {
    "bmad_key": "15-4-open-the-current-authorized-state-from-a-notification",
+   "declaration_known": true,
    "depends_on": [
     "OM-15.03"
    ],
@@ -1134,6 +1221,7 @@
   },
   {
    "bmad_key": "16-1-query-full-system-audit-with-explicit-coverage",
+   "declaration_known": true,
    "depends_on": [
     "E02",
     "E06",
@@ -1149,6 +1237,7 @@
   },
   {
    "bmad_key": "16-2-inspect-audit-timelines-and-object-changes-accessibly",
+   "declaration_known": true,
    "depends_on": [
     "OM-16.01"
    ],
@@ -1162,6 +1251,7 @@
   },
   {
    "bmad_key": "16-3-approve-collection-and-retention-policy-before-live-ingestion",
+   "declaration_known": true,
    "depends_on": [
     "OM-16.01"
    ],
@@ -1175,6 +1265,7 @@
   },
   {
    "bmad_key": "16-4-propagate-removal-and-revocation-through-derived-records",
+   "declaration_known": true,
    "depends_on": [
     "OM-16.03",
     "E11"
@@ -1189,6 +1280,7 @@
   },
   {
    "bmad_key": "16-5-preserve-governance-during-replay-and-snapshot-recovery",
+   "declaration_known": true,
    "depends_on": [
     "OM-16.03",
     "OM-16.04"
@@ -1203,6 +1295,7 @@
   },
   {
    "bmad_key": "16-6-archive-conversations-after-30-days-without-losing-knowledge",
+   "declaration_known": true,
    "depends_on": [
     "OM-16.05"
    ],
@@ -1216,6 +1309,7 @@
   },
   {
    "bmad_key": "17-1-qualify-a-minimal-read-only-t3-connection",
+   "declaration_known": true,
    "depends_on": [
     "E06",
     "E10"
@@ -1230,6 +1324,7 @@
   },
   {
    "bmad_key": "17-2-reconcile-t3-context-with-existing-native-evidence",
+   "declaration_known": true,
    "depends_on": [
     "OM-17.01"
    ],
@@ -1243,6 +1338,7 @@
   },
   {
    "bmad_key": "17-3-inspect-and-recover-optional-enrichment-independently",
+   "declaration_known": true,
    "depends_on": [
     "OM-17.02"
    ],
@@ -1256,6 +1352,7 @@
   },
   {
    "bmad_key": "18-1-qualify-the-full-runtime-and-source-capability-matrix",
+   "declaration_known": true,
    "depends_on": [
     "E01",
     "E02",
@@ -1284,6 +1381,7 @@
   },
   {
    "bmad_key": "18-2-restore-the-installation-and-survive-processing-failures",
+   "declaration_known": true,
    "depends_on": [
     "OM-18.01"
    ],
@@ -1297,6 +1395,7 @@
   },
   {
    "bmad_key": "18-3-demonstrate-observation-to-reuse-and-every-access-boundary",
+   "declaration_known": true,
    "depends_on": [
     "OM-18.02"
    ],
@@ -1310,6 +1409,7 @@
   },
   {
    "bmad_key": "18-4-package-a-reproducible-internal-and-public-ready-release",
+   "declaration_known": true,
    "depends_on": [
     "OM-18.03"
    ],
@@ -1323,6 +1423,7 @@
   },
   {
    "bmad_key": "19-1-operate-multiple-active-tenants",
+   "declaration_known": true,
    "depends_on": [
     "E18"
    ],
@@ -1336,6 +1437,7 @@
   },
   {
    "bmad_key": "19-2-introduce-fine-grained-openfga-authorization",
+   "declaration_known": true,
    "depends_on": [
     "OM-19.01"
    ],
@@ -1349,6 +1451,7 @@
   },
   {
    "bmad_key": "19-3-run-multiple-application-pods-with-compatible-upgrades",
+   "declaration_known": true,
    "depends_on": [
     "E18"
    ],
@@ -1362,6 +1465,7 @@
   },
   {
    "bmad_key": "19-4-extract-components-only-when-measurements-justify-them",
+   "declaration_known": true,
    "depends_on": [
     "E18"
    ],
@@ -1381,5 +1485,5 @@
   "Backlog": 103,
   "Done": 1
  },
- "taken_at": "2026-11-06T12:55:04Z"
+ "taken_at": "2026-11-06T13:19:42Z"
 }

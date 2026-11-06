@@ -60,6 +60,8 @@ def decide(story_id: str, snapshot: Snapshot, policy: Policy) -> Decision:
         return Decision(story_id, "unknown-eligibility", ("no Project item or empty Status",), entry.number)
     if entry.item_stable_id != entry.stable_id:
         return Decision(story_id, "unknown-eligibility", (f"Project Stable ID {entry.item_stable_id!r} differs from issue id",), entry.number)
+    if not entry.depends_on_known:
+        return Decision(story_id, "unknown-eligibility", ("'Depends on' declaration missing, duplicated or not understood; fail closed",), entry.number)
     if entry.state == "CLOSED":
         return Decision(story_id, "closed", (f"issue closed ({entry.state_reason}); Status {entry.status}",), entry.number)
     if entry.status == "Done":
@@ -77,7 +79,12 @@ def decide(story_id: str, snapshot: Snapshot, policy: Policy) -> Decision:
     def epic_complete(epic_id: str) -> tuple[bool, str]:
         if epic_id not in by_id:
             return False, f"{epic_id}: unknown epic prerequisite"
+        epic = by_id[epic_id]
+        if not epic.epic_prerequisites_known:
+            return False, f"{epic_id}: its own prerequisites declaration is not understood; fail closed"
         children = [e for e in snapshot.entries if e.kind == "story" and e.epic_id == epic_id]
+        if any(not c.depends_on_known for c in children):
+            return False, f"{epic_id}: a story of this epic has an unreadable dependency declaration; fail closed"
         incomplete = [c.stable_id for c in children if not dependency_state(c, c.stable_id)[0]]
         if not children or incomplete:
             return False, f"{epic_id}: epic prerequisite incomplete ({', '.join(incomplete[:4]) or 'no stories'})"
@@ -90,6 +97,10 @@ def decide(story_id: str, snapshot: Snapshot, policy: Policy) -> Decision:
     parent = snapshot.by_number().get(entry.parent_number) if entry.parent_number else None
     if parent is None:
         return Decision(story_id, "unknown-eligibility", ("story has no native parent epic",), entry.number)
+    if parent.kind != "epic" or parent.stable_id != entry.epic_id:
+        return Decision(story_id, "unknown-eligibility", (f"parent #{parent.number} is {parent.stable_id}, not {entry.epic_id}",), entry.number)
+    if not parent.epic_prerequisites_known:
+        return Decision(story_id, "unknown-eligibility", (f"{parent.stable_id} 'Epic prerequisites' declaration missing or not understood; fail closed",), entry.number)
     for prereq in parent.epic_prerequisites:
         ok, text = epic_complete(prereq)
         (met if ok else unmet).append(text)

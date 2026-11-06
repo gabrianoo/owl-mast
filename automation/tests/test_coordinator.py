@@ -1,10 +1,13 @@
-"""Story lifecycle: claims, checks before review, SHA-bound approval, repair cap, regression,
-cancel/resume, budgets and the evidence proposal."""
+"""Story lifecycle: claims, executed checks before review, SHA-bound approval, budgeted
+repair, per-reviewer objections, cancel/resume ordering, budgets and the evidence proposal."""
 
+import inspect
 import unittest
+from pathlib import Path
 
 from automation.tests.fake_transport import small_backlog
-from automation.tests.support import IMPLEMENTER, REVIEWER, Harness, receipt
+from automation.tests.support import IMPLEMENTER, REVIEWER, Harness, failing_runner, git_commit, ok_worktree, passing_runner, receipt
+from automation.unattended import cli, coordinator, github
 from automation.unattended.errors import BudgetExhausted, ReceiptInvalid, Refused
 from automation.unattended.github import PullRequestRecord
 
@@ -17,11 +20,11 @@ class LifecycleTests(unittest.TestCase):
     def tearDown(self):
         self.h.close()
 
-    def test_claim_writes_in_progress_and_marker(self):
+    def test_claim_posts_marker_and_records_revisions(self):
         state = self.h.claim()
         self.assertEqual(state.phase, "claimed")
-        self.assertEqual(self.h.fake.item_for(21).status, "In progress")
-        self.assertEqual(state.status_before_claim, "Ready")
+        self.assertEqual(sorted(state.revisions), ["E01", "OM-01.01", "OM-01.02"])
+        self.assertEqual(self.h.fake.item_for(21).status, "Ready")  # owner field untouched
         self.assertEqual(self.h.store.load_run().stories_claimed, 1)
         self.assertEqual(self.h.store.load_run().delegated_tasks, 1)
 
@@ -53,102 +56,166 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaises(BudgetExhausted):
             self.h.claim("OM-01.04")
 
-    def test_review_requires_passing_checks_at_head(self):
+    # -- checks --------------------------------------------------------------------------
+    def test_checks_execute_full_set_on_exact_head(self):
         self.h.claim()
-        self.c.record_head("OM-01.02", "sha1")
-        with self.assertRaises(Refused):
-            self.c.request_review("OM-01.02", "sha1", REVIEWER)
-        self.c.record_checks("OM-01.02", "sha1", False, {})
-        with self.assertRaises(Refused):
-            self.c.request_review("OM-01.02", "sha1", REVIEWER)
-        with self.assertRaises(Refused):
-            self.c.record_checks("OM-01.02", "sha2", True, {})  # checks for a sha that is not head
+        state = self.h.checks()
+        self.assertEqual(state.phase, "checks-passed")
+        last = state.checks[-1]
+        self.assertEqual(len(last["commands"]), len(self.h.policy.check_commands))
+        self.assertTrue(last["executed"] and last["clean_before"] and last["clean_after"])
+        self.assertEqual(last["head_after"], self.h.sha)
 
+    def test_failed_command_fails_checks_but_runs_whole_set(self):
+        self.h.claim()
+        state = self.h.checks(runner=failing_runner)
+        self.assertEqual(state.phase, "checks-failed")
+        self.assertEqual(len(state.checks[-1]["commands"]), len(self.h.policy.check_commands))
+
+    def test_checks_refuse_wrong_head_dirty_tree_and_foreign_cwd(self):
+        self.h.claim()
+        self.c.record_head("OM-01.02", "notthehead")
+        with self.assertRaises(Refused):
+            self.c.run_checks("OM-01.02", "notthehead", str(self.h.worktree), passing_runner)
+        self.c.record_head("OM-01.02", self.h.sha)
+        (self.h.worktree / "dirty.txt").write_text("x")
+        with self.assertRaises(Refused):
+            self.c.run_checks("OM-01.02", self.h.sha, str(self.h.worktree), passing_runner)
+        (self.h.worktree / "dirty.txt").unlink()
+        with self.assertRaises(Refused):
+            self.c.run_checks("OM-01.02", self.h.sha, str(self.h.worktree.parent), passing_runner)
+
+    def test_checks_that_modify_the_tree_do_not_pass(self):
+        self.h.claim()
+
+        def dirtying(argv, cwd, timeout):
+            (Path(cwd) / "generated.txt").write_text("x")
+            return passing_runner(argv, cwd, timeout)
+
+        state = self.h.checks(runner=dirtying)
+        self.assertEqual(state.phase, "checks-failed")
+        self.assertFalse(state.checks[-1]["clean_after"])
+
+    def test_no_asserted_pass_exists(self):
+        self.assertFalse(hasattr(self.c, "record_checks"))
+        self.assertNotIn("record-checks", inspect.getsource(cli))
+
+    def test_review_requires_executed_passing_checks_at_head(self):
+        self.h.claim()
+        self.c.record_head("OM-01.02", self.h.sha)
+        with self.assertRaises(Refused):
+            self.c.request_review("OM-01.02", self.h.sha, REVIEWER)
+        self.h.checks(runner=failing_runner)
+        with self.assertRaises(Refused):
+            self.c.request_review("OM-01.02", self.h.sha, REVIEWER)
+        self.c.repair("OM-01.02", receipt(IMPLEMENTER, "task-impl-2"))
+        # tamper: a check record whose command list is shorter than the configured set is refused
+        self.h.checks()
+        state = self.h.store.load_story("OM-01.02")
+        state.checks[-1]["commands"] = state.checks[-1]["commands"][:1]
+        self.h.store.save_story(state)
+        with self.assertRaises(Refused):
+            self.c.request_review("OM-01.02", self.h.sha, REVIEWER)
+
+    # -- review / repair ----------------------------------------------------------------
     def test_review_sha_must_match_head(self):
         self.h.claim()
-        self.c.record_head("OM-01.02", "sha1")
-        self.c.record_checks("OM-01.02", "sha1", True, {})
-        self.c.request_review("OM-01.02", "sha1", REVIEWER)
+        self.h.checks()
+        self.c.request_review("OM-01.02", self.h.sha, REVIEWER)
         with self.assertRaises(Refused):
             self.c.record_review("OM-01.02", "sha0", "approved", "r")
 
     def test_new_commit_invalidates_approval(self):
-        self.h.to_review_approved(sha="sha1")
-        state = self.c.record_head("OM-01.02", "sha2")
+        self.h.to_review_approved()
+        new = git_commit(self.h.worktree, "more.txt")
+        state = self.c.record_head("OM-01.02", new)
         self.assertEqual(state.phase, "implemented")
-        self.assertEqual(state.approved_sha, "sha1")  # history only; proposal refuses
         with self.assertRaises(Refused):
-            self.c.propose_evidence("OM-01.02", "sha2", 7, [], "s")
+            self.c.propose_evidence("OM-01.02", new, 7, [], "s")
         self.assertTrue(any(e["event"] == "head-recorded" and e["detail"]["approval_invalidated"] for e in self.h.store.read_journal()))
 
     def test_reviewer_task_must_be_fresh(self):
         self.h.claim()
-        self.c.record_head("OM-01.02", "sha1")
-        self.c.record_checks("OM-01.02", "sha1", True, {})
+        self.h.checks()
         with self.assertRaises(ReceiptInvalid):
-            self.c.request_review("OM-01.02", "sha1", {**REVIEWER, "taskId": "task-impl-1"})
+            self.c.request_review("OM-01.02", self.h.sha, {**REVIEWER, "taskId": "task-impl-1"})
+
+    def test_record_head_after_failure_requires_budgeted_repair(self):
+        """Reviewer probe B4: failed phases cannot loop through record-head."""
+        self.h.claim()
+        self.h.checks(runner=failing_runner)
+        for n in range(5):
+            with self.assertRaises(Refused) as ctx:
+                self.c.record_head("OM-01.02", f"sha{n}")
+            self.assertEqual(ctx.exception.code, "repair-required")
+        state = self.h.store.load_story("OM-01.02")
+        self.assertEqual((state.phase, state.repair_rounds), ("checks-failed", 0))
+        self.c.repair("OM-01.02", receipt(IMPLEMENTER, "task-impl-2"))
+        self.assertEqual(self.h.store.load_story("OM-01.02").repair_rounds, 1)
 
     def test_repair_cap_blocks_after_two_rounds(self):
         self.h.claim()
-        for n, sha in enumerate(("s1", "s2"), start=1):
-            self.c.record_head("OM-01.02", sha)
-            self.c.record_checks("OM-01.02", sha, False, {})
+        for n in range(1, 3):
+            self.h.checks(runner=failing_runner)
             state = self.c.repair("OM-01.02", receipt(IMPLEMENTER, f"task-impl-{n + 1}"))
-            self.assertEqual(state.repair_rounds, n)
-            self.assertEqual(state.phase, "claimed")
-        self.c.record_head("OM-01.02", "s3")
-        self.c.record_checks("OM-01.02", "s3", False, {})
+            self.assertEqual((state.repair_rounds, state.phase), (n, "claimed"))
+        self.h.checks(runner=failing_runner)
         state = self.c.repair("OM-01.02", receipt(IMPLEMENTER, "task-impl-9"))
         self.assertEqual(state.phase, "blocked")
         self.assertIn("repair rounds exhausted", state.blocked["reason"])
-        self.assertEqual(self.h.fake.item_for(21).status, "Blocked")
-        self.assertEqual(state.repair_rounds, 2)
+        self.assertEqual(len([c for c in self.h.fake.comments[21] if c.marker["kind"] == "block"]), 1)
+        self.assertEqual(self.h.fake.item_for(21).status, "Ready")  # Status is not written
 
     def test_review_regression_after_approval(self):
-        self.h.to_review_approved(sha="sha1")
-        state = self.c.record_review("OM-01.02", "sha1", "changes-requested", "second look")
-        self.assertEqual(state.phase, "changes-requested")
-        self.assertIsNone(state.approved_sha)
+        self.h.to_review_approved()
+        state = self.c.record_review("OM-01.02", self.h.sha, "changes-requested", "second look")
+        self.assertEqual((state.phase, state.approved_sha), ("changes-requested", None))
         self.assertTrue(state.reviews[-1]["regression"])
-        state = self.c.repair("OM-01.02", receipt(IMPLEMENTER, "task-impl-2"))
-        self.assertEqual(state.repair_rounds, 1)
+        with self.assertRaises(Refused):
+            self.c.record_head("OM-01.02", "s2")
+        self.assertEqual(self.c.repair("OM-01.02", receipt(IMPLEMENTER, "task-impl-2")).repair_rounds, 1)
 
     def test_delegated_task_budget(self):
         self.h = Harness(small_backlog(), max_delegated_tasks="2")
         self.h.claim()
-        self.h.coordinator.record_head("OM-01.02", "s1")
-        self.h.coordinator.record_checks("OM-01.02", "s1", True, {})
-        self.h.coordinator.request_review("OM-01.02", "s1", REVIEWER)
-        self.h.coordinator.record_review("OM-01.02", "s1", "changes-requested", "r")
+        self.h.checks()
+        self.h.coordinator.request_review("OM-01.02", self.h.sha, REVIEWER)
+        self.h.coordinator.record_review("OM-01.02", self.h.sha, "changes-requested", "r")
         with self.assertRaises(BudgetExhausted):
             self.h.coordinator.repair("OM-01.02", receipt(IMPLEMENTER, "task-impl-2"))
 
     def test_wall_clock_budget(self):
         self.h.claim()
-        self.c.record_head("OM-01.02", "s1")
-        self.c.record_checks("OM-01.02", "s1", True, {})
+        self.h.checks()
         self.c.now = lambda: "2026-11-07T13:00:00Z"
         with self.assertRaises(BudgetExhausted):
-            self.c.request_review("OM-01.02", "s1", REVIEWER)
+            self.c.request_review("OM-01.02", self.h.sha, REVIEWER)
         self.assertEqual(self.h.store.load_story("OM-01.02").phase, "checks-passed")
 
-    def test_cancel_restores_ready(self):
+    # -- cancel / resume ------------------------------------------------------------------
+    def test_cancel_posts_release_and_accepts_no_further_work(self):
         self.h.claim()
         state = self.c.cancel("OM-01.02", "operator stop")
         self.assertEqual(state.phase, "cancelled")
+        self.assertEqual(len([c for c in self.h.fake.comments[21] if c.marker["kind"] == "release"]), 1)
         self.assertEqual(self.h.fake.item_for(21).status, "Ready")
-        release = [c for c in self.h.fake.comments[21] if c.marker and c.marker["kind"] == "release"]
-        self.assertEqual(len(release), 1)
         with self.assertRaises(Refused):
-            self.c.record_head("OM-01.02", "s1")  # cancelled stories accept no further work
+            self.c.record_head("OM-01.02", "s1")
 
-    def test_resume_refuses_worktree_mismatch(self):
-        self.h.claim()
+    def test_resume_checks_identity_before_any_effect(self):
+        """Reviewer finding V6: an incomplete claim is not completed on a wrong worktree."""
+        from automation.unattended.errors import Outage
+
+        self.h.fake.fail_once["post_comment"] = Outage("503")
+        with self.assertRaises(Outage):
+            self.h.claim()
         with self.assertRaises(Refused) as ctx:
-            self.c.resume("OM-01.02", lambda p, b: (False, "worktree is on 'main', expected 't3/om-01-02'"))
-        self.assertIn("cannot resume", str(ctx.exception))
-        state = self.c.resume("OM-01.02", lambda p, b: (True, "ok"))
-        self.assertEqual(state.phase, "claimed")
+            self.c.resume("OM-01.02", lambda p, b: (False, "wrong worktree"))
+        self.assertEqual(ctx.exception.code, "worktree-mismatch")
+        state = self.h.store.load_story("OM-01.02")
+        self.assertEqual(state.phase, "claim-incomplete")
+        self.assertEqual(self.h.fake.comments[21], [])
+        self.assertEqual(self.c.resume("OM-01.02", ok_worktree).phase, "claimed")
 
     def test_cancel_run_stops_everything(self):
         self.h.claim()
@@ -157,40 +224,56 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaises(BudgetExhausted):
             self.h.claim()
 
-    def test_propose_evidence_posts_proposal_and_in_review(self):
-        self.h.to_review_approved(sha="sha1")
-        self.h.fake.pull_requests[7] = PullRequestRecord(7, "OPEN", "sha1", False, ({"state": "APPROVED", "commit": "sha1", "author": "rev", "submitted_at": "t"},), "SUCCESS")
-        state = self.c.propose_evidence("OM-01.02", "sha1", 7, ["OM-01.02-T1"], "summary")
+    # -- proposal -------------------------------------------------------------------------
+    def test_propose_evidence_posts_proposal_only(self):
+        self.h.to_review_approved()
+        self.h.fake.pull_requests[7] = PullRequestRecord(7, "OPEN", self.h.sha, False, ({"state": "APPROVED", "commit": self.h.sha, "author": "rev", "submitted_at": "t"},), "SUCCESS")
+        state = self.c.propose_evidence("OM-01.02", self.h.sha, 7, ["OM-01.02-T1"], "summary")
         self.assertEqual(state.phase, "proposed")
-        self.assertEqual(self.h.fake.item_for(21).status, "In review")
-        proposal = [c for c in self.h.fake.comments[21] if c.marker and c.marker["kind"] == "proposal"]
+        proposal = [c for c in self.h.fake.comments[21] if c.marker["kind"] == "proposal"]
         self.assertEqual(len(proposal), 1)
-        self.assertIn("- [ ] OM-01.02-T1", proposal[0].body)  # proposed, never ticked in the body
+        self.assertIn("- [ ] OM-01.02-T1", proposal[0].body)
         self.assertEqual(self.h.fake.issues[21].body.count("[x]"), 0)
-        self.assertNotIn("Done", [self.h.fake.item_for(21).status])
+        self.assertEqual(self.h.fake.item_for(21).status, "Ready")
 
-    def test_propose_refuses_merged_pr_head_mismatch_and_github_regression(self):
-        self.h.to_review_approved(sha="sha1")
-        self.h.fake.pull_requests[7] = PullRequestRecord(7, "MERGED", "sha1", True, (), "SUCCESS")
+    def test_propose_refuses_merged_pr_and_head_mismatch(self):
+        self.h.to_review_approved()
+        self.h.fake.pull_requests[7] = PullRequestRecord(7, "MERGED", self.h.sha, True, (), "SUCCESS")
         with self.assertRaises(Refused):
-            self.c.propose_evidence("OM-01.02", "sha1", 7, [], "s")
+            self.c.propose_evidence("OM-01.02", self.h.sha, 7, [], "s")
         self.h.fake.pull_requests[7] = PullRequestRecord(7, "OPEN", "sha9", False, (), None)
         with self.assertRaises(Refused):
-            self.c.propose_evidence("OM-01.02", "sha1", 7, [], "s")
-        self.h.fake.pull_requests[7] = PullRequestRecord(7, "OPEN", "sha1", False, ({"state": "CHANGES_REQUESTED", "commit": "sha1", "author": "rev", "submitted_at": "t"},), "SUCCESS")
-        with self.assertRaises(Refused):
-            self.c.propose_evidence("OM-01.02", "sha1", 7, [], "s")
+            self.c.propose_evidence("OM-01.02", self.h.sha, 7, [], "s")
+
+    def test_another_reviewers_approval_does_not_mask_an_objection(self):
+        """Reviewer probe B8/E10: objections are effective per reviewer."""
+        self.h.to_review_approved()
+        sha = self.h.sha
+        self.h.fake.pull_requests[7] = PullRequestRecord(7, "OPEN", sha, False, (
+            {"state": "CHANGES_REQUESTED", "commit": sha, "author": "A", "submitted_at": "1"},
+            {"state": "APPROVED", "commit": sha, "author": "B", "submitted_at": "2"},
+        ), "SUCCESS")
+        with self.assertRaises(Refused) as ctx:
+            self.c.propose_evidence("OM-01.02", sha, 7, [], "s")
+        self.assertIn("A", str(ctx.exception))
         self.assertEqual(self.h.store.load_story("OM-01.02").phase, "changes-requested")
 
-    def test_no_merge_or_done_path_exists(self):
-        import inspect
+    def test_objection_at_an_earlier_commit_still_counts_until_dismissed_or_re_reviewed(self):
+        self.h.to_review_approved()
+        sha = self.h.sha
+        pr = PullRequestRecord(7, "OPEN", sha, False, (
+            {"state": "CHANGES_REQUESTED", "commit": "old", "author": "A", "submitted_at": "1"},
+            {"state": "APPROVED", "commit": sha, "author": "B", "submitted_at": "2"},
+        ), "SUCCESS")
+        self.assertEqual(coordinator.outstanding_objections(pr), ["A"])
+        pr2 = PullRequestRecord(7, "OPEN", sha, False, pr.reviews + ({"state": "DISMISSED", "commit": "old", "author": "A", "submitted_at": "3"},), "SUCCESS")
+        self.assertEqual(coordinator.outstanding_objections(pr2), [])
+        pr3 = PullRequestRecord(7, "OPEN", sha, False, pr.reviews + ({"state": "COMMENTED", "commit": sha, "author": "A", "submitted_at": "3"},), "SUCCESS")
+        self.assertEqual(coordinator.outstanding_objections(pr3), ["A"])
+        self.h.fake.pull_requests[7] = pr2
+        self.assertEqual(self.c.propose_evidence("OM-01.02", sha, 7, [], "s").phase, "proposed")
 
-        from automation.unattended import cli, coordinator, github
-
+    def test_no_merge_status_or_done_write_path_exists(self):
         source = inspect.getsource(coordinator) + inspect.getsource(cli) + inspect.getsource(github)
-        self.assertNotIn("pr merge", source)
-        self.assertNotIn("mergePullRequest", source)
-        self.assertNotIn('"Done"', inspect.getsource(coordinator).split("def _write_status")[1].split("def claim")[0])
-        for line in inspect.getsource(coordinator).splitlines():
-            if "_write_status(" in line and "def " not in line:
-                self.assertNotIn("Done", line)
+        for needle in ("pr merge", "mergePullRequest", "updateProjectV2ItemFieldValue", "set_project_status", "updateIssue", "closeIssue"):
+            self.assertNotIn(needle, source)
