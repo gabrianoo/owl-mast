@@ -4,7 +4,7 @@ type: 'feature'
 created: '2026-11-06'
 status: 'in-review'
 route: 'dispatch'
-review_loop_iteration: 1
+review_loop_iteration: 2
 baseline_commit: '063ad881940a1621736a842eb1c8ffe1bafb0447'
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/epic-1-context.md'
@@ -80,12 +80,15 @@ context:
 
 - Repair round 1 (2026-11-06), review of d1d1ce25: F1 fixed by recording the bound scope as a resource of the actual Spring transaction (`ScopedTransactions.Binding`), joining equal scopes, rejecting different tenant/principal before any effect, marking rollback-only and poisoning the transaction so a caught rejection still fails at the end (Spring's participating rollback-only alone did not stop the outer commit in the probe). F2 fixed with `platform.diagnostics.SafeFailure` (class-name chain only) and a captured-log test. F3 fixed with `owlmast.qualified.jdk.*` pins in gradle.properties enforced in settings (daemon), buildSrc `QualifiedJdk` (compiler/test/application launchers) and `QualifiedJdkTest` (test JVM); CI pins `27.0.1`; daemon properties restricted to published 27.0.1+1 assets and the macOS x64 claim removed; gate script gains the `jdk-pin` negative case. Probe: `-Dorg.gradle.java.home` cannot override daemon criteria. Verified locally: 26 unit + 15 integration tests, 5/5 gates, clean build. Artifacts: reviews/om-01-01-review-initial.md, reviews/om-01-01-review-triage-round-1.md.
 
+- Repair round 2 (2026-11-06, final authorized), review of b4024d5: R1 fixed by registering a reactive `TransactionSynchronization` on the physical transaction whose `beforeCommit` refuses the commit of a poisoned transaction for any owner (external operator included). R2 fixed by tying the binding's lifetime to that synchronization (unbind on suspend, rebind on resume, remove after completion, identity-checked) and refusing calls without an actual synchronized transaction (`ScopeBindingUnavailableException`) before work. `Binding` became a plain class (identity semantics). Eight new real-database regressions in `ScopedTransactionsIT`; the reviewer's probe class passed unchanged as a one-off. Round-1 triage wording corrected (IncompatibleScopeException, not UnexpectedRollbackException). Artifacts: reviews/om-01-01-review-round-1.md, reviews/om-01-01-review-round-1-probe-ReviewScopeProbeIT.java.txt, reviews/om-01-01-review-triage-round-2.md.
+
 ## Spec Change Log
 
 - Round 1 (2026-11-06): no spec amendment; the frozen intent and acceptance already required fail-closed scope binding, secret-free diagnostics and qualified JDK pins. Findings were implementation defects. KEEP: real-database nested-transaction tests, captured-log assertions, pin enforcement on daemon/compiler/test JVMs.
 
 ## Review Triage Log
 
+- Independent review of b4024d5527a0f1ef000f1ae1531b0f2ff5a8f51f (round 1): REQUEST CHANGES. F2 resolved, F3 resolved; F1 partial with R1 high (external owner commits after swallowed mismatch) — confirmed, fixed; R2 high (binding lifetime longer than the physical transaction; REQUIRES_NEW and sequential SUPPORTS cases) — confirmed, fixed. Report: reviews/om-01-01-review-round-1.md; triage: reviews/om-01-01-review-triage-round-2.md.
 - Independent review of d1d1ce25b22deceb5f5473f9b0d76ffec7ef6c95: REQUEST CHANGES. F1 high (nested transaction overwrites outer tenant) — confirmed, fixed. F2 high (raw throwable logged) — confirmed, fixed. F3 medium (JDK patch not enforced, macOS x64 claim wrong) — confirmed, fixed. Full report: reviews/om-01-01-review-initial.md; triage and evidence: reviews/om-01-01-review-triage-round-1.md. Coordinator runs a fresh independent review on the repaired head.
 
 ## Design Notes

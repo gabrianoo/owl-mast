@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.transaction.ReactiveTransaction;
+import org.springframework.transaction.reactive.TransactionSynchronization;
 import org.springframework.transaction.reactive.TransactionSynchronizationManager;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Mono;
@@ -19,12 +20,16 @@ import reactor.core.publisher.Signal;
  * inside the transaction and sees the same scope on every asynchronous hop.
  *
  * <p>A transaction carries exactly one scope. The scope is recorded as a resource of the actual
- * Spring transaction (not of the lexical Reactor Context), so a nested call that joins the same
- * transaction with an equal scope participates without re-binding, while a nested call with a
- * different tenant or principal is rejected with {@link IncompatibleScopeException} before it runs
- * any work or touches the connection setting. The rejection is recorded on the shared transaction
- * (and the transaction is marked rollback-only), so even a caller that swallows the error cannot
- * commit partial work under a confused scope: the transaction fails at its end instead.
+ * Spring transaction and its lifetime is tied to that physical transaction through a registered
+ * {@link TransactionSynchronization}: it is unbound when the transaction is suspended (for example
+ * by {@code PROPAGATION_REQUIRES_NEW}), rebound on resume, and removed after commit or rollback. A
+ * nested call that joins the same transaction with an equal scope participates without re-binding,
+ * while a nested call with a different tenant or principal is rejected with {@link
+ * IncompatibleScopeException} before it runs any work or touches the connection setting. The
+ * rejection is recorded on the transaction and re-checked in {@code beforeCommit}, so whoever owns
+ * the transaction (this helper or an external operator) cannot commit after a caught rejection: the
+ * commit fails and the transaction rolls back. Calls without an actual synchronized transaction are
+ * refused with {@link ScopeBindingUnavailableException} before any work.
  */
 public final class ScopedTransactions {
 
@@ -34,10 +39,24 @@ public final class ScopedTransactions {
   /** Key of the {@link Binding} resource attached to the active transaction. */
   static final Object SCOPE_RESOURCE = new Object();
 
-  /** Scope bound to one actual transaction, plus whether a nested call was rejected inside it. */
-  private record Binding(ScopeContext scope, AtomicBoolean poisoned) {
-    Binding(ScopeContext scope) {
-      this(scope, new AtomicBoolean());
+  /**
+   * Scope bound to one physical transaction, plus whether a nested call was rejected inside it.
+   * Identity matters: a binding belongs to exactly one transaction lifecycle.
+   */
+  private static final class Binding {
+    private final ScopeContext scope;
+    private final AtomicBoolean poisoned = new AtomicBoolean();
+
+    private Binding(ScopeContext scope) {
+      this.scope = scope;
+    }
+
+    ScopeContext scope() {
+      return scope;
+    }
+
+    AtomicBoolean poisoned() {
+      return poisoned;
     }
   }
 
@@ -85,9 +104,13 @@ public final class ScopedTransactions {
       TransactionSynchronizationManager transaction,
       ReactiveTransaction status,
       ScopeContext requested) {
+    if (!transaction.isActualTransactionActive() || !transaction.isSynchronizationActive()) {
+      return Mono.error(new ScopeBindingUnavailableException());
+    }
     if (!transaction.hasResource(SCOPE_RESOURCE)) {
       Binding binding = new Binding(requested);
       transaction.bindResource(SCOPE_RESOURCE, binding);
+      transaction.registerSynchronization(new ScopeSynchronization(transaction, binding));
       return bindTenant(requested).thenReturn(binding);
     }
     Binding bound = (Binding) transaction.getResource(SCOPE_RESOURCE);
@@ -97,6 +120,54 @@ public final class ScopedTransactions {
     bound.poisoned().set(true);
     status.setRollbackOnly();
     return Mono.error(IncompatibleScopeException.requestedScopeDiffers());
+  }
+
+  /**
+   * Ties the binding to the physical transaction: hidden while the transaction is suspended,
+   * restored on resume, removed after completion, and enforced at the real commit boundary.
+   */
+  private static final class ScopeSynchronization implements TransactionSynchronization {
+
+    private final TransactionSynchronizationManager transaction;
+    private final Binding binding;
+
+    private ScopeSynchronization(TransactionSynchronizationManager transaction, Binding binding) {
+      this.transaction = transaction;
+      this.binding = binding;
+    }
+
+    @Override
+    public Mono<Void> suspend() {
+      return Mono.fromRunnable(this::unbindIfOwned);
+    }
+
+    @Override
+    public Mono<Void> resume() {
+      return Mono.fromRunnable(() -> {
+        if (!transaction.hasResource(SCOPE_RESOURCE)) {
+          transaction.bindResource(SCOPE_RESOURCE, binding);
+        }
+      });
+    }
+
+    @Override
+    public Mono<Void> beforeCommit(boolean readOnly) {
+      return binding.poisoned().get()
+          ? Mono.error(IncompatibleScopeException.transactionPoisoned())
+          : Mono.empty();
+    }
+
+    @Override
+    public Mono<Void> afterCompletion(int status) {
+      return Mono.fromRunnable(this::unbindIfOwned);
+    }
+
+    private void unbindIfOwned() {
+      if (transaction.hasResource(SCOPE_RESOURCE)
+          && transaction.getResource(SCOPE_RESOURCE) == binding) {
+        transaction.unbindResource(SCOPE_RESOURCE);
+      }
+    }
   }
 
   /**
