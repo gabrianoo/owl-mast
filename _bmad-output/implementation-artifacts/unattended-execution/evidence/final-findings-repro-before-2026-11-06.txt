@@ -1,0 +1,39 @@
+# Reproduction of the six final-disposition defects against the reviewed head a0fa769ee5cd8dfb44fa02cae181bf0d37fad6ee
+# Script: scratch probe_before.py (old request-review/repair API); in-memory GitHub, real local git worktree. 'DEFECT?' lines show the false advance.
+
+1 cancellation + pending proposal replay (B1/E1/V1)
+  propose: REFUSED outage: 503
+  pending: ['proposal-675809f163b5-pr7']
+  cancel_run: {'cancelled': [<OM-01.02 story state, phase cancelled, proposal intent still pending>], 'awaiting_worker_termination': []}
+  after cancel_run: phase cancelled run.cancelled True release [1001]
+  resume (fresh coordinator): OK -> proposed
+  DEFECT? phase proposed proposal comments [1002] run.cancelled True
+2 local review regression + pending proposal replay (E2)
+  propose: REFUSED outage: 503
+  after local changes-requested: phase changes-requested approved_sha None pending ['proposal-675809f163b5-pr7']
+  resume: OK -> proposed
+  DEFECT? phase proposed proposal comments [1001]
+3 reviewer ownership lost through HEAD recording / invalidation (B2/E3/V3)
+  review-requested worker_state running
+  record_head(same sha): phase review-requested worker_state returned
+  cancel WITHOUT terminal evidence: OK -> cancelled
+  DEFECT? phase cancelled release [1001]
+  record_review on dirty tree: REFUSED evidence-invalidated: record-review: worktree HEAD 675809f163b5bcb213e7537545b1ea1bc5ab42b5 / clean=False differs from the evidence at 675809f163b5bcb213e7537545b1ea1bc5ab42b5; check and review evidence invalidated
+  after invalidation: phase implemented worker_state running
+  cancel with IMPLEMENTER evidence while reviewer runs: OK -> cancelled
+  DEFECT? phase cancelled release [1001]
+4 crash between done claim intent and reserved transition (E4)
+  crash: synthetic crash after intent saved done, before phase transition
+  on disk: phase claim-incomplete intents [('claim', 'done')] claim comments [1000]
+  resume: OK -> claim-incomplete
+  DEFECT? phase claim-incomplete (expected reserved)
+  bind_receipt: REFUSED refused: OM-01.02 is claim-incomplete; this operation needs ('reserved',)
+5 duplicate stable id admitted (B3/E5)
+  decide: dispatchable issue 121
+  reserve: OK -> reserved
+  DEFECT? state issue 121 claim comments on #21 [] on #121 [1000]
+6 delegation budget checked only after launch (V2)
+  delegated_tasks 2 of 2
+  reserve second story with exhausted delegation budget (pre-launch admission): OK -> reserved
+  DEFECT? OM-01.04 state reserved claim comments on #23 [1002]
+  bind after launch: REFUSED budget-exhausted: delegated task budget 2 exhausted

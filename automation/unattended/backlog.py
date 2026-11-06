@@ -85,7 +85,16 @@ class Snapshot:
     repo: str
     entries: list[Entry] = field(default_factory=list)
 
+    def duplicate_ids(self) -> list[str]:
+        """Stable ids carried by more than one issue. ``by_id`` keeps only one of them, so
+        every admission path must refuse while this is non-empty (ambiguous identity)."""
+        seen: dict[str, int] = {}
+        for e in self.entries:
+            seen[e.stable_id] = seen.get(e.stable_id, 0) + 1
+        return sorted(i for i, n in seen.items() if n > 1)
+
     def by_id(self) -> dict[str, Entry]:
+        """Dictionary reduction; callers that admit work check :meth:`duplicate_ids` first."""
         return {e.stable_id: e for e in self.entries}
 
     def by_number(self) -> dict[int, Entry]:
@@ -170,8 +179,7 @@ def verify_mapping(snapshot: Snapshot, tasks_index_text: str | None = None) -> d
         if counts[key] != expected:
             problems.append(f"{key}: expected {expected}, found {counts[key]}")
 
-    ids = [e.stable_id for e in epics + stories]
-    dupes = sorted({i for i in ids if ids.count(i) > 1})
+    dupes = snapshot.duplicate_ids()
     if dupes:
         problems.append(f"duplicate stable ids: {dupes}")
     for epic in epics:

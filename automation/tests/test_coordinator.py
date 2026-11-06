@@ -24,17 +24,19 @@ class LifecycleTests(unittest.TestCase):
 
     def test_reserve_precedes_delegation_and_bind_binds_the_receipt(self):
         state = self.h.reserve()
-        self.assertEqual((state.phase, state.worker_state), ("reserved", "none"))
-        self.assertEqual(self.h.store.load_run().delegated_tasks, 0)
+        self.assertEqual((state.phase, state.active_task), ("reserved", None))
+        self.assertEqual(state.pending_authorization()["purpose"], "implementation")
+        self.assertEqual(self.h.store.load_run().delegated_tasks, 1)  # the slot is spent at authorization, before any launch
         with self.assertRaises(Refused):
             self.c.record_head("OM-01.02", "s1")  # nothing bound yet
         with self.assertRaises(Refused):
             self.c.bind_receipt("OM-01.04", IMPLEMENTER, str(self.h.worktree), "t3/om-01-02", ok_worktree)  # no reservation
         state = self.c.bind_receipt("OM-01.02", IMPLEMENTER, str(self.h.worktree), "t3/om-01-02", ok_worktree)
-        self.assertEqual((state.phase, state.worker_state), ("claimed", "running"))
+        self.assertEqual((state.phase, state.active_task["taskId"], state.active_task["role"]), ("claimed", "task-impl-1", "implementer"))
         self.assertEqual(self.h.store.load_run().delegated_tasks, 1)
-        with self.assertRaises(Refused):
+        with self.assertRaises(Refused) as ctx:
             self.c.bind_receipt("OM-01.02", IMPLEMENTER, str(self.h.worktree), "t3/om-01-02", ok_worktree)  # bound once
+        self.assertEqual(ctx.exception.code, "no-authorization")
 
     def test_claim_posts_marker_and_records_revisions(self):
         state = self.h.claim()
@@ -91,7 +93,7 @@ class LifecycleTests(unittest.TestCase):
 
     def test_checks_refuse_wrong_head_dirty_tree_and_foreign_cwd(self):
         self.h.claim()
-        self.c.record_head("OM-01.02", "notthehead")
+        self.c.record_head("OM-01.02", "notthehead", self.h.terminal())
         with self.assertRaises(Refused):
             self.c.run_checks("OM-01.02", "notthehead", str(self.h.worktree), passing_runner)
         self.c.record_head("OM-01.02", self.h.sha)
@@ -119,20 +121,20 @@ class LifecycleTests(unittest.TestCase):
 
     def test_review_requires_executed_passing_checks_at_head(self):
         self.h.claim()
-        self.c.record_head("OM-01.02", self.h.sha)
+        self.c.record_head("OM-01.02", self.h.sha, self.h.terminal())
         with self.assertRaises(Refused):
-            self.c.request_review("OM-01.02", self.h.sha, REVIEWER)
-        self.h.checks(runner=failing_runner)
+            self.c.authorize_review("OM-01.02", self.h.sha)
+        self.c.run_checks("OM-01.02", self.h.sha, str(self.h.worktree), failing_runner)
         with self.assertRaises(Refused):
-            self.c.request_review("OM-01.02", self.h.sha, REVIEWER)
-        self.c.repair("OM-01.02", receipt(IMPLEMENTER, "task-impl-2"))
+            self.c.authorize_review("OM-01.02", self.h.sha)
+        self.h.repair(receipt_=receipt(IMPLEMENTER, "task-impl-2"))
         # tamper: a check record whose command list is shorter than the configured set is refused
         self.h.checks()
         state = self.h.store.load_story("OM-01.02")
         state.checks[-1]["commands"] = state.checks[-1]["commands"][:1]
         self.h.store.save_story(state)
         with self.assertRaises(Refused):
-            self.c.request_review("OM-01.02", self.h.sha, REVIEWER)
+            self.c.authorize_review("OM-01.02", self.h.sha)
 
     # -- review / repair ----------------------------------------------------------------
     def test_unreported_worktree_change_invalidates_evidence_at_review_admission(self):
@@ -141,7 +143,7 @@ class LifecycleTests(unittest.TestCase):
         self.h.checks()
         new = git_commit(self.h.worktree, "changed")
         with self.assertRaises(Refused) as ctx:
-            self.c.request_review("OM-01.02", self.h.sha, REVIEWER)
+            self.c.authorize_review("OM-01.02", self.h.sha)
         self.assertEqual(ctx.exception.code, "evidence-invalidated")
         state = self.h.store.load_story("OM-01.02")
         self.assertEqual((state.phase, state.head_sha), ("implemented", new))
@@ -152,17 +154,17 @@ class LifecycleTests(unittest.TestCase):
         self.h.checks()
         (self.h.worktree / "README").write_text("changed after checks")
         with self.assertRaises(Refused) as ctx:
-            self.c.request_review("OM-01.02", self.h.sha, REVIEWER)
+            self.c.authorize_review("OM-01.02", self.h.sha)
         self.assertEqual(ctx.exception.code, "evidence-invalidated")
         self.assertEqual(self.h.store.load_story("OM-01.02").phase, "implemented")
 
     def test_worktree_change_before_review_verdict_or_proposal_invalidates(self):
         self.h.claim()
         self.h.checks()
-        self.c.request_review("OM-01.02", self.h.sha, REVIEWER)
+        self.h.request_review()
         (self.h.worktree / "README").write_text("edited during review")
         with self.assertRaises(Refused):
-            self.c.record_review("OM-01.02", self.h.sha, "approved", "r")
+            self.c.record_review("OM-01.02", self.h.sha, "approved", "r", self.h.terminal())
         self.assertEqual(self.h.store.load_story("OM-01.02").phase, "implemented")
         h2 = Harness(small_backlog())
         try:
@@ -179,9 +181,9 @@ class LifecycleTests(unittest.TestCase):
     def test_review_sha_must_match_head(self):
         self.h.claim()
         self.h.checks()
-        self.c.request_review("OM-01.02", self.h.sha, REVIEWER)
+        self.h.request_review()
         with self.assertRaises(Refused):
-            self.c.record_review("OM-01.02", "sha0", "approved", "r")
+            self.c.record_review("OM-01.02", "sha0", "approved", "r", self.h.terminal())
 
     def test_new_commit_invalidates_approval(self):
         self.h.to_review_approved()
@@ -195,8 +197,12 @@ class LifecycleTests(unittest.TestCase):
     def test_reviewer_task_must_be_fresh(self):
         self.h.claim()
         self.h.checks()
+        self.c.authorize_review("OM-01.02", self.h.sha)
         with self.assertRaises(ReceiptInvalid):
-            self.c.request_review("OM-01.02", self.h.sha, {**REVIEWER, "taskId": "task-impl-1"})
+            self.c.bind_receipt("OM-01.02", {**REVIEWER, "taskId": "task-impl-1"}, worktree_check=ok_worktree)
+        with self.assertRaises(ReceiptInvalid):  # an implementer receipt cannot consume a reviewer authorization
+            self.c.bind_receipt("OM-01.02", receipt(IMPLEMENTER, "task-impl-2"), worktree_check=ok_worktree)
+        self.assertEqual(self.h.store.load_story("OM-01.02").phase, "review-authorized")
 
     def test_record_head_after_failure_requires_budgeted_repair(self):
         """Reviewer probe B4: failed phases cannot loop through record-head."""
@@ -208,17 +214,17 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual(ctx.exception.code, "repair-required")
         state = self.h.store.load_story("OM-01.02")
         self.assertEqual((state.phase, state.repair_rounds), ("checks-failed", 0))
-        self.c.repair("OM-01.02", receipt(IMPLEMENTER, "task-impl-2"))
+        self.h.repair(receipt_=receipt(IMPLEMENTER, "task-impl-2"))
         self.assertEqual(self.h.store.load_story("OM-01.02").repair_rounds, 1)
 
     def test_repair_cap_blocks_after_two_rounds(self):
         self.h.claim()
         for n in range(1, 3):
             self.h.checks(runner=failing_runner)
-            state = self.c.repair("OM-01.02", receipt(IMPLEMENTER, f"task-impl-{n + 1}"))
+            state = self.h.repair(receipt_=receipt(IMPLEMENTER, f"task-impl-{n + 1}"))
             self.assertEqual((state.repair_rounds, state.phase), (n, "claimed"))
         self.h.checks(runner=failing_runner)
-        state = self.c.repair("OM-01.02", receipt(IMPLEMENTER, "task-impl-9"))
+        state = self.c.authorize_repair("OM-01.02")
         self.assertEqual(state.phase, "blocked")
         self.assertIn("repair rounds exhausted", state.blocked["reason"])
         self.assertEqual(len([c for c in self.h.fake.comments[21] if c.marker["kind"] == "block"]), 1)
@@ -231,23 +237,24 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue(state.reviews[-1]["regression"])
         with self.assertRaises(Refused):
             self.c.record_head("OM-01.02", "s2")
-        self.assertEqual(self.c.repair("OM-01.02", receipt(IMPLEMENTER, "task-impl-2")).repair_rounds, 1)
+        self.assertEqual(self.h.repair(receipt_=receipt(IMPLEMENTER, "task-impl-2")).repair_rounds, 1)
 
     def test_delegated_task_budget(self):
         self.h = Harness(small_backlog(), max_delegated_tasks="2")
         self.h.claim()
         self.h.checks()
-        self.h.coordinator.request_review("OM-01.02", self.h.sha, REVIEWER)
-        self.h.coordinator.record_review("OM-01.02", self.h.sha, "changes-requested", "r")
+        self.h.request_review()
+        self.h.coordinator.record_review("OM-01.02", self.h.sha, "changes-requested", "r", self.h.terminal())
         with self.assertRaises(BudgetExhausted):
-            self.h.coordinator.repair("OM-01.02", receipt(IMPLEMENTER, "task-impl-2"))
+            self.h.coordinator.authorize_repair("OM-01.02")  # refused before any launch
+        self.assertEqual(self.h.store.load_story("OM-01.02").pending_authorization(), None)
 
     def test_wall_clock_budget(self):
         self.h.claim()
         self.h.checks()
         self.c.now = lambda: "2026-11-07T13:00:00Z"
         with self.assertRaises(BudgetExhausted):
-            self.c.request_review("OM-01.02", self.h.sha, REVIEWER)
+            self.c.authorize_review("OM-01.02", self.h.sha)
         self.assertEqual(self.h.store.load_story("OM-01.02").phase, "checks-passed")
 
     # -- cancel / resume ------------------------------------------------------------------
@@ -281,7 +288,7 @@ class LifecycleTests(unittest.TestCase):
     def test_cancel_run_stops_everything(self):
         self.h = Harness(small_backlog(), allow='["OM-01.02", "OM-01.04"]', max_stories_per_run="2")
         self.h.claim()
-        self.h.coordinator.record_head("OM-01.02", self.h.sha)  # worker returned
+        self.h.coordinator.record_head("OM-01.02", self.h.sha, self.h.terminal())  # worker returned with terminal evidence
         result = self.h.coordinator.cancel_run("budget")
         self.assertEqual(result["awaiting_worker_termination"], [])
         self.assertEqual(self.h.store.load_story("OM-01.02").phase, "cancelled")

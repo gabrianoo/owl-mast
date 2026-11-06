@@ -2,20 +2,34 @@
 
 Phases (``state.PHASES``)::
 
-    reserve ──(admission under lock, claim marker)──> reserved ──bind-receipt (worktree identity)──> claimed
-    claimed ──record-head──> implemented ──run-checks (full set, exact clean HEAD)──> checks-passed | checks-failed
-    checks-passed ──request-review (worktree re-read, fresh reviewer receipt)──> review-requested ──record-review──> review-approved | changes-requested
-    checks-failed | changes-requested ──repair (budgeted, round ≤ 2)──> claimed ; otherwise ──> blocked
+    reserve ──(admission under lock, implementer authorization, claim marker)──> reserved
+    reserved ──bind-receipt (consumes the authorization; worktree identity)──> claimed            active task: implementer
+    claimed ──record-head (+ implementer terminal evidence)──> implemented                         active task: none
+    implemented ──run-checks (full set, exact clean HEAD)──> checks-passed | checks-failed
+    checks-passed ──authorize-review (worktree re-read, reviewer authorization)──> review-authorized
+    review-authorized ──bind-receipt (fresh reviewer receipt)──> review-requested                   active task: reviewer
+    review-requested ──record-review (+ reviewer terminal evidence)──> review-approved | changes-requested
+    checks-failed | changes-requested ──authorize-repair (round ≤ 2, implementer authorization)──> repair-authorized ; otherwise ──> blocked
+    repair-authorized ──bind-receipt──> claimed                                                     active task: implementer
     checks-failed | changes-requested ──record-head──> REFUSED (repair-required)
-    review-approved ──record-head(new sha) | unreported worktree change──> implemented (evidence invalidated)
+    review-authorized | review-requested | review-approved ──record-head(new sha) | unreported worktree change──> implemented (evidence invalidated; pending proposal abandoned)
     review-approved ──propose-evidence (revisions unchanged, worktree re-read, PR head/reviews/checks)──> proposed
-    any active | conflict ──block | cancel (terminal worker evidence when a worker is running)──> blocked | cancelled
+    any active | conflict ──block | cancel (terminal evidence for the active task)──> blocked | cancelled (pending advancing intents abandoned)
     duplicate marker ──> conflict
+
+Task capacity is authorized durably BEFORE a launch (``reserve``, ``authorize-review``,
+``authorize-repair``); every issued authorization counts against ``max_delegated_tasks``
+whether or not it is ever bound, ``bind-receipt`` consumes exactly one pending authorization,
+and budgets are derived from the story files under the lock, never from cached counters. The
+active task (id and role) is tracked independently of the phase: HEAD recording, review
+verdicts and evidence invalidation never release ownership; only terminal task evidence does.
 
 External effects are append-only marker comments only (``claim``, ``release``, ``block``,
 ``proposal``). Each is a write-ahead intent carrying its stable operation identity and its
 complete comment body; a replay posts exactly that body, and advancing replays re-validate
-their preconditions first. Terminal phases persist together with their cleanup intent.
+their preconditions (local phase, exact-SHA approval, revisions, worktree, PR) first. A
+terminal phase, its cleanup intent and the abandonment of every pending advancing intent
+persist in one write; a cancelled run or a terminal story never replays an advancing intent.
 
 Every operation refuses a live transport (``live-execution-disabled``) and a run's state is
 bound to the environment (fixture or live) it was created in. The live gate stays until the
@@ -34,7 +48,7 @@ from .backlog import Entry, Snapshot, take_snapshot
 from .eligibility import Decision, decide
 from .errors import BudgetExhausted, Conflict, Refused, StaleRevision, UnattendedError
 from .github import PullRequestRecord, Transport, render_marker
-from .policy import Policy
+from .policy import Policy, Target
 from .probes import run_commands
 from .receipts import validate_receipt
 from .state import ACTIVE_PHASES, Intent, Store, StoryState, utcnow
@@ -42,17 +56,23 @@ from .state import ACTIVE_PHASES, Intent, Store, StoryState, utcnow
 WorktreeCheck = Callable[[str, str], tuple[bool, str]]
 
 # What the installed T3 tools do not establish; verified against the tool metadata. The
-# protocol itself (reserve under the lock before delegate_task, bind the receipt afterwards,
+# protocol itself (authorize under the lock before delegate_task, bind the receipt afterwards,
 # keep ownership until task_status/task_cancel report a terminal state) is supported by the
 # tools and implemented below, but it has not been qualified with an actual worker.
 LIVE_EXECUTION_GAPS = (
     "no hard deadline or resource bound on a delegated child: delegate_task timeoutMs limits the wait in mode=wait only and does not cancel the child",
     "credential confinement of a delegated child is not established: the child runs with the coordinator's credentials and runtime mode",
-    "reserve-before-delegate, receipt binding and terminal task evidence (task_status workState result_available; task_cancel reporting a terminal state) are implemented as protocol but not qualified with an actual bounded worker",
+    "pre-launch task authorization, receipt binding and terminal task evidence (task_status workState result_available; task_cancel reporting a terminal state) are implemented as protocol but not qualified with an actual bounded worker; launches themselves are invisible to this tool, which bounds only what can be bound",
     "no bounded GitHub credential has passed the permission probe (denial of forbidden operations untested)",
 )
 TERMINAL_TASK_STATES = ("result_available", "completed", "failed", "cancelled", "terminal")
 CLEANUP_KINDS = ("release", "block")
+# purpose -> (phase in which the authorization is issued, phase after the receipt is bound, role)
+AUTHORIZATION_FLOW = {
+    "implementation": ("reserved", "claimed", "implementer"),
+    "review": ("review-authorized", "review-requested", "reviewer"),
+    "repair": ("repair-authorized", "claimed", "implementer"),
+}
 
 
 def git_worktree_check(path: str, branch: str) -> tuple[bool, str]:
@@ -139,6 +159,13 @@ def revision_diff(recorded: dict[str, dict], current: dict[str, dict]) -> dict[s
     return changed
 
 
+def require_unique_ids(snapshot: Snapshot, context: str) -> None:
+    """Refuse before any ``by_id`` reduction when a stable id is carried by several issues."""
+    dupes = snapshot.duplicate_ids()
+    if dupes:
+        raise Refused(f"{context}: duplicate stable ids {dupes} in the snapshot; identity mapping is ambiguous, nothing is admitted", code="ambiguous-identity", duplicates=dupes)
+
+
 class Coordinator:
     def __init__(self, transport: Transport, policy: Policy, store: Store, now: Callable[[], str] = utcnow, live: bool = False):
         self.transport, self.policy, self.store, self.now, self.live = transport, policy, store, now, live
@@ -158,6 +185,12 @@ class Coordinator:
             raise Refused("run binding changed on disk", code="run-binding-mismatch")
         self.run = run
 
+    def _require_run_active(self, operation: str) -> None:
+        """A cancelled run advances nothing: no admission, authorization, binding, evidence
+        recording or proposal. Terminal operations (cancel/block) and recovery stay allowed."""
+        if self.run.cancelled:
+            raise BudgetExhausted(f"{operation}: run is cancelled ({self.run.stop_reason}); only cancel, block, record-task-terminal, resume and status are allowed", code="run-cancelled", stop_reason=self.run.stop_reason)
+
     def _story(self, story: str) -> StoryState:
         state = self.store.load_story(story)
         if state is None:
@@ -168,31 +201,80 @@ class Coordinator:
         if state.phase not in phases:
             raise Refused(f"{state.story} is {state.phase}; this operation needs {phases}", phase=state.phase)
 
-    def _budget(self, *, delegation: bool = False, admission: bool = False) -> None:
-        run = self.run
-        if run.cancelled:
-            raise BudgetExhausted("run is cancelled", stop_reason=run.stop_reason)
-        elapsed = datetime.fromisoformat(self.now().replace("Z", "+00:00")) - datetime.fromisoformat(run.started_at.replace("Z", "+00:00"))
+    def _counts(self) -> dict[str, int]:
+        """Durable budget consumption from the story files; refreshes the run.json cache."""
+        counts = self.store.story_counts()
+        self.run.stories_claimed, self.run.delegated_tasks, self.run.repair_rounds = counts["stories_claimed"], counts["delegated_tasks"], counts["repair_rounds"]
+        return counts
+
+    def _wall_clock(self) -> None:
+        elapsed = datetime.fromisoformat(self.now().replace("Z", "+00:00")) - datetime.fromisoformat(self.run.started_at.replace("Z", "+00:00"))
         if elapsed > timedelta(minutes=self.policy.max_wall_clock_minutes):
             raise BudgetExhausted(f"wall clock budget of {self.policy.max_wall_clock_minutes} minutes exceeded")
-        if delegation and run.delegated_tasks + 1 > self.policy.max_delegated_tasks:
-            raise BudgetExhausted(f"delegated task budget {self.policy.max_delegated_tasks} exhausted")
-        if admission:
-            if run.stories_claimed + 1 > self.policy.max_stories_per_run:
-                raise BudgetExhausted(f"story budget {self.policy.max_stories_per_run} exhausted")
-            active = [s.story for s in self.store.list_stories() if s.active or s.phase == "conflict"]
-            if len(active) + 1 > self.policy.max_concurrent_implementers:
-                raise Refused(f"another story is active in this run: {active}", active=active)
 
-    def _count_delegation(self) -> None:
-        self.run.delegated_tasks += 1
-        self.store.save_run(self.run)
+    def _budget_admission(self) -> None:
+        self._wall_clock()
+        counts = self._counts()
+        if counts["stories_claimed"] + 1 > self.policy.max_stories_per_run:
+            raise BudgetExhausted(f"story budget {self.policy.max_stories_per_run} exhausted")
+        active = [s.story for s in self.store.list_stories() if s.active or s.phase == "conflict"]
+        if len(active) + 1 > self.policy.max_concurrent_implementers:
+            raise Refused(f"another story is active in this run: {active}", active=active)
+
+    def _authorize(self, state: StoryState, purpose: str, sha: str | None = None, round_: int | None = None) -> dict:
+        """Issue (or return the already pending) durable task authorization for ``purpose``.
+        Refuses BEFORE any launch when the delegated-task budget would be exceeded. The
+        authorization is counted from the moment it is saved, bound or not."""
+        role = AUTHORIZATION_FLOW[purpose][2]
+        pending = state.pending_authorization()
+        if pending is not None:
+            if (pending["purpose"], pending["sha"], pending["round"]) == (purpose, sha, round_):
+                return pending  # idempotent: the same unconsumed slot, no second count
+            raise Refused(f"{state.story} already has a pending {pending['purpose']} authorization {pending['id']}; bind or abandon it first", code="authorization-pending", authorization=pending)
+        self._wall_clock()
+        counts = self._counts()
+        if counts["delegated_tasks"] + 1 > self.policy.max_delegated_tasks:
+            raise BudgetExhausted(f"delegated task budget {self.policy.max_delegated_tasks} exhausted ({counts['delegated_tasks']} authorizations issued); no task may be launched", issued=counts["delegated_tasks"])
+        auth = {"id": f"{self.store.run_id}:{state.story}:{len(state.authorizations) + 1}", "role": role, "purpose": purpose, "sha": sha, "round": round_,
+                "issued_at": self.now(), "status": "pending", "task_id": None, "reason": None}
+        state.authorizations.append(auth)
+        return auth
+
+    def _abandon_authorization(self, state: StoryState, reason: str) -> dict | None:
+        pending = state.pending_authorization()
+        if pending is not None:
+            pending["status"], pending["reason"] = "abandoned", reason  # stays counted: the slot was issued
+        return pending
+
+    def _apply_task_evidence(self, state: StoryState, task_evidence: dict | None, operation: str) -> dict | None:
+        """Terminal task evidence (task_status workState result_available or a terminal
+        task_cancel result) for the active task clears ownership; anything else refuses.
+        Returns the history record, or None when no task is active and no evidence given."""
+        active = state.active_task
+        if active is None:
+            if task_evidence is not None:
+                raise Refused(f"{operation}: {state.story} has no active task; task evidence {task_evidence} matches nothing", code="no-active-task")
+            return None
+        if (not isinstance(task_evidence, dict) or task_evidence.get("taskId") != active["taskId"]
+                or task_evidence.get("status") not in TERMINAL_TASK_STATES):
+            raise Refused(f"{operation}: {active['role']} task {active['taskId']} of {state.story} is still owned; present terminal task evidence for exactly that task (task_status workState result_available or a terminal task_cancel result) before releasing it",
+                          code="worker-not-terminal", task_id=active["taskId"], role=active["role"])
+        record = {"taskId": active["taskId"], "role": active["role"], "status": task_evidence["status"], "at": self.now(), "operation": operation, "authorization": active.get("authorization")}
+        state.task_history.append(record)
+        state.active_task = None
+        return record
+
+    def _require_no_active_task(self, state: StoryState, operation: str) -> None:
+        if state.active_task is not None:
+            raise Refused(f"{operation}: {state.active_task['role']} task {state.active_task['taskId']} of {state.story} is still active; present its terminal evidence (record-task-terminal) first",
+                          code="worker-not-terminal", task_id=state.active_task["taskId"], role=state.active_task["role"])
 
     def _fresh_snapshot(self) -> Snapshot:
         return take_snapshot(self.transport, self.policy.repo_slug, self.now())
 
     def _current_revisions(self, story: str, snapshot: Snapshot | None = None) -> tuple[Snapshot, dict[str, dict]]:
         fresh = snapshot or self._fresh_snapshot()
+        require_unique_ids(fresh, "fresh snapshot")
         entry = fresh.by_id().get(story)
         return fresh, (revisions_of(closure(fresh, entry)) if entry else {})
 
@@ -206,6 +288,15 @@ class Coordinator:
             raise StaleRevision(f"{state.story}: revisions changed since admission for {sorted(changed)}; re-plan or rebase-revisions explicitly", changed=changed)
         return fresh
 
+    def _invalidate_evidence(self, state: StoryState, head: str | None, reason: str) -> list[str]:
+        """Check and review evidence no longer describe the source: phase ``implemented``,
+        approval cleared, pending proposal intents and a pending review authorization
+        abandoned. The active task is untouched (ownership is not evidence)."""
+        abandoned = state.abandon_advancing_intents(reason)
+        self._abandon_authorization(state, reason)
+        state.phase, state.head_sha, state.approved_sha = "implemented", head, None
+        return abandoned
+
     def _verify_worktree(self, state: StoryState, sha: str, gate: str) -> None:
         """Re-read the actual worktree identity, HEAD and cleanliness at an evidence gate.
         An unreported change invalidates the recorded check and review evidence."""
@@ -217,9 +308,9 @@ class Coordinator:
         head = git_head(state.claim["worktree_path"])
         clean, dirt = git_clean(state.claim["worktree_path"])
         if head != sha or not clean:
-            state.phase, state.head_sha, state.approved_sha = "implemented", head, None
+            abandoned = self._invalidate_evidence(state, head, f"unreported worktree change at {gate}: HEAD {head}, clean={clean}")
             self.store.save_story(state)
-            self.store.journal(state.story, "unreported-worktree-change", {"gate": gate, "expected": sha, "head": head, "clean": clean, "dirt": dirt})
+            self.store.journal(state.story, "unreported-worktree-change", {"gate": gate, "expected": sha, "head": head, "clean": clean, "dirt": dirt, "abandoned_intents": abandoned})
             raise Refused(f"{gate}: worktree HEAD {head} / clean={clean} differs from the evidence at {sha}; check and review evidence invalidated", code="evidence-invalidated", head=head, clean=clean)
 
     def _active_foreign_claims(self, issue: int, story: str) -> list[dict]:
@@ -246,12 +337,17 @@ class Coordinator:
         state.intents.append(intent)
         return intent
 
-    def _post_intent(self, state: StoryState, intent: Intent) -> Intent:
+    def _post_intent(self, state: StoryState, intent: Intent, phase_after: str | None = None) -> Intent:
         """Idempotent post of a recorded intent: zero markers ⇒ post the persisted body,
-        one ⇒ adopt, more ⇒ conflict."""
+        one ⇒ adopt, more ⇒ conflict. The intent's completion and the phase transition it
+        carries (``phase_after``) persist in one write, so a crash cannot separate them."""
         if not self.live:
             raise Refused(f"{intent.kind} for {state.story} needs live writes (--live)", code="live-required")
         if intent.status == "done":
+            if phase_after and state.phase != phase_after:
+                state.phase = phase_after
+                self.store.save_story(state)
+                self.store.journal(state.story, "transition-reconciled", {"op": intent.op, "phase": phase_after})
             return intent
         if intent.status == "abandoned":
             raise Refused(f"{intent.op} for {state.story} was abandoned: {intent.reason}")
@@ -273,23 +369,28 @@ class Coordinator:
                 self.store.save_story(state)
             raise Conflict(f"marker {intent.marker} appears {len(found)} times; a concurrent writer posted the same event", comment_ids=ids)
         intent.status, intent.comment_id, intent.completed_at = "done", found[0].comment_id, self.now()
-        self.store.save_story(state)
+        if phase_after:
+            state.phase = phase_after
+        self.store.save_story(state)  # completion and transition in one write
         return intent
 
     # -- admission -------------------------------------------------------------------------
     def reserve(self, story: str, snapshot: Snapshot, baseline_sha: str) -> StoryState:
-        """Admission BEFORE any delegated task exists: budgets, eligibility on the plan
-        snapshot and on a fresh read, no foreign claim, claim marker. The receipt of the task
-        the coordinator then launches is bound with :meth:`bind_receipt`."""
+        """Admission BEFORE any delegated task exists: budgets (stories and delegated tasks),
+        unique identity and eligibility on the plan snapshot and on a fresh read, no foreign
+        claim, implementer authorization, claim marker. The receipt of the task the
+        coordinator then launches is bound with :meth:`bind_receipt`."""
         with self.store.locked(self):
             self.require_not_live("reserve")
             self._reload_run()
+            self._require_run_active("reserve")
             if self.store.load_story(story) is not None:
                 raise Refused(f"{story} already has state in run {self.store.run_id}; a story is admitted at most once per run (no reclaim)", code="no-reclaim")
+            require_unique_ids(snapshot, "plan snapshot")
             decision: Decision = decide(story, snapshot, self.policy)
             if not decision.dispatchable:
                 raise Refused(f"{story} is not dispatchable: {decision.outcome} ({'; '.join(decision.reasons)})", decision=decision.as_dict())
-            self._budget(admission=True)
+            self._budget_admission()
             planned = snapshot.by_id()[story]
             fresh, current = self._current_revisions(story)
             changed = revision_diff(revisions_of(closure(snapshot, planned)), current)
@@ -305,52 +406,92 @@ class Coordinator:
             state = StoryState(story=story, issue=entry.number, item_id=entry.item_id, phase="claim-incomplete", run_id=self.store.run_id,
                                claim={"baseline_sha": baseline_sha, "reserved_at": self.now(), "scope": decision.outcome, "worktree_path": None, "branch": None},
                                revisions=current)
+            auth = self._authorize(state, "implementation")  # refuses before any save or post when the task budget is spent
             intent = self._new_intent(state, "claim", "claim", f"Unattended reservation by run `{self.store.run_id}` from `{baseline_sha}` (scope: {decision.outcome}). An implementer task is delegated only after this reservation; its receipt is bound to the reservation. Project Status is owner-maintained; completion still requires checks, independent review and owner acceptance.", {"revisions": current})
             self.store.save_story(state)
-            self.run.stories_claimed += 1
+            self.store.journal(story, "reserved", {"issue": entry.number, "baseline": baseline_sha, "scope": decision.outcome, "authorization": auth["id"]})
+            self._counts()
             self.store.save_run(self.run)
-            self.store.journal(story, "reserved", {"issue": entry.number, "baseline": baseline_sha, "scope": decision.outcome})
-            self._post_intent(state, intent)
-            state.phase = "reserved"
-            self.store.save_story(state)
+            self._post_intent(state, intent, phase_after="reserved")
             return state
 
-    def bind_receipt(self, story: str, receipt: dict, worktree_path: str, branch: str, worktree_check: WorktreeCheck = git_worktree_check) -> StoryState:
-        """Bind the delegated implementer task (its receipt and worktree) to the reservation."""
+    def bind_receipt(self, story: str, receipt: dict, worktree_path: str | None = None, branch: str | None = None, worktree_check: WorktreeCheck = git_worktree_check) -> StoryState:
+        """Bind the delegated task's receipt to the story's pending authorization, consuming
+        it: implementation (needs the worktree identity), review or repair (re-check the
+        bound worktree). Exactly one bind per authorization; no authorization ⇒ refused."""
         with self.store.locked(self):
             self.require_not_live("bind-receipt")
             self._reload_run()
+            self._require_run_active("bind-receipt")
             state = self._story(story)
-            self._require_phase(state, "reserved")
-            self._budget(delegation=True)
-            receipt = validate_receipt(receipt, self.policy.implementer, "implementer")
+            auth = state.pending_authorization()
+            if auth is None:
+                raise Refused(f"{story} has no pending task authorization; reserve / authorize-review / authorize-repair must precede every launch, and each authorization binds once", code="no-authorization")
+            issued_phase, next_phase, role = AUTHORIZATION_FLOW[auth["purpose"]]
+            self._require_phase(state, issued_phase)
+            self._require_no_active_task(state, "bind-receipt")
+            target: Target = self.policy.implementer if role == "implementer" else self.policy.reviewer
+            used = {r["taskId"] for r in state.reviewer_receipts + state.implementer_receipts}
+            receipt = validate_receipt(receipt, target, role, used)
+            if auth["purpose"] == "implementation":
+                if not worktree_path or not branch:
+                    raise Refused("bind-receipt for the implementation task needs --worktree and --branch")
+            else:
+                worktree_path, branch = state.claim["worktree_path"], state.claim["branch"]
             ok, why = worktree_check(worktree_path, branch)
             if not ok:
                 raise Refused(f"worktree identity check failed: {why}", code="worktree-mismatch")
-            state.claim.update({"worktree_path": worktree_path, "branch": branch, "claimed_at": self.now()})
-            state.implementer_receipts.append(receipt)
-            state.worker_state, state.phase = "running", "claimed"
+            if auth["purpose"] == "implementation":
+                state.claim.update({"worktree_path": worktree_path, "branch": branch, "claimed_at": self.now()})
+            auth["status"], auth["task_id"] = "consumed", receipt["taskId"]
+            if role == "implementer":
+                state.implementer_receipts.append(receipt)
+            else:
+                state.reviewer_receipts.append({**receipt, "sha": auth["sha"]})
+            state.active_task = {"taskId": receipt["taskId"], "role": role, "authorization": auth["id"], "bound_at": self.now()}
+            state.phase = next_phase
             self.store.save_story(state)
-            self._count_delegation()
-            self.store.journal(story, "receipt-bound", {"task": receipt["taskId"], "branch": branch, "worktree": worktree_path})
+            self._counts()
+            self.store.save_run(self.run)
+            self.store.journal(story, "receipt-bound", {"task": receipt["taskId"], "role": role, "purpose": auth["purpose"], "authorization": auth["id"], "branch": branch, "worktree": worktree_path})
+            return state
+
+    def record_task_terminal(self, story: str, task_evidence: dict) -> StoryState:
+        """Role-agnostic acknowledgment that the active task is terminal. The only way, with
+        the evidence arguments of record-head, record-review, cancel and block, to release
+        task ownership; it changes no other state."""
+        with self.store.locked(self):
+            self.require_not_live("record-task-terminal")
+            state = self._story(story)
+            record = self._apply_task_evidence(state, task_evidence, "record-task-terminal")
+            self.store.save_story(state)
+            self.store.journal(story, "task-terminal", record or {})
             return state
 
     # -- implementation ---------------------------------------------------------------------
-    def record_head(self, story: str, sha: str) -> StoryState:
+    def record_head(self, story: str, sha: str, task_evidence: dict | None = None) -> StoryState:
+        """Record the implementer's exact commit. While an implementer task is active its
+        terminal evidence is required; a reviewer task stays active regardless (the head is
+        not the reviewer's). The same SHA changes nothing; a new SHA invalidates evidence."""
         with self.store.locked(self):
             self.require_not_live("record-head")
+            self._reload_run()
+            self._require_run_active("record-head")
             state = self._story(story)
-            if state.phase in ("checks-failed", "changes-requested"):
-                raise Refused(f"{story} is {state.phase}; a new implementation needs a budgeted repair authorization first", code="repair-required", phase=state.phase)
-            self._require_phase(state, "claimed", "implemented", "checks-passed", "review-requested", "review-approved")
-            state.worker_state = "returned"
+            if state.phase in ("checks-failed", "changes-requested", "repair-authorized"):
+                raise Refused(f"{story} is {state.phase}; a new implementation needs a budgeted repair authorization bound to a fresh task first", code="repair-required", phase=state.phase)
+            self._require_phase(state, "claimed", "implemented", "checks-passed", "review-authorized", "review-requested", "review-approved")
+            if task_evidence is not None or (state.active_task and state.active_task["role"] == "implementer"):
+                self._apply_task_evidence(state, task_evidence, "record-head")
             if state.head_sha == sha and state.phase != "claimed":
                 self.store.save_story(state)
+                self.store.journal(story, "head-unchanged", {"sha": sha, "phase": state.phase, "active_task": state.active_task})
                 return state
-            invalidated = state.phase in ("review-requested", "review-approved")
+            invalidated = state.phase in ("review-authorized", "review-requested", "review-approved")
+            abandoned = self._invalidate_evidence(state, sha, f"new head {sha} recorded") if invalidated else []
             state.head_sha, state.phase, state.approved_sha = sha, "implemented", None
             self.store.save_story(state)
-            self.store.journal(story, "head-recorded", {"sha": sha, "approval_invalidated": invalidated})
+            self.store.journal(story, "head-recorded", {"sha": sha, "approval_invalidated": invalidated, "abandoned_intents": abandoned, "active_task": state.active_task})
             return state
 
     def run_checks(self, story: str, sha: str, cwd: str, runner=None) -> StoryState:
@@ -358,8 +499,11 @@ class Coordinator:
         This is the only way checks become evidence; there is no asserted pass."""
         with self.store.locked(self):
             self.require_not_live("run-checks")
+            self._reload_run()
+            self._require_run_active("run-checks")
             state = self._story(story)
             self._require_phase(state, "implemented", "checks-passed", "checks-failed")
+            self._require_no_active_task(state, "run-checks")
             if not state.claim or not state.claim.get("worktree_path") or Path(cwd).resolve() != Path(state.claim["worktree_path"]).resolve():
                 raise Refused(f"checks must run in the claimed worktree {state.claim and state.claim.get('worktree_path')}")
             if state.head_sha != sha:
@@ -384,70 +528,82 @@ class Coordinator:
             self.store.journal(story, "checks-recorded", {"sha": sha, "passed": passed, "commands": len(results)})
             return state
 
-    def request_review(self, story: str, sha: str, receipt: dict) -> StoryState:
+    def authorize_review(self, story: str, sha: str) -> StoryState:
+        """Pre-launch authorization of the reviewer task at the exact checked commit: full
+        check set passed at ``sha``, worktree re-read, implementer task terminal, delegated
+        task budget. Idempotent while the authorization is pending."""
         with self.store.locked(self):
-            self.require_not_live("request-review")
+            self.require_not_live("authorize-review")
             self._reload_run()
+            self._require_run_active("authorize-review")
             state = self._story(story)
-            self._require_phase(state, "checks-passed")
+            self._require_phase(state, "checks-passed", "review-authorized")
             last = state.checks[-1] if state.checks else None
             configured = len(self.policy.check_commands)
             if (state.head_sha != sha or not last or last["sha"] != sha or not last["passed"] or not last.get("executed")
                     or len(last.get("commands", [])) != configured or any(c.get("returncode") != 0 for c in last["commands"])
                     or last.get("head_after") != sha or not last.get("clean_after")):
                 raise Refused(f"the full configured check set ({configured} commands) has not been executed and passed at {sha}")
-            self._verify_worktree(state, sha, "request-review")
-            self._budget(delegation=True)
-            used = {r["taskId"] for r in state.reviewer_receipts + state.implementer_receipts}
-            receipt = validate_receipt(receipt, self.policy.reviewer, "reviewer", used)
-            state.reviewer_receipts.append({**receipt, "sha": sha})
-            state.phase, state.worker_state = "review-requested", "running"
+            self._verify_worktree(state, sha, "authorize-review")
+            self._require_no_active_task(state, "authorize-review")
+            auth = self._authorize(state, "review", sha=sha)
+            state.phase = "review-authorized"
             self.store.save_story(state)
-            self._count_delegation()
-            self.store.journal(story, "review-requested", {"sha": sha, "task": receipt["taskId"]})
+            self._counts()
+            self.store.save_run(self.run)
+            self.store.journal(story, "review-authorized", {"sha": sha, "authorization": auth["id"]})
             return state
 
-    def record_review(self, story: str, sha: str, verdict: str, report: str) -> StoryState:
+    def authorize_repair(self, story: str) -> StoryState:
+        """Pre-launch authorization of a repair implementer task: previous task terminal,
+        round ≤ max (otherwise blocked), delegated task budget. The round is counted at
+        authorization. Idempotent while the authorization is pending."""
+        with self.store.locked(self):
+            self.require_not_live("authorize-repair")
+            self._reload_run()
+            self._require_run_active("authorize-repair")
+            state = self._story(story)
+            self._require_phase(state, "checks-failed", "changes-requested", "repair-authorized")
+            self._require_no_active_task(state, "authorize-repair")
+            pending = state.pending_authorization()
+            if pending is not None and pending["purpose"] == "repair":
+                return state
+            if state.repair_rounds + 1 > self.policy.max_repair_rounds:
+                self.store.journal(story, "repair-refused", {"rounds": state.repair_rounds})
+                return self.block(story, f"repair rounds exhausted ({self.policy.max_repair_rounds}); unresolved after {state.phase}")
+            auth = self._authorize(state, "repair", round_=state.repair_rounds + 1)
+            state.repair_rounds += 1
+            state.phase = "repair-authorized"
+            self.store.save_story(state)
+            self._counts()
+            self.store.save_run(self.run)
+            self.store.journal(story, "repair-authorized", {"round": state.repair_rounds, "authorization": auth["id"]})
+            return state
+
+    def record_review(self, story: str, sha: str, verdict: str, report: str, task_evidence: dict | None = None) -> StoryState:
         with self.store.locked(self):
             self.require_not_live("record-review")
+            self._reload_run()
+            self._require_run_active("record-review")
             state = self._story(story)
             if verdict not in ("approved", "changes-requested"):
                 raise Refused("verdict must be approved or changes-requested")
             self._require_phase(state, "review-requested", "review-approved")
             if state.head_sha != sha:
                 raise Refused(f"review at {sha} does not match head {state.head_sha}; a code change invalidates it", head=state.head_sha)
+            if task_evidence is not None or state.active_task is not None:
+                self._apply_task_evidence(state, task_evidence, "record-review")  # the reviewer must be terminal before its verdict is evidence
             self._verify_worktree(state, sha, "record-review")
             regression = state.phase == "review-approved" and verdict == "changes-requested"
             state.reviews.append({"sha": sha, "verdict": verdict, "report": report, "at": self.now(), "regression": regression})
-            state.worker_state = "returned"
+            abandoned: list[str] = []
             if verdict == "approved":
                 state.phase, state.approved_sha = "review-approved", sha
             else:
                 state.phase, state.approved_sha = "changes-requested", None
+                abandoned = state.abandon_advancing_intents(f"local review changes-requested at {sha}")
             self.store.save_story(state)
-            self.store.journal(story, "review-recorded", {"sha": sha, "verdict": verdict, "regression": regression})
-            return state
-
-    def repair(self, story: str, receipt: dict) -> StoryState:
-        with self.store.locked(self):
-            self.require_not_live("repair")
-            self._reload_run()
-            state = self._story(story)
-            self._require_phase(state, "checks-failed", "changes-requested")
-            if state.repair_rounds + 1 > self.policy.max_repair_rounds:
-                self.store.journal(story, "repair-refused", {"rounds": state.repair_rounds})
-                return self.block(story, f"repair rounds exhausted ({self.policy.max_repair_rounds}); unresolved after {state.phase}")
-            self._budget(delegation=True)
-            used = {r["taskId"] for r in state.reviewer_receipts + state.implementer_receipts}
-            receipt = validate_receipt(receipt, self.policy.implementer, "implementer", used)
-            state.implementer_receipts.append(receipt)
-            state.repair_rounds += 1
-            state.phase, state.worker_state = "claimed", "running"
-            self.run.repair_rounds += 1
-            self.store.save_run(self.run)
-            self.store.save_story(state)
-            self._count_delegation()
-            self.store.journal(story, "repair-started", {"round": state.repair_rounds, "task": receipt["taskId"]})
+            self.store.journal(story, "review-recorded", {"sha": sha, "verdict": verdict, "regression": regression, "abandoned_intents": abandoned})
             return state
 
     # -- proposal -------------------------------------------------------------------------
@@ -461,63 +617,62 @@ class Coordinator:
         if objections:
             state.phase, state.approved_sha = "changes-requested", None
             state.reviews.append({"sha": sha, "verdict": "changes-requested", "report": f"GitHub review on PR #{pr_number} by {objections}", "at": self.now(), "regression": True})
-            for intent in state.pending_intents():
-                if intent.kind == "proposal":
-                    intent.status, intent.reason = "abandoned", f"review regression on PR #{pr_number} by {objections}"
+            abandoned = state.abandon_advancing_intents(f"review regression on PR #{pr_number} by {objections}")
             self.store.save_story(state)
-            self.store.journal(state.story, "review-regression-on-github", {"pr": pr_number, "sha": sha, "reviewers": objections})
+            self.store.journal(state.story, "review-regression-on-github", {"pr": pr_number, "sha": sha, "reviewers": objections, "abandoned_intents": abandoned})
             raise Refused(f"PR #{pr_number} has outstanding CHANGES_REQUESTED from {objections}; approval invalid")
         if pr.checks == "FAILURE":
             raise Refused(f"PR #{pr_number} status checks failed at {sha}")
         return pr
 
+    def _require_current_approval(self, state: StoryState, sha: str, operation: str) -> None:
+        """A proposal (first attempt or replay) needs the current local state to approve
+        exactly ``sha``: phase review-approved, approved and head SHA equal to it, no active task."""
+        self._require_phase(state, "review-approved")
+        if state.head_sha != sha or state.approved_sha != sha:
+            raise Refused(f"{operation}: approval is for {state.approved_sha}, head is {state.head_sha}, proposal names {sha}", code="approval-mismatch")
+        self._require_no_active_task(state, operation)
+
     def propose_evidence(self, story: str, sha: str, pr_number: int, tasks: list[str], summary: str) -> StoryState:
         with self.store.locked(self):
             self.require_not_live("propose-evidence")
+            self._reload_run()
+            self._require_run_active("propose-evidence")
             state = self._story(story)
-            self._require_phase(state, "review-approved")
-            if state.head_sha != sha or state.approved_sha != sha:
-                raise Refused(f"approval is for {state.approved_sha}, head is {state.head_sha}, proposal names {sha}")
+            self._require_current_approval(state, sha, "propose-evidence")
             self._check_revisions(state)
             self._verify_worktree(state, sha, "propose-evidence")
             pr = self._validate_pr(state, sha, pr_number)
             op = f"proposal-{sha[:12]}-pr{pr_number}"
             intent = state.intent(op)
-            if intent is None:
+            if intent is None or intent.status == "abandoned":
                 task_lines = "\n".join(f"- [ ] {t}" for t in tasks) or "- (no task completion proposed)"
                 body = (f"Evidence proposal from run `{self.store.run_id}` at exact commit `{sha}` (PR #{pr_number}, CI rollup: {pr.checks or 'pending'}).\n"
                         f"{summary}\n\nProposed task completion for owner application (the machine does not tick checkboxes or change Project Status):\n{task_lines}\n\n"
                         "Checked boxes, CI pass, review approval, acceptance, merge and deployment remain distinct facts; this comment records review-approved implementation only.")
-                intent = self._new_intent(state, op, "proposal", body, {"sha": sha, "pr": pr_number, "revisions": dict(state.revisions)}, sha=sha, pr=str(pr_number))
+                if intent is not None:  # a re-approval at the same commit after an abandoned attempt reuses the operation identity
+                    intent.status, intent.reason, intent.body, intent.preconditions = "pending", None, f"{render_marker(**intent.marker)}\n{body}", {"sha": sha, "pr": pr_number, "revisions": dict(state.revisions)}
+                else:
+                    intent = self._new_intent(state, op, "proposal", body, {"sha": sha, "pr": pr_number, "revisions": dict(state.revisions)}, sha=sha, pr=str(pr_number))
                 state.proposal = {"sha": sha, "pr": pr_number, "tasks": tasks, "at": self.now(), "ci": pr.checks}
                 self.store.save_story(state)
-            self._post_intent(state, intent)
-            state.phase = "proposed"
-            self.store.save_story(state)
+            self._post_intent(state, intent, phase_after="proposed")
             self.store.journal(story, "proposed", {"sha": sha, "pr": pr_number})
             return state
 
     # -- terminal -------------------------------------------------------------------------
-    def _require_worker_terminal(self, state: StoryState, task_evidence: dict | None, operation: str) -> None:
-        """A story whose delegated task has not returned keeps its ownership until the
-        coordinator presents terminal task evidence (task_status / task_cancel result)."""
-        if state.worker_state != "running":
-            return
-        receipts = state.reviewer_receipts if state.phase == "review-requested" else state.implementer_receipts
-        task_id = receipts[-1]["taskId"] if receipts else None
-        if not isinstance(task_evidence, dict) or task_evidence.get("taskId") != task_id or task_evidence.get("status") not in TERMINAL_TASK_STATES:
-            raise Refused(f"{operation}: delegated task {task_id} is still running; present terminal task evidence (task_status workState result_available or a terminal task_cancel result) before releasing ownership", code="worker-not-terminal", task_id=task_id)
-
     def _terminal(self, story: str, phase: str, reason: str, op: str, kind: str, body: str, task_evidence: dict | None) -> StoryState:
         state = self._story(story)
         self._require_phase(state, *ACTIVE_PHASES, "conflict")
-        self._require_worker_terminal(state, task_evidence, phase)
-        state.blocked = {"reason": reason, "at": self.now(), "from_phase": state.phase, "cancelled": phase == "cancelled", "task_evidence": task_evidence}
+        # refuses while a task is owned without its terminal evidence; evidence for no active task releases nothing
+        evidence = self._apply_task_evidence(state, task_evidence, phase) if state.active_task is not None else None
+        abandoned = state.abandon_advancing_intents(f"story {phase}: {reason}")
+        self._abandon_authorization(state, f"story {phase}: {reason}")
+        state.blocked = {"reason": reason, "at": self.now(), "from_phase": state.phase, "cancelled": phase == "cancelled", "task_evidence": task_evidence, "abandoned_intents": abandoned}
         state.phase = phase
-        state.worker_state = "none"
         intent = self._new_intent(state, op, kind, body)
-        self.store.save_story(state)  # terminal phase and its cleanup intent persist together
-        self.store.journal(story, phase, {"reason": reason})
+        self.store.save_story(state)  # terminal phase, cleanup intent and abandonments persist together
+        self.store.journal(story, phase, {"reason": reason, "abandoned_intents": abandoned, "task_evidence": evidence})
         try:
             self._post_intent(state, intent)
         except UnattendedError as exc:
@@ -537,8 +692,9 @@ class Coordinator:
             return self._terminal(story, "cancelled", reason, "release", "release", f"Claim released by run `{self.store.run_id}`: {reason}. No completion is implied. Project Status is owner-maintained.", task_evidence)
 
     def cancel_run(self, reason: str, task_evidence: dict[str, dict] | None = None) -> dict:
-        """Stop admissions and release every story whose worker is terminal. Stories with a
-        running worker and no terminal evidence stay owned and are reported."""
+        """Stop admissions and release every story whose task is terminal. Stories with an
+        active task and no terminal evidence stay owned and are reported; a cancelled run
+        never advances or replays an advancing intent for them."""
         with self.store.locked(self):
             self.require_not_live("cancel-run")
             self._reload_run()
@@ -554,14 +710,16 @@ class Coordinator:
                 except Refused as exc:
                     if exc.code != "worker-not-terminal":
                         raise
-                    awaiting.append({"story": s.story, "task_id": exc.detail.get("task_id")})
+                    awaiting.append({"story": s.story, "task_id": exc.detail.get("task_id"), "role": exc.detail.get("role")})
             return {"cancelled": released, "awaiting_worker_termination": awaiting}
 
     # -- recovery -------------------------------------------------------------------------
     def resume(self, story: str, worktree_check: WorktreeCheck = git_worktree_check) -> StoryState:
-        """Restart recovery. Order: live gate, ownership identity, then replay of pending
-        effects with their persisted payload: cleanups unconditionally, advancing effects only
-        after their preconditions are re-verified, then revision verification."""
+        """Restart recovery. Order: live gate, ownership identity, cleanups replayed
+        unconditionally, completed intents reconciled with their transition, then advancing
+        replays only for an active story in a live (not cancelled) run and only after their
+        preconditions (local phase and exact-SHA approval, revisions, worktree, PR) re-verify;
+        otherwise they are abandoned. Finally the revision verification."""
         with self.store.locked(self):
             self.require_not_live("resume")
             self._reload_run()
@@ -573,29 +731,45 @@ class Coordinator:
             for intent in state.pending_intents():
                 if intent.kind in CLEANUP_KINDS:
                     self._post_intent(state, intent)
-            for intent in state.pending_intents():
+            # completed advancing intents whose transition did not persist (legacy or partial state)
+            claim = state.intent("claim")
+            if claim is not None and claim.status == "done" and state.phase == "claim-incomplete":
+                self._post_intent(state, claim, phase_after="reserved")
+            for intent in state.intents:
+                if intent.kind == "proposal" and intent.status == "done" and state.phase == "review-approved" and state.approved_sha == intent.preconditions.get("sha"):
+                    self._post_intent(state, intent, phase_after="proposed")
+            pending_advancing = state.pending_advancing_intents()
+            if pending_advancing and (not state.active or self.run.cancelled):
+                why = "run is cancelled" if self.run.cancelled else f"story is {state.phase}"
+                abandoned = state.abandon_advancing_intents(f"not replayed on resume: {why}")
+                self.store.save_story(state)
+                self.store.journal(story, "resume-advancing-abandoned", {"reason": why, "ops": abandoned})
+                pending_advancing = []
+            for intent in pending_advancing:
                 if intent.kind == "claim":
                     fresh, current = self._current_revisions(story)
                     changed = revision_diff(intent.preconditions.get("revisions", state.revisions), current)
                     if changed:
                         self.store.journal(story, "resume-claim-abandoned", {"changed": sorted(changed)})
                         intent.status, intent.reason = "abandoned", f"revisions changed before the reservation completed: {sorted(changed)}"
+                        self._abandon_authorization(state, intent.reason)
                         state.phase = "cancelled"
                         state.blocked = {"reason": intent.reason, "at": self.now(), "from_phase": "claim-incomplete", "cancelled": True}
                         self.store.save_story(state)
                         return state
-                    self._post_intent(state, intent)
-                    if state.phase == "claim-incomplete":
-                        state.phase = "reserved"
-                        self.store.save_story(state)
-                        self.store.journal(story, "reservation-completed-on-resume", {})
+                    self._post_intent(state, intent, phase_after="reserved" if state.phase == "claim-incomplete" else None)
+                    self.store.journal(story, "reservation-completed-on-resume", {})
                 elif intent.kind == "proposal":
+                    sha = intent.preconditions["sha"]
+                    if state.phase != "review-approved" or state.approved_sha != sha or state.head_sha != sha or state.active_task is not None:
+                        intent.status, intent.reason = "abandoned", f"no current approval for {sha}: phase {state.phase}, approved {state.approved_sha}, head {state.head_sha}, active task {state.active_task}"
+                        self.store.save_story(state)
+                        self.store.journal(story, "resume-proposal-abandoned", {"op": intent.op, "reason": intent.reason})
+                        continue
                     self._check_revisions(state)
-                    self._verify_worktree(state, intent.preconditions["sha"], "resume-proposal")
-                    self._validate_pr(state, intent.preconditions["sha"], int(intent.preconditions["pr"]))
-                    self._post_intent(state, intent)
-                    state.phase = "proposed"
-                    self.store.save_story(state)
+                    self._verify_worktree(state, sha, "resume-proposal")
+                    self._validate_pr(state, sha, int(intent.preconditions["pr"]))
+                    self._post_intent(state, intent, phase_after="proposed")
                     self.store.journal(story, "proposal-completed-on-resume", {"op": intent.op})
             if state.active and state.phase not in ("claim-incomplete",):
                 self._check_revisions(state)
@@ -620,4 +794,6 @@ class Coordinator:
             return state
 
     def status(self) -> dict:
-        return {"run": self.run.__dict__, "environment": self.environment, "stories": [s.to_dict() for s in self.store.list_stories()], "journal_events": self.store.journal_count(), "live": self.live, "gaps": list(LIVE_EXECUTION_GAPS)}
+        with self.store.locked(self):
+            counts = self._counts()
+        return {"run": self.run.__dict__, "budgets": counts, "environment": self.environment, "stories": [s.to_dict() for s in self.store.list_stories()], "journal_events": self.store.journal_count(), "live": self.live, "gaps": list(LIVE_EXECUTION_GAPS)}

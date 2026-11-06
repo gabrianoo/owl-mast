@@ -20,8 +20,8 @@ from .policy import load_policy
 from .probes import check_permissions, run_commands, write_probe
 from .state import Store, utcnow
 
-# Every command that can reach a GitHub write, directly or through a fallback (repair may block).
-WRITE_COMMANDS = {"reserve", "repair", "propose-evidence", "block", "cancel", "cancel-run", "resume", "rebase-revisions", "probe-write"}
+# Every command that can reach a GitHub write, directly or through a fallback (authorize-repair may block).
+WRITE_COMMANDS = {"reserve", "authorize-repair", "propose-evidence", "block", "cancel", "cancel-run", "resume", "rebase-revisions", "probe-write"}
 
 
 def _json(obj) -> None:
@@ -50,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run-id", default=None, help="run identifier (required for state commands)")
     p.add_argument("--repo-root", default=".")
     p.add_argument("--snapshot", default=None, help="use a saved snapshot JSON instead of reading GitHub")
-    p.add_argument("--live", action="store_true", help="allow GitHub writes (claim, block, cancel, resume, propose-evidence, probe-write)")
+    p.add_argument("--live", action="store_true", help="allow GitHub writes (reserve, authorize-repair, block, cancel, cancel-run, resume, rebase-revisions, propose-evidence, probe-write)")
     sub = p.add_subparsers(dest="command", required=True)
 
     sub.add_parser("snapshot", help="read-only normalized backlog snapshot").add_argument("--out", default=None)
@@ -64,18 +64,20 @@ def build_parser() -> argparse.ArgumentParser:
     pw = sub.add_parser("probe-write", help="bounded live write probe on an engineering-automation issue")
     pw.add_argument("--issue", type=int, required=True)
 
-    rv0 = sub.add_parser("reserve", help="admit a dispatchable story BEFORE delegating its implementer task")
+    evidence_help = "JSON {taskId, status} from task_status (workState result_available) or a terminal task_cancel result for the active task"
+    rv0 = sub.add_parser("reserve", help="admit a dispatchable story and authorize its implementer task BEFORE delegating it")
     rv0.add_argument("story"); rv0.add_argument("--baseline", required=True)
-    bd = sub.add_parser("bind-receipt", help="bind the delegated implementer task receipt and worktree to a reservation")
-    bd.add_argument("story"); bd.add_argument("--receipt", required=True); bd.add_argument("--worktree", required=True); bd.add_argument("--branch", required=True)
-    rh = sub.add_parser("record-head"); rh.add_argument("story"); rh.add_argument("--sha", required=True)
+    bd = sub.add_parser("bind-receipt", help="bind the delegated task receipt to the pending authorization (implementation needs --worktree/--branch)")
+    bd.add_argument("story"); bd.add_argument("--receipt", required=True); bd.add_argument("--worktree", default=None); bd.add_argument("--branch", default=None)
+    rt = sub.add_parser("record-task-terminal", help="release the active task with its terminal evidence; changes nothing else"); rt.add_argument("story"); rt.add_argument("--task-evidence", required=True, help=evidence_help)
+    rh = sub.add_parser("record-head", help="record the implementer's exact commit (its terminal evidence is required while it is active)"); rh.add_argument("story"); rh.add_argument("--sha", required=True); rh.add_argument("--task-evidence", default=None, help=evidence_help)
     rc = sub.add_parser("run-checks", help="execute the full configured check set on the exact claimed HEAD and record it"); rc.add_argument("story"); rc.add_argument("--sha", required=True); rc.add_argument("--cwd", required=True)
-    rq = sub.add_parser("request-review"); rq.add_argument("story"); rq.add_argument("--sha", required=True); rq.add_argument("--receipt", required=True)
-    rv = sub.add_parser("record-review"); rv.add_argument("story"); rv.add_argument("--sha", required=True); rv.add_argument("--verdict", choices=["approved", "changes-requested"], required=True); rv.add_argument("--report", required=True)
-    rp = sub.add_parser("repair"); rp.add_argument("story"); rp.add_argument("--receipt", required=True)
+    ar = sub.add_parser("authorize-review", help="authorize the reviewer task at the checked commit BEFORE delegating it"); ar.add_argument("story"); ar.add_argument("--sha", required=True)
+    rv = sub.add_parser("record-review", help="record the reviewer's verdict (its terminal evidence is required while it is active)"); rv.add_argument("story"); rv.add_argument("--sha", required=True); rv.add_argument("--verdict", choices=["approved", "changes-requested"], required=True); rv.add_argument("--report", required=True); rv.add_argument("--task-evidence", default=None, help=evidence_help)
+    rp = sub.add_parser("authorize-repair", help="authorize a budgeted repair task BEFORE delegating it (blocks when rounds are exhausted)"); rp.add_argument("story")
     pe = sub.add_parser("propose-evidence"); pe.add_argument("story"); pe.add_argument("--sha", required=True); pe.add_argument("--pr", type=int, required=True); pe.add_argument("--task", action="append", default=[]); pe.add_argument("--summary", required=True)
-    b = sub.add_parser("block"); b.add_argument("story"); b.add_argument("--reason", required=True); b.add_argument("--task-evidence", default=None, help="JSON {taskId, status} from task_status/task_cancel when a worker is running")
-    ca = sub.add_parser("cancel"); ca.add_argument("story"); ca.add_argument("--reason", required=True); ca.add_argument("--task-evidence", default=None)
+    b = sub.add_parser("block"); b.add_argument("story"); b.add_argument("--reason", required=True); b.add_argument("--task-evidence", default=None, help=evidence_help)
+    ca = sub.add_parser("cancel"); ca.add_argument("story"); ca.add_argument("--reason", required=True); ca.add_argument("--task-evidence", default=None, help=evidence_help)
     cr = sub.add_parser("cancel-run"); cr.add_argument("--reason", required=True); cr.add_argument("--task-evidence", default=None, help="JSON {story: {taskId, status}}")
     rs = sub.add_parser("resume"); rs.add_argument("story")
     rb = sub.add_parser("rebase-revisions", help="explicitly accept changed GitHub revisions after human verification"); rb.add_argument("story"); rb.add_argument("--reason", required=True)
@@ -129,16 +131,18 @@ def main(argv: list[str] | None = None) -> int:
             state = coordinator.reserve(args.story, _snapshot(args, transport, policy), args.baseline)
         elif args.command == "bind-receipt":
             state = coordinator.bind_receipt(args.story, _load_json_arg(args.receipt), args.worktree, args.branch)
+        elif args.command == "record-task-terminal":
+            state = coordinator.record_task_terminal(args.story, _load_json_arg(args.task_evidence))
         elif args.command == "record-head":
-            state = coordinator.record_head(args.story, args.sha)
+            state = coordinator.record_head(args.story, args.sha, _load_json_arg(args.task_evidence) if args.task_evidence else None)
         elif args.command == "run-checks":
             state = coordinator.run_checks(args.story, args.sha, args.cwd)
-        elif args.command == "request-review":
-            state = coordinator.request_review(args.story, args.sha, _load_json_arg(args.receipt))
+        elif args.command == "authorize-review":
+            state = coordinator.authorize_review(args.story, args.sha)
         elif args.command == "record-review":
-            state = coordinator.record_review(args.story, args.sha, args.verdict, args.report)
-        elif args.command == "repair":
-            state = coordinator.repair(args.story, _load_json_arg(args.receipt))
+            state = coordinator.record_review(args.story, args.sha, args.verdict, args.report, _load_json_arg(args.task_evidence) if args.task_evidence else None)
+        elif args.command == "authorize-repair":
+            state = coordinator.authorize_repair(args.story)
         elif args.command == "propose-evidence":
             state = coordinator.propose_evidence(args.story, args.sha, args.pr, args.task, args.summary)
         elif args.command == "block":

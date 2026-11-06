@@ -7,13 +7,17 @@ Layout under ``<state_dir>/``::
     <run_id>/run.json           binding (repo, policy digest), budgets, counters, cancellation
     <run_id>/journal.jsonl      append-only events (seq, at, story, event, detail)
     <run_id>/stories/<ID>.json  checkpoint per story (phase, claim, revisions, head, checks,
-                                reviews, intents)
+                                reviews, intents, task authorizations, active task)
 
 Every file write is atomic (temp file + ``os.replace``). Atomic replacement alone does not
 serialize two processes, so every operation that reads budgets or produces effects runs
 inside :meth:`Store.locked`, which takes the store-wide lock non-blockingly and refuses
 when another process holds it. A run is bound to one repository and one policy digest;
 reopening it with another refuses before any recovery or effect.
+
+Budgets (stories admitted, task authorizations issued, repair rounds) are derived from the
+story files under the lock; the counters in ``run.json`` are a refreshed cache for
+``status`` only, so a crash between two file writes can never under-count a spent budget.
 """
 
 from __future__ import annotations
@@ -23,15 +27,17 @@ import json
 import os
 import tempfile
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .errors import Refused
 
-PHASES = ("reserved", "claim-incomplete", "claimed", "implemented", "checks-passed", "checks-failed", "review-requested", "review-approved", "changes-requested", "proposed", "blocked", "cancelled", "conflict")
-ACTIVE_PHASES = ("reserved", "claim-incomplete", "claimed", "implemented", "checks-passed", "checks-failed", "review-requested", "review-approved", "changes-requested")
+PHASES = ("claim-incomplete", "reserved", "claimed", "implemented", "checks-passed", "checks-failed", "review-authorized", "review-requested", "review-approved", "changes-requested", "repair-authorized", "proposed", "blocked", "cancelled", "conflict")
+ACTIVE_PHASES = ("claim-incomplete", "reserved", "claimed", "implemented", "checks-passed", "checks-failed", "review-authorized", "review-requested", "review-approved", "changes-requested", "repair-authorized")
 TERMINAL_PHASES = ("proposed", "blocked", "cancelled", "conflict")
+ADVANCING_KINDS = ("claim", "proposal")  # intents that move a story forward; never replayed from a terminal story or a cancelled run
+STORY_SCHEMA = 2
 
 
 def utcnow() -> str:
@@ -66,8 +72,8 @@ class RunState:
     policy_digest: str
     started_at: str
     environment: str = "fixture"  # fixture | live — the transport kind this run's state belongs to
-    stories_claimed: int = 0
-    delegated_tasks: int = 0
+    stories_claimed: int = 0  # cache of Store.story_counts(); enforcement never reads these three
+    delegated_tasks: int = 0  # task authorizations issued (bound or not)
     repair_rounds: int = 0
     cancelled: bool = False
     stop_reason: str | None = None
@@ -99,7 +105,6 @@ class StoryState:
     phase: str
     run_id: str
     claim: dict | None = None
-    worker_state: str = "none"  # none | running | returned
     revisions: dict = field(default_factory=dict)  # issue/item revisions verified at admission
     implementer_receipts: list[dict] = field(default_factory=list)
     reviewer_receipts: list[dict] = field(default_factory=list)
@@ -111,6 +116,11 @@ class StoryState:
     blocked: dict | None = None
     intents: list[Intent] = field(default_factory=list)
     proposal: dict | None = None
+    # Task capacity and ownership, independent of ``phase`` and of HEAD notifications.
+    authorizations: list[dict] = field(default_factory=list)  # {id, role, purpose, sha, round, issued_at, status: pending|consumed|abandoned, task_id, reason}
+    active_task: dict | None = None  # {taskId, role, authorization, bound_at}; cleared only by terminal task evidence
+    task_history: list[dict] = field(default_factory=list)  # terminal evidence records {taskId, role, status, at, operation}
+    schema: int = STORY_SCHEMA
     updated_at: str = field(default_factory=utcnow)
 
     @property
@@ -120,8 +130,22 @@ class StoryState:
     def pending_intents(self) -> list[Intent]:
         return [i for i in self.intents if i.status == "pending"]
 
+    def pending_advancing_intents(self) -> list[Intent]:
+        return [i for i in self.pending_intents() if i.kind in ADVANCING_KINDS]
+
     def intent(self, op: str) -> Intent | None:
         return next((i for i in self.intents if i.op == op), None)
+
+    def pending_authorization(self) -> dict | None:
+        return next((a for a in self.authorizations if a["status"] == "pending"), None)
+
+    def abandon_advancing_intents(self, reason: str) -> list[str]:
+        """Mark every pending advancing intent abandoned (in memory; the caller saves)."""
+        ops = []
+        for intent in self.pending_advancing_intents():
+            intent.status, intent.reason = "abandoned", reason
+            ops.append(intent.op)
+        return ops
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -129,6 +153,9 @@ class StoryState:
     @classmethod
     def from_dict(cls, raw: dict) -> "StoryState":
         raw = dict(raw)
+        expected = {f.name for f in fields(cls)}
+        if raw.get("schema") != STORY_SCHEMA or set(raw) != expected:
+            raise Refused(f"story state for {raw.get('story')!r} has schema {raw.get('schema')!r} / keys {sorted(set(raw) ^ expected)}; expected schema {STORY_SCHEMA} (no silent migration)", code="state-schema-mismatch")
         raw["intents"] = [Intent(**i) for i in raw.get("intents", [])]
         return cls(**raw)
 
@@ -224,6 +251,17 @@ class Store:
         if not folder.exists():
             return []
         return [StoryState.from_dict(json.loads(p.read_text(encoding="utf-8"))) for p in sorted(folder.glob("*.json"))]
+
+    def story_counts(self) -> dict[str, int]:
+        """Durable budget consumption derived from the story files: stories admitted, task
+        authorizations issued (every issued authorization counts, bound or not, so a crash or
+        retry cannot reclaim a spent slot) and repair rounds authorized."""
+        stories = self.list_stories()
+        return {
+            "stories_claimed": len(stories),
+            "delegated_tasks": sum(len(s.authorizations) for s in stories),
+            "repair_rounds": sum(s.repair_rounds for s in stories),
+        }
 
     # -- journal -------------------------------------------------------------------------
     @property

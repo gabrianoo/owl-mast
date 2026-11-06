@@ -143,9 +143,10 @@ class IdempotencyAndRetryTests(unittest.TestCase):
         with self.assertRaises(Conflict):
             self.h.claim()
         self.assertEqual(self.h.store.load_story("OM-01.02").phase, "conflict")
-        with self.assertRaises(Conflict):
-            self.h.coordinator.resume("OM-01.02", ok_worktree)
-        self.assertEqual(self.h.store.load_story("OM-01.02").phase, "conflict")
+        # conflict is terminal: resume replays no advancing intent (the claim is abandoned), posts nothing
+        state = self.h.coordinator.resume("OM-01.02", ok_worktree)
+        self.assertEqual((state.phase, [i.status for i in state.intents if i.kind == "claim"]), ("conflict", ["abandoned"]))
+        self.assertEqual(len(markers(self.h.fake, 21, "claim")), 2)
         with self.assertRaises(Refused):
             self.h.coordinator.record_head("OM-01.02", "s1")
 
@@ -371,8 +372,9 @@ class DenialOutageAndLiveGateTests(unittest.TestCase):
         for op in (lambda: self.h.coordinator.resume("OM-01.02", ok_worktree), lambda: self.h.coordinator.record_head("OM-01.02", "s"),
                    lambda: self.h.coordinator.cancel("OM-01.02", "x"), lambda: self.h.coordinator.block("OM-01.02", "x"),
                    lambda: self.h.coordinator.rebase_revisions("OM-01.02", "x"), lambda: self.h.coordinator.cancel_run("x"),
-                   lambda: self.h.coordinator.propose_evidence("OM-01.02", "s", 7, [], "s"), lambda: self.h.coordinator.repair("OM-01.02", IMPLEMENTER),
-                   lambda: self.h.coordinator.request_review("OM-01.02", "s", IMPLEMENTER), lambda: self.h.coordinator.record_review("OM-01.02", "s", "approved", "r"),
+                   lambda: self.h.coordinator.propose_evidence("OM-01.02", "s", 7, [], "s"), lambda: self.h.coordinator.authorize_repair("OM-01.02"),
+                   lambda: self.h.coordinator.authorize_review("OM-01.02", "s"), lambda: self.h.coordinator.record_review("OM-01.02", "s", "approved", "r"),
+                   lambda: self.h.coordinator.record_task_terminal("OM-01.02", {"taskId": "t", "status": "cancelled"}),
                    lambda: self.h.coordinator.run_checks("OM-01.02", "s", str(self.h.worktree)), lambda: self.h.coordinator.bind_receipt("OM-01.02", IMPLEMENTER, str(self.h.worktree), "t3/om-01-02", ok_worktree)):
             with self.assertRaises(Refused) as ctx:
                 op()
@@ -392,7 +394,7 @@ class DenialOutageAndLiveGateTests(unittest.TestCase):
         self.assertEqual(self.h.store.load_story("OM-01.02").phase, "claimed")
         self.assertEqual(markers(self.h.fake, 21, "release"), [])
         result = self.h.coordinator.cancel_run("stop")
-        self.assertEqual(result["awaiting_worker_termination"], [{"story": "OM-01.02", "task_id": "task-impl-1"}])
+        self.assertEqual(result["awaiting_worker_termination"], [{"story": "OM-01.02", "task_id": "task-impl-1", "role": "implementer"}])
         self.assertTrue(self.h.store.load_run().cancelled)
         state = self.h.coordinator.cancel("OM-01.02", "stop", {"taskId": "task-impl-1", "status": "cancelled"})
         self.assertEqual(state.phase, "cancelled")

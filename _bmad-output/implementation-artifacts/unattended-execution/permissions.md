@@ -1,4 +1,4 @@
-# ENG-01 permissions: minimum, observed, blocker (repair round 2)
+# ENG-01 permissions: minimum, observed, blocker (remediation pass 1; unchanged observations)
 
 ## GitHub: what this tool needs
 
@@ -30,14 +30,14 @@ Qualification steps for whichever the owner selects (not performed): run `check-
 | Need | Tool support (inspected metadata) | This foundation |
 | --- | --- | --- |
 | Explicit implementer and reviewer targets with effort | `orchestrator_capabilities` lists `claude-fable-5-1` `effort` and `gpt-6-astra` `reasoningEffort` values incl. `high`; this task's receipt shows the inherited target (`evidence/t3-task-receipt-2026-11-06.json`) | receipt validation implemented; a false receipt is not detectable |
-| Admission before the task starts | `delegate_task` returns a task id; nothing prevents the coordinator from reserving first | implemented as `reserve` (under the lock, claim marker) then `bind-receipt`; not exercised with a real task |
+| Admission and capacity before the task starts | `delegate_task` returns a task id; nothing prevents the coordinator from authorizing first | implemented as `reserve` / `authorize-review` / `authorize-repair` (durable authorization counted before launch, under the lock) then `bind-receipt` (consumes it); a launch itself is invisible to the tool; not exercised with a real task |
 | Isolated worktree, identity and resume | `delegate_task` `isolation: "worktree"`; `t3_worktree_status` reports path/branch | recorded at bind; re-read at every evidence gate and before resume effects |
-| Terminal task evidence before releasing ownership | `task_status` reports `workState` (`working`, `waiting_for_children`, `result_available`) and the final summary; `task_cancel` stops running and queued turns and delegates and, per the coordinator's inspection of the tool metadata, reports `cancel_requested` or a terminal state | implemented as required `{taskId, status}` evidence for `cancel`/`block`; `cancel_requested` is not terminal; not exercised with a real task |
+| Terminal task evidence before releasing ownership | `task_status` reports `workState` (`working`, `waiting_for_children`, `result_available`) and the final summary; `task_cancel` stops running and queued turns and delegates and, per the coordinator's inspection of the tool metadata, reports `cancel_requested` or a terminal state | implemented as `{taskId, status}` evidence matching exactly the active task (id and role) for `record-head`, `record-review`, `record-task-terminal`, `cancel`, `block`; `cancel_requested` is not terminal; ownership survives HEAD recording and evidence invalidation; not exercised with a real task |
 | Hard deadline or resource bound on a child | **not available**: `timeoutMs` applies to `mode: wait` only and "does not cancel the child"; no resource options | unmet; smallest upstream change: a child deadline that cancels or an equivalent bound |
 | Credential confinement of a child | **not established**: the child runs with the coordinator's credentials and a runtime mode at most the parent's | unmet |
 | No schedules or competing runners | `list_scheduled_tasks` returned none; `.bmad-loop/` holds only the untouched policy | observed |
 
-Consequence: every state command refuses the real transport (`live-execution-disabled`); fixture-born state cannot be reopened with it (`environment-mismatch`). The protocol above is implemented and fixture-covered but has not been qualified with an actual bounded worker, and no such qualification launch happened in this work.
+Consequence: every state command refuses the real transport (`live-execution-disabled`); fixture-born state cannot be reopened with it (`environment-mismatch`). The protocol above is implemented and fixture-covered but has not been qualified with an actual bounded worker, and no such qualification launch happened in this work or in remediation pass 1. No credential was created or requested in remediation pass 1; the existing broad token proves basic access only and cannot prove restricted permissions. No denial probe was run against live resources.
 
 ## Filesystem and containers
 

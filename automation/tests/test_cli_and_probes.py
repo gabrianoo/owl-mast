@@ -45,7 +45,7 @@ class CliTests(unittest.TestCase):
         code, out = run_cli("--policy", str(self.policy), "--run-id", "r", "reserve", "OM-01.02", "--baseline", "c")
         self.assertEqual(code, 3)
         self.assertIn("--live", out["error"]["message"])
-        for argv in (["repair", "OM-01.02", "--receipt", "{}"], ["resume", "OM-01.02"], ["rebase-revisions", "OM-01.02", "--reason", "r"], ["cancel-run", "--reason", "r"], ["probe-write", "--issue", "106"], ["block", "OM-01.02", "--reason", "r"], ["cancel", "OM-01.02", "--reason", "r"]):
+        for argv in (["authorize-repair", "OM-01.02"], ["resume", "OM-01.02"], ["rebase-revisions", "OM-01.02", "--reason", "r"], ["cancel-run", "--reason", "r"], ["probe-write", "--issue", "106"], ["block", "OM-01.02", "--reason", "r"], ["cancel", "OM-01.02", "--reason", "r"]):
             code, out = run_cli("--policy", str(self.policy), "--run-id", "r", *argv)
             self.assertEqual(code, 3, argv)
             self.assertIn("--live", out["error"]["message"])
@@ -54,12 +54,14 @@ class CliTests(unittest.TestCase):
         """Reviewer finding E11: every indirect write is behind --live."""
         from automation.unattended.cli import WRITE_COMMANDS
 
-        self.assertIn("repair", WRITE_COMMANDS)
+        self.assertIn("authorize-repair", WRITE_COMMANDS)
         choices = list(cli.build_parser()._subparsers._group_actions[0].choices)
         self.assertNotIn("record-checks", choices)
         self.assertNotIn("claim", choices)
-        self.assertIn("reserve", choices)
-        self.assertIn("bind-receipt", choices)
+        for gone in ("request-review", "repair"):  # post-launch receipt commands no longer exist: authorization precedes every launch
+            self.assertNotIn(gone, choices)
+        for present in ("reserve", "bind-receipt", "authorize-review", "authorize-repair", "record-task-terminal"):
+            self.assertIn(present, choices)
 
     def test_live_state_commands_refuse_on_the_real_transport_before_any_gh_call(self):
         """The CLI only ever builds the live gh transport; every state command must refuse."""

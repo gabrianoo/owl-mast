@@ -47,6 +47,11 @@ def dependency_state(dep: Entry | None, dep_id: str) -> tuple[bool, str]:
 
 
 def decide(story_id: str, snapshot: Snapshot, policy: Policy) -> Decision:
+    dupes = snapshot.duplicate_ids()
+    if dupes:
+        # Checked before any ``by_id`` reduction: a duplicated stable id anywhere makes the
+        # identity mapping ambiguous (the contract requires unique ids), so nothing is admitted.
+        return Decision(story_id, "ambiguous-identity", (f"duplicate stable ids in the snapshot: {dupes}; identity mapping is ambiguous, fail closed",))
     by_id = snapshot.by_id()
     entry = by_id.get(story_id)
     if story_id not in policy.allow:
