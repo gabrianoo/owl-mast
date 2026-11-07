@@ -29,6 +29,19 @@ record() { # record <name> <command...>: run, save output to evidence, echo stat
   local file="$OUT/$name.txt"
   { printf '$ %s\n' "$*"; "$@"; } >"$file" 2>&1 && log "ok   $name" || { log "FAIL $name (see $file)"; return 1; }
 }
+record_any() { # record_any <name> <command...>: save output to evidence whatever the exit status (the caller asserts on it)
+  local name="$1"; shift
+  local file="$OUT/$name.txt"
+  { printf '$ %s\n' "$*"; "$@"; } >"$file" 2>&1 || true
+  log "saw  $name (exit status recorded, asserted by the caller)"
+}
+owned_or_absent() { # owned_or_absent <namespace> <kind> <name>: fail closed when a named resource exists without this run's label
+  if k -n "$1" get "$2" "$3" >/dev/null 2>&1; then
+    k -n "$1" get "$2" "$3" -o jsonpath='{.metadata.labels}' | grep -q 'owlmast.aisquad.com/run":"om-01-02-local-20261107-01' \
+      || { log "$2 $1/$3 exists without this run's ownership label: refusing to adopt, replace or delete it"; exit 2; }
+    log "$2 $1/$3 exists and is owned by this run (reused)"
+  fi
+}
 ensure_secret() { # ensure_secret <namespace> <name> <username>: random password, created only if absent
   local ns="$1" name="$2" user="$3"
   if k -n "$ns" get secret "$name" >/dev/null 2>&1; then
@@ -74,6 +87,17 @@ step_prepare() {
     fi
   done
   record apply-namespaces k apply -f "$ROOT/deploy/local-kind/namespaces.yaml"
+  # Re-entry on an existing target: retained claims and any lingering release objects must be this run's own.
+  owned_or_absent "$NS" pvc "$RELEASE-postgresql-data"
+  owned_or_absent "$EXT_NS" pvc external-postgresql-data
+  owned_or_absent "$EXT_NS" deployment external-postgresql
+  owned_or_absent "$EXT_NS" deployment external-keycloak
+  for rel in "$RELEASE" "$RELEASE-broken" "$RELEASE-wrongidp"; do
+    if h status "$rel" -n "$NS" >/dev/null 2>&1; then
+      owned_or_absent "$NS" deployment "$rel-backend"
+      log "release $rel exists in $NS (owned by this run); it is upgraded or uninstalled by the steps below"
+    fi
+  done
   for ns in "$NS" "$EXT_NS"; do
     ensure_secret "$ns" owl-mast-postgres-admin owlmast_admin
     ensure_secret "$ns" owl-mast-db owlmast_app
@@ -135,7 +159,7 @@ check_shared_postgres() { # check_shared_postgres <namespace> <deployment>  (AC3
   record "ac3-$ns-flyway-history" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "select version||'|'||success from flyway_schema_history order by installed_rank"
   grep -q '^001|true$' "$OUT/ac3-$ns-flyway-history.txt" || { log "FAIL flyway history"; return 1; }
   # VectorChord index usage on synthetic data with the application principal (AC3).
-  record "ac3-$ns-vchord-index" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "create schema if not exists qualification; drop table if exists qualification.vectors; create table qualification.vectors(id int primary key, embedding vector(3)); insert into qualification.vectors select g, array[g, g*2, g*3]::vector from generate_series(1,200) g; create index vectors_vchordrq on qualification.vectors using vchordrq (embedding vector_l2_ops) with (options = E'residual_quantization = true\\n[build.internal]\\nlists = []'); analyze qualification.vectors; set enable_seqscan = off; explain (costs off) select id from qualification.vectors order by embedding <-> '[3,6,9]' limit 3; select id from qualification.vectors order by embedding <-> '[3,6,9]' limit 3; select indexdef from pg_indexes where schemaname='qualification' and indexname='vectors_vchordrq'"
+  record "ac3-$ns-vchord-index" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "create schema if not exists qualification; create table if not exists qualification.vectors(id int primary key, embedding vector(3)); insert into qualification.vectors select g, array[g, g*2, g*3]::vector from generate_series(1,200) g on conflict do nothing; create index if not exists vectors_vchordrq on qualification.vectors using vchordrq (embedding vector_l2_ops) with (options = E'residual_quantization = true\\n[build.internal]\\nlists = []'); analyze qualification.vectors; set enable_seqscan = off; explain (costs off) select id from qualification.vectors order by embedding <-> '[3,6,9]' limit 3; select id from qualification.vectors order by embedding <-> '[3,6,9]' limit 3; select indexdef from pg_indexes where schemaname='qualification' and indexname='vectors_vchordrq'"
   grep -q 'Index Scan using vectors_vchordrq' "$OUT/ac3-$ns-vchord-index.txt" && grep -q 'USING vchordrq' "$OUT/ac3-$ns-vchord-index.txt" || { log "FAIL vchord index usage"; return 1; }
   grep -qiE 'hnsw|ivfflat' "$OUT/ac3-$ns-vchord-index.txt" && { log "FAIL pgvector index type appeared"; return 1; }
   log "ok   ac3-$ns-vchord-index (vchordrq index scan on synthetic vectors)"
@@ -162,6 +186,7 @@ step_persistence() {
   local pv; pv="$(k get pvc "$pvc" -n "$NS" -o jsonpath='{.spec.volumeName}')"
   record t3-pv-reclaim k get pv "$pv" -o jsonpath='{.spec.persistentVolumeReclaimPolicy} {.spec.storageClassName}'
   grep -q 'Retain owl-mast-local-retain' "$OUT/t3-pv-reclaim.txt" || { log "FAIL PV reclaim policy"; return 1; }
+  # Re-entry keeps earlier synthetic rows: the marker is inserted only if absent and the count is recorded, never reset.
   record t3-write-marker pg_exec "$NS" "$RELEASE-postgresql" OWLMAST_APP owlmast "create table if not exists qualification.persistence(marker text primary key, written_at timestamptz default now()); insert into qualification.persistence(marker) values ('om-01-02-marker') on conflict do nothing; select count(*) from qualification.persistence"
   record t3-delete-pod k delete pod -n "$NS" -l app.kubernetes.io/component=postgresql --wait=true
   record t3-pod-replaced wait_ready "$NS" "$RELEASE-postgresql" 300
@@ -241,7 +266,7 @@ step_failure_paths() {
   # The Service has no endpoints while readiness is DOWN, so read the probe through the pod proxy.
   local pod; pod="$(k get pods -n "$NS" -l app.kubernetes.io/instance="$RELEASE-wrongidp" -o jsonpath='{.items[0].metadata.name}')"
   record fail-wrong-issuer-no-endpoints k get endpointslices -n "$NS" -l kubernetes.io/service-name="$RELEASE-wrongidp-backend" -o jsonpath='{.items[*].endpoints[*].conditions.ready}'
-  record fail-wrong-issuer-readiness k get --raw "/api/v1/namespaces/$NS/pods/$pod:8080/proxy/actuator/health/readiness" || true
+  record_any fail-wrong-issuer-readiness k get --raw "/api/v1/namespaces/$NS/pods/$pod:8080/proxy/actuator/health/readiness"
   record fail-wrong-issuer-liveness k get --raw "/api/v1/namespaces/$NS/pods/$pod:8080/proxy/actuator/health/liveness"
   # The readiness probe answers 503; the API proxy surfaces that as ServiceUnavailable without a body.
   grep -qE '"status":"DOWN"|ServiceUnavailable' "$OUT/fail-wrong-issuer-readiness.txt" && grep -qx false "$OUT/fail-wrong-issuer-no-endpoints.txt" \

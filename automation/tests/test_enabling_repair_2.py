@@ -21,7 +21,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from automation.tests.support import IMPLEMENTER, REVIEWER, ok_worktree, passing_runner
+from automation.tests.support import IMPLEMENTER, REVIEWER, controlled_cli_clock, ok_worktree, passing_runner
 from automation.tests.test_activation import S, T0, LiveHarness, activation_text
 from automation.tests.test_enabling_repair_1 import claimed, refuses
 from automation.unattended import cli
@@ -299,13 +299,31 @@ class F3StatusUnderTheSharedGateTests(unittest.TestCase):
         calls = []
         original = GhCliTransport._run
         GhCliTransport._run = lambda self, args, stdin=None: calls.append(args) or "{}"
-        try:
-            self.h.h.fake.live = True
+        args = ["--policy", str(Path(self.h.h.tmpdir.name) / "policy.toml"), "--state-dir", str(self.h.h.state_dir), "--run-id", "run-live", "--live", "status"]
+
+        def status():
             buf = io.StringIO()
             with redirect_stdout(buf):
-                code = cli.main(["--policy", str(Path(self.h.h.tmpdir.name) / "policy.toml"), "--state-dir", str(self.h.h.state_dir), "--run-id", "run-live", "--live", "status"])
-            out = json.loads(buf.getvalue())
-            self.assertEqual((code, out["activation"]["stop"]), (0, "activation-required"))  # the CLI's real clock is past the fixture window only if the host clock says so; the no-file route reports
+                code = cli.main(args)
+            return code, json.loads(buf.getvalue())
+
+        try:
+            self.h.h.fake.live = True
+            with controlled_cli_clock(self.h.clock):  # the CLI observes the injected clock, never the host clock
+                self.h.clock[0] = T0
+                code, out = status()
+                self.assertEqual((code, out["activation"]["stop"]), (0, "activation-required"))  # inside the window the no-file route reports; nothing is recorded
+                self.assertIsNone(self.store.load_run().activation_stop)
+                self.h.clock[0] = EXPIRED
+                code, out = status()
+                self.assertEqual((code, out["activation"]["stop"]), (0, "activation-expired"))  # the first observation past the window is recorded by status itself
+                stop = self.store.load_run().activation_stop
+                self.assertEqual((stop["code"], stop["observed_at"], stop["operation"]), ("activation-expired", EXPIRED, "status"))
+                self.assertEqual(out["activation"]["recorded_stop"], stop)
+                self.h.clock[0] = T0  # a later observation inside the window again (rollback) does not lift the durable stop
+                code, out = status()
+                self.assertEqual((code, out["activation"]["stop"], out["activation"]["recorded_stop"]), (0, "activation-expired", stop))
+                refuses(self, lambda: self.h.coordinator().record_head(S, self.h.h.sha, self.h.terminal()), "activation-expired")
         finally:
             GhCliTransport._run = original
         self.assertEqual(calls, [])

@@ -10,7 +10,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from automation.tests.support import IMPLEMENTER, REVIEWER, ok_worktree, passing_runner
+from automation.tests.support import IMPLEMENTER, REVIEWER, controlled_cli_clock, ok_worktree, passing_runner
 from automation.tests.test_activation import S, T0, LiveHarness, activation_text
 from automation.unattended import cli
 from automation.unattended.activation import Activation, load_activation
@@ -18,6 +18,7 @@ from automation.unattended.errors import Refused, UnattendedError
 from automation.unattended.state import Store
 
 NO_CALLS: list = []
+EXPIRED = "2026-11-07T14:00:01Z"  # one second past the fixture window: an injected observation, not the host clock
 
 
 def POLICY(h: LiveHarness) -> Path:
@@ -58,11 +59,20 @@ class R1MissingRunMetadataTests(unittest.TestCase):
             self.assertFalse(store.run_path.exists())
             self.assertEqual({p: p.read_bytes() for p in store.root.rglob("*") if p.is_file()}, {p: b for p, b in before.items() if p != store.run_path})
             self.assertEqual(h.h.fake.calls, NO_CALLS)
-            buf = io.StringIO()
-            with redirect_stdout(buf):
-                code = cli.main(["--policy", str(POLICY(h)), "--activation", str(h.path), "--state-dir", str(h.h.state_dir), "--run-id", "run-1", "status"])
-            self.assertEqual(code, 3)
-            self.assertEqual(json.loads(buf.getvalue())["error"]["code"], "run-metadata-missing")
+            args = ["--policy", str(POLICY(h)), "--activation", str(h.path), "--state-dir", str(h.h.state_dir), "--run-id", "run-1", "status"]
+            # The CLI decides on an injected observation, never the host clock: inside the window the
+            # retained artifacts are the refusal; past it the expired observation is, and still nothing is written.
+            with controlled_cli_clock(h.clock):
+                for observation, expected in ((T0, "run-metadata-missing"), (EXPIRED, "activation-expired"), (T0, "run-metadata-missing")):
+                    h.clock[0] = observation
+                    buf = io.StringIO()
+                    with redirect_stdout(buf):
+                        code = cli.main(args)
+                    self.assertEqual(code, 3, observation)
+                    self.assertEqual(json.loads(buf.getvalue())["error"]["code"], expected, observation)
+                    self.assertFalse(store.run_path.exists(), observation)
+                    self.assertEqual({p: p.read_bytes() for p in store.root.rglob("*") if p.is_file()}, {p: b for p, b in before.items() if p != store.run_path}, observation)
+            self.assertEqual(h.h.fake.calls, NO_CALLS)
         finally:
             h.close()
 
