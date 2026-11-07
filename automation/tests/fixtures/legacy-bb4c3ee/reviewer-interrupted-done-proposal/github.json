@@ -1,0 +1,24 @@
+{
+ "comments": [
+  {
+   "issue": 21,
+   "comment_id": 1000,
+   "body": "<!-- unattended kind=claim op=claim run=run-1 story=OM-01.02 -->\nUnattended reservation by run `run-1` from `c5d9d2e` (scope: dispatchable). An implementer task is delegated only after this reservation; its receipt is bound to the reservation. Project Status is owner-maintained; completion still requires checks, independent review and owner acceptance."
+  },
+  {
+   "issue": 21,
+   "comment_id": 1001,
+   "body": "<!-- unattended kind=proposal op=proposal-0399856038fd-pr7 pr=7 run=run-1 sha=0399856038fd9fd1eac8bd25460edb159ae6e011 story=OM-01.02 -->\nEvidence proposal from run `run-1` at exact commit `0399856038fd9fd1eac8bd25460edb159ae6e011` (PR #7, CI rollup: SUCCESS).\nsummary\n\nProposed task completion for owner application (the machine does not tick checkboxes or change Project Status):\n- [ ] OM-01.02-T1\n\nChecked boxes, CI pass, review approval, acceptance, merge and deployment remain distinct facts; this comment records review-approved implementation only."
+  }
+ ],
+ "pull_requests": {
+  "7": [
+   7,
+   "OPEN",
+   "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   false,
+   [],
+   "SUCCESS"
+  ]
+ }
+}

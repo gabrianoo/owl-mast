@@ -196,15 +196,28 @@ class StoryState:
             return False
         return record.get("status") in cls.SUCCESSFUL_STATUSES
 
-    def successful_execution(self, task_id: str, run_id: str | None, role: str) -> dict | None:
-        """The terminal history record proving that exactly ``(task_id, run_id)`` completed
-        successfully in ``role``, or None. The run identity must match exactly (a legacy
-        task-only pair matches only a legacy task-only record); another run of the same task,
-        another role or an unsuccessful outcome proves nothing."""
-        for r in reversed(self.task_history):
-            if r.get("taskId") == task_id and (r.get("runId") or None) == (run_id or None) and r.get("role") == role:
-                return r if self.record_successful(r) else None
-        return None
+    def terminal_record(self, task_id: str | None, run_id: str | None) -> dict | None:
+        """The latest terminal history record of exactly the identified execution
+        ``(task_id, run_id)``, whatever its role, authorization or outcome; None when either
+        identity is missing (a task-only legacy record identifies no execution)."""
+        if not task_id or not run_id:
+            return None
+        return next((r for r in reversed(self.task_history) if r.get("taskId") == task_id and r.get("runId") == run_id), None)
+
+    def successful_execution(self, task_id: str | None, run_id: str | None, role: str, authorization: str | None) -> dict | None:
+        """The terminal history record proving that exactly the identified execution
+        ``(task_id, run_id)``, bound to exactly ``authorization`` in ``role``, completed
+        successfully; None otherwise. Every identity must be present and match exactly: an
+        absent task, run or authorization identity (on the selection or on the record) never
+        matches, another run of the same task, another role, another authorization or an
+        unsuccessful/contradictory outcome proves nothing. Task-only completion is not an
+        identified execution."""
+        record = self.terminal_record(task_id, run_id)
+        if record is None or not authorization or not record.get("runId") or not record.get("authorization"):
+            return None
+        if record.get("role") != role or str(record.get("authorization")) != str(authorization):
+            return None
+        return record if self.record_successful(record) else None
 
     def predecessor_terminal(self, task_id: str, identified: bool = True) -> bool:
         """True when ``task_id`` is not the active task and a terminal record exists for it.

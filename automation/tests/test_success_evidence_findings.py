@@ -223,9 +223,9 @@ class ReviewerUnsuccessfulTests(Base):
         self.assertEqual((ctx.exception.code, ctx.exception.detail.get("task_id"), ctx.exception.detail.get("sha")), ("worker-interrupted", "task-review-2", sha2))
         state = self.story()
         self.assertEqual((state.phase, state.approved_sha, len(state.reviews)), ("review-requested", None, 1))
-        self.assertTrue(state.successful_execution(REVIEW_TASK, run_of(REVIEW_TASK, 1), "reviewer"))  # the sha1 record is intact but irrelevant
+        self.assertTrue(state.successful_execution(REVIEW_TASK, run_of(REVIEW_TASK, 1), "reviewer", "run-1:OM-01.02:2"))  # the sha1 record is intact but irrelevant
         # an implementer's successful record never stands in for the reviewer's
-        self.assertIsNone(state.successful_execution("task-impl-2", run_of("task-impl-2", 1), "reviewer"))
+        self.assertIsNone(state.successful_execution("task-impl-2", run_of("task-impl-2", 1), "reviewer", "run-1:OM-01.02:3"))
 
 
 class LegacyHistoryTests(Base):

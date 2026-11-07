@@ -15,6 +15,7 @@ Phases (``state.PHASES``)::
     review-authorized | review-requested | review-approved ──record-head(new sha) | unreported worktree change──> implemented (evidence invalidated; pending proposal abandoned; pending review authorization revoked, still owned)
     any phase with an unresolved authorization ──cancel | block | cancel-run | run-checks | authorize-* | propose──> REFUSED (authorization-unresolved); its late receipt binds for cleanup only; record-no-launch resolves it
     review-approved ──propose-evidence (revisions unchanged, worktree re-read, PR head/reviews/checks)──> proposed
+    every advancing consumer of recorded evidence (record-head, run-checks, authorize-review, authorize-repair, record-review, propose-evidence, resume proposal replay/reconciliation) ──_require_advancing_evidence: identified, linked, successful implementer (and reviewer-for-SHA) execution──> else REFUSED, phase unchanged
     any active | conflict ──block | cancel (terminal evidence for the active task)──> blocked | cancelled (pending advancing intents abandoned)
     duplicate marker ──> conflict
 
@@ -467,14 +468,34 @@ class Coordinator:
         if auth.get("status") != "consumed" or auth.get("cleanup_only"):
             raise Refused(f"{operation}: {role} task {auth['task_id']} of {state.story} was bound to authorization {auth['id']} for cleanup only ({auth.get('cleanup_only') or auth.get('status')}); no work was authorized, so its outcome cannot advance the story",
                           code="no-successful-execution", role=role, task_id=auth["task_id"], authorization=auth["id"], sha=sha)
-        record = state.successful_execution(auth["task_id"], auth.get("run_id"), role)
+        detail = {"role": role, "task_id": auth["task_id"], "run_id": auth.get("run_id"), "authorization": auth["id"], "sha": sha}
+        if not auth.get("run_id"):
+            raise Refused(f"{operation}: {role} task {auth['task_id']} of {state.story} was bound to authorization {auth['id']} without a run identity (legacy task-only record); task-only completion is not an identified execution and is not inferred, so the story cannot advance",
+                          code="run-identity-missing", **detail)
+        latest = state.terminal_record(auth["task_id"], auth["run_id"])
+        if latest is None:
+            raise Refused(f"{operation}: {role} task {auth['task_id']} (run {auth['run_id']}) of {state.story}, authorization {auth['id']}" + (f" for {sha}" if sha else "") + " has no identified terminal record; nothing completed that could advance the story",
+                          code="no-successful-execution", **detail)
+        if latest.get("role") != role or not latest.get("authorization") or str(latest.get("authorization")) != str(auth["id"]):
+            raise Refused(f"{operation}: the terminal record of {role} task {auth['task_id']} (run {auth['run_id']}) of {state.story} is recorded for role {latest.get('role')!r} and authorization {latest.get('authorization')!r}; the selected authorization is {auth['id']} ({role}); contradictory or unlinked evidence is not successful result evidence",
+                          code="conflicting-evidence", recorded_role=latest.get("role"), recorded_authorization=latest.get("authorization"), **detail)
+        record = state.successful_execution(auth["task_id"], auth["run_id"], role, auth["id"])
         if record is None:
-            latest = next((r for r in reversed(state.task_history) if r.get("taskId") == auth["task_id"] and (r.get("runId") or None) == (auth.get("run_id") or None)), None)
-            status = latest.get("status") if latest else None
-            raise Refused(f"{operation}: {role} task {auth['task_id']} (run {auth.get('run_id')}) of {state.story}, authorization {auth['id']}" + (f" for {sha}" if sha else "")
-                          + (f", terminated as {status!r} and completed nothing" if latest else " has no terminal record") + "; terminal acknowledgement is not successful result evidence, so the story cannot advance",
-                          code=unsuccessful_code(status) if latest else "no-successful-execution", role=role, task_id=auth["task_id"], run_id=auth.get("run_id"), authorization=auth["id"], status=status, sha=sha)
+            status = latest.get("status")
+            raise Refused(f"{operation}: {role} task {auth['task_id']} (run {auth['run_id']}) of {state.story}, authorization {auth['id']}" + (f" for {sha}" if sha else "") + f", terminated as {status!r} and completed nothing; terminal acknowledgement is not successful result evidence, so the story cannot advance",
+                          code=unsuccessful_code(status), status=status, successful=latest.get("successful"), **detail)
         return record
+
+    def _require_advancing_evidence(self, state: StoryState, operation: str, sha: str | None = None) -> None:
+        """The one gate every advancing consumer of recorded evidence passes, whatever path led
+        here (direct evidence, release then reload, upgrade from older state, restart replay):
+        the latest bound implementer execution completed successfully and, when ``sha`` names
+        the reviewed commit, so did the reviewer execution authorized for exactly that SHA.
+        A head, a check result, an approval or a posted proposal recorded by an older
+        coordinator over an unsuccessful or unidentified execution is history, never evidence."""
+        self._require_successful_execution(state, "implementer", operation)
+        if sha is not None:
+            self._require_successful_execution(state, "reviewer", operation, sha)
 
     def _require_no_active_task(self, state: StoryState, operation: str) -> None:
         if state.active_task is not None:
@@ -878,7 +899,7 @@ class Coordinator:
             self._require_phase(state, "claimed", "implemented", "checks-passed", "review-authorized", "review-requested", "review-approved")
             if task_evidence is not None or (state.active_task and state.active_task["role"] == "implementer"):
                 self._apply_task_evidence(state, task_evidence, "record-head")
-            self._require_successful_execution(state, "implementer", "record-head")  # released ownership is not a result: the bound implementer run must have completed
+            self._require_advancing_evidence(state, "record-head")  # released ownership is not a result: the bound implementer run must have completed
             if state.head_sha == sha and state.phase != "claimed":
                 self.store.save_story(state)
                 self.store.journal(story, "head-unchanged", {"sha": sha, "phase": state.phase, "active_task": state.active_task})
@@ -900,6 +921,7 @@ class Coordinator:
             state = self._story(story)
             self._require_phase(state, "implemented", "checks-passed", "checks-failed")
             self._require_no_obligation(state, "run-checks")  # a reviewer launched for an invalidated commit may still be running
+            self._require_advancing_evidence(state, "run-checks")  # a head recorded over an unsuccessful or unidentified implementer run (older state) is not checkable evidence
             if not state.claim or not state.claim.get("worktree_path") or Path(cwd).resolve() != Path(state.claim["worktree_path"]).resolve():
                 raise Refused(f"checks must run in the claimed worktree {state.claim and state.claim.get('worktree_path')}")
             if state.head_sha != sha:
@@ -940,6 +962,7 @@ class Coordinator:
                     or len(last.get("commands", [])) != configured or any(c.get("returncode") != 0 for c in last["commands"])
                     or last.get("head_after") != sha or not last.get("clean_after")):
                 raise Refused(f"the full configured check set ({configured} commands) has not been executed and passed at {sha}")
+            self._require_advancing_evidence(state, "authorize-review")  # no reviewer is authorized for a head that no successful implementer run produced
             self._verify_worktree(state, sha, "authorize-review")
             self._require_no_active_task(state, "authorize-review")
             auth = self._authorize(state, "review", sha=sha)
@@ -964,6 +987,7 @@ class Coordinator:
             pending = state.pending_authorization()
             if pending is not None and pending["purpose"] == "repair":
                 return state
+            self._require_advancing_evidence(state, "authorize-repair")  # a repair round builds on a head some successful implementer run produced; otherwise cancel or block
             self._require_no_obligation(state, "authorize-repair")  # before the round is counted or the block fallback runs
             if state.repair_rounds + 1 > self.policy.max_repair_rounds:
                 self.store.journal(story, "repair-refused", {"rounds": state.repair_rounds})
@@ -990,7 +1014,7 @@ class Coordinator:
                 raise Refused(f"review at {sha} does not match head {state.head_sha}; a code change invalidates it", head=state.head_sha)
             if task_evidence is not None or state.active_task is not None:
                 self._apply_task_evidence(state, task_evidence, "record-review")  # the reviewer must be terminal before its verdict is evidence
-            self._require_successful_execution(state, "reviewer", "record-review", sha)  # and must have completed, for exactly this commit; a released interrupted/failed/cancelled reviewer proves nothing
+            self._require_advancing_evidence(state, "record-review", sha)  # and must have completed, for exactly this commit, over a successful implementer run; a released interrupted/failed/cancelled worker proves nothing
             self._verify_worktree(state, sha, "record-review")
             regression = state.phase == "review-approved" and verdict == "changes-requested"
             state.reviews.append({"sha": sha, "verdict": verdict, "report": report, "at": self.now(), "regression": regression})
@@ -1030,7 +1054,7 @@ class Coordinator:
         if state.head_sha != sha or state.approved_sha != sha:
             raise Refused(f"{operation}: approval is for {state.approved_sha}, head is {state.head_sha}, proposal names {sha}", code="approval-mismatch")
         self._require_no_obligation(state, operation)
-        self._require_successful_execution(state, "reviewer", operation, sha)  # an approval recorded over an unsuccessful reviewer execution (legacy state) is not current approval
+        self._require_advancing_evidence(state, operation, sha)  # an approval recorded over an unsuccessful or unidentified implementer/reviewer execution (older state) is not current approval
 
     def propose_evidence(self, story: str, sha: str, pr_number: int, tasks: list[str], summary: str) -> StoryState:
         with self.store.locked(self):
@@ -1194,8 +1218,13 @@ class Coordinator:
                 if stop:
                     self._withhold_reconciliation(state, intent, STOP_REASONS[stop])
                     continue
-                if state.phase != "review-approved" or state.approved_sha != sha or state.head_sha != sha or state.active_task is not None or unresolved is not None or pr is None:
-                    self._withhold_reconciliation(state, intent, f"no current approval for {sha}: phase {state.phase}, approved {state.approved_sha}, head {state.head_sha}, active task {state.active_task}, unresolved authorization {unresolved and unresolved['id']}, pr {pr}")
+                if pr is None or sha is None:
+                    self._withhold_reconciliation(state, intent, f"no current approval for {sha}: the completed proposal names no sha/pr ({sha}, {pr})")
+                    continue
+                try:  # the same current-approval gate as a fresh proposal, successful implementer and reviewer executions included
+                    self._require_current_approval(state, sha, "resume-reconcile-proposal")
+                except UnattendedError as exc:
+                    self._withhold_reconciliation(state, intent, f"no current approval for {sha}: {exc.code}: {exc} (phase {state.phase}, approved {state.approved_sha}, head {state.head_sha}, active task {state.active_task}, unresolved authorization {unresolved and unresolved['id']}, pr {pr})")
                     continue
                 try:  # the same current-evidence gates as a fresh proposal, with the same consequences (stale ⇒ refused, dirty ⇒ invalidated, objection ⇒ regression)
                     self._check_revisions(state)  # fresh read, unique identities, revisions of the closure
@@ -1223,8 +1252,10 @@ class Coordinator:
                 elif intent.kind == "proposal":
                     sha = intent.preconditions["sha"]
                     unresolved = state.unresolved_authorization()
-                    if state.phase != "review-approved" or state.approved_sha != sha or state.head_sha != sha or state.active_task is not None or unresolved is not None:
-                        intent.status, intent.reason = "abandoned", f"no current approval for {sha}: phase {state.phase}, approved {state.approved_sha}, head {state.head_sha}, active task {state.active_task}, unresolved authorization {unresolved and unresolved['id']}"
+                    try:  # the same current-approval gate as a fresh proposal; a failing gate abandons the replay, nothing is posted
+                        self._require_current_approval(state, sha, "resume-proposal")
+                    except UnattendedError as exc:
+                        intent.status, intent.reason = "abandoned", f"no current approval for {sha}: {exc.code}: {exc} (phase {state.phase}, approved {state.approved_sha}, head {state.head_sha}, active task {state.active_task}, unresolved authorization {unresolved and unresolved['id']})"
                         self.store.save_story(state)
                         self.store.journal(story, "resume-proposal-abandoned", {"op": intent.op, "reason": intent.reason})
                         continue

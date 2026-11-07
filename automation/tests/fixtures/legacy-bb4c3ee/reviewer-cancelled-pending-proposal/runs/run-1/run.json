@@ -1,0 +1,12 @@
+{
+ "cancelled": false,
+ "delegated_tasks": 2,
+ "environment": "fixture",
+ "policy_digest": "4e328dd4b7e4a950c9314298d8efa85aedbc000eea4054e412102673aa917389",
+ "repair_rounds": 0,
+ "repo": "gabrianoo/owl-mast",
+ "run_id": "run-1",
+ "started_at": "2026-11-07T12:06:37Z",
+ "stop_reason": null,
+ "stories_claimed": 1
+}
