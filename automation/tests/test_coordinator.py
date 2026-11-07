@@ -3,6 +3,7 @@ repair, per-reviewer objections, cancel/resume ordering, budgets and the evidenc
 
 import inspect
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from automation.tests.fake_transport import small_backlog
@@ -252,7 +253,8 @@ class LifecycleTests(unittest.TestCase):
     def test_wall_clock_budget(self):
         self.h.claim()
         self.h.checks()
-        self.c.now = lambda: "2026-11-07T13:00:00Z"
+        expiry = datetime.fromisoformat(self.c.run.started_at.replace("Z", "+00:00")) + timedelta(minutes=self.c.policy.max_wall_clock_minutes + 1)
+        self.c.now = lambda: expiry.isoformat()
         with self.assertRaises(BudgetExhausted):
             self.c.authorize_review("OM-01.02", self.h.sha)
         self.assertEqual(self.h.store.load_story("OM-01.02").phase, "checks-passed")
