@@ -86,8 +86,10 @@ identity bundle later keeps the existing Keycloak database and principal untouch
 Initialisation layout: only `10-owl-mast-databases.sh` is placed in `/docker-entrypoint-initdb.d`
 (the image's entrypoint auto-executes every `*.sh` there); the provisioning helper is mounted at
 `/owl-mast/provision-keycloak.sh` and invoked explicitly, so a volume initialised with the identity
-bundle disabled completes initialisation on the first start. `deploy/tests/test_postgresql_init.py`
-exercises both fresh initialisations and the first-enable/retry transition against the pinned image.
+bundle disabled completes initialisation on the first start. The synthetic external fixture
+(`deploy/local-kind/external-fixtures.yaml`) declares the same two mounts. `deploy/tests/test_postgresql_init.py`
+derives the layout from the actual Deployment manifests (chart and fixture) and exercises fresh
+initialisations and the first-enable/retry transition against the pinned image in disposable containers.
 
 ## Probes and resources (AC1)
 
@@ -119,8 +121,22 @@ not decided here**: local node storage is disposable, and no backup is implied.
 
 `frontend.*` deploys the independent shell artifact (`frontend.image.*`, disabled until OM-01.04
 supplies an image; enabling without a tag or digest fails rendering). `routing.*` defines the path
-contract: `/api` and `/actuator` route to the backend, `/` to the frontend. The Ingress is disabled
-by default and requires an explicit host; public origins, TLS and session behaviour are OM-02.01.
+contract: `/api` and `/actuator` route to the backend, `/` to the frontend. No exposure is rendered by
+default. Two mutually exclusive mechanisms exist; enabling both is refused as ambiguous:
+
+- **Gateway API (first-class):** `routing.gateway.enabled=true` renders one stable
+  `gateway.networking.k8s.io/v1` `HTTPRoute` attached to the operator-supplied parent Gateway(s)
+  (`routing.gateway.parentRefs[].name`, optional `namespace`, `sectionName`, `port`; at least one entry
+  is required), with optional `hostnames`. Prerequisites the operator provides and qualifies: the
+  Gateway API CRDs (standard channel, `v1` HTTPRoute), a GatewayClass and controller, the Gateway with
+  its listeners and any TLS. The chart renders the route only; it was validated by render and negative
+  tests, not against a running Gateway controller (none is installed on the qualification target), so
+  manifest support is distinct from controller/runtime qualification.
+- **Ingress (compatibility):** `routing.ingress.enabled=true` requires an explicit host. The Kubernetes
+  Ingress API is frozen (GA, no removal planned) while the project recommends Gateway API; the retirement
+  of the ingress-nginx controller is a separate fact and does not remove the API.
+
+Public origins, TLS and session behaviour are OM-02.01.
 
 ## Commands
 
@@ -138,11 +154,16 @@ helm upgrade --install owl-mast deploy/helm/owl-mast -n owl-mast -f deploy/helm/
 KUBECONFIG=<run>/kubeconfig OWLMAST_HELM=<run>/helm EVIDENCE_DIR=<private> scripts/qualify-local-install.sh all
 ```
 
-The qualification script first preflights every resource the selected steps consume or change
-(StorageClass, namespaces, quotas, Secrets, fixture objects, retained claims, Helm releases): an
-existing object must carry this run's ownership label with the exact run id, an unreadable
+The qualification script first rejects target overrides its static manifests and the chart's
+naming cannot honour (`NS`/`EXT_NS` other than the manifest namespaces, a release whose chart fullname
+differs from its name) before any cluster call, then preflights every resource the selected steps
+consume or change (StorageClass, namespaces, quotas, every consumed Secret, fixture objects, retained
+claims, every renderable resource of each affected release including hook ConfigMap/Job, Ingress and
+HTTPRoute, and the selected pods' controller chain pod → ReplicaSet → Deployment by UID, label and
+readability): an existing object must carry the expected identity's label exactly, an unreadable
 ownership (denied, outage) refuses, and only an explicit NotFound counts as absence; nothing is
-mutated when preflight refuses. It then prepares the run-owned StorageClass, namespaces and quotas (6 CPU / 12Gi /
+mutated when preflight refuses. Pod replacement deletes only the pods whose chain was proven
+immediately before, by name. It then prepares the run-owned StorageClass, namespaces and quotas (6 CPU / 12Gi /
 40Gi combined), generates synthetic secrets into the cluster only, deploys synthetic external
 PostgreSQL/Keycloak fixtures, installs all four combinations sequentially, proves pod replacement,
 uninstall retention, reinstall with the existing claim and upgrade, and exercises the failure paths

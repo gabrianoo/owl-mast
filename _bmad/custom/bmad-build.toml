@@ -1,0 +1,7 @@
+# Team override for bmad-build (owner-requested engineering rules, 2026-11-07). Lists append to the skill defaults.
+
+[workflow]
+persistent_facts = [
+  """All Ubuntu CI jobs must pin an explicitly qualified fixed runner version (for Owl Mast, ubuntu-26.04); never use ubuntu-latest or another floating Ubuntu runner alias, including in matrices or reusable workflows. Verify runner availability and checks before claiming qualification.""",
+  """Owl Mast Kubernetes/Helm packaging must support stable Gateway API routing as a first-class option, alongside optional Ingress compatibility. Validate parent Gateway/listener references, routes/backend services, prerequisites and fail-closed configuration; include render/negative tests and distinguish manifest support from controller/runtime qualification. Kubernetes Ingress API is frozen, not removed/deprecated; ingress-nginx controller retirement is a separate fact.""",
+]

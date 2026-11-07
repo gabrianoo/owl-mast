@@ -135,4 +135,17 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- fail "routing.ingress.enabled=true requires routing.ingress.host" -}}
 {{- end -}}
 {{- end -}}
+{{- if and .Values.routing.ingress.enabled .Values.routing.gateway.enabled -}}
+{{- fail "routing.ingress.enabled and routing.gateway.enabled are both true: choose one routing mechanism (ambiguous exposure is refused)" -}}
+{{- end -}}
+{{- if .Values.routing.gateway.enabled -}}
+{{- if not .Values.routing.gateway.parentRefs -}}
+{{- fail "routing.gateway.enabled=true requires at least one routing.gateway.parentRefs entry naming the operator-supplied Gateway" -}}
+{{- end -}}
+{{- range .Values.routing.gateway.parentRefs -}}
+{{- if not .name -}}
+{{- fail "every routing.gateway.parentRefs entry needs a name" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}

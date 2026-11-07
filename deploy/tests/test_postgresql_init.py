@@ -36,19 +36,59 @@ def render_scripts(*sets) -> dict:
     return yaml.safe_load(out)["data"]
 
 
-class DisposablePostgres:
-    """The pinned image started like the pod: init dir with only the first-init script, helper mounted separately."""
+FIXTURES = REPO / "deploy" / "local-kind" / "external-fixtures.yaml"
 
-    def __init__(self, scripts: dict, keycloak: bool):
+
+def configmap_mounts(deployment: dict, configmap_name: str) -> dict:
+    """{mountPath: [keys]} for every mount of ``configmap_name`` in the Deployment's PostgreSQL container,
+    exactly as the kubelet would project it: ``items`` when present, else every key (``None``)."""
+    spec = deployment["spec"]["template"]["spec"]
+    volumes = {v["name"]: v for v in spec["volumes"]}
+    out = {}
+    for mount in spec["containers"][0]["volumeMounts"]:
+        volume = volumes[mount["name"]]
+        if volume.get("configMap", {}).get("name") == configmap_name:
+            items = volume["configMap"].get("items")
+            out[mount["mountPath"]] = [i["path"] for i in items] if items else None
+    return out
+
+
+def chart_postgres_deployment(*sets) -> dict:
+    args = [HELM, "template", "t", str(CHART), "-s", "templates/postgresql-deployment.yaml"]
+    for s in sets:
+        args += ["--set", s]
+    return yaml.safe_load(subprocess.run(args, capture_output=True, text=True, check=True).stdout)
+
+
+def fixture_postgres_deployment() -> dict:
+    docs = [d for d in yaml.safe_load_all(FIXTURES.read_text()) if d]
+    return next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "external-postgresql")
+
+
+def fixture_init_configmap() -> dict:
+    """The init ConfigMap exactly as scripts/qualify-local-install.sh renders it for the fixture namespace."""
+    out = subprocess.run([HELM, "template", "external", str(CHART), "--set", "fullnameOverride=external", "-s", "templates/postgresql-init-configmap.yaml"],
+                         capture_output=True, text=True, check=True).stdout
+    return yaml.safe_load(out)
+
+
+class DisposablePostgres:
+    """The pinned image started with the script layout a Deployment manifest actually declares (mounts of the
+    init ConfigMap, honouring ``items``), tmpfs data, no network, synthetic credentials."""
+
+    def __init__(self, scripts: dict, keycloak: bool, layout: dict | None = None):
         self.tmp = Path(tempfile.mkdtemp(prefix="owlmast-pginit."))
-        init = self.tmp / "initdb.d"; init.mkdir()
-        helper = self.tmp / "owl-mast"; helper.mkdir()
-        (init / "10-owl-mast-databases.sh").write_text(scripts["10-owl-mast-databases.sh"])
-        (helper / "provision-keycloak.sh").write_text(scripts["provision-keycloak.sh"])
-        for p in (init / "10-owl-mast-databases.sh", helper / "provision-keycloak.sh"):
-            p.chmod(0o555)
-        for d in (init, helper, self.tmp):
-            d.chmod(0o755)
+        layout = layout if layout is not None else {"/docker-entrypoint-initdb.d": ["10-owl-mast-databases.sh"], "/owl-mast": ["provision-keycloak.sh"]}
+        self.layout = layout
+        mounts = []
+        for index, (mount_path, keys) in enumerate(layout.items()):
+            host = self.tmp / f"mount{index}"; host.mkdir()
+            for key in (keys if keys is not None else list(scripts)):
+                (host / key).write_text(scripts[key]); (host / key).chmod(0o555)
+            host.chmod(0o755)
+            mounts += ["-v", f"{host}:{mount_path}:ro"]
+        self.mounts = mounts
+        self.tmp.chmod(0o755)
         self.env = {"POSTGRES_USER": "owlmast_admin", "POSTGRES_PASSWORD": secrets.token_urlsafe(24), "PGDATA": "/var/lib/postgresql/data/pgdata",
                     "OWLMAST_APP_DATABASE": "owlmast", "OWLMAST_APP_USERNAME": "owlmast_app", "OWLMAST_APP_PASSWORD": secrets.token_urlsafe(24)}
         self.keycloak_env = {"OWLMAST_KEYCLOAK_DATABASE": "keycloak", "OWLMAST_KEYCLOAK_USERNAME": "keycloak_app", "OWLMAST_KEYCLOAK_PASSWORD": secrets.token_urlsafe(24)}
@@ -57,7 +97,7 @@ class DisposablePostgres:
         env_file = self.tmp / "env"; env_file.write_text("".join(f"{k}={v}\n" for k, v in self.env.items())); env_file.chmod(0o600)
         self.name = f"owlmast-pginit-{secrets.token_hex(4)}"
         subprocess.run(["docker", "run", "-d", "--name", self.name, "--network", "none", "--tmpfs", "/var/lib/postgresql/data:rw,size=512m",
-                        "--env-file", str(env_file), "-v", f"{init}:/docker-entrypoint-initdb.d:ro", "-v", f"{helper}:/owl-mast:ro",
+                        "--env-file", str(env_file), *self.mounts,
                         IMAGE, "postgres", "-c", "shared_preload_libraries=vchord,vector"], check=True, capture_output=True, text=True)
 
     def wait_ready(self, timeout=120) -> str:
@@ -152,6 +192,34 @@ class PostgresInitTests(unittest.TestCase):
             self.assertEqual(pg.sql("OWLMAST_APP", "owlmast", "select extname from pg_extension where extname in ('vchord','vector') order by 1").stdout.split(), ["vchord", "vector"])
         finally:
             pg.close()
+
+    def test_external_fixture_manifest_layout_initialises_a_fresh_volume_with_both_principals(self):
+        """N1: the fixture Deployment's actual mounts of the ConfigMap the qualification script renders for it,
+        with the fixture's four credentials, on a fresh volume: init completes on the first start and the
+        external Keycloak's role/database exist with the same isolation as the chart's PostgreSQL."""
+        configmap = fixture_init_configmap()
+        self.assertEqual(configmap["metadata"]["name"], "external-postgresql-init")
+        layout = configmap_mounts(fixture_postgres_deployment(), "external-postgresql-init")
+        self.assertEqual(layout, {"/docker-entrypoint-initdb.d": ["10-owl-mast-databases.sh"], "/owl-mast": ["provision-keycloak.sh"]})
+        pg = DisposablePostgres(configmap["data"], keycloak=True, layout=layout)
+        try:
+            logs = pg.wait_ready()
+            self.assertEqual(subprocess.run(["docker", "inspect", "-f", "{{.RestartCount}} {{.State.Running}}", pg.name], capture_output=True, text=True).stdout.strip(), "0 true")
+            self.assertNotIn("No such file or directory", logs); self.assertNotIn("parameter null or not set", logs)
+            self.assertIn("CREATE DATABASE", logs)
+            self.assertEqual(pg.sql("OWLMAST_KEYCLOAK", "keycloak", "select current_database()").stdout.strip(), "keycloak")
+            self.assertEqual(pg.sql("OWLMAST_APP", "owlmast", "select extname from pg_extension where extname in ('vchord','vector') order by 1").stdout.split(), ["vchord", "vector"])
+            self.assert_restricted(pg, "OWLMAST_APP", "owlmast"); self.assert_restricted(pg, "OWLMAST_KEYCLOAK", "keycloak")
+            for prefix, db in (("OWLMAST_APP", "keycloak"), ("OWLMAST_KEYCLOAK", "owlmast")):
+                denied = pg.sql(prefix, db, "select 1")
+                self.assertNotEqual(denied.returncode, 0); self.assertIn(f'permission denied for database "{db}"', denied.stderr)
+        finally:
+            pg.close()
+
+    def test_chart_manifest_layout_matches_the_tested_layout(self):
+        """The chart's PostgreSQL Deployment declares the same init/helper separation the other tests materialise."""
+        self.assertEqual(configmap_mounts(chart_postgres_deployment(), "t-owl-mast-postgresql-init"),
+                         {"/docker-entrypoint-initdb.d": ["10-owl-mast-databases.sh"], "/owl-mast": ["provision-keycloak.sh"]})
 
     def test_helper_without_a_consumer_is_a_safe_no_op_and_the_init_dir_holds_only_the_init_script(self):
         scripts = render_scripts("identity.bundled=false", "identity.external.issuerUri=https://idp.example/realms/owl-mast")

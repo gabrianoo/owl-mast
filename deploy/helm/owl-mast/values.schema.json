@@ -118,7 +118,7 @@
     "routing": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["apiPathPrefix", "actuatorPathPrefix", "frontendPathPrefix", "ingress"],
+      "required": ["apiPathPrefix", "actuatorPathPrefix", "frontendPathPrefix", "ingress", "gateway"],
       "properties": {
         "apiPathPrefix": {"type": "string", "pattern": "^/"},
         "actuatorPathPrefix": {"type": "string", "pattern": "^/"},
@@ -133,6 +133,30 @@
             "host": {"type": "string"},
             "annotations": {"type": "object"},
             "tls": {"type": "array"}
+          }
+        },
+        "gateway": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "parentRefs"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "parentRefs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name"],
+                "properties": {
+                  "name": {"type": "string", "minLength": 1},
+                  "namespace": {"type": "string"},
+                  "sectionName": {"type": "string"},
+                  "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+                }
+              }
+            },
+            "hostnames": {"type": "array", "items": {"type": "string", "minLength": 1}},
+            "annotations": {"type": "object"}
           }
         }
       }

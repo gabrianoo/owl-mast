@@ -39,6 +39,43 @@ OUT="$EVIDENCE_DIR/runtime"
 mkdir -p "$OUT/preflight"
 export KUBECONFIG
 
+# -- target identities are derived from the artifacts that are applied, never assumed --------------------
+# The static manifests fix their namespaces, quota names and StorageClass; the chart fixes the fullname of
+# every release resource. Overrides that would make preflight look at one object while a mutation touches
+# another are rejected here, before any cluster effect (N2).
+manifest_field() { python3 - "$@" <<'PY'
+import sys, yaml
+path, kind, field = sys.argv[1], sys.argv[2], sys.argv[3]
+for doc in yaml.safe_load_all(open(path)):
+    if doc and doc.get("kind") == kind:
+        cur = doc
+        for part in field.split("."):
+            cur = cur[part]
+        print(cur)
+PY
+}
+chart_fullname() { # chart_fullname <release>: the fullname Helm renders for this release (from the backend Deployment name)
+  h template "$1" "$CHART" -s templates/backend-deployment.yaml 2>/dev/null | sed -n 's/^  name: \(.*\)-backend$/\1/p' | head -1
+}
+assert_supported_targets() {
+  local manifest_ns ext_manifest_ns sc quota_ns quota_ext rel fullname
+  mapfile -t manifest_ns < <(manifest_field "$ROOT/deploy/local-kind/namespaces.yaml" Namespace metadata.name)
+  [ "${manifest_ns[0]:-}" = "$NS" ] && [ "${manifest_ns[1]:-}" = "$EXT_NS" ] \
+    || { echo "REFUSED: NS=$NS / EXT_NS=$EXT_NS differ from the namespaces the static manifests apply (${manifest_ns[*]}); namespace overrides are not supported" >&2; exit 2; }
+  mapfile -t quota_ns < <(manifest_field "$ROOT/deploy/local-kind/namespaces.yaml" ResourceQuota metadata.namespace)
+  [ "${quota_ns[0]:-}" = "$NS" ] && [ "${quota_ns[1]:-}" = "$EXT_NS" ] || { echo "REFUSED: quota manifests target other namespaces" >&2; exit 2; }
+  ext_manifest_ns="$(manifest_field "$ROOT/deploy/local-kind/external-fixtures.yaml" Deployment metadata.namespace | sort -u)"
+  [ "$ext_manifest_ns" = "$EXT_NS" ] || { echo "REFUSED: the fixture manifest targets namespace '$ext_manifest_ns', not EXT_NS=$EXT_NS" >&2; exit 2; }
+  sc="$(manifest_field "$ROOT/deploy/local-kind/external-fixtures.yaml" PersistentVolumeClaim spec.storageClassName)"
+  [ "$sc" = "$STORAGE_CLASS" ] || { echo "REFUSED: the fixture claim uses StorageClass '$sc', not $STORAGE_CLASS" >&2; exit 2; }
+  [ "$(manifest_field "$ROOT/deploy/local-kind/storageclass.yaml" StorageClass metadata.name)" = "$STORAGE_CLASS" ] || { echo "REFUSED: storageclass manifest name differs from $STORAGE_CLASS" >&2; exit 2; }
+  for rel in "$RELEASE" "$RELEASE-broken" "$RELEASE-wrongidp" ${FE_RELEASE:+"$FE_RELEASE"}; do
+    fullname="$(chart_fullname "$rel")"
+    [ "$fullname" = "$rel" ] || { echo "REFUSED: release '$rel' renders chart fullname '$fullname'; this script addresses release resources as <release>-<component>, so a release name whose fullname differs is not supported" >&2; exit 2; }
+  done
+}
+STORAGE_CLASS="owl-mast-local-retain"
+
 k() { kubectl --context "$CONTEXT" "$@"; }
 h() { "$OWLMAST_HELM" --kube-context "$CONTEXT" "$@"; }
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$OUT/qualification.log"; }
@@ -68,6 +105,7 @@ resource_state() {
     elif [ -z "$out" ]; then echo "foreign:unlabelled"
     else echo "foreign:$out"; fi
   elif grep -q '(NotFound)' <<<"$out"; then echo absent
+  elif grep -q "doesn't have a resource type" <<<"$out"; then echo kind-unavailable  # the API kind is not served (CRDs absent): no such object can exist here
   else echo "error:$(tr '\n' ' ' <<<"$out" | cut -c1-200)"; fi
 }
 release_state() { # release_state <release>: absent | present | error:<message>  (Helm's own record; resources are checked one by one)
@@ -80,23 +118,53 @@ release_state() { # release_state <release>: absent | present | error:<message> 
 RELEASE_KINDS_AND_SUFFIXES=( "deployment:-backend" "deployment:-postgresql" "deployment:-keycloak" "deployment:-frontend"
   "service:-backend" "service:-postgresql" "service:-keycloak" "service:-frontend"
   "configmap:-postgresql-init" "configmap:-keycloak-realm" "configmap:-postgresql-provision-scripts"
-  "job:-postgresql-provision-keycloak" "ingress:" "pvc:-postgresql-data" )
-preflight_pods() { # preflight_pods <release> <component> <owner>: every selected pod must carry the owner label and belong to the release's ReplicaSet
-  local rel="$1" comp="$2" owner="$3" out rc=0 line name label ref
-  out="$(k -n "$NS" get pods -l "app.kubernetes.io/instance=$rel,app.kubernetes.io/component=$comp" -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.labels.owlmast\.aisquad\.com/run}{"|"}{.metadata.ownerReferences[0].kind}/{.metadata.ownerReferences[0].name}{"\n"}{end}' 2>&1)" || rc=$?
+  "job:-postgresql-provision-keycloak" "ingress:" "httproute:" "pvc:-postgresql-data" )
+verified_pods() { # verified_pods <release> <component> <owner>: prints the names of the selected pods whose controller chain is proven
+  # Each selected pod must carry the owner label and exactly one controller reference to a ReplicaSet that
+  # exists, is readable, has that UID, carries the owner label and is itself controlled (one controller
+  # reference, matching UID) by the expected Deployment <release>-<component>, which must exist, be readable
+  # and carry the owner label. Anything else refuses. This proves the chain at the moment of reading; a pod
+  # replaced afterwards is not covered by this proof (no atomic guarantee is claimed).
+  local rel="$1" comp="$2" owner="$3" out rc=0 line name label refs dep_uid dep_label rs_out rs_uid rs_label rs_refs
+  local proven_file="$OUT/preflight/proven-pods-$rel-$comp.txt"; : >"$proven_file"  # the proven names, read by callers
+  dep_uid="$(k -n "$NS" get deployment "$rel-$comp" -o jsonpath='{.metadata.uid}|{.metadata.labels.owlmast\.aisquad\.com/run}' 2>&1)" || rc=$?
   if [ "$rc" -ne 0 ]; then
-    printf 'pods %s/%s(%s) error:%s\n' "$NS" "$rel" "$comp" "$(tr '\n' ' ' <<<"$out" | cut -c1-200)" >>"$OUT/preflight/resources.txt"
-    log "preflight pods $NS/$rel ($comp): selection unreadable: refusing"; PREFLIGHT_FAILED=1; return
+    if grep -q '(NotFound)' <<<"$dep_uid"; then dep_uid="absent|"; else log "chain $rel/$comp: deployment unreadable ($(tr '\n' ' ' <<<"$dep_uid" | cut -c1-120)): refusing"; return 1; fi
   fi
-  while IFS='|' read -r name label ref; do
+  dep_label="${dep_uid#*|}"; dep_uid="${dep_uid%%|*}"
+  rc=0
+  out="$(k -n "$NS" get pods -l "app.kubernetes.io/instance=$rel,app.kubernetes.io/component=$comp" -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.labels.owlmast\.aisquad\.com/run}{"|"}{range .metadata.ownerReferences[*]}{.kind}/{.name}/{.uid}/{.controller}{" "}{end}{"\n"}{end}' 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then log "chain $rel/$comp: pod selection unreadable ($(tr '\n' ' ' <<<"$out" | cut -c1-120)): refusing"; return 1; fi
+  local failed=0
+  while IFS='|' read -r name label refs; do
     [ -n "$name" ] || continue
-    printf 'pod %s/%s label=%s owner=%s\n' "$NS" "$name" "$label" "$ref" >>"$OUT/preflight/resources.txt"
-    if [ "$label" != "$owner" ] || [[ "$ref" != ReplicaSet/$rel-$comp-* ]]; then
-      log "preflight pod $NS/$name: label '$label' / owner '$ref' is not this release's $comp ReplicaSet owned by $owner: refusing"; PREFLIGHT_FAILED=1
-    else
-      log "preflight pod $NS/$name: owned ($ref)"
+    printf 'pod %s/%s label=%s refs=%s\n' "$NS" "$name" "$label" "$refs" >>"$OUT/preflight/resources.txt"
+    if [ "$label" != "$owner" ]; then log "chain pod $NS/$name: label '$label' is not $owner: refusing"; failed=1; continue; fi
+    local controllers; controllers="$(tr ' ' '\n' <<<"$refs" | grep -E '/true$' || true)"
+    if [ "$(grep -c . <<<"$controllers")" -ne 1 ] || [ -z "$controllers" ]; then log "chain pod $NS/$name: expected exactly one controller reference, got '$refs': refusing"; failed=1; continue; fi
+    local ckind cname cuid; IFS='/' read -r ckind cname cuid _ <<<"$controllers"
+    if [ "$ckind" != ReplicaSet ]; then log "chain pod $NS/$name: controller is $ckind, not a ReplicaSet: refusing"; failed=1; continue; fi
+    rc=0; rs_out="$(k -n "$NS" get replicaset "$cname" -o jsonpath='{.metadata.uid}|{.metadata.labels.owlmast\.aisquad\.com/run}|{range .metadata.ownerReferences[*]}{.kind}/{.name}/{.uid}/{.controller}{" "}{end}' 2>&1)" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      if grep -q '(NotFound)' <<<"$rs_out"; then log "chain pod $NS/$name: controller ReplicaSet $cname is missing: refusing"; else log "chain pod $NS/$name: controller ReplicaSet $cname unreadable: refusing"; fi
+      failed=1; continue
     fi
+    IFS='|' read -r rs_uid rs_label rs_refs <<<"$rs_out"
+    if [ "$rs_uid" != "$cuid" ]; then log "chain pod $NS/$name: ReplicaSet $cname UID $rs_uid differs from the pod's controller reference $cuid: refusing"; failed=1; continue; fi
+    if [ "$rs_label" != "$owner" ]; then log "chain pod $NS/$name: ReplicaSet $cname label '$rs_label' is not $owner: refusing"; failed=1; continue; fi
+    local rs_controllers; rs_controllers="$(tr ' ' '\n' <<<"$rs_refs" | grep -E '/true$' || true)"
+    if [ "$(grep -c . <<<"$rs_controllers")" -ne 1 ] || [ -z "$rs_controllers" ]; then log "chain pod $NS/$name: ReplicaSet $cname has no single controller: refusing"; failed=1; continue; fi
+    local dkind dname duid; IFS='/' read -r dkind dname duid _ <<<"$rs_controllers"
+    if [ "$dkind/$dname" != "Deployment/$rel-$comp" ] || [ "$duid" != "$dep_uid" ] || [ "$dep_label" != "$owner" ]; then
+      log "chain pod $NS/$name: ReplicaSet $cname is controlled by $dkind/$dname ($duid), expected Deployment/$rel-$comp ($dep_uid) owned by $owner: refusing"; failed=1; continue
+    fi
+    log "chain pod $NS/$name: proven ($name -> ReplicaSet/$cname $rs_uid -> Deployment/$rel-$comp $dep_uid, all $owner)"
+    printf '%s\n' "$name" >>"$proven_file"
   done <<<"$out"
+  [ "$failed" -eq 0 ]
+}
+preflight_pods() { # preflight_pods <release> <component> <owner>
+  verified_pods "$1" "$2" "$3" || PREFLIGHT_FAILED=1
 }
 preflight_release() { # preflight_release <release> [owner]: Helm record plus every resource the chart can render, hooks included, plus selected pods
   local rel="$1" owner="${2:-$RUN_ID}" state entry kind suffix
@@ -118,6 +186,7 @@ preflight_resource() { # preflight_resource <namespace|-> <kind> <name> [owner]
   printf '%s %s/%s %s\n' "$2" "$1" "$3" "$state" >>"$OUT/preflight/resources.txt"
   case "$state" in
     absent) log "preflight $2 $1/$3: absent" ;;
+    kind-unavailable) log "preflight $2 $1/$3: the API kind is not served on this cluster (its CRDs are absent), so no such object can exist; the chart must keep that feature disabled here" ;;
     owned) log "preflight $2 $1/$3: owned by this run" ;;
     foreign:*) log "preflight $2 $1/$3: exists but owner is '${state#foreign:}', not ${4:-$RUN_ID}: no adoption, overwrite or deletion"; PREFLIGHT_FAILED=1 ;;
     *) log "preflight $2 $1/$3: ownership unreadable (${state#error:}): refusing rather than assuming absence"; PREFLIGHT_FAILED=1 ;;
@@ -128,7 +197,7 @@ preflight_secrets_of() { # the four synthetic Secrets of a namespace
   for s in owl-mast-postgres-admin owl-mast-db owl-mast-keycloak-db owl-mast-keycloak-bootstrap; do preflight_resource "$ns" secret "$s"; done
 }
 preflight_install_common() { # what every product install in $NS consumes
-  preflight_resource - storageclass owl-mast-local-retain
+  preflight_resource - storageclass "$STORAGE_CLASS"
   preflight_resource - namespace "$NS"
 }
 preflight_fixture_endpoints() { # what every external combination consumes from the fixture namespace (read-only use)
@@ -143,12 +212,13 @@ preflight() { # preflight <step...>: every resource the selected steps consume o
   for step in "$@"; do
     case "$step" in
       prepare)
-        preflight_resource - storageclass owl-mast-local-retain
+        preflight_resource - storageclass "$STORAGE_CLASS"
         preflight_resource - namespace "$NS"; preflight_resource - namespace "$EXT_NS"
         preflight_resource "$NS" resourcequota owl-mast-test-budget; preflight_resource "$EXT_NS" resourcequota owl-mast-test-external-budget
         preflight_secrets_of "$NS"; preflight_secrets_of "$EXT_NS"
         preflight_resource "$NS" secret owl-mast-external-db; preflight_resource "$NS" secret owl-mast-external-keycloak-db ;;
       fixtures)
+        preflight_resource - storageclass "$STORAGE_CLASS"  # consumed by the fixture claim
         preflight_resource - namespace "$EXT_NS"
         preflight_secrets_of "$EXT_NS"
         preflight_resource "$EXT_NS" configmap external-postgresql-init; preflight_resource "$EXT_NS" configmap external-keycloak-realm
@@ -381,7 +451,14 @@ step_persistence() {
   grep -q 'Retain owl-mast-local-retain' "$OUT/t3-pv-reclaim.txt" || { log "FAIL PV reclaim policy"; return 1; }
   # Re-entry keeps earlier synthetic rows: the marker is inserted only if absent and the count is recorded, never reset.
   record t3-write-marker pg_exec "$NS" "$RELEASE-postgresql" OWLMAST_APP owlmast "create table if not exists qualification.persistence(marker text primary key, written_at timestamptz default now()); insert into qualification.persistence(marker) values ('om-01-02-marker') on conflict do nothing; select count(*) from qualification.persistence"
-  record t3-delete-pod k delete pod -n "$NS" -l "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=postgresql" --wait=true
+  # Replace the PostgreSQL pod: the pods are re-proven through their controller chain immediately before
+  # deletion and deleted by name; the selector is only how they are found.
+  verified_pods "$RELEASE" postgresql "$RUN_ID" || { log "FAIL pod controller chain not proven; nothing deleted"; return 1; }
+  local proven_pods; proven_pods="$(cat "$OUT/preflight/proven-pods-$RELEASE-postgresql.txt")"
+  [ -n "$proven_pods" ] || { log "FAIL no PostgreSQL pod selected for replacement"; return 1; }
+  printf '%s\n' "$proven_pods" >"$OUT/t3-delete-pod-proven.txt"
+  # shellcheck disable=SC2086
+  record t3-delete-pod k delete pod -n "$NS" $proven_pods --wait=true
   record t3-pod-replaced wait_ready "$NS" "$RELEASE-postgresql" 300
   record t3-marker-after-replacement pg_exec "$NS" "$RELEASE-postgresql" OWLMAST_APP owlmast "select marker from qualification.persistence"
   grep -q om-01-02-marker "$OUT/t3-marker-after-replacement.txt" || { log "FAIL marker lost on pod replacement"; return 1; }
@@ -559,6 +636,7 @@ main() {
       *) echo "unknown step $step"; exit 2 ;;
     esac
   done
+  assert_supported_targets
   preflight "${expanded[@]}"
   for step in "${expanded[@]}"; do "step_${step//-/_}"; done
   log "qualification steps complete: ${expanded[*]}"

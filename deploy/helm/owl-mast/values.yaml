@@ -82,6 +82,19 @@ routing:
     host: ""
     annotations: {}
     tls: []
+  # Gateway API (stable gateway.networking.k8s.io/v1 HTTPRoute) as the first-class routing option. The
+  # operator supplies the Gateway (GatewayClass, controller, listeners, TLS) and the Gateway API CRDs;
+  # the chart renders an HTTPRoute attached to the referenced parent(s). Mutually exclusive with the
+  # Ingress: enabling both is refused as ambiguous.
+  gateway:
+    enabled: false
+    # At least one parent Gateway reference is required when enabled.
+    parentRefs: []
+    #  - name: shared-gateway
+    #    namespace: gateway-system
+    #    sectionName: https
+    hostnames: []
+    annotations: {}
 
 # Application database. `bundled: true` deploys the PostgreSQL/VectorChord instance below;
 # `bundled: false` requires compatible external connection values (PostgreSQL 18 with VectorChord

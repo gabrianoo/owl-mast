@@ -96,15 +96,28 @@ spec:
           volumeMounts:
             - {name: data, mountPath: /var/lib/postgresql/data}
             - {name: init, mountPath: /docker-entrypoint-initdb.d, readOnly: true}
+            - {name: provisioning, mountPath: /owl-mast, readOnly: true}
             - {name: run, mountPath: /var/run/postgresql}
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: external-postgresql-data
+        # Same layout as the chart's PostgreSQL: only the first-initialisation script is auto-executed by
+        # the entrypoint; the provisioning helper is mounted separately and called explicitly.
         - name: init
           configMap:
             name: external-postgresql-init
             defaultMode: 0555
+            items:
+              - key: 10-owl-mast-databases.sh
+                path: 10-owl-mast-databases.sh
+        - name: provisioning
+          configMap:
+            name: external-postgresql-init
+            defaultMode: 0555
+            items:
+              - key: provision-keycloak.sh
+                path: provision-keycloak.sh
         - name: run
           emptyDir: {}
 ---

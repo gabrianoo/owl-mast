@@ -223,9 +223,41 @@ class ChartRenderTest(unittest.TestCase):
             self.assertEqual(d["spec"]["template"]["metadata"]["labels"]["owlmast.aisquad.com/run"], "run-x", d["metadata"]["name"])
             self.assertEqual(d["metadata"]["labels"]["owlmast.aisquad.com/run"], "run-x")
 
+    def test_gateway_api_route_is_optional_explicit_and_exclusive_with_ingress(self):
+        """Owner steering: stable Gateway API routing as a first-class option; the Gateway itself is operator-supplied."""
+        self.assertEqual(by_kind(render(), "HTTPRoute"), [])
+        docs = render("--set", "routing.gateway.enabled=true", "--set", "routing.gateway.parentRefs[0].name=shared-gw",
+                      "--set", "routing.gateway.parentRefs[0].namespace=gateway-system", "--set", "routing.gateway.parentRefs[0].sectionName=https",
+                      "--set", "routing.gateway.hostnames[0]=owl-mast.example.internal")
+        routes = by_kind(docs, "HTTPRoute")
+        self.assertEqual(len(routes), 1)
+        route = routes[0]
+        self.assertEqual(route["apiVersion"], "gateway.networking.k8s.io/v1")
+        self.assertEqual(route["metadata"]["name"], "t-owl-mast")
+        self.assertEqual(route["spec"]["parentRefs"], [{"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": "shared-gw", "namespace": "gateway-system", "sectionName": "https"}])
+        self.assertEqual(route["spec"]["hostnames"], ["owl-mast.example.internal"])
+        self.assertEqual(len(route["spec"]["rules"]), 1)  # backend only while the frontend is disabled
+        self.assertEqual([m["path"]["value"] for m in route["spec"]["rules"][0]["matches"]], ["/api", "/actuator"])
+        self.assertEqual(route["spec"]["rules"][0]["backendRefs"], [{"name": "t-owl-mast-backend", "port": 8080}])
+        self.assertEqual(by_kind(docs, "Ingress"), [])
+        with_frontend = by_kind(render("--set", "routing.gateway.enabled=true", "--set", "routing.gateway.parentRefs[0].name=shared-gw",
+                                       "--set", "frontend.enabled=true", "--set", "frontend.image.tag=0.0.1-shell"), "HTTPRoute")[0]
+        self.assertEqual(with_frontend["spec"]["rules"][1]["matches"][0]["path"]["value"], "/")
+        self.assertEqual(with_frontend["spec"]["rules"][1]["backendRefs"], [{"name": "t-owl-mast-frontend", "port": 80}])
+        for sets, expected in (
+            (("routing.gateway.enabled=true",), "requires at least one routing.gateway.parentRefs entry"),
+            (("routing.gateway.enabled=true", "routing.gateway.parentRefs[0].name=gw", "routing.ingress.enabled=true", "routing.ingress.host=h"), "both true: choose one routing mechanism"),
+        ):
+            result = helm("template", "t", str(CHART), *[a for s_ in sets for a in ("--set", s_)])
+            self.assertNotEqual(result.returncode, 0, sets); self.assertIn(expected, result.stderr, sets)
+        for sets in (("routing.gateway.enabled=true", "routing.gateway.parentRefs[0].namespace=x"), ("routing.gateway.parentRefs[0].name=gw", "routing.gateway.parentRefs[0].listener=https")):
+            result = helm("template", "t", str(CHART), *[a for s_ in sets for a in ("--set", s_)])
+            self.assertNotEqual(result.returncode, 0, sets); self.assertIn("schema", result.stderr.lower(), sets)
+
     def test_no_ingress_or_frontend_by_default(self):
         docs = render()
         self.assertEqual(by_kind(docs, "Ingress"), [])
+        self.assertEqual(by_kind(docs, "HTTPRoute"), [])
         self.assertNotIn("t-owl-mast-frontend", {d["metadata"]["name"] for d in docs})
 
     def test_examples_render_and_contain_no_credentials(self):
