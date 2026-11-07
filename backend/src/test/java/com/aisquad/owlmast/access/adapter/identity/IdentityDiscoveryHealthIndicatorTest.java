@@ -48,6 +48,26 @@ class IdentityDiscoveryHealthIndicatorTest {
   }
 
   @Test
+  void downWhenDiscoveryAnswersEmptyOk() {
+    try (StubIdentityProvider provider = StubIdentityProvider.startEmpty("owl-mast", 200)) {
+      Health health = check(provider.issuerUri());
+      assertThat(health).isNotNull();
+      assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+      assertThat(health.getDetails()).containsEntry("reason", "discovery response has no body");
+    }
+  }
+
+  @Test
+  void downWhenDiscoveryAnswersNoContent() {
+    try (StubIdentityProvider provider = StubIdentityProvider.startEmpty("owl-mast", 204)) {
+      Health health = check(provider.issuerUri());
+      assertThat(health).isNotNull();
+      assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+      assertThat(health.getDetails()).containsEntry("reason", "discovery response has no body");
+    }
+  }
+
+  @Test
   void downWhenIssuerIsUnreachable() {
     Health health = check("http://127.0.0.1:1/realms/owl-mast");
     assertThat(health.getStatus()).isEqualTo(Status.DOWN);

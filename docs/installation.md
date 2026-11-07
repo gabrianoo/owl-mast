@@ -28,8 +28,11 @@ chart never creates or templates credential values; a missing Secret or key leav
 | --- | --- | --- |
 | `database.existingSecret` | `owl-mast-db` | Backend application principal (`owlmast_app` by convention); also consumed by the bundled PostgreSQL initialisation |
 | `postgresql.adminExistingSecret` | `owl-mast-postgres-admin` | Bundled PostgreSQL provisioning superuser only (initialisation, extensions); no runtime component uses it |
-| `identity.keycloak.database.existingSecret` | `owl-mast-keycloak-db` | Keycloak's own database principal (`keycloak_app`) |
-| `identity.keycloak.bootstrapExistingSecret` | `owl-mast-keycloak-bootstrap` | Keycloak temporary bootstrap admin |
+| `identity.keycloak.database.existingSecret` | `owl-mast-keycloak-db` | Keycloak's own database principal (`keycloak_app`); referenced only when `identity.bundled=true` (by Keycloak, by the bundled PostgreSQL initialisation and by the provisioning Job) |
+| `identity.keycloak.bootstrapExistingSecret` | `owl-mast-keycloak-bootstrap` | Keycloak temporary bootstrap admin; referenced only when `identity.bundled=true` |
+
+With `identity.bundled=false` an install needs only `database.existingSecret` (and `postgresql.adminExistingSecret`
+when the database is bundled); no Keycloak credential or database is provisioned.
 
 ## Combinations
 
@@ -60,6 +63,20 @@ identity. Verified on the local target: each runtime principal is not a superuse
 synthetic vectors is created by `owlmast_app` and used by the planner (`Index Scan using …`); no
 `hnsw`/`ivfflat` index exists. Operators supplying an external PostgreSQL must reproduce the same
 separation; the init script is the reference.
+
+## Enabling the identity bundle later on an initialised bundled PostgreSQL
+
+The first-initialisation script of the bundled PostgreSQL runs once, when the data directory is
+empty. A volume initialised with `identity.bundled=false` therefore has no `keycloak` database or
+`keycloak_app` role, and simply switching to `identity.bundled=true` leaves Keycloak failing
+authentication (unready, nothing destroyed). The explicit transition is one upgrade with
+`postgresql.provisionKeycloakDatabase=true`, which runs a post-upgrade Job
+(`<release>-postgresql-provision-keycloak`) executing the idempotent `provision-keycloak.sh` from the
+init ConfigMap with the admin principal: the role is created only if absent (an existing role keeps
+its password, so the Secret must match it), the database only if absent, and the restricted grants are
+re-applied. Nothing is dropped or recreated. The value is rejected unless both bundles are enabled;
+leave it `false` afterwards. Disabling the identity bundle later keeps the existing Keycloak database
+and principal untouched.
 
 ## Probes and resources (AC1)
 
@@ -110,9 +127,16 @@ helm upgrade --install owl-mast deploy/helm/owl-mast -n owl-mast -f deploy/helm/
 KUBECONFIG=<run>/kubeconfig OWLMAST_HELM=<run>/helm EVIDENCE_DIR=<private> scripts/qualify-local-install.sh all
 ```
 
-The qualification script prepares the run-owned StorageClass, namespaces and quotas (6 CPU / 12Gi /
+The qualification script first preflights every resource the selected steps consume or change
+(StorageClass, namespaces, quotas, Secrets, fixture objects, retained claims, Helm releases): an
+existing object must carry this run's ownership label with the exact run id, an unreadable
+ownership (denied, outage) refuses, and only an explicit NotFound counts as absence; nothing is
+mutated when preflight refuses. It then prepares the run-owned StorageClass, namespaces and quotas (6 CPU / 12Gi /
 40Gi combined), generates synthetic secrets into the cluster only, deploys synthetic external
 PostgreSQL/Keycloak fixtures, installs all four combinations sequentially, proves pod replacement,
 uninstall retention, reinstall with the existing claim and upgrade, and exercises the failure paths
-(Secret missing a key, non-existent realm). Evidence is written to the private evidence directory,
-never to the repository.
+(Secret missing a key, non-existent realm). Isolation evidence requires the PostgreSQL CONNECT denial
+for the other database together with a successful same-principal control connection; transport or
+authentication failures fail the check. Secret inventories list metadata and key names only; no
+Secret value is ever requested in a persistable form. Evidence is written to the private evidence
+directory, never to the repository.

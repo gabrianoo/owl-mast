@@ -126,6 +126,11 @@ postgresql:
     # Reuse a claim that this installation previously created (or an operator-owned claim with
     # compatible ownership). Empty creates a new run-owned claim.
     existingClaim: ""
+  # Set to true for one upgrade when the identity bundle is enabled on a bundled PostgreSQL whose
+  # volume was initialised with identity.bundled=false: first-initialisation scripts never rerun, so
+  # an explicit post-install/post-upgrade Job provisions Keycloak's database and principal
+  # idempotently (nothing existing is dropped; an existing role keeps its password).
+  provisionKeycloakDatabase: false
   securityContext:
     runAsUser: 999
     runAsGroup: 999

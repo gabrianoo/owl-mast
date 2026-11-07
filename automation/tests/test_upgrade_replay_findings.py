@@ -14,6 +14,7 @@ linkage rules of finding 3 on current state with explicitly labelled synthetic m
 Part 3 checks the positive controls and that cleanup stays possible."""
 
 import json
+from datetime import datetime, timedelta
 import shutil
 import tempfile
 import unittest
@@ -48,9 +49,18 @@ class Upgraded:
         tmp = Path(self.tmpdir.name)
         self.fake, self.state_dir, self.worktree, self.sha, self.meta = lb.materialize(fixture_dir, name, tmp)
         self.policy = load_policy(write_policy(tmp, allow='["OM-01.02"]'))
+        # The committed fixtures carry the wall clock of the day they were generated (started_at,
+        # last observation). The upgraded coordinator observes a deterministic instant one minute
+        # after the latest persisted moment of the scenario, never the host clock, so the matrix
+        # gives the same results whenever it runs (the 240-minute wall-clock budget is measured
+        # from started_at).
+        run = json.loads((self.state_dir / "run-1" / "run.json").read_text(encoding="utf-8"))
+        moments = [run["started_at"], run.get("last_observed_at"), (run.get("activation") or {}).get("validated_at")]
+        latest = max(datetime.fromisoformat(m.replace("Z", "+00:00")) for m in moments if m)
+        self.moment = (latest + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def fresh(self) -> Coordinator:
-        return Coordinator(self.fake, self.policy, Store(self.state_dir, "run-1"), live=True)
+        return Coordinator(self.fake, self.policy, Store(self.state_dir, "run-1"), now=lambda: self.moment, live=True)
 
     def story(self):
         return Store(self.state_dir, "run-1").load_story(S)

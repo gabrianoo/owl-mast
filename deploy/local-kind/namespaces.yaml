@@ -19,6 +19,8 @@ kind: ResourceQuota
 metadata:
   name: owl-mast-test-budget
   namespace: owl-mast-test
+  labels:
+    owlmast.aisquad.com/run: om-01-02-local-20261107-01
 spec:
   hard:
     limits.cpu: "4"
@@ -31,6 +33,8 @@ kind: ResourceQuota
 metadata:
   name: owl-mast-test-external-budget
   namespace: owl-mast-test-external
+  labels:
+    owlmast.aisquad.com/run: om-01-02-local-20261107-01
 spec:
   hard:
     limits.cpu: "2"

@@ -120,6 +120,11 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- fail "identity.external.issuerUri must be an absolute http(s) URL" -}}
 {{- end -}}
 {{- end -}}
+{{- if .Values.postgresql.provisionKeycloakDatabase -}}
+{{- if not (and .Values.database.bundled .Values.identity.bundled) -}}
+{{- fail "postgresql.provisionKeycloakDatabase=true applies only to a bundled PostgreSQL with a bundled Keycloak (database.bundled=true and identity.bundled=true)" -}}
+{{- end -}}
+{{- end -}}
 {{- if .Values.frontend.enabled -}}
 {{- if and (not .Values.frontend.image.tag) (not .Values.frontend.image.digest) -}}
 {{- fail "frontend.enabled=true requires frontend.image.tag or frontend.image.digest (artifact delivered by OM-01.04)" -}}

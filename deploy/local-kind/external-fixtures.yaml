@@ -20,6 +20,8 @@ kind: Service
 metadata:
   name: external-postgresql
   namespace: owl-mast-test-external
+  labels:
+    owlmast.aisquad.com/run: om-01-02-local-20261107-01
 spec:
   selector:
     app: external-postgresql
@@ -111,6 +113,8 @@ kind: Service
 metadata:
   name: external-keycloak
   namespace: owl-mast-test-external
+  labels:
+    owlmast.aisquad.com/run: om-01-02-local-20261107-01
 spec:
   selector:
     app: external-keycloak
@@ -127,6 +131,8 @@ kind: ConfigMap
 metadata:
   name: external-keycloak-realm
   namespace: owl-mast-test-external
+  labels:
+    owlmast.aisquad.com/run: om-01-02-local-20261107-01
 data:
   owl-mast-realm.json: |
     {"realm": "owl-mast", "enabled": true, "displayName": "Owl Mast (external fixture)"}

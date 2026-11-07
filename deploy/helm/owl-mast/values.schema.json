@@ -164,6 +164,7 @@
       "properties": {
         "image": {"$ref": "#/$defs/pinnedImage"},
         "adminExistingSecret": {"$ref": "#/$defs/secretName"},
+        "provisionKeycloakDatabase": {"type": "boolean"},
         "service": {"type": "object", "required": ["port"]},
         "resources": {"$ref": "#/$defs/resources"},
         "persistence": {

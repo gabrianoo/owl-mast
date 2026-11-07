@@ -16,7 +16,7 @@ import unittest
 from datetime import datetime, timezone
 from unittest import mock
 
-from automation.tests import test_enabling_repair_1, test_enabling_repair_2, test_enabling_repair_3
+from automation.tests import test_enabling_repair_1, test_enabling_repair_2, test_enabling_repair_3, test_upgrade_replay_findings
 from automation.unattended import state as state_module
 
 HOST_CLOCKS = ("2026-11-07T09:00:00Z", "2026-11-07T13:59:59Z", "2026-11-07T14:00:01Z", "2026-11-08T00:00:00Z", "2031-01-01T00:00:00Z")
@@ -49,6 +49,17 @@ class CliClockIndependenceTests(unittest.TestCase):
                     result = unittest.TextTestRunner(stream=out, verbosity=0).run(suite)
                     self.assertTrue(result.wasSuccessful(), f"host clock {host}, {case.__name__}.{name or '*'}:\n{out.getvalue()}")
                     self.assertGreater(result.testsRun, 0)
+
+    def test_the_committed_legacy_matrix_passes_under_a_host_clock_past_its_wall_clock_budget(self):
+        """The committed legacy fixtures started at 2026-11-07T12:06Z with a 240-minute budget; the
+        upgraded coordinator must observe the scenario's own instant, so the matrix passes identically
+        with the host clock years later."""
+        for host in ("2026-11-07T17:00:00Z", "2031-01-01T00:00:00Z"):
+            with mock.patch.object(state_module, "datetime", _fixed_host_clock(host)):
+                suite = unittest.TestLoader().loadTestsFromName("test_full_matrix_on_committed_fixtures", test_upgrade_replay_findings.CommittedLegacyFixturesTests)
+                out = io.StringIO()
+                result = unittest.TextTestRunner(stream=out, verbosity=0).run(suite)
+                self.assertTrue(result.wasSuccessful(), f"host clock {host}:\n{out.getvalue()[-3000:]}")
 
     def test_without_injection_the_host_clock_decides(self):
         """Control: the production default really reads the host clock, so the injection above is what makes the scenarios deterministic."""

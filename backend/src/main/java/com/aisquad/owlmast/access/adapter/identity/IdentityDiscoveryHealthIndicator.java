@@ -39,6 +39,10 @@ final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator 
         .bodyToMono(DOCUMENT)
         .timeout(TIMEOUT)
         .map(this::evaluate)
+        // An empty 200 or a 204 completes without a body: that is not a discovery document, so the
+        // indicator must contribute DOWN rather than nothing (an absent contribution would let the
+        // readiness aggregate stay UP without any issuer having been verified).
+        .switchIfEmpty(Mono.fromSupplier(() -> down("discovery response has no body")))
         .onErrorResume(failure -> {
           // Diagnostic safety (NFR-6): class names only; responses may echo configuration.
           log.warn("Identity discovery failed: {}", SafeFailure.describe(failure));

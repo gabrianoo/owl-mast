@@ -27,6 +27,23 @@ public final class StubIdentityProvider implements AutoCloseable {
   }
 
   /**
+   * Starts a provider whose discovery endpoint answers {@code status} (200 or 204) with no body: a
+   * reachable endpoint that never publishes an issuer, which must not satisfy readiness.
+   */
+  public static StubIdentityProvider startEmpty(String realm, int status) {
+    DisposableServer server =
+        HttpServer.create()
+            .port(0)
+            .route(routes ->
+                routes.get(
+                    "/realms/" + realm + "/.well-known/openid-configuration",
+                    (request, response) ->
+                        response.status(status).header("Content-Type", "application/json").send()))
+            .bindNow();
+    return new StubIdentityProvider(server, realm, null);
+  }
+
+  /**
    * Starts a provider that publishes {@code publishedIssuer} instead of its own URL, to prove a
    * mismatched issuer is refused. {@code null} publishes the real URL.
    */

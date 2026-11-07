@@ -127,6 +127,45 @@ class ChartRenderTest(unittest.TestCase):
         backend = {d["metadata"]["name"]: d for d in by_kind(docs, "Deployment")}["t-owl-mast-backend"]
         self.assertEqual(env_of(backend)["OWLMAST_IDENTITY_ISSUER_URI"]["value"], "https://idp.example/realms/owl-mast")
 
+    def test_external_identity_needs_no_keycloak_credentials(self):
+        """R2: with the identity bundle disabled, no rendered object references a Keycloak Secret or
+        Keycloak database credentials, so the install needs only the application and admin Secrets."""
+        docs = render(*COMBINATIONS["bundled-external"])
+        referenced = set()
+        for d in by_kind(docs, "Deployment") + by_kind(docs, "Job"):
+            for c in d["spec"]["template"]["spec"]["containers"]:
+                for e in c.get("env", []):
+                    ref = e.get("valueFrom", {}).get("secretKeyRef")
+                    if ref:
+                        referenced.add(ref["name"])
+                    self.assertFalse(e["name"].startswith("OWLMAST_KEYCLOAK"), e["name"])
+        self.assertEqual(referenced, {"owl-mast-db", "owl-mast-postgres-admin"})
+        init = {d["metadata"]["name"]: d for d in by_kind(docs, "ConfigMap")}["t-owl-mast-postgresql-init"]
+        self.assertIn('if [ -n "${OWLMAST_KEYCLOAK_USERNAME:-}" ]', init["data"]["10-owl-mast-databases.sh"])
+        bundled = render()
+        pg = {d["metadata"]["name"]: d for d in by_kind(bundled, "Deployment")}["t-owl-mast-postgresql"]
+        self.assertEqual(env_of(pg)["OWLMAST_KEYCLOAK_PASSWORD"]["valueFrom"]["secretKeyRef"], {"name": "owl-mast-keycloak-db", "key": "password"})
+
+    def test_keycloak_provisioning_job_is_explicit_and_idempotent(self):
+        """R2: enabling Keycloak on an initialised volume is an explicit opt-in Job, never a silent recreation."""
+        self.assertEqual(by_kind(render(), "Job"), [])
+        docs = render("--set", "postgresql.provisionKeycloakDatabase=true")
+        job = by_kind(docs, "Job")
+        self.assertEqual(len(job), 1)
+        self.assertEqual(job[0]["metadata"]["annotations"]["helm.sh/hook"], "post-install,post-upgrade")
+        self.assertEqual(job[0]["spec"]["template"]["spec"]["containers"][0]["command"], ["bash", "/owl-mast/provision-keycloak.sh"])
+        script = {d["metadata"]["name"]: d for d in by_kind(docs, "ConfigMap")}["t-owl-mast-postgresql-init"]["data"]["provision-keycloak.sh"]
+        self.assertIn("WHERE NOT EXISTS (SELECT 1 FROM pg_roles", script)
+        self.assertIn("WHERE NOT EXISTS (SELECT 1 FROM pg_database", script)
+        self.assertNotIn("DROP", script.upper())
+        for sets in (
+            ("postgresql.provisionKeycloakDatabase=true", "identity.bundled=false", "identity.external.issuerUri=https://idp.example/realms/x"),
+            ("postgresql.provisionKeycloakDatabase=true", "database.bundled=false", "database.external.host=pg.example", "identity.keycloak.database.external.host=pg.example"),
+        ):
+            result = helm("template", "t", str(CHART), *[a for s_ in sets for a in ("--set", s_)])
+            self.assertNotEqual(result.returncode, 0, sets)
+            self.assertIn("provisionKeycloakDatabase=true applies only", result.stderr)
+
     def test_external_external_renders_only_the_backend(self):
         docs = render(*COMBINATIONS["external-external"])
         self.assertEqual([d["metadata"]["name"] for d in by_kind(docs, "Deployment")], ["t-owl-mast-backend"])

@@ -7,6 +7,23 @@ metadata:
     {{- include "owl-mast.labels" . | nindent 4 }}
     app.kubernetes.io/component: postgresql
 data:
+  # Idempotent provisioning of Keycloak's own database and login principal (AC3): the role is
+  # created only if absent (an existing role keeps its password; the Secret must match it), the
+  # database only if absent, grants are re-applied. Used at first initialisation when Keycloak is
+  # bundled and by the explicit provisioning Job when Keycloak is enabled on an already initialised volume.
+  provision-keycloak.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    : "${OWLMAST_KEYCLOAK_DATABASE:?}" "${OWLMAST_KEYCLOAK_USERNAME:?}" "${OWLMAST_KEYCLOAK_PASSWORD:?}"
+    psql -v ON_ERROR_STOP=1 --host "${PGHOST:-/var/run/postgresql}" --username "$POSTGRES_USER" --dbname postgres \
+      --set=kc_db="$OWLMAST_KEYCLOAK_DATABASE" --set=kc_user="$OWLMAST_KEYCLOAK_USERNAME" --set=kc_password="$OWLMAST_KEYCLOAK_PASSWORD" <<'SQL'
+    SELECT format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION', :'kc_user', :'kc_password')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'kc_user') \gexec
+    SELECT format('CREATE DATABASE %I OWNER %I', :'kc_db', :'kc_user')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'kc_db') \gexec
+    REVOKE ALL ON DATABASE :"kc_db" FROM PUBLIC;
+    GRANT CONNECT, TEMPORARY ON DATABASE :"kc_db" TO :"kc_user";
+    SQL
   # Runs once on first initialisation of the data directory (docker-entrypoint-initdb.d), as the
   # provisioning superuser. Separate databases and login principals with restricted grants (AC3):
   # runtime principals are NOSUPERUSER NOCREATEDB NOCREATEROLE and may connect only to their own
@@ -15,18 +32,19 @@ data:
     #!/bin/bash
     set -euo pipefail
     psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres \
-      --set=app_db="$OWLMAST_APP_DATABASE" --set=app_user="$OWLMAST_APP_USERNAME" --set=app_password="$OWLMAST_APP_PASSWORD" \
-      --set=kc_db="$OWLMAST_KEYCLOAK_DATABASE" --set=kc_user="$OWLMAST_KEYCLOAK_USERNAME" --set=kc_password="$OWLMAST_KEYCLOAK_PASSWORD" <<'SQL'
+      --set=app_db="$OWLMAST_APP_DATABASE" --set=app_user="$OWLMAST_APP_USERNAME" --set=app_password="$OWLMAST_APP_PASSWORD" <<'SQL'
     CREATE ROLE :"app_user" LOGIN PASSWORD :'app_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION;
-    CREATE ROLE :"kc_user" LOGIN PASSWORD :'kc_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION;
     CREATE DATABASE :"app_db" OWNER :"app_user";
-    CREATE DATABASE :"kc_db" OWNER :"kc_user";
     REVOKE ALL ON DATABASE :"app_db" FROM PUBLIC;
-    REVOKE ALL ON DATABASE :"kc_db" FROM PUBLIC;
     REVOKE ALL ON DATABASE postgres FROM PUBLIC;
     GRANT CONNECT, TEMPORARY ON DATABASE :"app_db" TO :"app_user";
-    GRANT CONNECT, TEMPORARY ON DATABASE :"kc_db" TO :"kc_user";
     \connect :"app_db"
     CREATE EXTENSION IF NOT EXISTS vchord CASCADE;
     SQL
+    if [ -n "${OWLMAST_KEYCLOAK_USERNAME:-}" ]; then
+      # Keycloak is the bundled identity consumer: provision its principal and database now.
+      bash /docker-entrypoint-initdb.d/provision-keycloak.sh
+    else
+      echo "owl-mast: identity bundle disabled; no Keycloak database or principal provisioned"
+    fi
 {{- end }}
