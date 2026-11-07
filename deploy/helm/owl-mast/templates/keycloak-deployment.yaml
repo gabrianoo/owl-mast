@@ -1,0 +1,120 @@
+{{- if .Values.identity.bundled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "owl-mast.keycloak.fullname" . }}
+  labels:
+    {{- include "owl-mast.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "owl-mast.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: keycloak
+  template:
+    metadata:
+      labels:
+        {{- include "owl-mast.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: keycloak
+      annotations:
+        owlmast.aisquad.com/database-mode: {{ ternary "bundled" "external" .Values.database.bundled | quote }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: keycloak
+          image: {{ include "owl-mast.image" .Values.identity.keycloak.image | quote }}
+          imagePullPolicy: {{ .Values.identity.keycloak.image.pullPolicy }}
+          args:
+            - start
+            {{- if .Values.identity.keycloak.importRealm }}
+            - --import-realm
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: management
+              containerPort: 9000
+          env:
+            - name: KC_DB
+              value: postgres
+            - name: KC_DB_URL
+              value: {{ printf "jdbc:postgresql://%s:%s/%s?sslmode=%s" (include "owl-mast.keycloak.database.host" .) (include "owl-mast.keycloak.database.port" .) .Values.identity.keycloak.database.name (include "owl-mast.keycloak.database.sslMode" .) | quote }}
+            - name: KC_DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.identity.keycloak.database.existingSecret }}
+                  key: username
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.identity.keycloak.database.existingSecret }}
+                  key: password
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.identity.keycloak.bootstrapExistingSecret }}
+                  key: username
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.identity.keycloak.bootstrapExistingSecret }}
+                  key: password
+            # Cluster-local issuer; public origins and TLS termination are an OM-02.01 gate.
+            - name: KC_HOSTNAME
+              value: {{ printf "http://%s:%v" (include "owl-mast.keycloak.fullname" .) .Values.identity.keycloak.service.port | quote }}
+            - name: KC_HTTP_ENABLED
+              value: "true"
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            - name: KC_HTTP_MANAGEMENT_PORT
+              value: "9000"
+            - name: KC_PROXY_HEADERS
+              value: xforwarded
+          startupProbe:
+            httpGet:
+              path: /health/started
+              port: management
+            periodSeconds: {{ .Values.identity.keycloak.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.identity.keycloak.probes.startup.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: management
+            periodSeconds: {{ .Values.identity.keycloak.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.identity.keycloak.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: management
+            periodSeconds: {{ .Values.identity.keycloak.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.identity.keycloak.probes.readiness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.identity.keycloak.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.identity.keycloak.importRealm }}
+            - name: realm
+              mountPath: /opt/keycloak/data/import
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.identity.keycloak.importRealm }}
+        - name: realm
+          configMap:
+            name: {{ include "owl-mast.keycloak.fullname" . }}-realm
+        {{- end }}
+{{- end }}

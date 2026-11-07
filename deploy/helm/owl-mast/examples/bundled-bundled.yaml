@@ -1,0 +1,13 @@
+# Bundled PostgreSQL/VectorChord and bundled Keycloak. Secrets are references only; create them first:
+#   kubectl create secret generic owl-mast-postgres-admin --from-literal=username=... --from-literal=password=...
+#   kubectl create secret generic owl-mast-db --from-literal=username=owlmast_app --from-literal=password=...
+#   kubectl create secret generic owl-mast-keycloak-db --from-literal=username=keycloak_app --from-literal=password=...
+#   kubectl create secret generic owl-mast-keycloak-bootstrap --from-literal=username=... --from-literal=password=...
+database:
+  bundled: true
+identity:
+  bundled: true
+postgresql:
+  persistence:
+    storageClass: ""
+    size: 10Gi

@@ -50,6 +50,7 @@ dependencies {
     testFixturesImplementation(platform(libs.spring.boot.bom))
     testFixturesImplementation("org.springframework.boot:spring-boot-testcontainers")
     testFixturesImplementation("org.springframework.boot:spring-boot-starter-test")
+    testFixturesImplementation("org.springframework.boot:spring-boot-starter-webflux")
     testFixturesImplementation("org.testcontainers:testcontainers-postgresql")
     testFixturesRuntimeOnly("org.testcontainers:testcontainers-r2dbc")
 }

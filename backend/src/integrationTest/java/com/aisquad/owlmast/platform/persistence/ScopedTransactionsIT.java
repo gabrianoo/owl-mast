@@ -7,6 +7,7 @@ import com.aisquad.owlmast.platform.scope.MissingScopeException;
 import com.aisquad.owlmast.platform.scope.ScopeContext;
 import com.aisquad.owlmast.platform.scope.Scopes;
 import com.aisquad.owlmast.testing.ContainersConfiguration;
+import com.aisquad.owlmast.testing.StubIdentityConfiguration;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
@@ -29,7 +30,7 @@ import reactor.test.StepVerifier;
  * rollbacks and the fail-closed path behave on the actual database.
  */
 @SpringBootTest
-@Import(ContainersConfiguration.class)
+@Import({ContainersConfiguration.class, StubIdentityConfiguration.class})
 class ScopedTransactionsIT {
 
   private static final String PROBE = "it_scoped_tx_probe";

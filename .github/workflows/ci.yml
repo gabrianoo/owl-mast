@@ -55,6 +55,18 @@ jobs:
       - name: Inject violations and assert each gate fails with its diagnostic
         run: scripts/verify-quality-gates.sh
 
+  package-checks:
+    name: Installation package (chart lint, four combinations, fail-closed validation)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Qualified Helm 4.3.1 (checksum verified) and chart render tests
+        run: scripts/verify-install-package.sh
+
   automation-tests:
     name: Unattended execution foundation (policy, sync and coordinator tests)
     runs-on: ubuntu-26.04

@@ -1,0 +1,203 @@
+# Synthetic "existing" dependencies for the external combinations. Same pinned images and the same
+# database/principal contract as the chart (init ConfigMap `external-postgresql-init` is rendered
+# from the chart by scripts/qualify-local-install.sh). Not a customer service.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: external-postgresql-data
+  namespace: owl-mast-test-external
+  labels:
+    owlmast.aisquad.com/run: om-01-02-local-20261107-01
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: owl-mast-local-retain
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-postgresql
+  namespace: owl-mast-test-external
+spec:
+  selector:
+    app: external-postgresql
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: external-postgresql
+  namespace: owl-mast-test-external
+  labels:
+    owlmast.aisquad.com/run: om-01-02-local-20261107-01
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: external-postgresql
+  template:
+    metadata:
+      labels:
+        app: external-postgresql
+    spec:
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgresql
+          image: tensorchord/vchord-postgres:pg18-v1.1.1@sha256:700ff05ebdc7e4afd4dd8442e0684293046c3833677fec326550000a04cf8a91
+          args: ["postgres", "-c", "shared_preload_libraries=vchord,vector"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 5432
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_USER
+              valueFrom: {secretKeyRef: {name: owl-mast-postgres-admin, key: username}}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: owl-mast-postgres-admin, key: password}}
+            - name: OWLMAST_APP_DATABASE
+              value: owlmast
+            - name: OWLMAST_APP_USERNAME
+              valueFrom: {secretKeyRef: {name: owl-mast-db, key: username}}
+            - name: OWLMAST_APP_PASSWORD
+              valueFrom: {secretKeyRef: {name: owl-mast-db, key: password}}
+            - name: OWLMAST_KEYCLOAK_DATABASE
+              value: keycloak
+            - name: OWLMAST_KEYCLOAK_USERNAME
+              valueFrom: {secretKeyRef: {name: owl-mast-keycloak-db, key: username}}
+            - name: OWLMAST_KEYCLOAK_PASSWORD
+              valueFrom: {secretKeyRef: {name: owl-mast-keycloak-db, key: password}}
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "psql -U \"$POSTGRES_USER\" -d \"$OWLMAST_APP_DATABASE\" -h 127.0.0.1 -Atc 'select 1' | grep -qx 1"]
+            periodSeconds: 5
+            failureThreshold: 36
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/postgresql/data}
+            - {name: init, mountPath: /docker-entrypoint-initdb.d, readOnly: true}
+            - {name: run, mountPath: /var/run/postgresql}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: external-postgresql-data
+        - name: init
+          configMap:
+            name: external-postgresql-init
+            defaultMode: 0555
+        - name: run
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-keycloak
+  namespace: owl-mast-test-external
+spec:
+  selector:
+    app: external-keycloak
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: management
+      port: 9000
+      targetPort: 9000
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: external-keycloak-realm
+  namespace: owl-mast-test-external
+data:
+  owl-mast-realm.json: |
+    {"realm": "owl-mast", "enabled": true, "displayName": "Owl Mast (external fixture)"}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: external-keycloak
+  namespace: owl-mast-test-external
+  labels:
+    owlmast.aisquad.com/run: om-01-02-local-20261107-01
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: external-keycloak
+  template:
+    metadata:
+      labels:
+        app: external-keycloak
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.8.2@sha256:3879c623248408de29a5303178b5816c77e8dfef3890c361f8c0bbeaa979ba3b
+          args: ["start", "--import-realm"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - {containerPort: 8080}
+            - {containerPort: 9000}
+          env:
+            - {name: KC_DB, value: postgres}
+            - {name: KC_DB_URL, value: "jdbc:postgresql://external-postgresql:5432/keycloak?sslmode=disable"}
+            - name: KC_DB_USERNAME
+              valueFrom: {secretKeyRef: {name: owl-mast-keycloak-db, key: username}}
+            - name: KC_DB_PASSWORD
+              valueFrom: {secretKeyRef: {name: owl-mast-keycloak-db, key: password}}
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              valueFrom: {secretKeyRef: {name: owl-mast-keycloak-bootstrap, key: username}}
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom: {secretKeyRef: {name: owl-mast-keycloak-bootstrap, key: password}}
+            - {name: KC_HOSTNAME, value: "http://external-keycloak.owl-mast-test-external.svc:8080"}
+            - {name: KC_HTTP_ENABLED, value: "true"}
+            - {name: KC_HEALTH_ENABLED, value: "true"}
+            - {name: KC_HTTP_MANAGEMENT_PORT, value: "9000"}
+          startupProbe:
+            httpGet: {path: /health/started, port: 9000}
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /health/ready, port: 9000}
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: {cpu: 500m, memory: 768Mi}
+            limits: {cpu: "1", memory: 1536Mi}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: realm, mountPath: /opt/keycloak/data/import, readOnly: true}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: realm
+          configMap:
+            name: external-keycloak-realm

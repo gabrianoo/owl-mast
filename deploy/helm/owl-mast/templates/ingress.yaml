@@ -1,0 +1,47 @@
+{{- if .Values.routing.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "owl-mast.fullname" . }}
+  labels:
+    {{- include "owl-mast.labels" . | nindent 4 }}
+  {{- with .Values.routing.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.routing.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.routing.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.routing.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.routing.apiPathPrefix }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "owl-mast.backend.fullname" . }}
+                port:
+                  name: http
+          - path: {{ .Values.routing.actuatorPathPrefix }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "owl-mast.backend.fullname" . }}
+                port:
+                  name: http
+          {{- if .Values.frontend.enabled }}
+          - path: {{ .Values.routing.frontendPathPrefix }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "owl-mast.frontend.fullname" . }}
+                port:
+                  name: http
+          {{- end }}
+{{- end }}

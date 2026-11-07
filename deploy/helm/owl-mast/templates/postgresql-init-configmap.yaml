@@ -1,0 +1,32 @@
+{{- if .Values.database.bundled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "owl-mast.postgresql.fullname" . }}-init
+  labels:
+    {{- include "owl-mast.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+data:
+  # Runs once on first initialisation of the data directory (docker-entrypoint-initdb.d), as the
+  # provisioning superuser. Separate databases and login principals with restricted grants (AC3):
+  # runtime principals are NOSUPERUSER NOCREATEDB NOCREATEROLE and may connect only to their own
+  # database. VectorChord is installed by the provisioning identity so the app never needs superuser.
+  10-owl-mast-databases.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres \
+      --set=app_db="$OWLMAST_APP_DATABASE" --set=app_user="$OWLMAST_APP_USERNAME" --set=app_password="$OWLMAST_APP_PASSWORD" \
+      --set=kc_db="$OWLMAST_KEYCLOAK_DATABASE" --set=kc_user="$OWLMAST_KEYCLOAK_USERNAME" --set=kc_password="$OWLMAST_KEYCLOAK_PASSWORD" <<'SQL'
+    CREATE ROLE :"app_user" LOGIN PASSWORD :'app_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION;
+    CREATE ROLE :"kc_user" LOGIN PASSWORD :'kc_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION;
+    CREATE DATABASE :"app_db" OWNER :"app_user";
+    CREATE DATABASE :"kc_db" OWNER :"kc_user";
+    REVOKE ALL ON DATABASE :"app_db" FROM PUBLIC;
+    REVOKE ALL ON DATABASE :"kc_db" FROM PUBLIC;
+    REVOKE ALL ON DATABASE postgres FROM PUBLIC;
+    GRANT CONNECT, TEMPORARY ON DATABASE :"app_db" TO :"app_user";
+    GRANT CONNECT, TEMPORARY ON DATABASE :"kc_db" TO :"kc_user";
+    \connect :"app_db"
+    CREATE EXTENSION IF NOT EXISTS vchord CASCADE;
+    SQL
+{{- end }}

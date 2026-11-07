@@ -1,0 +1,21 @@
+{{- if .Values.identity.bundled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "owl-mast.keycloak.fullname" . }}
+  labels:
+    {{- include "owl-mast.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keycloak
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "owl-mast.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: keycloak
+  ports:
+    - name: http
+      port: {{ .Values.identity.keycloak.service.port }}
+      targetPort: http
+    - name: management
+      port: {{ .Values.identity.keycloak.service.managementPort }}
+      targetPort: management
+{{- end }}

@@ -1,0 +1,13 @@
+Owl Mast {{ .Chart.Version }} ({{ .Release.Name }} in {{ .Release.Namespace }})
+
+Database:  {{ ternary "bundled PostgreSQL/VectorChord" (printf "external %s:%v" .Values.database.external.host .Values.database.external.port) .Values.database.bundled }} (database {{ .Values.database.name }}, Secret {{ .Values.database.existingSecret }})
+Identity:  {{ ternary "bundled Keycloak" "external issuer" .Values.identity.bundled }} -> {{ include "owl-mast.identity.issuerUri" . }}
+Frontend:  {{ ternary "enabled" "not deployed (OM-01.04 delivers the shell artifact)" .Values.frontend.enabled }}
+{{- if and .Values.database.bundled (not .Values.postgresql.persistence.existingClaim) }}
+
+The PersistentVolumeClaim {{ include "owl-mast.postgresql.fullname" . }}-data is retained when this
+release is uninstalled. Reinstall with --set postgresql.persistence.existingClaim={{ include "owl-mast.postgresql.fullname" . }}-data
+to reuse it. Snapshot cadence and provider remain an explicit operator decision.
+{{- end }}
+
+Readiness: kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
