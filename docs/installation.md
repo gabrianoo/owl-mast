@@ -129,9 +129,18 @@ default. Two mutually exclusive mechanisms exist; enabling both is refused as am
   (`routing.gateway.parentRefs[].name`, optional `namespace`, `sectionName`, `port`; at least one entry
   is required), with optional `hostnames`. Prerequisites the operator provides and qualifies: the
   Gateway API CRDs (standard channel, `v1` HTTPRoute), a GatewayClass and controller, the Gateway with
-  its listeners and any TLS. The chart renders the route only; it was validated by render and negative
-  tests, not against a running Gateway controller (none is installed on the qualification target), so
-  manifest support is distinct from controller/runtime qualification.
+  its listeners and any TLS. The chart validates the exposed inputs against the stable HTTPRoute `v1`
+  contract (hostnames as lowercase DNS names with an optional leading `*.` wildcard, at most 16 and 253
+  characters each; parent `namespace` as a DNS label, `sectionName` as a DNS subdomain, `port` 1–65535, at
+  most 32 parents, a distinct `sectionName` on every repeated parent; path prefixes absolute, valid
+  characters only, none of `//`, `/./`, `/../`, `%2f`, `%2F`, `#`) and refuses rendering otherwise, never
+  coercing values. Rendered routes are validated offline in the deploy test suite against the pinned
+  upstream schema (`deploy/tests/fixtures/gateway-api/`, Gateway API v1.4.0 standard CRD, origin and SHA256
+  recorded) for the ordinary schema constraints; the CRD's CEL rules are enforced by the chart for the
+  inputs it exposes. This is manifest validation, not controller acceptance: listener permission, hostname
+  intersection and route status are decided by the operator's Gateway, and no Gateway controller runs on
+  the qualification target (the API group is absent there), so manifest support is distinct from
+  controller/runtime qualification.
 - **Ingress (compatibility):** `routing.ingress.enabled=true` requires an explicit host. The Kubernetes
   Ingress API is frozen (GA, no removal planned) while the project recommends Gateway API; the retirement
   of the ingress-nginx controller is a separate fact and does not remove the API.
@@ -161,8 +170,11 @@ consume or change (StorageClass, namespaces, quotas, every consumed Secret, fixt
 claims, every renderable resource of each affected release including hook ConfigMap/Job, Ingress and
 HTTPRoute, and the selected pods' controller chain pod → ReplicaSet → Deployment by UID, label and
 readability): an existing object must carry the expected identity's label exactly, an unreadable
-ownership (denied, outage) refuses, and only an explicit NotFound counts as absence; nothing is
-mutated when preflight refuses. Pod replacement deletes only the pods whose chain was proven
+ownership (denied, outage, partial discovery, unexpected output) refuses, and only an explicit API
+NotFound (`--ignore-not-found` exit 0 with no object) counts as absence. The one optional kind,
+HTTPRoute, counts as absent only when a complete, successful `api-versions` listing lacks
+`gateway.networking.k8s.io/v1`; every discovery failure refuses. Nothing is mutated when preflight
+refuses. Pod replacement deletes only the pods whose chain was proven
 immediately before, by name. It then prepares the run-owned StorageClass, namespaces and quotas (6 CPU / 12Gi /
 40Gi combined), generates synthetic secrets into the cluster only, deploys synthetic external
 PostgreSQL/Keycloak fixtures, installs all four combinations sequentially, proves pod replacement,

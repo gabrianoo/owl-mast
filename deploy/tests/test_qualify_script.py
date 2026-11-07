@@ -41,15 +41,34 @@ state_of() { # kind ns name
 }
 ns="-"; set -- "$@"; argv=("$@")
 for ((i=0;i<${#argv[@]};i++)); do [ "${argv[$i]}" = "-n" ] && ns="${argv[$((i+1))]}"; done
-if [[ "$args" == *" get "* && "$args" == *"jsonpath={.metadata.labels.owlmast"* ]]; then
+# Discovery: world line `apiversions - gateway.networking.k8s.io/v1 <nogateway|partial|forbidden|unavailable|garbage>`; no line = served.
+if [[ "$args" == *" api-versions"* ]]; then
+  state="$(state_of apiversions - gateway.networking.k8s.io/v1)"
+  base=$'apps/v1\nbatch/v1\nnetworking.k8s.io/v1\nstorage.k8s.io/v1\nv1'
+  case "$state" in
+    nogateway) printf '%s\n' "$base"; exit 0 ;;
+    partial) printf '%s\n' "$base"; echo "E1107 memcache.go:287] couldn't get resource list for gateway.networking.k8s.io/v1: the server is currently unable to handle the request" >&2; exit 1 ;;
+    forbidden) echo "error: couldn't get available api versions from server: forbidden" >&2; exit 1 ;;
+    unavailable) echo "error: couldn't get available api versions from server: the server is currently unable to handle the request" >&2; exit 1 ;;
+    garbage) echo "<html>503</html>"; exit 0 ;;
+    *) printf '%s\ngateway.networking.k8s.io/v1\n' "$base"; exit 0 ;;
+  esac
+fi
+if [[ "$args" == *" get "* && "$args" == *"--ignore-not-found"* && "$args" == *"metadata.labels.owlmast"* ]]; then
   for ((i=0;i<${#argv[@]};i++)); do if [ "${argv[$i]}" = "get" ]; then kind="${argv[$((i+1))]}"; name="${argv[$((i+2))]}"; fi; done
+  [ "$kind" = "httproutes.v1.gateway.networking.k8s.io" ] && kind=httproute
   state="$(state_of "$kind" "$ns" "$name")"
   case "$state" in
-    owned) printf '%s' "$STUB_RUN_ID" ;;
-    foreign:unlabelled) printf '' ;;
-    foreign:*) printf '%s' "${state#foreign:}" ;;
-    absent) echo "Error from server (NotFound): $kind \"$name\" not found" >&2; exit 1 ;;
+    owned) printf '%s|%s' "$name" "$STUB_RUN_ID" ;;
+    foreign:unlabelled) printf '%s|' "$name" ;;
+    foreign:*) printf '%s|%s' "$name" "${state#foreign:}" ;;
+    absent) exit 0 ;;   # --ignore-not-found: NotFound is exit 0 with no output
     kind-unavailable) echo "error: the server doesn't have a resource type \"$kind\"" >&2; exit 1 ;;
+    mixed-forbidden) echo "E1107 memcache.go:287] couldn't get resource list for gateway.networking.k8s.io/v1: Forbidden" >&2; echo "error: the server doesn't have a resource type \"$kind\"" >&2; exit 1 ;;
+    mixed-unavailable) echo "E1107 memcache.go:287] couldn't get resource list for gateway.networking.k8s.io/v1: the server is currently unable to handle the request" >&2; echo "error: the server doesn't have a resource type \"$kind\"" >&2; exit 1 ;;
+    forbidden) echo "Error from server (Forbidden): $kind \"$name\" is forbidden" >&2; exit 1 ;;
+    warn-shape) printf 'weird output without separator'; echo "W1107 warnings.go:70] stale discovery cache" >&2; exit 0 ;;
+    garbage) printf 'not-the-object'; exit 0 ;;
     *) echo "Unable to connect to the server: dial tcp 10.0.0.1:6443: connect: connection refused" >&2; exit 1 ;;
   esac
   exit 0
@@ -314,18 +333,52 @@ class PreflightTests(unittest.TestCase):
                 finally:
                     h.close()
 
-    def test_unserved_api_kind_is_not_an_object_but_other_errors_still_refuse(self):
-        """A cluster without the Gateway API CRDs cannot hold an HTTPRoute: that is explicit absence of the kind, not an unreadable object."""
-        h = Harness(BASE_WORLD + "httproute owl-mast-test owl-mast kind-unavailable\n")
+    def test_absent_gateway_api_is_established_only_by_complete_discovery(self):
+        """N4: the optional HTTPRoute kind is absent only when a complete, successful discovery listing lacks its
+        group/version; the object is then never queried. Every discovery failure refuses with zero mutations."""
+        h = Harness(BASE_WORLD + "apiversions - gateway.networking.k8s.io/v1 nogateway\nhttproute owl-mast-test owl-mast mixed-forbidden\n")
+        try:
+            r = h.run("bundled-bundled")
+            self.assertIn("is not among the served API versions (complete discovery succeeded without it)", r.stdout)
+            self.assertNotIn("REFUSED", r.stdout)
+            self.assertTrue(all("httproutes" not in c for c in h.calls.read_text().splitlines()), "the unserved kind was still queried")
+        finally:
+            h.close()
+        for discovery, message in (("partial", "discovery incomplete or failed"), ("forbidden", "discovery incomplete or failed"), ("unavailable", "discovery incomplete or failed"), ("garbage", "unexpected discovery output")):
+            r = self.run_refused(BASE_WORLD + f"apiversions - gateway.networking.k8s.io/v1 {discovery}\n", "bundled-bundled")
+            self.assertIn(message, r.stdout, discovery)
+            self.assertIn("ownership unreadable", r.stdout, discovery)
+
+    def test_mixed_discovery_errors_on_a_served_kind_refuse_and_never_reach_helm(self):
+        """N4: the reviewer's reproductions, at full invocation: partial discovery plus a mapping miss is an error, not absence."""
+        for state in ("mixed-forbidden", "mixed-unavailable", "forbidden", "kind-unavailable", "warn-shape", "garbage", "error"):
+            r = self.run_refused(BASE_WORLD + f"httproute owl-mast-test owl-mast {state}\n", "bundled-bundled")
+            self.assertIn("preflight httproute owl-mast-test/owl-mast: ownership unreadable", r.stdout, state)
+            self.assertTrue(all(" upgrade " not in c for c in r.stdout.splitlines()), state)
+        # the text that used to be trusted is not an exception for any other kind
+        for kind in ("configmap", "job", "service"):
+            name = {"configmap": "owl-mast-postgresql-init", "job": "owl-mast-postgresql-provision-keycloak", "service": "owl-mast-backend"}[kind]
+            self.run_refused(BASE_WORLD + f"{kind} owl-mast-test {name} kind-unavailable\n", "bundled-bundled")
+            self.run_refused(BASE_WORLD + f"{kind} owl-mast-test {name} mixed-forbidden\n", "bundled-bundled")
+
+    def test_served_gateway_api_kind_follows_the_ordinary_ownership_rules(self):
+        self.run_refused(BASE_WORLD + "httproute owl-mast-test owl-mast foreign:other\n", "bundled-bundled")
+        self.run_refused(BASE_WORLD + "httproute owl-mast-test owl-mast foreign:unlabelled\n", "bundled-bundled")
+        h = Harness(BASE_WORLD + "httproute owl-mast-test owl-mast owned\n")
         try:
             r = h.source("preflight bundled-bundled")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertIn("preflight httproute owl-mast-test/owl-mast: the API kind is not served", r.stdout)
-            self.assertEqual(h.mutating_calls(), [])
+            self.assertIn("preflight httproute owl-mast-test/owl-mast: owned by this run", r.stdout)
+            self.assertIn(" get httproutes.v1.gateway.networking.k8s.io owl-mast --ignore-not-found", h.calls.read_text())
         finally:
             h.close()
-        self.run_refused(BASE_WORLD + "httproute owl-mast-test owl-mast error\n", "bundled-bundled")
-        self.run_refused(BASE_WORLD + "httproute owl-mast-test owl-mast foreign:other\n", "bundled-bundled")
+        h = Harness(BASE_WORLD)  # served but absent: an explicit NotFound (exit 0, no output) is absence
+        try:
+            r = h.source("preflight bundled-bundled")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("preflight httproute owl-mast-test/owl-mast: absent", r.stdout)
+        finally:
+            h.close()
 
     def test_direct_fixtures_checks_the_consumed_storage_class(self):
         r = self.run_refused(BASE_WORLD + "storageclass - owl-mast-local-retain foreign:other\n", "fixtures")

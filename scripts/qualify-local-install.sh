@@ -95,18 +95,53 @@ refuse() { log "REFUSED: $*"; exit 2; }
 # -- ownership -------------------------------------------------------------------------------------
 # resource_state <namespace|-> <kind> <name>: prints absent | owned | foreign:<owner or unlabelled> | error:<message>.
 # Only an explicit NotFound is absence; any other failure (denied, outage, unreadable) is an error.
+# api_version_served <group/version>: served | not-served | error:<message>. Absence of an API kind is established
+# only by a SUCCESSFUL, COMPLETE discovery listing (exit 0 and no diagnostics) that lacks the group/version;
+# permission, transport, partial-discovery and unexpected output are errors.
+api_version_served() {
+  local gv="$1" out err rc=0
+  err="$(mktemp)"
+  out="$(k api-versions 2>"$err")" || rc=$?
+  if [ "$rc" -ne 0 ] || [ -s "$err" ]; then
+    echo "error:discovery incomplete or failed: $(tr '\n' ' ' <"$err" | cut -c1-200)"; rm -f "$err"; return
+  fi
+  rm -f "$err"
+  if ! grep -qE '^[a-z0-9.-]+(/[a-z0-9]+)?$|^v1$' <<<"$out"; then echo "error:unexpected discovery output"; return; fi
+  if grep -qx -- "$gv" <<<"$out"; then echo served; else echo not-served; fi
+}
+# Only this optional kind may be legitimately unserved: the chart renders it solely when routing.gateway is
+# enabled, which the qualification never does; any other kind that cannot be resolved is an error.
+OPTIONAL_KIND_HTTPROUTE_GV="gateway.networking.k8s.io/v1"
+OPTIONAL_KIND_HTTPROUTE_RESOURCE="httproutes.v1.gateway.networking.k8s.io"
 resource_state() {
-  local ns="$1" kind="$2" name="$3" owner="${4:-$RUN_ID}" out rc=0
+  local ns="$1" kind="$2" name="$3" owner="${4:-$RUN_ID}" out err rc=0 served
+  local resource="$kind"
   local -a nsarg=()
   [ "$ns" != "-" ] && nsarg=(-n "$ns")
-  out="$(k "${nsarg[@]}" get "$kind" "$name" -o jsonpath="{.metadata.labels.owlmast\.aisquad\.com/run}" 2>&1)" || rc=$?
-  if [ "$rc" -eq 0 ]; then
-    if [ "$out" = "$owner" ]; then echo owned
-    elif [ -z "$out" ]; then echo "foreign:unlabelled"
-    else echo "foreign:$out"; fi
-  elif grep -q '(NotFound)' <<<"$out"; then echo absent
-  elif grep -q "doesn't have a resource type" <<<"$out"; then echo kind-unavailable  # the API kind is not served (CRDs absent): no such object can exist here
-  else echo "error:$(tr '\n' ' ' <<<"$out" | cut -c1-200)"; fi
+  if [ "$kind" = httproute ]; then
+    served="$(api_version_served "$OPTIONAL_KIND_HTTPROUTE_GV")"
+    case "$served" in
+      not-served) echo kind-unavailable; return ;;
+      served) resource="$OPTIONAL_KIND_HTTPROUTE_RESOURCE" ;;
+      *) echo "$served"; return ;;
+    esac
+  fi
+  # --ignore-not-found: an explicit API NotFound yields exit 0 with no output; every other failure keeps its
+  # non-zero status (Forbidden, unreachable, unresolvable kind, partial discovery), so absence is never inferred
+  # from error text. Diagnostics on stderr with exit 0 are also treated as a failed read.
+  err="$(mktemp)"
+  out="$(k "${nsarg[@]}" get "$resource" "$name" --ignore-not-found -o jsonpath='{.metadata.name}|{.metadata.labels.owlmast\.aisquad\.com/run}' 2>"$err")" || rc=$?
+  if [ "$rc" -ne 0 ] || [ -s "$err" ]; then
+    echo "error:$(tr '\n' ' ' <"$err" | cut -c1-200)"; rm -f "$err"; return
+  fi
+  rm -f "$err"
+  if [ -z "$out" ]; then echo absent; return; fi
+  case "$out" in
+    "$name|$owner") echo owned ;;
+    "$name|") echo "foreign:unlabelled" ;;
+    "$name|"*) echo "foreign:${out#*|}" ;;
+    *) echo "error:unexpected object projection '$(cut -c1-120 <<<"$out")'" ;;
+  esac
 }
 release_state() { # release_state <release>: absent | present | error:<message>  (Helm's own record; resources are checked one by one)
   local rel="$1" out rc=0
@@ -186,7 +221,7 @@ preflight_resource() { # preflight_resource <namespace|-> <kind> <name> [owner]
   printf '%s %s/%s %s\n' "$2" "$1" "$3" "$state" >>"$OUT/preflight/resources.txt"
   case "$state" in
     absent) log "preflight $2 $1/$3: absent" ;;
-    kind-unavailable) log "preflight $2 $1/$3: the API kind is not served on this cluster (its CRDs are absent), so no such object can exist; the chart must keep that feature disabled here" ;;
+    kind-unavailable) log "preflight $2 $1/$3: $OPTIONAL_KIND_HTTPROUTE_GV is not among the served API versions (complete discovery succeeded without it): the optional HTTPRoute kind cannot exist here and routing.gateway stays disabled" ;;
     owned) log "preflight $2 $1/$3: owned by this run" ;;
     foreign:*) log "preflight $2 $1/$3: exists but owner is '${state#foreign:}', not ${4:-$RUN_ID}: no adoption, overwrite or deletion"; PREFLIGHT_FAILED=1 ;;
     *) log "preflight $2 $1/$3: ownership unreadable (${state#error:}): refusing rather than assuming absence"; PREFLIGHT_FAILED=1 ;;

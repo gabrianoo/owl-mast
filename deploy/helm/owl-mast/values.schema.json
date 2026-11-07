@@ -120,9 +120,9 @@
       "additionalProperties": false,
       "required": ["apiPathPrefix", "actuatorPathPrefix", "frontendPathPrefix", "ingress", "gateway"],
       "properties": {
-        "apiPathPrefix": {"type": "string", "pattern": "^/"},
-        "actuatorPathPrefix": {"type": "string", "pattern": "^/"},
-        "frontendPathPrefix": {"type": "string", "pattern": "^/"},
+        "apiPathPrefix": {"type": "string", "pattern": "^/", "maxLength": 1024},
+        "actuatorPathPrefix": {"type": "string", "pattern": "^/", "maxLength": 1024},
+        "frontendPathPrefix": {"type": "string", "pattern": "^/", "maxLength": 1024},
         "ingress": {
           "type": "object",
           "additionalProperties": false,
@@ -143,19 +143,20 @@
             "enabled": {"type": "boolean"},
             "parentRefs": {
               "type": "array",
+              "maxItems": 32,
               "items": {
                 "type": "object",
                 "additionalProperties": false,
                 "required": ["name"],
                 "properties": {
-                  "name": {"type": "string", "minLength": 1},
-                  "namespace": {"type": "string"},
-                  "sectionName": {"type": "string"},
+                  "name": {"type": "string", "minLength": 1, "maxLength": 253},
+                  "namespace": {"type": "string", "minLength": 1, "maxLength": 63, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+                  "sectionName": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"},
                   "port": {"type": "integer", "minimum": 1, "maximum": 65535}
                 }
               }
             },
-            "hostnames": {"type": "array", "items": {"type": "string", "minLength": 1}},
+            "hostnames": {"type": "array", "maxItems": 16, "items": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^(\\*\\.)?[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"}},
             "annotations": {"type": "object"}
           }
         }

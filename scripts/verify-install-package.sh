@@ -20,5 +20,7 @@ fi
 
 "$OWLMAST_HELM" version
 python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check 'PyYAML>=6,<7'
+# The Gateway API schema tests validate rendered HTTPRoutes against the pinned upstream schema offline.
+python3 -c 'import jsonschema' 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check 'jsonschema>=4,<5'
 cd "$ROOT"
 python3 -m unittest discover -s deploy/tests -t . -v
