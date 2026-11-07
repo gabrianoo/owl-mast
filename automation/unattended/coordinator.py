@@ -740,16 +740,35 @@ class Coordinator:
                 raise Refused("the receipt needs the dispatch record of the resumed run ({\"dispatch\": {\"runId\": …, \"messageId\": …}}) to correlate it with the authorization", code="correlation-missing")
             if str(dispatch["runId"]) != run_id:
                 raise Refused(f"dispatch record names run {dispatch['runId']}; the receipt names run {run_id}", code="run-mismatch", dispatch_run=str(dispatch["runId"]), receipt_run=run_id)
-            started = receipt.get("startedAt") or task_evidence.get("startedAt") if isinstance(task_evidence, dict) else None
-            completed = receipt.get("completedAt") or task_evidence.get("completedAt") if isinstance(task_evidence, dict) else None
-            if not started:
-                raise Refused("the receipt needs startedAt of the resumed run to correlate it with the authorization's issued_at", code="correlation-missing")
-            try:
-                started_dt = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
-                issued_dt = datetime.fromisoformat(str(auth["issued_at"]).replace("Z", "+00:00"))
-                completed_dt = datetime.fromisoformat(str(completed).replace("Z", "+00:00")) if completed else None
-            except ValueError as exc:
-                raise Refused(f"unparseable timestamps for correlation: {exc}", code="correlation-missing") from exc
+            def parse_timestamp(value, label):
+                if not isinstance(value, str) or not value.strip():
+                    raise Refused(f"{label} must be a nonempty timestamp string", code="correlation-missing")
+                try:
+                    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                except ValueError as exc:
+                    raise Refused(f"invalid {label}: {exc}", code="correlation-missing") from exc
+                if parsed.utcoffset() is None:
+                    raise Refused(f"{label} must include a timezone", code="correlation-missing")
+                return parsed
+
+            def correlated_timestamp(field):
+                # Validate every supplied value before selecting a source. Neither a receipt
+                # nor a terminal report may hide contradictory or malformed evidence.
+                supplied = [(source, payload[field]) for source, payload in
+                            (("receipt", receipt), ("terminal evidence", task_evidence))
+                            if payload.get(field) is not None]
+                parsed = [(value, parse_timestamp(value, f"{source}.{field}"))
+                          for source, value in supplied]
+                if len(parsed) == 2 and parsed[0][1] != parsed[1][1]:
+                    raise Refused(f"receipt and terminal evidence disagree on {field}",
+                                  code="conflicting-evidence", field=field)
+                return parsed[0] if parsed else (None, None)
+
+            started, started_dt = correlated_timestamp("startedAt")
+            completed, completed_dt = correlated_timestamp("completedAt")
+            if started_dt is None:
+                raise Refused("startedAt is required to correlate the resumed run with its authorization", code="correlation-missing")
+            issued_dt = parse_timestamp(auth["issued_at"], "authorization.issued_at")
             if started_dt < issued_dt:
                 raise Refused(f"run {run_id} started at {started}, before authorization {auth['id']} was issued at {auth['issued_at']}; an earlier run of the retained task cannot settle a later authorization", code="run-precedes-authorization", started_at=str(started), issued_at=auth["issued_at"])
             if completed_dt is not None and completed_dt < started_dt:

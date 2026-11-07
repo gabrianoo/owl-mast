@@ -242,6 +242,54 @@ class HistoricalReconciliationTests(unittest.TestCase):
             self.reconcile(receipt={**self.receipt, "runId": run_of(OWNER, 6), "dispatch": {"runId": run_of(OWNER, 6)}}, task_evidence=status_shaped(OWNER, run_of(OWNER, 6)))
         self.assertEqual(ctx.exception.code, "conflicting-evidence")
 
+    def test_timestamp_conflicts_and_invalid_values_never_mutate_initial_or_replayed_recovery(self):
+        def snapshot():
+            return {str(p.relative_to(self.h.store.root)): p.read_bytes()
+                    for p in self.h.store.root.rglob("*") if p.is_file()}
+
+        cases = [
+            ({}, {"startedAt": "2000-01-01T00:00:00Z", "completedAt": "1999-01-01T00:00:00Z"}),
+            ({}, {"startedAt": "2099-01-01T00:00:01Z"}),
+            ({}, {"completedAt": "2099-01-01T00:02:01Z"}),
+        ]
+        for field in ("startedAt", "completedAt"):
+            for invalid in ("bad", "", "2099-01-01T00:00:00", 42, False):
+                cases.append(({}, {field: invalid}))
+                cases.append(({field: invalid}, {field: self.receipt[field]}))
+        # Agreement does not excuse stale runs or completion before start.
+        cases.extend([
+            ({"startedAt": "2000-01-01T00:00:00Z"}, {"startedAt": "2000-01-01T00:00:00Z"}),
+            ({"completedAt": "2098-12-31T23:59:59Z"}, {"completedAt": "2098-12-31T23:59:59Z"}),
+        ])
+        for replay in (False, True):
+            if replay:
+                self.reconcile()
+            before = snapshot()
+            for receipt_change, evidence_change in cases:
+                with self.subTest(replay=replay, receipt=receipt_change, evidence=evidence_change):
+                    with self.assertRaises(Refused):
+                        self.reconcile(receipt={**self.receipt, **receipt_change},
+                                       task_evidence={**self.evidence, **evidence_change})
+                    self.assertEqual(snapshot(), before)
+
+    def test_matching_timestamp_instants_from_both_sources_are_accepted_and_repeatable(self):
+        ev = {**self.evidence, "startedAt": "2099-01-01T01:00:00+01:00",
+              "completedAt": "2099-01-01T01:02:00+01:00"}
+        first = self.reconcile(task_evidence=ev)
+        again = self.reconcile(task_evidence=ev)
+        self.assertIsNone(again.unresolved_authorization())
+        self.assertEqual(first.task_history, again.task_history)
+        self.assertTrue(self.h.store.load_run().cancelled)
+
+    def test_timestamps_may_come_from_terminal_evidence_alone(self):
+        rec = {k: v for k, v in self.receipt.items() if k not in ("startedAt", "completedAt")}
+        ev = {**self.evidence, "startedAt": self.receipt["startedAt"],
+              "completedAt": self.receipt["completedAt"]}
+        first = self.reconcile(receipt=rec, task_evidence=ev)
+        again = self.reconcile(receipt=rec, task_evidence=ev)
+        self.assertEqual(first.task_history, again.task_history)
+        self.assertIsNone(again.unresolved_authorization())
+
     def test_stale_coordinator_cannot_overwrite_the_cancellation(self):
         """Second-turn finding 1: the run is reloaded under the lock; a stale object never saves."""
         stale = Coordinator(self.h.fake, self.h.policy, self.h.store, live=True)
