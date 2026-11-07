@@ -1,0 +1,56 @@
+# Unattended execution policy for Owl Mast (ENG-01). Loaded by `python3 -m automation.unattended`.
+# Empty allowlist: nothing is dispatchable. See docs/unattended-execution.md for the semantics and
+# automation/examples/first-run-om-01-02.toml for the candidate first activation.
+# Operating agreement (owner-accepted 2026-11-06): the operator's machine is trusted, budgets are
+# coordinator-enforced best effort, Status/acceptance stay manual. Real-transport state commands remain
+# refused (live gate) regardless of this file; the default allowlist stays empty.
+
+[repository]
+owner = "gabrianoo"
+name = "owl-mast"
+project_owner = "gabrianoo"
+project_number = 2
+
+[dispatch]
+allow = []                        # explicit OM story allowlist; empty = fail closed
+include_optional_epics = false    # E17 stays out of default dispatch
+include_later_epics = false       # E19 stays out of default dispatch
+contract_design_exceptions = []   # stories whose designated design portion may run before prerequisites
+
+[budgets]
+max_stories_per_run = 1
+max_concurrent_implementers = 1   # fixed: one active implementer per story and per run
+max_repair_rounds = 2             # ceiling enforced by the loader
+max_delegated_tasks = 6           # implementer + reviewer turns per run
+max_wall_clock_minutes = 240      # best effort: stops admissions/authorizations; cannot stop a launched child
+
+[targets.implementer]
+provider = "claudeAgent"
+model = "claude-fable-5-1"
+isolation = "worktree"
+options = { effort = "high" }
+
+[targets.reviewer]
+provider = "codex"
+model = "gpt-6-astra"
+options = { reasoningEffort = "high" }
+
+[checks]
+commands = [
+  "./gradlew build --console=plain",
+  "scripts/verify-quality-gates.sh",
+  "python3 -m unittest discover -s automation/tests -t .",
+]
+timeout_minutes = 45
+
+[probes]
+commands = [
+  "gh auth status",
+  "git --version",
+  "docker version --format {{.Server.Version}}",
+]
+timeout_seconds = 60
+
+[writes]
+apply_task_checkboxes = false     # must stay false
+merge = "owner"                   # must stay owner

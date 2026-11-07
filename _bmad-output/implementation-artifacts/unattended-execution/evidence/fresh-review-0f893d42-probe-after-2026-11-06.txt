@@ -1,0 +1,70 @@
+RP2-F2 done proposal (intent done, phase review-approved) + current evidence changed; resume
+{"case": "done_proposal_revision", "result": "StaleRevision:OM-01.02: revisions changed since admission for ['OM-01.02']; re-plan or rebase-revisions explicitly", "persisted_phase": "review-approved", "intent": "done", "proposal_markers": 1, "calls": ["list_issues", "list_project_items"], "withheld": ["current evidence refused the transition: stale-revision: OM-"]}
+{"case": "done_proposal_objection", "result": "Refused:PR #7 has outstanding CHANGES_REQUESTED from ['r']; approval invalid", "persisted_phase": "changes-requested", "intent": "done", "proposal_markers": 1, "calls": ["list_issues", "list_project_items", "get_pull_request"], "withheld": ["current evidence refused the transition: refused: PR #7 has "]}
+{"case": "done_proposal_dirty", "result": "Refused:resume-reconcile-proposal: worktree HEAD 0674b6b2760c7c1718ff041233d1a02d8f2ec6e1 / clean=False differs from t", "persisted_phase": "implemented", "intent": "done", "proposal_markers": 1, "calls": ["list_issues", "list_project_items"], "withheld": ["current evidence refused the transition: evidence-invalidate"]}
+{"case": "done_proposal_expired", "result": "review-approved", "persisted_phase": "review-approved", "intent": "done", "proposal_markers": 1, "calls": ["list_issues", "list_project_items"], "withheld": ["run wall clock budget exceeded"]}
+{"case": "done_proposal_outage", "result": "Outage:503", "persisted_phase": "review-approved", "intent": "done", "proposal_markers": 1, "calls": ["list_issues"], "withheld": ["current evidence refused the transition: outage: 503"]}
+    resume after the outage cleared (clean recovery, no repost): OK -> ('proposed', False, 1)
+{"case": "done_proposal_duplicate-id", "result": "Refused:fresh snapshot: duplicate stable ids ['OM-01.02'] in the snapshot; identity mapping is ambiguous, nothing is a", "persisted_phase": "review-approved", "intent": "done", "proposal_markers": 1, "calls": ["list_issues", "list_project_items"], "withheld": ["current evidence refused the transition: ambiguous-identity:"]}
+RP2-F1 reserve -> authorized launch, receipt delayed -> cancel / cancel_run / block / invalidate_review
+  cancel: REFUSED authorization-unresolved: cancelled: implementer authorization run-1:OM-01.02:1 of OM-01.02 (implementation, sha None) is revoked and unresolved; a task may have been launched 
+{"case": "after_stop_cancel", "phase": "reserved", "active_task": null, "authorization": {"id": "run-1:OM-01.02:1", "status": "revoked", "sha": null, "task_id": null}, "release_markers": 0, "block_markers": 0}
+  reserve OM-01.04 while unresolved: REFUSED refused: another story is active in this run: ['OM-01.02']
+  late bind with a WRONG authorization id: REFUSED authorization-mismatch: bind-receipt: authorization run-1:OM-01.02:9 is not the unresolved authorization of OM-01.02 (run-1:OM-01.02:1: implementation, sha None, revoked); a 
+  late bind with the exact authorization id: REFUSED authorization-revoked: bind-receipt: authorization run-1:OM-01.02:1 was revoked (story cancelled requested: stop after launch before receipt); implementer task task-impl-1 i
+{"case": "late_receipt_cancel", "phase": "reserved", "active_task": {"authorization": "run-1:OM-01.02:1", "bound_at": "2026-11-06T17:15:21Z", "cleanup_only": "authorization-revoked", "role": "implementer", "taskId": "task-impl-1"}, "authorization": {"id": "run-1:OM-01.02:1", "status": "consumed", "sha": null, "task_id": "task-impl-1", "cleanup_only": "authorization-revoked"}, "receipt_sha": null, "delegated_tasks": 1}
+  cancel WITHOUT terminal evidence: REFUSED worker-not-terminal: cancelled: implementer task task-impl-1 of OM-01.02 is still owned; present terminal task evidence for exactly that task (task_status workState result
+  cancel with the task's terminal evidence: OK -> cancelled
+  release markers 1 delegated_tasks 1
+  reserve OM-01.04 after resolution: OK -> reserved
+  cancel_run -> [{"story": "OM-01.02", "task_id": null, "role": "implementer", "authorization": "run-1:OM-01.02:1", "code": "authorization-unresolved"}]
+{"case": "after_stop_cancel_run", "phase": "reserved", "active_task": null, "authorization": {"id": "run-1:OM-01.02:1", "status": "revoked", "sha": null, "task_id": null}, "release_markers": 0, "block_markers": 0}
+  reserve OM-01.04 while unresolved: REFUSED run-cancelled: reserve: run is cancelled (stop after launch before receipt); only cancel, block, record-task-terminal, resume and status are allowed
+  late bind with a WRONG authorization id: REFUSED authorization-mismatch: bind-receipt: authorization run-1:OM-01.02:9 is not the unresolved authorization of OM-01.02 (run-1:OM-01.02:1: implementation, sha None, revoked); a 
+  late bind with the exact authorization id: REFUSED run-cancelled: bind-receipt: run is cancelled (stop after launch before receipt); implementer task task-impl-1 is bound to OM-01.02 for cleanup only (slot spent, own
+{"case": "late_receipt_cancel_run", "phase": "reserved", "active_task": {"authorization": "run-1:OM-01.02:1", "bound_at": "2026-11-06T17:15:21Z", "cleanup_only": "run-cancelled", "role": "implementer", "taskId": "task-impl-1"}, "authorization": {"id": "run-1:OM-01.02:1", "status": "consumed", "sha": null, "task_id": "task-impl-1", "cleanup_only": "run-cancelled"}, "receipt_sha": null, "delegated_tasks": 1}
+  cancel WITHOUT terminal evidence: REFUSED worker-not-terminal: cancelled: implementer task task-impl-1 of OM-01.02 is still owned; present terminal task evidence for exactly that task (task_status workState result
+  cancel with the task's terminal evidence: OK -> cancelled
+  release markers 1 delegated_tasks 1
+  reserve OM-01.04 after resolution: REFUSED run-cancelled: reserve: run is cancelled (stop after launch before receipt); only cancel, block, record-task-terminal, resume and status are allowed
+  block: REFUSED authorization-unresolved: blocked: implementer authorization run-1:OM-01.02:1 of OM-01.02 (implementation, sha None) is revoked and unresolved; a task may have been launched fo
+{"case": "after_stop_block", "phase": "reserved", "active_task": null, "authorization": {"id": "run-1:OM-01.02:1", "status": "revoked", "sha": null, "task_id": null}, "release_markers": 0, "block_markers": 0}
+  reserve OM-01.04 while unresolved: REFUSED refused: another story is active in this run: ['OM-01.02']
+  late bind with a WRONG authorization id: REFUSED authorization-mismatch: bind-receipt: authorization run-1:OM-01.02:9 is not the unresolved authorization of OM-01.02 (run-1:OM-01.02:1: implementation, sha None, revoked); a 
+  late bind with the exact authorization id: REFUSED authorization-revoked: bind-receipt: authorization run-1:OM-01.02:1 was revoked (story blocked requested: stop after launch before receipt); implementer task task-impl-1 is 
+{"case": "late_receipt_block", "phase": "reserved", "active_task": {"authorization": "run-1:OM-01.02:1", "bound_at": "2026-11-06T17:15:21Z", "cleanup_only": "authorization-revoked", "role": "implementer", "taskId": "task-impl-1"}, "authorization": {"id": "run-1:OM-01.02:1", "status": "consumed", "sha": null, "task_id": "task-impl-1", "cleanup_only": "authorization-revoked"}, "receipt_sha": null, "delegated_tasks": 1}
+  cancel WITHOUT terminal evidence: REFUSED worker-not-terminal: cancelled: implementer task task-impl-1 of OM-01.02 is still owned; present terminal task evidence for exactly that task (task_status workState result
+  cancel with the task's terminal evidence: OK -> cancelled
+  release markers 1 delegated_tasks 1
+  reserve OM-01.04 after resolution: OK -> reserved
+{"case": "after_stop_invalidate_review", "phase": "implemented", "active_task": null, "authorization": {"id": "run-1:OM-01.02:2", "status": "revoked", "sha": "0674b6b2760c7c1718ff041233d1a02d8f2ec6e1", "task_id": null}, "release_markers": 0, "block_markers": 0}
+  reserve OM-01.04 while unresolved: REFUSED refused: another story is active in this run: ['OM-01.02']
+  late bind with a WRONG authorization id: REFUSED authorization-mismatch: bind-receipt: authorization run-1:OM-01.02:9 is not the unresolved authorization of OM-01.02 (run-1:OM-01.02:2: review, sha 0674b6b2760c7c1718ff041233
+  late bind with the exact authorization id: REFUSED authorization-revoked: bind-receipt: authorization run-1:OM-01.02:2 was revoked (new head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb recorded); reviewer task task-review-1 is 
+{"case": "late_receipt_invalidate_review", "phase": "implemented", "active_task": {"authorization": "run-1:OM-01.02:2", "bound_at": "2026-11-06T17:15:21Z", "cleanup_only": "authorization-revoked", "role": "reviewer", "taskId": "task-review-1"}, "authorization": {"id": "run-1:OM-01.02:2", "status": "consumed", "sha": "0674b6b2760c7c1718ff041233d1a02d8f2ec6e1", "task_id": "task-review-1", "cleanup_only": "authorization-revoked"}, "receipt_sha": "0674b6b2760c7c1718ff041233d1a02d8f2ec6e1", "delegated_tasks": 2}
+  cancel WITHOUT terminal evidence: REFUSED worker-not-terminal: cancelled: reviewer task task-review-1 of OM-01.02 is still owned; present terminal task evidence for exactly that task (task_status workState result_
+  cancel with the task's terminal evidence: OK -> cancelled
+  release markers 1 delegated_tasks 2
+  reserve OM-01.04 after resolution: OK -> reserved
+RP2-F1 no-launch attestation instead of a receipt
+  cancel: REFUSED authorization-unresolved: cancelled: implementer authorization run-1:OM-01.02:1 of OM-01.02 (implementation, sha None) is revoked and unresolved; a task may have been launched 
+  record_no_launch with the wrong id: REFUSED no-launch-invalid: record-no-launch: OM-01.02 has no authorization run-1:OM-01.02:9
+  record_no_launch with the exact id: OK -> {'status': 'not-launched', 'resolution': 'attested'}
+  record_no_launch again (applies once): REFUSED no-launch-invalid: record-no-launch: authorization run-1:OM-01.02:1 is not-launched (task None); a no-launch attestation applies only to an unresolved authorization
+  late bind after the attestation: REFUSED no-authorization: OM-01.02 has no unresolved task authorization; reserve / authorize-review / authorize-repair must precede every launch, and each authorization binds o
+  cancel after the attestation: OK -> cancelled
+  release markers 1 delegated_tasks 1
+  reserve OM-01.04: OK -> reserved
+RP2-F1 authorize review A -> new head B before receipt -> B's review; A's late receipt
+{"after_record_head_B": {"phase": "implemented", "old_authorization": {"id": "run-1:OM-01.02:2", "status": "revoked", "sha": "505b29ceabaaf7f116358c39dcd696a55ffd3c10"}}}
+  run_checks(B) while A unresolved: REFUSED authorization-unresolved: run-checks: reviewer authorization run-1:OM-01.02:2 of OM-01.02 (review, sha 505b29ceabaaf7f116358c39dcd696a55ffd3c10) is revoked and unresolved; a ta
+  authorize_review(B) while A unresolved: REFUSED refused: OM-01.02 is implemented; this operation needs ('checks-passed', 'review-authorized')
+  A's late receipt binds (cleanup only): REFUSED authorization-revoked: bind-receipt: authorization run-1:OM-01.02:2 was revoked (new head b037134e8b812dbba56d0eed219abfe0f6f0ede2 recorded); reviewer task task-review-1 is 
+{"after_A_receipt": {"phase": "implemented", "bound_receipt_sha": "505b29ceabaaf7f116358c39dcd696a55ffd3c10", "bound_authorization": "run-1:OM-01.02:2", "active_task": {"authorization": "run-1:OM-01.02:2", "bound_at": "2026-11-06T17:15:22Z", "cleanup_only": "authorization-revoked", "role": "reviewer", "taskId": "task-review-1"}}}
+  record_review(B, approved) with A's reviewer evidence: REFUSED refused: OM-01.02 is implemented; this operation needs ('review-requested', 'review-approved')
+  record_task_terminal(A): OK -> None
+  run_checks(B): OK -> checks-passed
+  authorize_review(B): OK -> {'id': 'run-1:OM-01.02:3', 'role': 'reviewer', 'purpose': 'review', 'sha': 'b037134e8b812dbba56d0eed219abfe0f6f0ede2', 'round': None, 'issued_at': '2026-11-06T17:15:22Z', 'status': 'pending', 'task_id': None, 'reason': None}
+  bind a fresh reviewer to B: OK -> review-requested
+  record_review(B, approved) with the new reviewer's evidence: OK -> review-approved
+{"case": "late_old_review_cannot_consume_new_authorization", "old_sha": "505b29ceabaaf7f116358c39dcd696a55ffd3c10", "new_sha": "b037134e8b812dbba56d0eed219abfe0f6f0ede2", "old_authorization": "run-1:OM-01.02:2", "new_authorization": "run-1:OM-01.02:3", "phase": "review-approved", "approved_sha": "b037134e8b812dbba56d0eed219abfe0f6f0ede2", "reviewer_receipt_shas": ["505b29ceabaaf7f116358c39dcd696a55ffd3c10", "b037134e8b812dbba56d0eed219abfe0f6f0ede2"], "delegated_tasks": 3}

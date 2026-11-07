@@ -1,0 +1,17 @@
+{
+  "source": "mcp__t3-code__orchestrator_capabilities, called once by the delegated implementation task on 2026-11-06",
+  "parentThreadId": "thread:delegated-task:command%3Amcp%3Af7c3c131-c18d-4868-98ee-f6b69abfd21c%3Adelegate-task%3Aowl-unattended-foundation-implementation-20261106",
+  "inheritedProviderInstanceId": "claudeAgent",
+  "inheritedModel": "claude-fable-5-1",
+  "inheritedOptions": [{"id": "effort", "value": "high"}],
+  "runtimeMode": "full-access",
+  "interactionMode": "default",
+  "providers_relevant": {
+    "codex": {"gpt-6-astra": {"reasoningEffort": {"values": ["low", "medium", "high", "xhigh", "max", "ultra"], "default": "medium"}}},
+    "claudeAgent": {"claude-fable-5-1": {"effort": {"values": ["low", "medium", "high", "xhigh", "max", "ultracode", "ultrathink"], "default": "medium"}}}
+  },
+  "features": {"appOwnedSubagents": true, "asyncPolling": true, "cancellation": true, "threadManagement": true, "scheduledTasks": true},
+  "worktree_status": {"attached": true, "worktreePath": "/home/gabrianoo/.t3/worktrees/owlmast/t3-08a6bd98", "branch": "t3/unattended-execution-foundation", "projectWorkspaceRoot": "/mnt/c/Users/gabrianoo/Work/aisquad/owlmast"},
+  "scheduled_tasks": [],
+  "note": "This receipt proves that T3 propagated the explicit claudeAgent/claude-fable-5-1 effort=high target into this delegated run and that gpt-6-astra reasoningEffort=high is an admissible reviewer target. It is live-transport evidence for requirement 3; it is not a product dispatch."
+}

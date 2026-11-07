@@ -1,0 +1,19 @@
+# Reviewer's probe /tmp/eng01-review-0f893d-probes.py, unchanged, re-run against the repaired head on 2026-11-06.
+# The script catches refusals only inside its RP2-F2 loop and at its bind/reserve calls; the first cancel of its RP2-F1 loop now refuses (authorization-unresolved), so the script stops there with the traceback below. The adapted probe (probe_repair_pass_2_findings.py) continues through every case.
+{"case": "done_proposal_revision", "result": "StaleRevision:OM-01.02: revisions changed since admission for ['OM-01.02']; re-plan or rebase-revisions explicitly", "persisted_phase": "review-approved", "calls": ["list_issues", "list_project_items"]}
+{"case": "done_proposal_objection", "result": "Refused:PR #7 has outstanding CHANGES_REQUESTED from ['r']; approval invalid", "persisted_phase": "changes-requested", "calls": ["list_issues", "list_project_items", "get_pull_request"]}
+{"case": "done_proposal_dirty", "result": "Refused:resume-reconcile-proposal: worktree HEAD c04a377932836cca055b910f6d06c6dbb3ae3a17 / clean=False differs from the evidence at c04a377932836cca055b910f6d06c6dbb3ae3a17; check and review evidence invalidated", "persisted_phase": "implemented", "calls": ["list_issues", "list_project_items"]}
+{"case": "done_proposal_expired", "result": "review-approved", "persisted_phase": "review-approved", "calls": ["list_issues", "list_project_items"]}
+Traceback (most recent call last):
+  File "/tmp/eng01-review-0f893d-probes.py", line 34, in <module>
+    else:h.coordinator.cancel(S,'stop after launch before receipt')
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/gabrianoo/.t3/worktrees/owlmast/t3-08a6bd98/automation/unattended/coordinator.py", line 862, in cancel
+    return self._terminal(story, "cancelled", reason, "release", "release", f"Claim released by run `{self.store.run_id}`: {reason}. No completion is implied. Project Status is owner-maintained.", task_evidence, no_launch)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/gabrianoo/.t3/worktrees/owlmast/t3-08a6bd98/automation/unattended/coordinator.py", line 838, in _terminal
+    resolved = self._settle_authorizations(state, phase, reason, no_launch)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/gabrianoo/.t3/worktrees/owlmast/t3-08a6bd98/automation/unattended/coordinator.py", line 354, in _settle_authorizations
+    raise self._unresolved_refusal(state, operation, unresolved)
+automation.unattended.errors.Refused: cancelled: implementer authorization run-1:OM-01.02:1 of OM-01.02 (implementation, sha None) is revoked and unresolved; a task may have been launched for it. Bind its receipt (bind-receipt --authorization run-1:OM-01.02:1) and present that task's terminal evidence, or attest that no task was launched (record-no-launch), before anything is released or re-issued
