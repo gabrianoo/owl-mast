@@ -1,6 +1,7 @@
 package com.aisquad.owlmast;
 
 import com.aisquad.owlmast.testing.ContainersConfiguration;
+import com.aisquad.owlmast.testing.StubIdentityConfiguration;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
@@ -10,7 +11,7 @@ import org.springframework.test.web.reactive.server.WebTestClient;
 
 /** AC1: the application starts against the real database and the health endpoint answers UP. */
 @SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT)
-@Import(ContainersConfiguration.class)
+@Import({ContainersConfiguration.class, StubIdentityConfiguration.class})
 class HealthEndpointIT {
 
   @LocalServerPort private int port;

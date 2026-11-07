@@ -1,0 +1,96 @@
+{{- include "owl-mast.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "owl-mast.backend.fullname" . }}
+  labels:
+    {{- include "owl-mast.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  replicas: {{ .Values.backend.replicas }}
+  selector:
+    matchLabels:
+      {{- include "owl-mast.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels:
+        {{- include "owl-mast.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: backend
+        {{- with .Values.commonLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        owlmast.aisquad.com/database-mode: {{ ternary "bundled" "external" .Values.database.bundled | quote }}
+        owlmast.aisquad.com/identity-mode: {{ ternary "bundled" "external" .Values.identity.bundled | quote }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: backend
+          image: {{ include "owl-mast.image" .Values.backend.image | quote }}
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.backend.containerPort }}
+          env:
+            - name: SERVER_PORT
+              value: {{ .Values.backend.containerPort | quote }}
+            - name: JAVA_TOOL_OPTIONS
+              value: {{ .Values.backend.javaToolOptions | quote }}
+            - name: OWLMAST_DATABASE_R2DBC_URL
+              value: {{ printf "r2dbc:postgresql://%s:%s/%s?sslMode=%s" (include "owl-mast.database.host" .) (include "owl-mast.database.port" .) .Values.database.name (include "owl-mast.database.sslMode" .) | quote }}
+            - name: OWLMAST_DATABASE_JDBC_URL
+              value: {{ printf "jdbc:postgresql://%s:%s/%s?sslmode=%s" (include "owl-mast.database.host" .) (include "owl-mast.database.port" .) .Values.database.name (include "owl-mast.database.sslMode" .) | quote }}
+            - name: OWLMAST_DATABASE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: username
+            - name: OWLMAST_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: password
+            - name: OWLMAST_IDENTITY_ISSUER_URI
+              value: {{ include "owl-mast.identity.issuerUri" . | quote }}
+            {{- range .Values.backend.extraEnv }}
+            - name: {{ .name | quote }}
+              value: {{ .value | quote }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.backend.probes.startup.path }}
+              port: http
+            periodSeconds: {{ .Values.backend.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.backend.probes.startup.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.backend.probes.liveness.path }}
+              port: http
+            periodSeconds: {{ .Values.backend.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.backend.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.backend.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ .Values.backend.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.backend.probes.readiness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

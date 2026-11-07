@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.aisquad.owlmast.bootstrap.api.SchemaBaselineQuery;
 import com.aisquad.owlmast.testing.ContainersConfiguration;
+import com.aisquad.owlmast.testing.StubIdentityConfiguration;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -15,7 +16,7 @@ import reactor.test.StepVerifier;
 
 /** AC4: the real migration path ran against the pinned VectorChord image. */
 @SpringBootTest
-@Import(ContainersConfiguration.class)
+@Import({ContainersConfiguration.class, StubIdentityConfiguration.class})
 class BootstrapMigrationIT {
 
   @Autowired private DatabaseClient databaseClient;

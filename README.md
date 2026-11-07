@@ -17,3 +17,7 @@ Details, environment variables for an external database and CI parity: [docs/dev
 ## Stack
 
 Java 27 application code, Spring Boot 4.1.2 (WebFlux, R2DBC, Flyway, Actuator), Gradle 9.8.2 with Kotlin DSL, PostgreSQL 18 with VectorChord (pgvector only as its required dependency), Testcontainers. One modular reactive backend; the web client (OM-01.04) and Kubernetes packaging (OM-01.02) are separate deliverables.
+
+## Installation
+
+The Helm chart in `deploy/helm/owl-mast` packages the backend with independently optional PostgreSQL/VectorChord and Keycloak bundles. Pins, the secret contract, the four bundled/external combinations and retention behaviour are documented in [docs/installation.md](docs/installation.md); `scripts/verify-install-package.sh` runs the packaging checks.

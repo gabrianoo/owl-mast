@@ -1,0 +1,141 @@
+{{- if .Values.database.bundled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "owl-mast.postgresql.fullname" . }}
+  labels:
+    {{- include "owl-mast.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  replicas: 1
+  # One writer per volume: the old pod stops before the new one mounts the claim.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "owl-mast.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgresql
+  template:
+    metadata:
+      labels:
+        {{- include "owl-mast.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: postgresql
+        {{- with .Values.commonLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/init: {{ include (print $.Template.BasePath "/postgresql-init-configmap.yaml") . | sha256sum }}
+    spec:
+      securityContext:
+        runAsUser: {{ .Values.postgresql.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.postgresql.securityContext.runAsGroup }}
+        fsGroup: {{ .Values.postgresql.securityContext.fsGroup }}
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgresql
+          image: {{ include "owl-mast.image" .Values.postgresql.image | quote }}
+          imagePullPolicy: {{ .Values.postgresql.image.pullPolicy }}
+          # Preload is required by VectorChord; the image default command already sets it.
+          args: ["postgres", "-c", "shared_preload_libraries=vchord,vector"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: postgresql
+              containerPort: 5432
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgresql.adminExistingSecret }}
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgresql.adminExistingSecret }}
+                  key: password
+            - name: OWLMAST_APP_DATABASE
+              value: {{ .Values.database.name | quote }}
+            - name: OWLMAST_APP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: username
+            - name: OWLMAST_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: password
+            {{- if .Values.identity.bundled }}
+            # Keycloak's database principal is provisioned only when Keycloak is the bundled consumer;
+            # an external issuer needs no local Keycloak credentials (AC2).
+            - name: OWLMAST_KEYCLOAK_DATABASE
+              value: {{ .Values.identity.keycloak.database.name | quote }}
+            - name: OWLMAST_KEYCLOAK_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.identity.keycloak.database.existingSecret }}
+                  key: username
+            - name: OWLMAST_KEYCLOAK_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.identity.keycloak.database.existingSecret }}
+                  key: password
+            {{- end }}
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d postgres -h 127.0.0.1"]
+            periodSeconds: {{ .Values.postgresql.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.postgresql.probes.startup.failureThreshold }}
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d postgres -h 127.0.0.1"]
+            periodSeconds: {{ .Values.postgresql.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.postgresql.probes.liveness.failureThreshold }}
+          readinessProbe:
+            exec:
+              # Ready only when the application database exists, i.e. initialisation completed.
+              command: ["sh", "-c", "psql -U \"$POSTGRES_USER\" -d \"$OWLMAST_APP_DATABASE\" -h 127.0.0.1 -Atc 'select 1' | grep -qx 1"]
+            periodSeconds: {{ .Values.postgresql.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.postgresql.probes.readiness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.postgresql.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            - name: provisioning
+              mountPath: /owl-mast
+              readOnly: true
+            - name: run
+              mountPath: /var/run/postgresql
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-data" (include "owl-mast.postgresql.fullname" .)) .Values.postgresql.persistence.existingClaim }}
+        # Only the first-initialisation script is auto-executed by the entrypoint; the provisioning
+        # helper is mounted separately and called explicitly (a disabled identity bundle must not fail init).
+        - name: init
+          configMap:
+            name: {{ include "owl-mast.postgresql.fullname" . }}-init
+            defaultMode: 0555
+            items:
+              - key: 10-owl-mast-databases.sh
+                path: 10-owl-mast-databases.sh
+        - name: provisioning
+          configMap:
+            name: {{ include "owl-mast.postgresql.fullname" . }}-init
+            defaultMode: 0555
+            items:
+              - key: provision-keycloak.sh
+                path: provision-keycloak.sh
+        - name: run
+          emptyDir: {}
+{{- end }}

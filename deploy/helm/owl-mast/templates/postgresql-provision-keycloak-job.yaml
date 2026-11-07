@@ -1,0 +1,105 @@
+{{- if and .Values.database.bundled .Values.identity.bundled .Values.postgresql.provisionKeycloakDatabase }}
+# Explicit, operator-requested provisioning of Keycloak's database and principal on a bundled
+# PostgreSQL whose data directory was initialised while the identity bundle was disabled
+# (first-initialisation scripts never rerun). It runs as a PRE-upgrade hook against the PostgreSQL of
+# the release as it is before the upgrade, so Keycloak's database exists before Helm applies and waits
+# for the Keycloak and backend consumers. The hook carries its own script ConfigMap (hook resources
+# are not release resources) and waits, bounded, for PostgreSQL readiness before provisioning.
+# Idempotent: nothing existing is dropped or recreated. Meaningful only on an upgrade; a fresh
+# install provisions at first initialisation.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "owl-mast.postgresql.fullname" . }}-provision-scripts
+  labels:
+    {{- include "owl-mast.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql-provisioning
+  annotations:
+    helm.sh/hook: pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  provision-keycloak.sh: {{ (include (print $.Template.BasePath "/postgresql-init-configmap.yaml") . | fromYaml).data | dig "provision-keycloak.sh" "" | quote }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "owl-mast.postgresql.fullname" . }}-provision-keycloak
+  labels:
+    {{- include "owl-mast.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql-provisioning
+  annotations:
+    helm.sh/hook: pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "owl-mast.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: postgresql-provisioning
+        {{- with .Values.commonLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsUser: {{ .Values.postgresql.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.postgresql.securityContext.runAsGroup }}
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: provision
+          image: {{ include "owl-mast.image" .Values.postgresql.image | quote }}
+          imagePullPolicy: {{ .Values.postgresql.image.pullPolicy }}
+          command: ["bash", "/owl-mast/provision-keycloak.sh"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: PGHOST
+              value: {{ include "owl-mast.postgresql.fullname" . }}
+            - name: PGPORT
+              value: {{ .Values.postgresql.service.port | quote }}
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgresql.adminExistingSecret }}
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgresql.adminExistingSecret }}
+                  key: password
+            - name: OWLMAST_KEYCLOAK_DATABASE
+              value: {{ .Values.identity.keycloak.database.name | quote }}
+            - name: OWLMAST_KEYCLOAK_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.identity.keycloak.database.existingSecret }}
+                  key: username
+            - name: OWLMAST_KEYCLOAK_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.identity.keycloak.database.existingSecret }}
+                  key: password
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /owl-mast
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "owl-mast.postgresql.fullname" . }}-provision-scripts
+            defaultMode: 0555
+{{- end }}

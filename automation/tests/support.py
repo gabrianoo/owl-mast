@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import inspect
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
+from unittest import mock
 
+from automation.unattended import cli as cli_module
+from automation.unattended import coordinator as coordinator_module
+from automation.unattended import state as state_module
 from automation.unattended.backlog import take_snapshot
 from automation.unattended.coordinator import Coordinator
 from automation.unattended.policy import load_policy
@@ -32,6 +38,28 @@ def write_policy(tmp: Path, **overrides: str) -> Path:
     path = tmp / "policy.toml"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+@contextmanager
+def controlled_cli_clock(clock: list):
+    """Test-scoped deterministic clock for the CLI path. Inside the block every clock observation
+    the CLI can make reads ``clock[0]`` (a UTC text such as ``LiveHarness.clock``) instead of the
+    host clock: the ``Coordinator`` construction default (the production default callable, which
+    ``cli.main`` relies on), and the module names ``cli.utcnow``, ``coordinator.utcnow`` and
+    ``state.utcnow`` used for creation, journal and status metadata. Nothing in production is
+    changed: the patches are restored on exit. Expected results then follow the injected
+    observation alone, so a test asserts the same outcome before, at and after the fixture
+    window whatever the host clock says."""
+    now = lambda: clock[0]  # noqa: E731 - a movable observation, read on every call
+    init = Coordinator.__init__
+    parameters = [p for p in inspect.signature(init).parameters.values() if p.default is not inspect.Parameter.empty]
+    if "now" not in {p.name for p in parameters}:  # pragma: no cover - guards the injection boundary against signature drift
+        raise AssertionError("Coordinator.__init__ no longer takes a default clock; the CLI clock injection must be revisited")
+    defaults = tuple(now if p.name == "now" else p.default for p in parameters)
+    with mock.patch.object(init, "__defaults__", defaults), mock.patch.object(cli_module, "utcnow", now), \
+            mock.patch.object(coordinator_module, "utcnow", now), mock.patch.object(state_module, "utcnow", now):
+        assert inspect.signature(Coordinator.__init__).parameters["now"].default is now
+        yield now
 
 
 def ok_worktree(path: str, branch: str) -> tuple[bool, str]:

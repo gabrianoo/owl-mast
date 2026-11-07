@@ -20,7 +20,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from automation.tests.support import IMPLEMENTER, REVIEWER, ok_worktree, passing_runner
+from automation.tests.support import IMPLEMENTER, REVIEWER, controlled_cli_clock, ok_worktree, passing_runner
 from automation.tests.test_activation import S, T0, LiveHarness, activation_text
 from automation.tests.test_enabling_repair_1 import claimed, refuses
 from automation.unattended import cli
@@ -121,18 +121,28 @@ class Final1StaleCreationObjectTests(unittest.TestCase):
             GhCliTransport._run = lambda self, args, stdin=None: calls.append(args) or "{}"
             try:
                 args = ["--policy", str(Path(h.h.tmpdir.name) / "policy.toml"), "--state-dir", str(h.h.state_dir), "--run-id", "run-live", "--live", "--activation", str(h.path), "status"]
-                buf = io.StringIO()
-                with redirect_stdout(buf):
-                    self.assertEqual(cli.main(args), 0)  # the unchanged source creates and reports
-                self.assertTrue(json.loads(buf.getvalue())["activation"]["recorded"]["approved"])
                 store = Store(h.h.state_dir, "run-live")
-                store.run_path.unlink()
-                store.journal_path.unlink()
-                alter_source(h, how)
-                buf = io.StringIO()
-                with redirect_stdout(buf):
-                    rc = cli.main(args)
-                out = json.loads(buf.getvalue())
+                with controlled_cli_clock(h.clock):  # creation is decided on the injected observation, never the host clock
+                    h.clock[0] = EXPIRED
+                    buf = io.StringIO()
+                    with redirect_stdout(buf):
+                        rc = cli.main(args)  # the unchanged source past its window creates nothing
+                    self.assertEqual((rc, json.loads(buf.getvalue())["error"]["code"]), (3, "activation-expired"))
+                    self.assertFalse(store.root.exists() and any(store.root.iterdir()))
+                    h.clock[0] = T0
+                    buf = io.StringIO()
+                    with redirect_stdout(buf):
+                        self.assertEqual(cli.main(args), 0)  # the unchanged source inside its window creates and reports
+                    created = json.loads(buf.getvalue())
+                    self.assertTrue(created["activation"]["recorded"]["approved"])
+                    self.assertEqual((created["activation"]["recorded"]["validated_at"], created["run"]["started_at"]), (T0, T0))  # the recorded moments are the injected observation
+                    store.run_path.unlink()
+                    store.journal_path.unlink()
+                    alter_source(h, how)
+                    buf = io.StringIO()
+                    with redirect_stdout(buf):
+                        rc = cli.main(args)
+                    out = json.loads(buf.getvalue())
                 self.assertEqual(rc, 3)
                 # the CLI loads the file afresh, so a changed source is seen by the loader itself (unapproved), a missing or malformed one by the loader or the creation boundary
                 self.assertIn(out["error"]["code"], {"changed": {"activation-unapproved"}, "missing": {"activation-required", "activation-invalid"}, "malformed": {"activation-invalid"}}[how])

@@ -1,0 +1,8 @@
+# Bundled PostgreSQL/VectorChord, existing external OpenID Connect issuer. Keycloak is not deployed;
+# authentication stays mandatory through the external issuer, which the backend verifies at readiness.
+database:
+  bundled: true
+identity:
+  bundled: false
+  external:
+    issuerUri: https://idp.example.internal/realms/owl-mast

@@ -1,0 +1,11 @@
+# Run-owned StorageClass on the Kind local-path provisioner. Retain keeps the PersistentVolume (and
+# its node directory) when a claim is deleted; local node storage is still disposable, not a backup.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: owl-mast-local-retain
+  labels:
+    owlmast.aisquad.com/run: om-01-02-local-20261107-01
+provisioner: rancher.io/local-path
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer

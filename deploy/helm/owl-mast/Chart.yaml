@@ -1,0 +1,12 @@
+apiVersion: v2
+name: owl-mast
+description: Owl Mast backend with independently optional bundled PostgreSQL/VectorChord and Keycloak (OM-01.02)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.31.0-0"
+home: https://github.com/gabrianoo/owl-mast
+sources:
+  - https://github.com/gabrianoo/owl-mast
+annotations:
+  owlmast.aisquad.com/story: OM-01.02

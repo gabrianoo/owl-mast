@@ -1,0 +1,20 @@
+# Existing PostgreSQL 18 with VectorChord 1.1.1 installed (`CREATE EXTENSION vchord CASCADE` in the
+# application database), bundled Keycloak using its own database/principal on the same server.
+database:
+  bundled: false
+  name: owlmast
+  existingSecret: owl-mast-db
+  external:
+    host: postgresql.data.example.internal
+    port: 5432
+    sslMode: require
+identity:
+  bundled: true
+  keycloak:
+    database:
+      name: keycloak
+      existingSecret: owl-mast-keycloak-db
+      external:
+        host: postgresql.data.example.internal
+        port: 5432
+        sslMode: require

@@ -1,0 +1,11 @@
+# Both dependencies supplied by the operator: only the backend (and optionally the frontend) is deployed.
+database:
+  bundled: false
+  external:
+    host: postgresql.data.example.internal
+    port: 5432
+    sslMode: verify-full
+identity:
+  bundled: false
+  external:
+    issuerUri: https://idp.example.internal/realms/owl-mast

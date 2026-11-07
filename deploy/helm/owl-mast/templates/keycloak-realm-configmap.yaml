@@ -1,0 +1,18 @@
+{{- if and .Values.identity.bundled .Values.identity.keycloak.importRealm }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "owl-mast.keycloak.fullname" . }}-realm
+  labels:
+    {{- include "owl-mast.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keycloak
+data:
+  # Minimal synthetic realm so discovery and connectivity can be verified. It carries no clients,
+  # users or browser session policy: those are OM-02.01's contract.
+  owl-mast-realm.json: |
+    {
+      "realm": {{ .Values.identity.realm | quote }},
+      "enabled": true,
+      "displayName": "Owl Mast"
+    }
+{{- end }}

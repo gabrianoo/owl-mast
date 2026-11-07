@@ -1,0 +1,275 @@
+"""Deterministic packaging checks for the owl-mast chart (OM-01.02-T1/T4).
+
+Runs `helm lint` and `helm template` for the four bundled/external combinations and asserts the
+fail-closed validations. Requires Helm 4.x; set OWLMAST_HELM to the binary (scripts/verify-install-package.sh
+fetches a checksum-verified Helm 4.3.1 when none is available).
+"""
+
+import os
+import shutil
+import subprocess
+import unittest
+from pathlib import Path
+
+import yaml  # PyYAML is bundled with the Python used in CI (setup-python) and this repository's checks.
+
+REPO = Path(__file__).resolve().parents[2]
+CHART = REPO / "deploy" / "helm" / "owl-mast"
+EXAMPLES = CHART / "examples"
+HELM = os.environ.get("OWLMAST_HELM") or shutil.which("helm")
+
+COMBINATIONS = {
+    "bundled-bundled": [],
+    "bundled-external": ["--set", "identity.bundled=false", "--set", "identity.external.issuerUri=https://idp.example/realms/owl-mast"],
+    "external-bundled": [
+        "--set", "database.bundled=false", "--set", "database.external.host=pg.example",
+        "--set", "identity.keycloak.database.external.host=pg.example",
+    ],
+    "external-external": [
+        "--set", "database.bundled=false", "--set", "database.external.host=pg.example",
+        "--set", "identity.bundled=false", "--set", "identity.external.issuerUri=https://idp.example/realms/owl-mast",
+    ],
+}
+
+
+def helm(*args):
+    return subprocess.run([HELM, *args], capture_output=True, text=True, check=False)
+
+
+def render(*args):
+    result = helm("template", "t", str(CHART), *args)
+    if result.returncode != 0:
+        raise AssertionError(result.stderr)
+    return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+
+
+def by_kind(docs, kind):
+    return [d for d in docs if d["kind"] == kind]
+
+
+def env_of(deployment):
+    return {e["name"]: e for e in deployment["spec"]["template"]["spec"]["containers"][0]["env"]}
+
+
+@unittest.skipIf(HELM is None, "helm binary required (OWLMAST_HELM)")
+class ChartRenderTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        version = helm("version", "--template", "{{.Version}}")
+        if not version.stdout.startswith("v4."):
+            raise AssertionError(f"Helm 4.x required for Kubernetes 1.36 (found {version.stdout!r})")
+
+    def test_lint_passes(self):
+        result = helm("lint", str(CHART))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_bundled_bundled_renders_both_bundles_with_probes_and_retained_claim(self):
+        docs = render()
+        deployments = {d["metadata"]["name"]: d for d in by_kind(docs, "Deployment")}
+        self.assertEqual(set(deployments), {"t-owl-mast-backend", "t-owl-mast-postgresql", "t-owl-mast-keycloak"})
+        for d in deployments.values():
+            c = d["spec"]["template"]["spec"]["containers"][0]
+            self.assertIn("startupProbe", c, d["metadata"]["name"])
+            self.assertIn("livenessProbe", c, d["metadata"]["name"])
+            self.assertIn("readinessProbe", c, d["metadata"]["name"])
+            self.assertIn("limits", c["resources"])
+            self.assertIn("requests", c["resources"])
+        pvc = by_kind(docs, "PersistentVolumeClaim")
+        self.assertEqual(len(pvc), 1)
+        self.assertEqual(pvc[0]["metadata"]["annotations"]["helm.sh/resource-policy"], "keep")
+        self.assertEqual(deployments["t-owl-mast-postgresql"]["spec"]["strategy"]["type"], "Recreate")
+        self.assertEqual(
+            deployments["t-owl-mast-postgresql"]["spec"]["template"]["spec"]["volumes"][0]["persistentVolumeClaim"]["claimName"],
+            "t-owl-mast-postgresql-data",
+        )
+        backend_env = env_of(deployments["t-owl-mast-backend"])
+        self.assertEqual(backend_env["OWLMAST_IDENTITY_ISSUER_URI"]["value"], "http://t-owl-mast-keycloak:8080/realms/owl-mast")
+        self.assertEqual(backend_env["OWLMAST_DATABASE_R2DBC_URL"]["value"], "r2dbc:postgresql://t-owl-mast-postgresql:5432/owlmast?sslMode=disable")
+        self.assertEqual(backend_env["OWLMAST_DATABASE_PASSWORD"]["valueFrom"]["secretKeyRef"], {"name": "owl-mast-db", "key": "password"})
+        kc_env = env_of(deployments["t-owl-mast-keycloak"])
+        self.assertEqual(kc_env["KC_DB_URL"]["value"], "jdbc:postgresql://t-owl-mast-postgresql:5432/keycloak?sslmode=disable")
+        self.assertEqual(kc_env["KC_DB_USERNAME"]["valueFrom"]["secretKeyRef"]["name"], "owl-mast-keycloak-db")
+        self.assertEqual(kc_env["KC_HOSTNAME"]["value"], "http://t-owl-mast-keycloak:8080")
+
+    def test_images_are_digest_pinned(self):
+        docs = render()
+        images = {
+            d["metadata"]["name"]: d["spec"]["template"]["spec"]["containers"][0]["image"] for d in by_kind(docs, "Deployment")
+        }
+        self.assertEqual(
+            images["t-owl-mast-postgresql"],
+            "tensorchord/vchord-postgres:pg18-v1.1.1@sha256:700ff05ebdc7e4afd4dd8442e0684293046c3833677fec326550000a04cf8a91",
+        )
+        self.assertEqual(
+            images["t-owl-mast-keycloak"],
+            "quay.io/keycloak/keycloak:26.8.2@sha256:3879c623248408de29a5303178b5816c77e8dfef3890c361f8c0bbeaa979ba3b",
+        )
+        pinned = render("--set", "backend.image.digest=sha256:" + "a" * 64)
+        self.assertEqual(
+            {d["metadata"]["name"]: d for d in by_kind(pinned, "Deployment")}["t-owl-mast-backend"]["spec"]["template"]["spec"]["containers"][0]["image"],
+            "owl-mast/backend:0.1.0@sha256:" + "a" * 64,
+        )
+
+    def test_external_database_omits_bundle_and_points_both_consumers_at_it(self):
+        docs = render(*COMBINATIONS["external-bundled"])
+        names = {d["metadata"]["name"] for d in docs}
+        self.assertNotIn("t-owl-mast-postgresql", names)
+        self.assertNotIn("t-owl-mast-postgresql-data", names)
+        deployments = {d["metadata"]["name"]: d for d in by_kind(docs, "Deployment")}
+        self.assertEqual(env_of(deployments["t-owl-mast-backend"])["OWLMAST_DATABASE_JDBC_URL"]["value"], "jdbc:postgresql://pg.example:5432/owlmast?sslmode=prefer")
+        self.assertEqual(env_of(deployments["t-owl-mast-keycloak"])["KC_DB_URL"]["value"], "jdbc:postgresql://pg.example:5432/keycloak?sslmode=prefer")
+
+    def test_external_identity_omits_keycloak_but_keeps_issuer(self):
+        docs = render(*COMBINATIONS["bundled-external"])
+        names = {d["metadata"]["name"] for d in docs}
+        self.assertNotIn("t-owl-mast-keycloak", names)
+        self.assertNotIn("t-owl-mast-keycloak-realm", names)
+        backend = {d["metadata"]["name"]: d for d in by_kind(docs, "Deployment")}["t-owl-mast-backend"]
+        self.assertEqual(env_of(backend)["OWLMAST_IDENTITY_ISSUER_URI"]["value"], "https://idp.example/realms/owl-mast")
+
+    def test_external_identity_needs_no_keycloak_credentials(self):
+        """R2: with the identity bundle disabled, no rendered object references a Keycloak Secret or
+        Keycloak database credentials, so the install needs only the application and admin Secrets."""
+        docs = render(*COMBINATIONS["bundled-external"])
+        referenced = set()
+        for d in by_kind(docs, "Deployment") + by_kind(docs, "Job"):
+            for c in d["spec"]["template"]["spec"]["containers"]:
+                for e in c.get("env", []):
+                    ref = e.get("valueFrom", {}).get("secretKeyRef")
+                    if ref:
+                        referenced.add(ref["name"])
+                    self.assertFalse(e["name"].startswith("OWLMAST_KEYCLOAK"), e["name"])
+        self.assertEqual(referenced, {"owl-mast-db", "owl-mast-postgres-admin"})
+        init = {d["metadata"]["name"]: d for d in by_kind(docs, "ConfigMap")}["t-owl-mast-postgresql-init"]
+        self.assertIn('if [ -n "${OWLMAST_KEYCLOAK_USERNAME:-}" ]', init["data"]["10-owl-mast-databases.sh"])
+        bundled = render()
+        pg = {d["metadata"]["name"]: d for d in by_kind(bundled, "Deployment")}["t-owl-mast-postgresql"]
+        self.assertEqual(env_of(pg)["OWLMAST_KEYCLOAK_PASSWORD"]["valueFrom"]["secretKeyRef"], {"name": "owl-mast-keycloak-db", "key": "password"})
+
+    def test_keycloak_provisioning_job_is_explicit_and_idempotent(self):
+        """R2: enabling Keycloak on an initialised volume is an explicit opt-in Job, never a silent recreation."""
+        self.assertEqual(by_kind(render(), "Job"), [])
+        docs = render("--set", "postgresql.provisionKeycloakDatabase=true")
+        job = by_kind(docs, "Job")
+        self.assertEqual(len(job), 1)
+        self.assertEqual(job[0]["metadata"]["annotations"]["helm.sh/hook"], "pre-upgrade")  # F2: provisions before Helm waits for the consumers
+        self.assertEqual(job[0]["spec"]["template"]["spec"]["containers"][0]["command"], ["bash", "/owl-mast/provision-keycloak.sh"])
+        self.assertEqual(job[0]["spec"]["template"]["spec"]["volumes"][0]["configMap"]["name"], "t-owl-mast-postgresql-provision-scripts")
+        hook_cm = {d["metadata"]["name"]: d for d in by_kind(docs, "ConfigMap")}["t-owl-mast-postgresql-provision-scripts"]
+        self.assertEqual((hook_cm["metadata"]["annotations"]["helm.sh/hook"], hook_cm["metadata"]["annotations"]["helm.sh/hook-weight"]), ("pre-upgrade", "-5"))
+        script = {d["metadata"]["name"]: d for d in by_kind(docs, "ConfigMap")}["t-owl-mast-postgresql-init"]["data"]["provision-keycloak.sh"]
+        self.assertEqual(hook_cm["data"]["provision-keycloak.sh"], script)  # the hook carries the same script, independent of the release ConfigMap
+        self.assertIn("pg_isready", script)  # bounded readiness wait before provisioning over the network
+        self.assertIn("WHERE NOT EXISTS (SELECT 1 FROM pg_roles", script)
+        self.assertIn("WHERE NOT EXISTS (SELECT 1 FROM pg_database", script)
+        self.assertNotIn("DROP", script.upper())
+        for sets in (
+            ("postgresql.provisionKeycloakDatabase=true", "identity.bundled=false", "identity.external.issuerUri=https://idp.example/realms/x"),
+            ("postgresql.provisionKeycloakDatabase=true", "database.bundled=false", "database.external.host=pg.example", "identity.keycloak.database.external.host=pg.example"),
+        ):
+            result = helm("template", "t", str(CHART), *[a for s_ in sets for a in ("--set", s_)])
+            self.assertNotEqual(result.returncode, 0, sets)
+            self.assertIn("provisionKeycloakDatabase=true applies only", result.stderr)
+
+    def test_external_external_renders_only_the_backend(self):
+        docs = render(*COMBINATIONS["external-external"])
+        self.assertEqual([d["metadata"]["name"] for d in by_kind(docs, "Deployment")], ["t-owl-mast-backend"])
+        self.assertEqual(by_kind(docs, "PersistentVolumeClaim"), [])
+
+    def test_missing_external_values_fail_rendering_with_the_value_named(self):
+        cases = {
+            ("database.bundled=false",): "database.external.host",
+            ("identity.bundled=false",): "identity.external.issuerUri",
+            ("identity.bundled=false", "identity.external.issuerUri=idp.example/realms/x"): "absolute http(s) URL",
+            ("database.bundled=false", "database.external.host=pg.example"): "identity.keycloak.database.external.host",
+            ("frontend.enabled=true",): "frontend.image.tag or frontend.image.digest",
+            ("routing.ingress.enabled=true",): "routing.ingress.host",
+        }
+        for sets, expected in cases.items():
+            args = [a for s in sets for a in ("--set", s)]
+            result = helm("template", "t", str(CHART), *args)
+            self.assertNotEqual(result.returncode, 0, sets)
+            self.assertIn(expected, result.stderr, sets)
+
+    def test_secret_references_and_unknown_keys_fail_schema_validation(self):
+        for sets in (
+            ("database.existingSecret=",),
+            ("postgresql.adminExistingSecret=",),
+            ("identity.keycloak.bootstrapExistingSecret=",),
+            ("identity.keycloak.database.existingSecret=",),
+            ("auth.enabled=false",),  # no such knob: authentication cannot be switched off
+            ("identity.enabled=false",),
+            ("postgresql.image.digest=",),
+            ("backend.extraEnv[0].name=DB_PASSWORD", "backend.extraEnv[0].value=x"),
+        ):
+            args = [a for s in sets for a in ("--set", s)]
+            result = helm("template", "t", str(CHART), *args)
+            self.assertNotEqual(result.returncode, 0, sets)
+            self.assertIn("schema", result.stderr.lower(), sets)
+
+    def test_frontend_values_are_independent_of_the_backend_image(self):
+        docs = render("--set", "frontend.enabled=true", "--set", "frontend.image.tag=0.0.1-shell",
+                      "--set", "routing.ingress.enabled=true", "--set", "routing.ingress.host=owl-mast.local")
+        deployments = {d["metadata"]["name"]: d for d in by_kind(docs, "Deployment")}
+        self.assertEqual(deployments["t-owl-mast-frontend"]["spec"]["template"]["spec"]["containers"][0]["image"], "owl-mast/frontend:0.0.1-shell")
+        self.assertEqual(deployments["t-owl-mast-backend"]["spec"]["template"]["spec"]["containers"][0]["image"], "owl-mast/backend:0.1.0")
+        ingress = by_kind(docs, "Ingress")[0]
+        paths = {p["path"]: p["backend"]["service"]["name"] for p in ingress["spec"]["rules"][0]["http"]["paths"]}
+        self.assertEqual(paths, {"/api": "t-owl-mast-backend", "/actuator": "t-owl-mast-backend", "/": "t-owl-mast-frontend"})
+
+    def test_common_labels_reach_pod_templates(self):
+        docs = render("--set", "commonLabels.owlmast\\.aisquad\\.com/run=run-x", "--set", "postgresql.provisionKeycloakDatabase=true")
+        for d in by_kind(docs, "Deployment") + by_kind(docs, "Job"):
+            self.assertEqual(d["spec"]["template"]["metadata"]["labels"]["owlmast.aisquad.com/run"], "run-x", d["metadata"]["name"])
+            self.assertEqual(d["metadata"]["labels"]["owlmast.aisquad.com/run"], "run-x")
+
+    def test_gateway_api_route_is_optional_explicit_and_exclusive_with_ingress(self):
+        """Owner steering: stable Gateway API routing as a first-class option; the Gateway itself is operator-supplied."""
+        self.assertEqual(by_kind(render(), "HTTPRoute"), [])
+        docs = render("--set", "routing.gateway.enabled=true", "--set", "routing.gateway.parentRefs[0].name=shared-gw",
+                      "--set", "routing.gateway.parentRefs[0].namespace=gateway-system", "--set", "routing.gateway.parentRefs[0].sectionName=https",
+                      "--set", "routing.gateway.hostnames[0]=owl-mast.example.internal")
+        routes = by_kind(docs, "HTTPRoute")
+        self.assertEqual(len(routes), 1)
+        route = routes[0]
+        self.assertEqual(route["apiVersion"], "gateway.networking.k8s.io/v1")
+        self.assertEqual(route["metadata"]["name"], "t-owl-mast")
+        self.assertEqual(route["spec"]["parentRefs"], [{"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": "shared-gw", "namespace": "gateway-system", "sectionName": "https"}])
+        self.assertEqual(route["spec"]["hostnames"], ["owl-mast.example.internal"])
+        self.assertEqual(len(route["spec"]["rules"]), 1)  # backend only while the frontend is disabled
+        self.assertEqual([m["path"]["value"] for m in route["spec"]["rules"][0]["matches"]], ["/api", "/actuator"])
+        self.assertEqual(route["spec"]["rules"][0]["backendRefs"], [{"name": "t-owl-mast-backend", "port": 8080}])
+        self.assertEqual(by_kind(docs, "Ingress"), [])
+        with_frontend = by_kind(render("--set", "routing.gateway.enabled=true", "--set", "routing.gateway.parentRefs[0].name=shared-gw",
+                                       "--set", "frontend.enabled=true", "--set", "frontend.image.tag=0.0.1-shell"), "HTTPRoute")[0]
+        self.assertEqual(with_frontend["spec"]["rules"][1]["matches"][0]["path"]["value"], "/")
+        self.assertEqual(with_frontend["spec"]["rules"][1]["backendRefs"], [{"name": "t-owl-mast-frontend", "port": 80}])
+        for sets, expected in (
+            (("routing.gateway.enabled=true",), "requires at least one routing.gateway.parentRefs entry"),
+            (("routing.gateway.enabled=true", "routing.gateway.parentRefs[0].name=gw", "routing.ingress.enabled=true", "routing.ingress.host=h"), "both true: choose one routing mechanism"),
+        ):
+            result = helm("template", "t", str(CHART), *[a for s_ in sets for a in ("--set", s_)])
+            self.assertNotEqual(result.returncode, 0, sets); self.assertIn(expected, result.stderr, sets)
+        for sets in (("routing.gateway.enabled=true", "routing.gateway.parentRefs[0].namespace=x"), ("routing.gateway.parentRefs[0].name=gw", "routing.gateway.parentRefs[0].listener=https")):
+            result = helm("template", "t", str(CHART), *[a for s_ in sets for a in ("--set", s_)])
+            self.assertNotEqual(result.returncode, 0, sets); self.assertIn("schema", result.stderr.lower(), sets)
+
+    def test_no_ingress_or_frontend_by_default(self):
+        docs = render()
+        self.assertEqual(by_kind(docs, "Ingress"), [])
+        self.assertEqual(by_kind(docs, "HTTPRoute"), [])
+        self.assertNotIn("t-owl-mast-frontend", {d["metadata"]["name"] for d in docs})
+
+    def test_examples_render_and_contain_no_credentials(self):
+        examples = sorted(EXAMPLES.glob("*.yaml"))
+        self.assertEqual([p.name for p in examples], [
+            "bundled-bundled.yaml", "bundled-external.yaml", "external-bundled.yaml", "external-external.yaml",
+        ])
+        for example in examples:
+            text = example.read_text()
+            self.assertNotRegex(text.lower(), r"password:|token:", example.name)
+            render("-f", str(example))
+
+
+if __name__ == "__main__":
+    unittest.main()
