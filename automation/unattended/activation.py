@@ -26,7 +26,7 @@ import hashlib
 import re
 import tomllib
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .errors import Refused
@@ -34,6 +34,12 @@ from .policy import STORY_ID_RE, Policy, Target, _walk
 
 KNOWN_KEYS = {"approved", "id", "approver", "issued_at", "expires_at", "agreement", "binding", "scope", "targets", "budgets", "evidence"}
 BINDING_KEYS = {"repository", "policy_digest", "environment", "run_id"}
+TARGET_KEYS = {"provider", "model", "options", "isolation"}
+# The record a live run persists at creation (``RunState.activation``). It carries the facts a later
+# operation needs to re-check without the file: the document identity (id, digest), the approval window,
+# and the run binding it was validated against. Anything short of exactly this shape is not a binding.
+BINDING_RECORD_KEYS = {"id", "digest", "approver", "issued_at", "expires_at", "path", "repository", "policy_digest", "environment", "run_id", "approved", "validated_at"}
+DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 BUDGET_KEYS = ("max_stories_per_run", "max_concurrent_implementers", "max_repair_rounds", "max_delegated_tasks", "max_wall_clock_minutes")
 EVIDENCE_KEYS = ("lifecycle_smoke", "fresh_review")
 MAX_WINDOW_MINUTES = 24 * 60
@@ -45,12 +51,29 @@ class ActivationError(Refused):
     code = "activation-invalid"
 
 
-def _parse_time(value: str, name: str, problems: list[str]) -> datetime | None:
+def parse_utc(value) -> datetime:
+    """Strict timestamp: an ISO-8601 string with a time part AND an explicit UTC offset
+    (``2026-11-07T10:00:00Z`` or ``+00:00``), normalized to UTC. Date-only, timezone-naive,
+    non-string and unparsable values raise ``ValueError`` so no consumer ever compares a naive
+    and an aware datetime."""
+    if not isinstance(value, str) or "T" not in value:
+        raise ValueError(f"{value!r} is not an ISO-8601 timestamp with a time part")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{value!r} has no UTC offset (timezone-naive timestamps are refused)")
+    return parsed.astimezone(timezone.utc)
+
+
+def _parse_time(value, name: str, problems: list[str]) -> datetime | None:
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        problems.append(f"{name} {value!r} is not an ISO-8601 UTC timestamp")
+        return parse_utc(value)
+    except (ValueError, OverflowError, TypeError) as exc:
+        problems.append(f"{name} {value!r} is not an ISO-8601 UTC timestamp with a time part and offset: {exc}")
         return None
+
+
+def _utc_text(moment: datetime) -> str:
+    return moment.isoformat().replace("+00:00", "Z")
 
 
 @dataclass(frozen=True)
@@ -72,12 +95,16 @@ class Activation:
     digest: str
     path: str
 
-    def binding(self) -> dict:
-        """What a run records at creation so later operations can tell this activation from any other."""
-        return {"id": self.id, "digest": self.digest, "approver": self.approver, "issued_at": self.issued_at, "expires_at": self.expires_at, "path": self.path}
+    def binding(self, validated_at: str | None = None) -> dict:
+        """What a live run records at creation so later operations can tell this activation from
+        any other and re-check the approval facts without the file. Only ``Store.ensure_run``
+        persists it, after ``problems`` came back empty, and ``validate_binding`` re-checks the
+        complete record on every reload."""
+        return {"id": self.id, "digest": self.digest, "approver": self.approver, "issued_at": self.issued_at, "expires_at": self.expires_at, "path": self.path,
+                "repository": self.repository, "policy_digest": self.policy_digest, "environment": self.environment, "run_id": self.run_id, "approved": self.approved, "validated_at": validated_at}
 
     def matches(self, binding: dict | None) -> bool:
-        return bool(binding) and (binding.get("id"), binding.get("digest")) == (self.id, self.digest)
+        return isinstance(binding, dict) and (binding.get("id"), binding.get("digest")) == (self.id, self.digest)
 
     def problems(self, policy: Policy, run_id: str | None, now: str) -> list[tuple[str, str]]:
         """Every reason this activation does not currently authorize ``run_id`` under
@@ -171,17 +198,35 @@ def load_activation(path: Path) -> Activation:
     else:
         for name in ("implementer", "reviewer"):
             t = raw_targets[name]
-            options = t.get("options") if isinstance(t, dict) else None
-            if not isinstance(t, dict) or not isinstance(options, dict) or not options or not t.get("provider") or not t.get("model"):
-                problems.append(f"targets.{name} needs provider, model and a non-empty options table")
+            if not isinstance(t, dict):
+                problems.append(f"targets.{name} must be a table")
                 continue
-            targets[name] = Target(str(t["provider"]), str(t["model"]), {str(k): str(v) for k, v in options.items()}, str(t.get("isolation", "")))
+            unknown_target = set(t) - TARGET_KEYS
+            if unknown_target:
+                problems.append(f"targets.{name} has unknown keys {sorted(unknown_target)}; only {sorted(TARGET_KEYS)} are allowed")
+            options = t.get("options")
+            if not isinstance(options, dict) or not options or not all(isinstance(k, str) and isinstance(v, str) and v.strip() for k, v in options.items()):
+                problems.append(f"targets.{name}.options must be a non-empty table of string values (no coercion of numbers, booleans or tables)")
+            for key in ("provider", "model"):
+                if not isinstance(t.get(key), str) or not t[key].strip():
+                    problems.append(f"targets.{name}.{key} must be a non-empty string")
+            if "isolation" in t and (not isinstance(t["isolation"], str) or not t["isolation"].strip()):
+                problems.append(f"targets.{name}.isolation must be a non-empty string when present")
+            if unknown_target or not isinstance(options, dict) or any(not isinstance(t.get(k), str) for k in ("provider", "model")) or ("isolation" in t and not isinstance(t["isolation"], str)):
+                continue
+            targets[name] = Target(t["provider"], t["model"], {k: v for k, v in options.items() if isinstance(k, str) and isinstance(v, str)}, t.get("isolation", ""))
     budgets: dict[str, int] = {}
     raw_budgets = raw.get("budgets")
     if not isinstance(raw_budgets, dict) or set(raw_budgets) != set(BUDGET_KEYS) or not all(isinstance(raw_budgets[k], int) and not isinstance(raw_budgets[k], bool) for k in BUDGET_KEYS):
         problems.append(f"budgets must be a table with exactly {list(BUDGET_KEYS)} as integers")
     else:
         budgets = {k: int(raw_budgets[k]) for k in BUDGET_KEYS}
+    times: dict[str, str] = {}
+    for key in ("issued_at", "expires_at"):
+        if isinstance(raw.get(key), str):
+            parsed = _parse_time(raw[key], key, problems)
+            if parsed is not None:
+                times[key] = _utc_text(parsed)
     evidence = raw.get("evidence")
     if not isinstance(evidence, dict) or set(evidence) != set(EVIDENCE_KEYS) or not all(isinstance(evidence[k], str) and evidence[k].strip() for k in EVIDENCE_KEYS):
         problems.append(f"evidence must be a table with exactly {list(EVIDENCE_KEYS)} as non-empty references")
@@ -189,8 +234,47 @@ def load_activation(path: Path) -> Activation:
     if problems:
         raise ActivationError(f"activation {path} rejected: " + "; ".join(problems), code="activation-invalid", problems=problems)
     return Activation(
-        id=str(raw["id"]), approved=bool(raw["approved"]), approver=str(raw["approver"]), issued_at=str(raw["issued_at"]), expires_at=str(raw["expires_at"]),
+        id=str(raw["id"]), approved=bool(raw["approved"]), approver=str(raw["approver"]), issued_at=times["issued_at"], expires_at=times["expires_at"],
         agreement=str(raw["agreement"]), repository=str(binding["repository"]), policy_digest=str(binding["policy_digest"]), environment=str(binding["environment"]),
         run_id=str(binding["run_id"]), stories=stories, targets=targets, budgets=budgets, evidence={k: str(v) for k, v in evidence.items()},
         digest=hashlib.sha256(text).hexdigest(), path=str(path),
     )
+
+
+class BindingError(Refused):
+    code = "activation-binding-invalid"
+
+
+def validate_binding(binding, run_id: str, repo: str, policy_digest: str) -> dict:
+    """The persisted activation record of a live run, re-checked strictly on every load: exactly
+    :data:`BINDING_RECORD_KEYS`, a well-formed id and file digest, strict UTC timestamps in
+    order, ``approved`` exactly true, and a run binding equal to the run it is stored in (run id,
+    repository, policy digest, ``live``). A partial, foreign, unapproved or otherwise inconsistent
+    record is not a binding: it refuses with ``activation-binding-invalid`` and the run's
+    obligations stay where they are (nothing is replaced, migrated or inferred). ``None`` or an
+    empty value is reported separately by the caller as ``activation-required``."""
+    problems: list[str] = []
+    if not isinstance(binding, dict):
+        raise BindingError(f"run {run_id}: persisted activation binding is {type(binding).__name__}, not a record; a live run without a valid recorded activation can neither advance nor release (restore run.json from the run that created it, or recover by hand)", code="activation-binding-invalid")
+    if set(binding) != BINDING_RECORD_KEYS:
+        problems.append(f"keys {sorted(set(binding) ^ BINDING_RECORD_KEYS)} differ from the binding record shape {sorted(BINDING_RECORD_KEYS)}")
+    for key in ("id", "digest", "approver", "issued_at", "expires_at", "path", "repository", "policy_digest", "environment", "run_id"):
+        if not isinstance(binding.get(key), str) or not binding.get(key, "").strip():
+            problems.append(f"{key} must be a non-empty string")
+    if isinstance(binding.get("id"), str) and not ID_RE.match(binding["id"]):
+        problems.append("id is malformed")
+    if isinstance(binding.get("digest"), str) and not DIGEST_RE.match(binding["digest"]):
+        problems.append("digest is not a sha256 hex digest")
+    if binding.get("approved") is not True:
+        problems.append("approved is not exactly true")
+    if binding.get("validated_at") is not None and _parse_time(binding.get("validated_at"), "validated_at", problems) is None:
+        pass
+    issued, expires = _parse_time(binding.get("issued_at"), "issued_at", problems), _parse_time(binding.get("expires_at"), "expires_at", problems)
+    if issued and expires and expires <= issued:
+        problems.append("expires_at must be after issued_at")
+    for key, expected in (("run_id", run_id), ("repository", repo), ("policy_digest", policy_digest), ("environment", "live")):
+        if binding.get(key) != expected:
+            problems.append(f"{key} {binding.get(key)!r} is not this run's {expected!r}")
+    if problems:
+        raise BindingError(f"run {run_id}: persisted activation binding is not a valid binding for this run: " + "; ".join(problems) + "; nothing is advanced or released on it (restore run.json from the run that created it, or recover by hand)", code="activation-binding-invalid", problems=problems)
+    return binding

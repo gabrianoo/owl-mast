@@ -299,10 +299,11 @@ class ExpiryAndCleanupTests(unittest.TestCase):
         state = self.c.record_task_terminal(S, self.lh.terminal())
         self.assertIsNone(state.active_task)
         bare = self.lh.coordinator(activation=None)  # restart without the file: the recorded binding suffices for cleanup
-        self.assertEqual(bare.status()["activation"]["stop"], "activation-required")
+        self.assertEqual(bare.status()["activation"]["stop"], "activation-expired")  # the expiry observed above is a durable stop (R6), reported before the missing file
+        self.assertEqual(bare.status()["activation"]["recorded_stop"]["code"], "activation-expired")
         with self.assertRaises(Refused) as ctx:
             bare.record_head(S, self.lh.h.sha)
-        self.assertEqual(ctx.exception.code, "activation-required")
+        self.assertEqual(ctx.exception.code, "activation-expired")
         state = bare.resume(S, ok_worktree)
         self.assertEqual(state.phase, "claimed")
         report = bare.cancel_run("expired activation")
@@ -311,7 +312,7 @@ class ExpiryAndCleanupTests(unittest.TestCase):
         self.assertTrue(any("kind=release" in c_.body for c_ in self.lh.h.fake.comments[21]))
         with self.assertRaises(Refused) as ctx:
             bare.reserve("OM-01.03", self.lh.h.snapshot, "c5d9d2e")
-        self.assertIn(ctx.exception.code, ("run-cancelled", "activation-required"))
+        self.assertIn(ctx.exception.code, ("run-cancelled", "activation-required", "activation-expired"))
         self.assertIsInstance(report, dict)
 
     def test_restart_after_expiry_replays_cleanup_but_not_advancing_intents(self):

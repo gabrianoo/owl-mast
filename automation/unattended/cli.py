@@ -144,7 +144,8 @@ def main(argv: list[str] | None = None) -> int:
             raise UnattendedError("--run-id is required for state commands")
         coordinator = Coordinator(transport, policy, Store(Path(args.state_dir), args.run_id), live=bool(args.live), activation=activation)
         if args.command == "reserve":
-            coordinator.require_activation("reserve")  # before any GitHub read on a live transport
+            with coordinator.store.locked(coordinator):
+                coordinator.require_activation("reserve")  # before any GitHub read on a live transport, under the lock
             state = coordinator.reserve(args.story, _snapshot(args, transport, policy), args.baseline)
         elif args.command == "bind-receipt":
             state = coordinator.bind_receipt(args.story, _load_json_arg(args.receipt), args.worktree, args.branch, authorization=args.authorization)

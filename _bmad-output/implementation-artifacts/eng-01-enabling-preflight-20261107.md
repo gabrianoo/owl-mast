@@ -2,7 +2,7 @@
 
 Companion to `spec-eng-01-enabling-preflight.md`. Everything below was read, never written: no status, checkbox, Project field, issue comment, cluster, service or credential was changed. Sanitized: no tokens, no private Notion content.
 
-**Status: activation target unspecified and unqualified. The enabling change is prepared and pending fresh review; activation itself stays blocked on the owner decisions listed at the end.**
+**Status: activation target unspecified and unqualified. The enabling change was reviewed at 96ad53a with changes requested (six findings R1–R6); repair round 1 is applied and a fresh review is pending. Not eligible for activation approval, not approved, not enabled; activation itself stays blocked on the owner decisions listed at the end. OM-01.02 remains Backlog; PR #107 remains unmerged at f71167b.**
 
 ## Verified (read-only, this machine)
 

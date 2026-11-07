@@ -76,7 +76,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .activation import Activation
+from .activation import Activation, _parse_time, _utc_text, load_activation
 from .backlog import Entry, Snapshot, take_snapshot
 from .eligibility import Decision, decide
 from .errors import BudgetExhausted, Conflict, Refused, StaleRevision, UnattendedError
@@ -127,8 +127,10 @@ AUTHORIZATION_FLOW = {
 STOP_REASONS = {"run-cancelled": "run is cancelled", "wall-clock-exceeded": "run wall clock budget exceeded",
                 "activation-required": "no activation authorization presented for this live run", "activation-expired": "activation authorization expired",
                 "activation-not-yet-valid": "activation authorization not yet valid", "activation-unapproved": "activation authorization is not approved",
-                "activation-mismatch": "activation authorization no longer matches the policy or run", "activation-invalid": "activation authorization is invalid"}
-ACTIVATION_STOPS = tuple(code for code in STOP_REASONS if code.startswith("activation-"))
+                "activation-mismatch": "activation authorization no longer matches the policy or run", "activation-invalid": "activation authorization is invalid",
+                "clock-regression": "the clock moved backwards past an earlier observation; the activation window cannot be trusted"}
+ACTIVATION_STOPS = tuple(code for code in STOP_REASONS if code.startswith("activation-") or code == "clock-regression")
+CLOCK_REGRESSION_TOLERANCE_MINUTES = 5  # ordinary NTP slew; a larger backward step is a durable stop
 
 
 def unsuccessful_code(status: str | None) -> str:
@@ -276,7 +278,8 @@ class Coordinator:
         self.environment = "live" if getattr(transport, "live", False) else "fixture"
         if self.environment == "live" and store.load_run() is None:
             self._refuse_unless_current("run-start", creating=True)  # a live run is created only under a current activation
-        self.run = store.ensure_run(policy.repo_slug, policy.digest, self.environment, activation=activation.binding() if activation else None)
+        # the only creation path: Store.ensure_run validates the document for this run, policy and moment before persisting its binding
+        self.run = store.ensure_run(policy.repo_slug, policy.digest, self.environment, activation=activation, policy=policy, now=self.now())
 
     # -- guards --------------------------------------------------------------------------
     def _activation_problems(self) -> list[tuple[str, str]]:
@@ -285,9 +288,11 @@ class Coordinator:
         return self.activation.problems(self.policy, self.store.run_id, self.now())
 
     def _activation_stop(self) -> str | None:
-        """Why a live run advances nothing: no, expired or non-matching activation. ``None`` on fixtures."""
+        """Why a live run advances nothing: a durable observed stop, else no, expired or non-matching activation. ``None`` on fixtures."""
         if self.environment != "live":
             return None
+        if self.run.activation_stop:
+            return self.run.activation_stop["code"]
         return Activation.stop_code(self._activation_problems())
 
     def _refuse_unless_current(self, operation: str, creating: bool = False) -> None:
@@ -298,24 +303,89 @@ class Coordinator:
             raise Refused(f"{operation}: {what} on the live transport needs a current activation authorization: " + "; ".join(m for _, m in problems) + f" ({OPERATING_AGREEMENT}; accepting residual risk is not activation)",
                           code=code, problems=[m for _, m in problems], agreement=OPERATING_AGREEMENT, gaps=list(LIVE_EXECUTION_GAPS))
 
-    def require_activation(self, operation: str, advancing: bool = True) -> None:
-        """The live gate. Fixture transports pass. On the live transport the run must have been
-        created under an activation and any activation presented now must be that same one;
-        an advancing operation additionally needs it current (approved, bound to this policy
-        digest, run, scope, targets and budgets, inside its time window). Cleanup
-        (``advancing=False``) is allowed after expiry or without the file, never with a
-        different activation."""
-        if self.environment != "live":
+    def _refresh_activation(self, operation: str) -> None:
+        """Re-read the activation source the presented document came from. The file is the
+        approval; the loaded object is a cache. A changed file (another digest) or a malformed
+        one is a different document and refuses every operation, cleanup included
+        (``activation-mismatch`` / ``activation-invalid``: omit --activation to clean up on the
+        recorded binding). A missing file leaves nothing presented: advancement stops
+        (``activation-required``) while cleanup proceeds on the validated recorded binding."""
+        if self.activation is None or not self.activation.path:
             return
-        if not self.run.activation:
+        path = Path(self.activation.path)
+        if not path.exists():
+            self.activation = None
+            return
+        try:
+            fresh = load_activation(path)
+        except Refused as exc:
+            raise Refused(f"{operation}: the activation source {path} no longer loads ({exc}); a malformed source is not the document this run was activated under; omit --activation to clean up on the recorded binding", code="activation-invalid", problems=exc.detail.get("problems")) from exc
+        if fresh.digest != self.activation.digest:
+            raise Refused(f"{operation}: the activation source {path} changed since it was loaded (digest {fresh.digest[:12]} vs {self.activation.digest[:12]}); a changed document is refused for every operation, cleanup included; omit --activation to clean up on the recorded binding", code="activation-mismatch")
+        self.activation = fresh
+
+    def _observe_stop(self, operation: str) -> None:
+        """Record, durably and under the lock, the first observation that the recorded approval
+        window is over (``activation-expired``) or that the clock moved backwards past an earlier
+        observation (``clock-regression``). Once recorded the run never advances again, after a
+        clock correction, a rollback or a restart; cleanup, late receipts (cleanup only) and
+        terminal evidence stay allowed; approvals, obligations and budgets are untouched."""
+        if self.run.activation_stop or not self.run.activation:
+            return
+        problems: list[str] = []
+        now, expires = _parse_time(self.now(), "now", problems), _parse_time(self.run.activation["expires_at"], "expires_at", problems)
+        if problems:
+            raise Refused(f"{operation}: cannot evaluate the activation window: " + "; ".join(problems), code="activation-invalid", problems=problems)
+        high_water = _parse_time(self.run.last_observed_at or self.run.activation.get("validated_at") or self.run.activation["issued_at"], "last_observed_at", problems) or now
+        stop = None
+        if now > expires:
+            stop = {"code": "activation-expired", "observed_at": self.now(), "message": f"now {self.now()} is after the recorded expires_at {self.run.activation['expires_at']}"}
+        elif now < high_water - timedelta(minutes=CLOCK_REGRESSION_TOLERANCE_MINUTES):
+            stop = {"code": "clock-regression", "observed_at": self.now(), "message": f"now {self.now()} is before the latest recorded observation {_utc_text(high_water)}; the approval window cannot be trusted"}
+        if stop:
+            self.run.activation_stop = {**stop, "operation": operation}
+            self.store.save_run(self.run)
+            self.store.journal(None, "activation-stopped", self.run.activation_stop)
+        elif now > high_water:
+            self.run.last_observed_at = _utc_text(now)
+            self.store.save_run(self.run)
+
+    def require_activation(self, operation: str, advancing: bool = True) -> None:
+        """The live gate, one validation for every consumer, run under the operation lock. It
+        reloads the run from disk (binding to repository, policy digest and environment, then the
+        persisted activation record validated strictly against this run), re-reads the activation
+        source, records an observed expiry or clock regression durably, and compares the presented
+        document to the recorded binding. Fixture transports only reload. On the live transport the
+        run must carry a valid recorded binding and any activation presented now must be that same
+        document; an advancing operation additionally needs it present and current (approved,
+        bound to this policy digest, run, scope, targets and budgets, inside its window) and no
+        durable stop. Cleanup (``advancing=False``) is allowed after expiry, after a recorded stop
+        or without the file, never with a different, changed or malformed one."""
+        if self.environment != "live":
+            self._reload_run()
+            return
+        persisted = self.store.bound_run()  # fresh locked state; a partial or foreign record refuses here (activation-binding-invalid)
+        if persisted is None or not persisted.activation:
             raise Refused(f"{operation}: live run {self.store.run_id} was never activated; nothing can be admitted, advanced or released here ({OPERATING_AGREEMENT}; accepting residual risk is not activation)", code="activation-required", agreement=OPERATING_AGREEMENT, gaps=list(LIVE_EXECUTION_GAPS))
+        self._reload_run()
         if self.activation is not None and not self.activation.matches(self.run.activation):
             raise Refused(f"{operation}: activation {self.activation.id} (digest {self.activation.digest[:12]}) is not the activation this run was created under ({self.run.activation['id']}, digest {self.run.activation['digest'][:12]}); a changed or different authorization is refused for every operation", code="activation-mismatch")
+        self._refresh_activation(operation)
+        if self.activation is not None and not self.activation.matches(self.run.activation):  # a re-read that no longer matches is a different document
+            raise Refused(f"{operation}: the re-read activation {self.activation.id} is not the one this run was created under", code="activation-mismatch")
+        if self.store._lock_depth:
+            self._observe_stop(operation)
         if advancing:
+            if self.run.activation_stop:
+                stop = self.run.activation_stop
+                raise BudgetExhausted(f"{operation}: {STOP_REASONS[stop['code']]} (observed {stop['observed_at']} during {stop.get('operation')}: {stop['message']}); the run never advances again; only cancel, block, record-task-terminal, record-no-launch, cancel-run, resume (cleanup) and status are allowed", code=stop["code"], stop=stop)
             self._refuse_unless_current(operation)
 
     def _reload_run(self) -> None:
-        run = self.store.load_run()
+        """Fresh locked state: the run as persisted now, never a cached object. The repository,
+        policy digest and environment binding and (live) the strict activation record are
+        validated on every reload."""
+        run = self.store.bound_run()
         if run is None or (run.repo, run.policy_digest, run.environment) != (self.policy.repo_slug, self.policy.digest, self.environment):
             raise Refused("run binding changed on disk", code="run-binding-mismatch")
         self.run = run
@@ -325,7 +395,8 @@ class Coordinator:
 
     def _run_stop(self) -> str | None:
         """Why the run admits and advances nothing any more: ``run-cancelled`` or
-        ``wall-clock-exceeded`` (a local expiry; it does not stop a launched child), else None."""
+        ``wall-clock-exceeded`` (a local expiry; it does not stop a launched child), a durable
+        activation stop, else the activation's current problems, else None."""
         if self.run.cancelled:
             return "run-cancelled"
         if self._elapsed() > timedelta(minutes=self.policy.max_wall_clock_minutes):
@@ -336,6 +407,8 @@ class Coordinator:
         if code == "run-cancelled":
             return f"run is cancelled ({self.run.stop_reason})"
         if code in ACTIVATION_STOPS:
+            if self.run.activation_stop and self.run.activation_stop["code"] == code:
+                return STOP_REASONS[code] + f" (durable stop observed {self.run.activation_stop['observed_at']}: {self.run.activation_stop['message']})"
             return STOP_REASONS[code] + ": " + "; ".join(m for _, m in self._activation_problems())
         return f"wall clock budget of {self.policy.max_wall_clock_minutes} minutes exceeded ({int(self._elapsed().total_seconds() // 60)} minutes elapsed since {self.run.started_at})"
 
@@ -1334,4 +1407,4 @@ class Coordinator:
     def status(self) -> dict:
         with self.store.locked(self):
             counts = self._counts()
-        return {"run": self.run.__dict__, "budgets": counts, "environment": self.environment, "stories": [s.to_dict() for s in self.store.list_stories()], "journal_events": self.store.journal_count(), "live": self.live, "activation": {"recorded": self.run.activation, "presented": self.activation.binding() if self.activation else None, "stop": self._activation_stop(), "problems": [m for _, m in self._activation_problems()] if self.environment == "live" else []}, "agreement": OPERATING_AGREEMENT, "gaps": list(LIVE_EXECUTION_GAPS)}
+        return {"run": self.run.__dict__, "budgets": counts, "environment": self.environment, "stories": [s.to_dict() for s in self.store.list_stories()], "journal_events": self.store.journal_count(), "live": self.live, "activation": {"recorded": self.run.activation, "recorded_stop": self.run.activation_stop, "presented": self.activation.binding() if self.activation else None, "stop": self._activation_stop(), "problems": [m for _, m in self._activation_problems()] if self.environment == "live" else []}, "agreement": OPERATING_AGREEMENT, "gaps": list(LIVE_EXECUTION_GAPS)}

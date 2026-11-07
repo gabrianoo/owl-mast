@@ -23,7 +23,7 @@ The foundation refuses every real-transport state command unconditionally (`live
 - AC5 Foreign run id, foreign repository, policy digest drift, scope drift, implementer/reviewer model drift, budget drift, non-live environment, over-long or inverted window, not-yet-valid and expired activations refuse at run start with the specific code, no calls, no run state. Policy drift after activation refuses the existing run (`run-binding-mismatch`) and a new one (`activation-mismatch`). (`test_foreign_scope_and_drift…`, `test_policy_drift…`)
 - AC6 After expiry every advancing operation refuses `activation-expired`; a late receipt binds for cleanup only; cancel with terminal evidence, record-task-terminal, resume (cleanup only), cancel-run work with the same or no activation and never advance; restart replays cleanup but abandons advancing intents. (`ExpiryAndCleanupTests`)
 - AC7 A changed or different activation refuses every operation including cleanup. (`test_changed_activation…`)
-- AC8 All previously qualified safeguards and the existing suite stay green: 288 tests (277 + 11), `./gradlew build --console=plain`, `scripts/verify-quality-gates.sh`. `.java-version`, backend, product specs and CI untouched.
+- AC8 All previously qualified safeguards and the existing suite stay green: 305 tests (277 + 11 + 17), `./gradlew build --console=plain`, `scripts/verify-quality-gates.sh`. `.java-version`, backend, product specs and CI untouched.
 - AC9 Preflight evidence is recorded with verified vs missing items and explicit blockers; no status, checkbox, Project or environment mutation.
 
 ## Code map
@@ -36,9 +36,25 @@ The foundation refuses every real-transport state command unconditionally (`live
 | `automation/unattended/cli.py` | `--activation`, `check-activation`; reserve pre-read gate |
 | `automation/examples/activation-om-01-02.candidate.toml` | unapproved candidate (cannot dispatch when copied) |
 | `automation/tests/test_activation.py` | 11 tests for AC1–AC7 |
+| `automation/tests/test_enabling_repair_1.py` | 17 tests for the repair-round-1 findings R1–R6 below |
 | `automation/tests/test_{cli_and_probes,coordinator,sync,transport,lifecycle_smoke,repair_pass_2_findings}.py` | gate expectations moved to `activation-required` |
 | `docs/unattended-execution.md`, `automation/README.md`, `docs/engineering-tracking.md` | opt-in semantics, candidate, trust model (`automation/policy.toml` stays byte-identical: committed legacy fixtures bind to its digest) |
 | `_bmad-output/implementation-artifacts/eng-01-enabling-preflight-20261107.md` | sanitized OM-01.02 activation preflight |
+
+## Review triage (independent review of 96ad53a: CHANGES REQUESTED; repair round 1)
+
+Status: **implemented; reviewed with changes requested at 96ad53a; repair round 1 applied; fresh review pending; not eligible for activation approval; not approved; not enabled.** Findings and the shared fix (one validation in `Coordinator.require_activation`, run under the existing operation lock by every advancing and cleanup consumer, reading fresh locked state, never the cached run):
+
+| Finding | Fix | Code |
+| --- | --- | --- |
+| R1 missing `run.json` with retained artifacts promoted fixture stories to live | `Store.ensure_run` refuses creation (any environment) when the run folder holds a journal or story checkpoints without metadata; nothing written, artifacts kept for explicit recovery | `run-metadata-missing` |
+| R2 persisted binding accepted by truthiness; public `Store.ensure_run` took a dictionary; cached binding checked before reload | `Store.ensure_run` is the only live creation path: it takes the loaded `Activation`, the policy and the time, persists the complete binding record (`BINDING_RECORD_KEYS`: document identity, window, run binding, `approved`, `validated_at`) only when `problems` is empty; `Store.bound_run` / `validate_binding` re-check the full record against the run on every load; every consumer reloads under the lock before any decision | `activation-binding-invalid`, `activation-required` |
+| R3 long-lived Coordinator ignored a changed or missing file | `_refresh_activation` re-reads the source at every gate: changed digest or malformed file refuses every operation (omit `--activation` to clean up on the recorded binding); a missing file stops advancement (`activation-required`), cleanup and cleanup replays proceed on the validated binding | `activation-mismatch`, `activation-invalid`, `activation-required` |
+| R4 naive timestamps crashed with `TypeError` | `parse_utc`: time part and explicit offset required, normalized to UTC at load; naive, date-only, malformed and overflowing values refuse at load; a naive injected clock is a structured refusal | `activation-invalid` |
+| R5 unknown nested target keys ignored | per-target allowlist `provider/model/options/isolation`, string-typed fields, string-valued options, no coercion | `activation-invalid` |
+| R6 observed expiry reversible after clock rollback/restart | `_observe_stop` persists the first observed expiry (from the recorded window) or a clock regression past the last observed time (5 min tolerance) in `run.json` (`activation_stop`, `last_observed_at`); the run never advances again, cleanup, late receipts (cleanup only) and terminal evidence stay allowed; approvals and budgets untouched | `activation-expired`, `clock-regression` |
+
+Unchanged: the trusted-machine boundary (no credential scheme, no signatures), `automation/policy.toml` (byte-identical to f71167b), the default empty allowlist, the unapproved committed candidate. One existing assertion changed: after an observed expiry the bare restart reports the durable `activation-expired` stop instead of `activation-required` (`test_cleanup_after_expiry_works_with_the_same_or_no_activation_but_never_advances`).
 
 ## Out of scope / blockers kept explicit
 
