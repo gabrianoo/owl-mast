@@ -103,8 +103,11 @@ LIVE_EXECUTION_GAPS = (
 TERMINAL_TASK_STATES = ("result_available", "completed", "failed", "cancelled", "terminal", "interrupted")
 # Terminal statuses that acknowledge termination without any completed work. They release
 # ownership (record-task-terminal, cancel, block, cancel-run) but can never stand in for the
-# successful completion that an advancing operation records.
-NON_SUCCESS_TERMINAL_TASK_STATES = ("interrupted",)
+# successful completion that an advancing operation records. Success is only a status in
+# StoryState.SUCCESSFUL_STATUSES; everything else terminal (including the bare "terminal"
+# marker) is unsuccessful for advancement.
+SUCCESSFUL_TERMINAL_TASK_STATES = StoryState.SUCCESSFUL_STATUSES
+NON_SUCCESS_TERMINAL_TASK_STATES = tuple(s for s in TERMINAL_TASK_STATES if s not in SUCCESSFUL_TERMINAL_TASK_STATES)
 ADVANCING_EVIDENCE_OPERATIONS = ("record-head", "record-review")
 CLEANUP_KINDS = ("release", "block")
 # purpose -> (phase in which the authorization is issued, phase after the receipt is bound, role)
@@ -114,6 +117,13 @@ AUTHORIZATION_FLOW = {
     "repair": ("repair-authorized", "claimed", "implementer"),
 }
 STOP_REASONS = {"run-cancelled": "run is cancelled", "wall-clock-exceeded": "run wall clock budget exceeded"}
+
+
+def unsuccessful_code(status: str | None) -> str:
+    """Refusal code for an execution whose outcome is not a success: the established
+    ``worker-interrupted`` for the transport's interrupted status, ``worker-unsuccessful``
+    for failed/cancelled/other."""
+    return "worker-interrupted" if status == "interrupted" else "worker-unsuccessful"
 
 
 def git_worktree_check(path: str, branch: str) -> tuple[bool, str]:
@@ -432,12 +442,38 @@ class Coordinator:
         if evidence["runId"] != active["runId"]:
             raise Refused(f"{operation}: {active['role']} task {active['taskId']} of {state.story} is still owned; the evidence is for run {evidence['runId']}, the bound execution is run {active['runId']}",
                           code="run-mismatch", task_id=active["taskId"], role=active["role"], authorization=active.get("authorization"), bound_run=active["runId"], evidence_run=evidence["runId"])
-        if operation in ADVANCING_EVIDENCE_OPERATIONS and evidence["status"] in NON_SUCCESS_TERMINAL_TASK_STATES:
-            raise Refused(f"{operation}: {active['role']} task {active['taskId']} of {state.story} terminated as {evidence['status']!r} (run {active['runId']}); an interrupted execution completed nothing and cannot advance the story; it stays owned until released (record-task-terminal, cancel or block)",
-                          code="worker-interrupted", task_id=active["taskId"], role=active["role"], authorization=active.get("authorization"), status=evidence["status"], run_id=active["runId"])
-        record = {"taskId": active["taskId"], "runId": active["runId"], "role": active["role"], "status": evidence["status"], "successful": evidence["status"] not in NON_SUCCESS_TERMINAL_TASK_STATES, "at": self.now(), "operation": operation, "authorization": active.get("authorization"), "evidence_shape": evidence["shape"]}
+        successful = evidence["status"] in SUCCESSFUL_TERMINAL_TASK_STATES
+        if operation in ADVANCING_EVIDENCE_OPERATIONS and not successful:
+            raise Refused(f"{operation}: {active['role']} task {active['taskId']} of {state.story} terminated as {evidence['status']!r} (run {active['runId']}); an unsuccessful execution completed nothing and cannot advance the story; it stays owned until released (record-task-terminal, cancel or block)",
+                          code=unsuccessful_code(evidence["status"]), task_id=active["taskId"], role=active["role"], authorization=active.get("authorization"), status=evidence["status"], run_id=active["runId"])
+        record = {"taskId": active["taskId"], "runId": active["runId"], "role": active["role"], "status": evidence["status"], "successful": successful, "at": self.now(), "operation": operation, "authorization": active.get("authorization"), "evidence_shape": evidence["shape"]}
         state.task_history.append(record)
         state.active_task = None
+        return record
+
+    def _require_successful_execution(self, state: StoryState, role: str, operation: str, sha: str | None = None) -> dict:
+        """The durable result evidence an advancing operation needs, independent of ownership:
+        the latest consumed ``role`` authorization of the story (for a reviewer, the one issued
+        for exactly ``sha``) names a bound execution ``(task_id, run_id)`` whose terminal history
+        record is a successful completion in that role. Terminal acknowledgement alone (a
+        released interrupted/failed/cancelled task, a cleanup-only binding, a legacy record whose
+        flag contradicts its status) never authorizes a head, a verdict or a proposal. Returns
+        the history record."""
+        relevant = [a for a in state.authorizations if a["role"] == role and a.get("task_id") and (sha is None or a.get("sha") == sha)]
+        if not relevant:
+            raise Refused(f"{operation}: {state.story} has no bound {role} execution" + (f" authorized for {sha}" if sha else "") + "; nothing completed that could advance the story",
+                          code="no-successful-execution", role=role, sha=sha)
+        auth = relevant[-1]
+        if auth.get("status") != "consumed" or auth.get("cleanup_only"):
+            raise Refused(f"{operation}: {role} task {auth['task_id']} of {state.story} was bound to authorization {auth['id']} for cleanup only ({auth.get('cleanup_only') or auth.get('status')}); no work was authorized, so its outcome cannot advance the story",
+                          code="no-successful-execution", role=role, task_id=auth["task_id"], authorization=auth["id"], sha=sha)
+        record = state.successful_execution(auth["task_id"], auth.get("run_id"), role)
+        if record is None:
+            latest = next((r for r in reversed(state.task_history) if r.get("taskId") == auth["task_id"] and (r.get("runId") or None) == (auth.get("run_id") or None)), None)
+            status = latest.get("status") if latest else None
+            raise Refused(f"{operation}: {role} task {auth['task_id']} (run {auth.get('run_id')}) of {state.story}, authorization {auth['id']}" + (f" for {sha}" if sha else "")
+                          + (f", terminated as {status!r} and completed nothing" if latest else " has no terminal record") + "; terminal acknowledgement is not successful result evidence, so the story cannot advance",
+                          code=unsuccessful_code(status) if latest else "no-successful-execution", role=role, task_id=auth["task_id"], run_id=auth.get("run_id"), authorization=auth["id"], status=status, sha=sha)
         return record
 
     def _require_no_active_task(self, state: StoryState, operation: str) -> None:
@@ -842,6 +878,7 @@ class Coordinator:
             self._require_phase(state, "claimed", "implemented", "checks-passed", "review-authorized", "review-requested", "review-approved")
             if task_evidence is not None or (state.active_task and state.active_task["role"] == "implementer"):
                 self._apply_task_evidence(state, task_evidence, "record-head")
+            self._require_successful_execution(state, "implementer", "record-head")  # released ownership is not a result: the bound implementer run must have completed
             if state.head_sha == sha and state.phase != "claimed":
                 self.store.save_story(state)
                 self.store.journal(story, "head-unchanged", {"sha": sha, "phase": state.phase, "active_task": state.active_task})
@@ -953,6 +990,7 @@ class Coordinator:
                 raise Refused(f"review at {sha} does not match head {state.head_sha}; a code change invalidates it", head=state.head_sha)
             if task_evidence is not None or state.active_task is not None:
                 self._apply_task_evidence(state, task_evidence, "record-review")  # the reviewer must be terminal before its verdict is evidence
+            self._require_successful_execution(state, "reviewer", "record-review", sha)  # and must have completed, for exactly this commit; a released interrupted/failed/cancelled reviewer proves nothing
             self._verify_worktree(state, sha, "record-review")
             regression = state.phase == "review-approved" and verdict == "changes-requested"
             state.reviews.append({"sha": sha, "verdict": verdict, "report": report, "at": self.now(), "regression": regression})
@@ -992,6 +1030,7 @@ class Coordinator:
         if state.head_sha != sha or state.approved_sha != sha:
             raise Refused(f"{operation}: approval is for {state.approved_sha}, head is {state.head_sha}, proposal names {sha}", code="approval-mismatch")
         self._require_no_obligation(state, operation)
+        self._require_successful_execution(state, "reviewer", operation, sha)  # an approval recorded over an unsuccessful reviewer execution (legacy state) is not current approval
 
     def propose_evidence(self, story: str, sha: str, pr_number: int, tasks: list[str], summary: str) -> StoryState:
         with self.store.locked(self):

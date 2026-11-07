@@ -177,6 +177,34 @@ class StoryState:
         return pairs
 
     TERMINAL_STATUSES = ("completed", "cancelled", "failed", "result_available", "terminal", "interrupted")  # the real transport reports a cancelled run as interrupted
+    # Only these terminal statuses are a completed execution. interrupted (task_cancel), failed and
+    # cancelled acknowledge termination without any completed work; the bare "terminal" marker says
+    # nothing about the outcome. Success is never derived from a record merely being terminal.
+    SUCCESSFUL_STATUSES = ("completed", "result_available")
+
+    @classmethod
+    def record_successful(cls, record: dict) -> bool:
+        """Outcome of a terminal history record, interpreted fail-closed: the status must be a
+        successful one AND the stored ``successful`` flag, when present, must agree. A legacy
+        record without the flag is read from its status; a contradictory flag (``true`` on a
+        failed/cancelled/interrupted status, or ``false`` on a completed one) never counts as
+        success."""
+        if not isinstance(record, dict):
+            return False
+        flag = record.get("successful")
+        if flag is not None and flag is not True:
+            return False
+        return record.get("status") in cls.SUCCESSFUL_STATUSES
+
+    def successful_execution(self, task_id: str, run_id: str | None, role: str) -> dict | None:
+        """The terminal history record proving that exactly ``(task_id, run_id)`` completed
+        successfully in ``role``, or None. The run identity must match exactly (a legacy
+        task-only pair matches only a legacy task-only record); another run of the same task,
+        another role or an unsuccessful outcome proves nothing."""
+        for r in reversed(self.task_history):
+            if r.get("taskId") == task_id and (r.get("runId") or None) == (run_id or None) and r.get("role") == role:
+                return r if self.record_successful(r) else None
+        return None
 
     def predecessor_terminal(self, task_id: str, identified: bool = True) -> bool:
         """True when ``task_id`` is not the active task and a terminal record exists for it.
