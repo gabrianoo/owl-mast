@@ -58,10 +58,15 @@ revisions with unique identities, the re-read worktree and the PR); otherwise it
 recorded as history and the phase is not advanced. A reservation whose revisions changed before it was checkpointed is cancelled
 together with the release it owes (when its claim comment landed) in one write.
 
-Every operation refuses a live transport (``live-execution-disabled``) and a run's state is
-bound to the environment (fixture or live) it was created in. The live gate stays until the
-T3 execution protocol is qualified with an actual bounded worker, which this foundation has
-not done.
+A run's state is bound to the environment (fixture or live) it was created in. On a live
+transport nothing runs by default: a live run can only be created with, and admission and
+every advancing operation require, a current run-bound activation authorization
+(``automation/unattended/activation.py``, ``--activation``); without one every state command
+refuses ``activation-required``. Cleanup of a run that was activated earlier (cancel, block,
+terminal records, cancel-run, the cleanup part of resume) needs only the run's recorded
+binding; an expired activation stops advancement like a wall-clock expiry and a different
+activation is refused everywhere. The activation is a trusted-coordinator engineering
+approval, not authentication.
 """
 
 from __future__ import annotations
@@ -71,6 +76,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from .activation import Activation
 from .backlog import Entry, Snapshot, take_snapshot
 from .eligibility import Decision, decide
 from .errors import BudgetExhausted, Conflict, Refused, StaleRevision, UnattendedError
@@ -92,7 +98,8 @@ OPERATING_AGREEMENT = "trusted-machine operating agreement accepted by the owner
 # credential-denial qualification, automated Project Status synchronization). Accepting a residual
 # risk is not activation: the gate stays unconditional for this effort.
 LIVE_EXECUTION_GAPS = (
-    "live execution is disabled for this effort: product dispatch and every real-transport state command stay refused until the engineering-only lifecycle smoke (real T3 receipts and terminal evidence, exact-SHA checks and a fresh independent review) is published and the owner separately authorizes activation",
+    "live execution is opt-in only: the shipped policy (empty allowlist) and the committed activation candidate (approved = false) dispatch nothing; a real-transport state command advances only under a current activation authorization (--activation) that the owner approved for exactly this repository, policy digest, run id, story scope, targets, budgets and time window, citing the published engineering-only lifecycle smoke and fresh independent review; missing, malformed, unapproved, expired or changed activation refuses admission and advancement (cleanup of an activated run stays allowed)",
+    "trust, not authentication: an activation is an engineering approval written by the trusted coordinator/owner on the trusted machine; it is not a credential, not signed and not cryptographically verified",
     "accepted residual risk, not a control: budgets are coordinator-enforced best effort (stop dispatch and request cancellation on expiry); a coordinator failure can leave a worker running; T3 timeoutMs bounds only the wait",
     "accepted residual risk, not a control: the operator's development machine is trusted; worktrees isolate files, not host credentials; the child runs with the machine's credentials and no credential confinement is claimed",
     "disclosed, not certified: the operator credential is broad (repository admin, excess scopes); check-permissions reports facts only and never certifies a bounded credential; restricted credentials are used where practical",
@@ -117,7 +124,11 @@ AUTHORIZATION_FLOW = {
     "review": ("review-authorized", "review-requested", "reviewer"),
     "repair": ("repair-authorized", "claimed", "implementer"),
 }
-STOP_REASONS = {"run-cancelled": "run is cancelled", "wall-clock-exceeded": "run wall clock budget exceeded"}
+STOP_REASONS = {"run-cancelled": "run is cancelled", "wall-clock-exceeded": "run wall clock budget exceeded",
+                "activation-required": "no activation authorization presented for this live run", "activation-expired": "activation authorization expired",
+                "activation-not-yet-valid": "activation authorization not yet valid", "activation-unapproved": "activation authorization is not approved",
+                "activation-mismatch": "activation authorization no longer matches the policy or run", "activation-invalid": "activation authorization is invalid"}
+ACTIVATION_STOPS = tuple(code for code in STOP_REASONS if code.startswith("activation-"))
 
 
 def unsuccessful_code(status: str | None) -> str:
@@ -260,17 +271,48 @@ def require_unique_ids(snapshot: Snapshot, context: str) -> None:
 
 
 class Coordinator:
-    def __init__(self, transport: Transport, policy: Policy, store: Store, now: Callable[[], str] = utcnow, live: bool = False):
-        self.transport, self.policy, self.store, self.now, self.live = transport, policy, store, now, live
+    def __init__(self, transport: Transport, policy: Policy, store: Store, now: Callable[[], str] = utcnow, live: bool = False, activation: Activation | None = None):
+        self.transport, self.policy, self.store, self.now, self.live, self.activation = transport, policy, store, now, live, activation
         self.environment = "live" if getattr(transport, "live", False) else "fixture"
-        self.run = store.ensure_run(policy.repo_slug, policy.digest, self.environment)
+        if self.environment == "live" and store.load_run() is None:
+            self._refuse_unless_current("run-start", creating=True)  # a live run is created only under a current activation
+        self.run = store.ensure_run(policy.repo_slug, policy.digest, self.environment, activation=activation.binding() if activation else None)
 
     # -- guards --------------------------------------------------------------------------
-    def require_not_live(self, operation: str) -> None:
-        """Every state-advancing operation and every recovery refuses a production transport.
-        No live state can exist, so there is nothing a bounded cleanup could release there."""
-        if self.environment == "live":
-            raise Refused(f"{operation}: live execution is disabled for this effort ({OPERATING_AGREEMENT}); accepting residual risk is not activation", code="live-execution-disabled", agreement=OPERATING_AGREEMENT, gaps=list(LIVE_EXECUTION_GAPS))
+    def _activation_problems(self) -> list[tuple[str, str]]:
+        if self.activation is None:
+            return [("activation-required", "no activation authorization presented (--activation); accepting residual risk is not activation")]
+        return self.activation.problems(self.policy, self.store.run_id, self.now())
+
+    def _activation_stop(self) -> str | None:
+        """Why a live run advances nothing: no, expired or non-matching activation. ``None`` on fixtures."""
+        if self.environment != "live":
+            return None
+        return Activation.stop_code(self._activation_problems())
+
+    def _refuse_unless_current(self, operation: str, creating: bool = False) -> None:
+        problems = self._activation_problems()
+        code = Activation.stop_code(problems)
+        if code:
+            what = "creating a live run" if creating else "advancing"
+            raise Refused(f"{operation}: {what} on the live transport needs a current activation authorization: " + "; ".join(m for _, m in problems) + f" ({OPERATING_AGREEMENT}; accepting residual risk is not activation)",
+                          code=code, problems=[m for _, m in problems], agreement=OPERATING_AGREEMENT, gaps=list(LIVE_EXECUTION_GAPS))
+
+    def require_activation(self, operation: str, advancing: bool = True) -> None:
+        """The live gate. Fixture transports pass. On the live transport the run must have been
+        created under an activation and any activation presented now must be that same one;
+        an advancing operation additionally needs it current (approved, bound to this policy
+        digest, run, scope, targets and budgets, inside its time window). Cleanup
+        (``advancing=False``) is allowed after expiry or without the file, never with a
+        different activation."""
+        if self.environment != "live":
+            return
+        if not self.run.activation:
+            raise Refused(f"{operation}: live run {self.store.run_id} was never activated; nothing can be admitted, advanced or released here ({OPERATING_AGREEMENT}; accepting residual risk is not activation)", code="activation-required", agreement=OPERATING_AGREEMENT, gaps=list(LIVE_EXECUTION_GAPS))
+        if self.activation is not None and not self.activation.matches(self.run.activation):
+            raise Refused(f"{operation}: activation {self.activation.id} (digest {self.activation.digest[:12]}) is not the activation this run was created under ({self.run.activation['id']}, digest {self.run.activation['digest'][:12]}); a changed or different authorization is refused for every operation", code="activation-mismatch")
+        if advancing:
+            self._refuse_unless_current(operation)
 
     def _reload_run(self) -> None:
         run = self.store.load_run()
@@ -288,11 +330,13 @@ class Coordinator:
             return "run-cancelled"
         if self._elapsed() > timedelta(minutes=self.policy.max_wall_clock_minutes):
             return "wall-clock-exceeded"
-        return None
+        return self._activation_stop()
 
     def _stop_message(self, code: str) -> str:
         if code == "run-cancelled":
             return f"run is cancelled ({self.run.stop_reason})"
+        if code in ACTIVATION_STOPS:
+            return STOP_REASONS[code] + ": " + "; ".join(m for _, m in self._activation_problems())
         return f"wall clock budget of {self.policy.max_wall_clock_minutes} minutes exceeded ({int(self._elapsed().total_seconds() // 60)} minutes elapsed since {self.run.started_at})"
 
     def _require_run_active(self, operation: str) -> None:
@@ -320,8 +364,9 @@ class Coordinator:
         return counts
 
     def _wall_clock(self) -> None:
-        if self._run_stop() == "wall-clock-exceeded":
-            raise BudgetExhausted(self._stop_message("wall-clock-exceeded"), code="wall-clock-exceeded")
+        code = self._run_stop()
+        if code and code != "run-cancelled":
+            raise BudgetExhausted(self._stop_message(code), code=code)
 
     def _budget_admission(self) -> None:
         self._wall_clock()
@@ -622,7 +667,7 @@ class Coordinator:
         claim, implementer authorization, claim marker. The receipt of the task the
         coordinator then launches is bound with :meth:`bind_receipt`."""
         with self.store.locked(self):
-            self.require_not_live("reserve")
+            self.require_activation("reserve")
             self._reload_run()
             self._require_run_active("reserve")
             if self.store.load_story(story) is not None:
@@ -674,7 +719,7 @@ class Coordinator:
         refuses with ``bound_for_cleanup`` so the coordinator cancels the task instead of
         working it. Nothing is refunded."""
         with self.store.locked(self):
-            self.require_not_live("bind-receipt")
+            self.require_activation("bind-receipt", advancing=False)
             self._reload_run()
             state = self._story(story)
             stop = self._run_stop()
@@ -746,7 +791,7 @@ class Coordinator:
         the evidence arguments of record-head, record-review, cancel and block, to release
         task ownership; it changes no other state."""
         with self.store.locked(self):
-            self.require_not_live("record-task-terminal")
+            self.require_activation("record-task-terminal", advancing=False)
             state = self._story(story)
             record = self._apply_task_evidence(state, task_evidence, "record-task-terminal")
             self.store.save_story(state)
@@ -761,7 +806,7 @@ class Coordinator:
         Like receipts and terminal evidence it is the coordinator's report; a false
         attestation is not detectable."""
         with self.store.locked(self):
-            self.require_not_live("record-no-launch")
+            self.require_activation("record-no-launch", advancing=False)
             state = self._story(story)
             auth = self._apply_no_launch(state, no_launch, "record-no-launch")
             self.store.save_story(state)
@@ -778,7 +823,7 @@ class Coordinator:
         and no no-launch attestation is created. Identical evidence is idempotent;
         conflicting evidence refuses. A backup of the story file is written first."""
         with self.store.locked(self):
-            self.require_not_live("reconcile-retained-execution")
+            self.require_activation("reconcile-retained-execution", advancing=False)
             self._reload_run()  # binding validated and the latest cancellation/budgets read under the lock; never saved from a stale object
             stop = self._run_stop()
             if not stop:
@@ -890,7 +935,7 @@ class Coordinator:
         terminal evidence is required; a reviewer task stays active regardless (the head is
         not the reviewer's). The same SHA changes nothing; a new SHA invalidates evidence."""
         with self.store.locked(self):
-            self.require_not_live("record-head")
+            self.require_activation("record-head")
             self._reload_run()
             self._require_run_active("record-head")
             state = self._story(story)
@@ -915,7 +960,7 @@ class Coordinator:
         """Execute the full configured check set on the exact claimed HEAD in a clean tree.
         This is the only way checks become evidence; there is no asserted pass."""
         with self.store.locked(self):
-            self.require_not_live("run-checks")
+            self.require_activation("run-checks")
             self._reload_run()
             self._require_run_active("run-checks")
             state = self._story(story)
@@ -951,7 +996,7 @@ class Coordinator:
         check set passed at ``sha``, worktree re-read, implementer task terminal, delegated
         task budget. Idempotent while the authorization is pending."""
         with self.store.locked(self):
-            self.require_not_live("authorize-review")
+            self.require_activation("authorize-review")
             self._reload_run()
             self._require_run_active("authorize-review")
             state = self._story(story)
@@ -978,7 +1023,7 @@ class Coordinator:
         round ≤ max (otherwise blocked), delegated task budget. The round is counted at
         authorization. Idempotent while the authorization is pending."""
         with self.store.locked(self):
-            self.require_not_live("authorize-repair")
+            self.require_activation("authorize-repair")
             self._reload_run()
             self._require_run_active("authorize-repair")
             state = self._story(story)
@@ -1003,7 +1048,7 @@ class Coordinator:
 
     def record_review(self, story: str, sha: str, verdict: str, report: str, task_evidence: dict | None = None) -> StoryState:
         with self.store.locked(self):
-            self.require_not_live("record-review")
+            self.require_activation("record-review")
             self._reload_run()
             self._require_run_active("record-review")
             state = self._story(story)
@@ -1058,7 +1103,7 @@ class Coordinator:
 
     def propose_evidence(self, story: str, sha: str, pr_number: int, tasks: list[str], summary: str) -> StoryState:
         with self.store.locked(self):
-            self.require_not_live("propose-evidence")
+            self.require_activation("propose-evidence")
             self._reload_run()
             self._require_run_active("propose-evidence")
             state = self._story(story)
@@ -1107,12 +1152,12 @@ class Coordinator:
 
     def block(self, story: str, reason: str, task_evidence: dict | None = None, no_launch: dict | None = None) -> StoryState:
         with self.store.locked(self):
-            self.require_not_live("block")
+            self.require_activation("block", advancing=False)
             return self._terminal(story, "blocked", reason, "block", "block", f"Blocked by run `{self.store.run_id}`: {reason}. Owner decision or new evidence required; nothing advanced. Project Status is owner-maintained.", task_evidence, no_launch)
 
     def cancel(self, story: str, reason: str, task_evidence: dict | None = None, no_launch: dict | None = None) -> StoryState:
         with self.store.locked(self):
-            self.require_not_live("cancel")
+            self.require_activation("cancel", advancing=False)
             return self._terminal(story, "cancelled", reason, "release", "release", f"Claim released by run `{self.store.run_id}`: {reason}. No completion is implied. Project Status is owner-maintained.", task_evidence, no_launch)
 
     def cancel_run(self, reason: str, task_evidence: dict[str, dict] | None = None, no_launch: dict[str, dict] | None = None) -> dict:
@@ -1121,7 +1166,7 @@ class Coordinator:
         attestation, stay owned (their pending authorization is revoked) and are reported; a
         cancelled run never advances or replays an advancing intent for them."""
         with self.store.locked(self):
-            self.require_not_live("cancel-run")
+            self.require_activation("cancel-run", advancing=False)
             self._reload_run()
             self.run.cancelled, self.run.stop_reason = True, reason
             self.store.save_run(self.run)
@@ -1185,7 +1230,7 @@ class Coordinator:
         after their preconditions (local phase and exact-SHA approval, revisions, worktree, PR)
         re-verify; otherwise they are abandoned. Finally the revision verification."""
         with self.store.locked(self):
-            self.require_not_live("resume")
+            self.require_activation("resume", advancing=False)
             self._reload_run()
             state = self._story(story)
             if state.claim and state.claim.get("worktree_path"):
@@ -1271,7 +1316,7 @@ class Coordinator:
     def rebase_revisions(self, story: str, reason: str) -> StoryState:
         """Explicit, journaled acceptance of changed revisions after a human verified them."""
         with self.store.locked(self):
-            self.require_not_live("rebase-revisions")
+            self.require_activation("rebase-revisions")
             state = self._story(story)
             self._require_phase(state, *ACTIVE_PHASES)
             fresh, current = self._current_revisions(story)
@@ -1289,4 +1334,4 @@ class Coordinator:
     def status(self) -> dict:
         with self.store.locked(self):
             counts = self._counts()
-        return {"run": self.run.__dict__, "budgets": counts, "environment": self.environment, "stories": [s.to_dict() for s in self.store.list_stories()], "journal_events": self.store.journal_count(), "live": self.live, "agreement": OPERATING_AGREEMENT, "gaps": list(LIVE_EXECUTION_GAPS)}
+        return {"run": self.run.__dict__, "budgets": counts, "environment": self.environment, "stories": [s.to_dict() for s in self.store.list_stories()], "journal_events": self.store.journal_count(), "live": self.live, "activation": {"recorded": self.run.activation, "presented": self.activation.binding() if self.activation else None, "stop": self._activation_stop(), "problems": [m for _, m in self._activation_problems()] if self.environment == "live" else []}, "agreement": OPERATING_AGREEMENT, "gaps": list(LIVE_EXECUTION_GAPS)}

@@ -3,7 +3,8 @@
 # automation/examples/first-run-om-01-02.toml for the candidate first activation.
 # Operating agreement (owner-accepted 2026-11-06): the operator's machine is trusted, budgets are
 # coordinator-enforced best effort, Status/acceptance stay manual. Real-transport state commands remain
-# refused (live gate) regardless of this file; the default allowlist stays empty.
+# refused without a current run-bound activation authorization (--activation, opt-in only) regardless of
+# this file; the default allowlist stays empty.
 
 [repository]
 owner = "gabrianoo"

@@ -1,7 +1,9 @@
 """Command line entry point: ``python3 -m automation.unattended <command>``.
 
 Every command prints one JSON document. Read-only commands never write to GitHub. Commands
-that write require ``--live``; without it they refuse and say so.
+that write require ``--live``; without it they refuse and say so. On the real transport every
+state command additionally needs ``--activation`` naming a current run-bound activation
+authorization; without one it refuses ``activation-required`` before any GitHub call.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ import json
 import sys
 from pathlib import Path
 
+from .activation import load_activation
 from .backlog import Snapshot, load_tasks_index, take_snapshot, verify_mapping
 from .coordinator import Coordinator
 from .eligibility import plan
@@ -50,7 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run-id", default=None, help="run identifier (required for state commands)")
     p.add_argument("--repo-root", default=".")
     p.add_argument("--snapshot", default=None, help="use a saved snapshot JSON instead of reading GitHub")
-    p.add_argument("--live", action="store_true", help="allow GitHub writes (reserve, authorize-repair, block, cancel, cancel-run, resume, rebase-revisions, propose-evidence, probe-write)")
+    p.add_argument("--live", action="store_true", help="allow GitHub writes (reserve, authorize-repair, block, cancel, cancel-run, resume, rebase-revisions, probe-write)")
+    p.add_argument("--activation", default=None, help="run-bound activation authorization TOML (see automation/examples/activation-om-01-02.candidate.toml); required on the real transport for every state command; the shipped candidate is unapproved and refuses")
     sub = p.add_subparsers(dest="command", required=True)
 
     sub.add_parser("snapshot", help="read-only normalized backlog snapshot").add_argument("--out", default=None)
@@ -61,6 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--out", default=None)
     sub.add_parser("check-permissions", help="probe the minimum GitHub permissions")
     sub.add_parser("probe", help="run the policy environment probes")
+    sub.add_parser("check-activation", help="read-only: load --activation and report whether it currently authorizes --run-id under --policy (touches no state, no GitHub)")
     pw = sub.add_parser("probe-write", help="bounded live write probe on an engineering-automation issue")
     pw.add_argument("--issue", type=int, required=True)
 
@@ -94,6 +99,13 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         policy = load_policy(Path(args.policy))
+        activation = load_activation(Path(args.activation)) if args.activation else None
+        if args.command == "check-activation":
+            if activation is None:
+                raise UnattendedError("check-activation needs --activation", code="activation-required")
+            problems = activation.problems(policy, args.run_id, utcnow())
+            _json({"activation": activation.binding(), "approved": activation.approved, "run_id": args.run_id, "policy_digest": policy.digest, "current": not problems, "stop": activation.stop_code(problems), "problems": [m for _, m in problems]})
+            return 0 if not problems else 2
         transport = GhCliTransport(policy.owner, policy.repo, policy.project_owner, policy.project_number)
         if args.command in WRITE_COMMANDS and not args.live:
             raise UnattendedError(f"{args.command} writes to GitHub; pass --live to confirm")
@@ -130,9 +142,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if not args.run_id:
             raise UnattendedError("--run-id is required for state commands")
-        coordinator = Coordinator(transport, policy, Store(Path(args.state_dir), args.run_id), live=bool(args.live))
+        coordinator = Coordinator(transport, policy, Store(Path(args.state_dir), args.run_id), live=bool(args.live), activation=activation)
         if args.command == "reserve":
-            coordinator.require_not_live("reserve")  # before any GitHub read on a live transport
+            coordinator.require_activation("reserve")  # before any GitHub read on a live transport
             state = coordinator.reserve(args.story, _snapshot(args, transport, policy), args.baseline)
         elif args.command == "bind-receipt":
             state = coordinator.bind_receipt(args.story, _load_json_arg(args.receipt), args.worktree, args.branch, authorization=args.authorization)

@@ -1,0 +1,43 @@
+# Candidate activation authorization for the first unattended run (OM-01.02). ENG-01 (#106).
+# Loaded by `python3 -m automation.unattended --activation <file> ...`.
+#
+# THIS FILE IS NOT APPROVED AND CANNOT DISPATCH. `approved = false`, the run id is a placeholder,
+# the window is in the past and the policy digest must be recomputed. Copying it as-is refuses
+# with activation-unapproved / activation-mismatch / activation-expired. Activation is the owner's
+# separate decision: the owner writes a private, run-specific copy OUTSIDE the repository (never
+# commit an approved activation), sets approved = true, the exact run id, the sha256 of the exact
+# policy file in use and a window of at most 24 hours, then verifies it with
+#   python3 -m automation.unattended --policy automation/examples/first-run-om-01-02.toml --activation <copy> --run-id <run> check-activation
+# Trust model: this is an engineering approval by the trusted coordinator/owner on the trusted
+# machine under the 2026-11-06 operating agreement. It is not a credential and is not signed.
+
+approved = false
+id = "eng01-activation-om-01-02-candidate"
+approver = "owner (trusted-coordinator engineering approval, not cryptographic authentication)"
+issued_at = "2026-11-07T00:00:00Z"
+expires_at = "2026-11-07T00:00:01Z"   # placeholder window, already expired; an approved copy uses a real window of at most 24h
+agreement = "_bmad-output/implementation-artifacts/spec-eng-01-trusted-operation.md (owner-accepted 2026-11-06)"
+
+[binding]
+repository = "gabrianoo/owl-mast"
+policy_digest = "0000000000000000000000000000000000000000000000000000000000000000"   # sha256sum automation/examples/first-run-om-01-02.toml at approval time
+environment = "live"
+run_id = "REPLACE-WITH-THE-EXACT-RUN-ID"
+
+[scope]
+stories = ["OM-01.02"]              # must equal dispatch.allow of the policy; E17/E19 stay excluded by the policy
+
+[targets]
+implementer = { provider = "claudeAgent", model = "claude-fable-5-1", isolation = "worktree", options = { effort = "high" } }
+reviewer = { provider = "codex", model = "gpt-6-astra", options = { reasoningEffort = "high" } }
+
+[budgets]
+max_stories_per_run = 1
+max_concurrent_implementers = 1
+max_repair_rounds = 2
+max_delegated_tasks = 6
+max_wall_clock_minutes = 240
+
+[evidence]
+lifecycle_smoke = "REPLACE: published engineering-only lifecycle smoke reference (PR #107 disposition comment)"
+fresh_review = "REPLACE: published fresh independent review reference (fresh-review-f71167b)"

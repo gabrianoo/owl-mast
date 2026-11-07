@@ -85,6 +85,7 @@ class RunState:
     repair_rounds: int = 0
     cancelled: bool = False
     stop_reason: str | None = None
+    activation: dict | None = None  # live runs only: the activation binding (id, digest, approver, window) the run was created under
 
 
 @dataclass
@@ -312,20 +313,26 @@ class Store:
     def save_run(self, run: RunState) -> None:
         atomic_write_text(self.run_path, json.dumps(asdict(run), indent=1, sort_keys=True))
 
-    def ensure_run(self, repo: str, policy_digest: str, environment: str) -> RunState:
+    def ensure_run(self, repo: str, policy_digest: str, environment: str, activation: dict | None = None) -> RunState:
         """Create the run or validate its binding. A run belongs to exactly one repository,
         policy digest and transport environment (fixture or live); any other pairing is
-        refused before recovery or effects, so synthetic state can never drive production."""
+        refused before recovery or effects, so synthetic state can never drive production.
+        A live run records the activation binding it was created under; a later activation
+        with another id or digest is refused (``activation-mismatch``)."""
         with self.locked():
             run = self.load_run()
             if run is None:
-                run = RunState(self.run_id, repo, policy_digest, utcnow(), environment=environment)
+                if environment == "live" and not activation:
+                    raise Refused(f"run {self.run_id}: a live run is created only under an activation authorization", code="activation-required")
+                run = RunState(self.run_id, repo, policy_digest, utcnow(), environment=environment, activation=activation if environment == "live" else None)
                 self.save_run(run)
-                self.journal(None, "run-started", {"repo": repo, "policy_digest": policy_digest, "environment": environment})
+                self.journal(None, "run-started", {"repo": repo, "policy_digest": policy_digest, "environment": environment, "activation": run.activation})
             elif (run.repo, run.policy_digest) != (repo, policy_digest):
                 raise Refused(f"run {self.run_id} is bound to {run.repo} / policy {run.policy_digest[:12]}; refusing {repo} / {policy_digest[:12]}", code="run-binding-mismatch")
             elif run.environment != environment:
                 raise Refused(f"run {self.run_id} state belongs to the {run.environment!r} environment; refusing to reuse it with a {environment!r} transport", code="environment-mismatch")
+            elif environment == "live" and activation and (not run.activation or (run.activation.get("id"), run.activation.get("digest")) != (activation.get("id"), activation.get("digest"))):
+                raise Refused(f"run {self.run_id} was created under activation {run.activation and run.activation.get('id')!r}; refusing activation {activation.get('id')!r} (digest {activation.get('digest', '')[:12]})", code="activation-mismatch")
             return run
 
     # -- stories -------------------------------------------------------------------------

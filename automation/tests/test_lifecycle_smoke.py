@@ -226,10 +226,9 @@ class LiveGateWordingTests(unittest.TestCase):
         h = Harness(small_backlog())
         try:
             h.fake.live = True
-            live = Coordinator(h.fake, h.policy, Store(h.state_dir, "run-live"), live=True)
             with self.assertRaises(Refused) as ctx:
-                live.reserve("OM-01.02", h.snapshot, "b")
-            self.assertEqual(ctx.exception.code, "live-execution-disabled")
+                Coordinator(h.fake, h.policy, Store(h.state_dir, "run-live"), live=True)
+            self.assertEqual(ctx.exception.code, "activation-required")
             self.assertEqual(ctx.exception.detail["agreement"], OPERATING_AGREEMENT)
             self.assertIn("2026-11-06", OPERATING_AGREEMENT)
             text = " ".join(LIVE_EXECUTION_GAPS)
@@ -238,7 +237,8 @@ class LiveGateWordingTests(unittest.TestCase):
                 self.assertNotIn(superseded, text)
             self.assertIn("accepted residual risk, not a control", text)
             self.assertIn("manual by agreement", text)
-            self.assertEqual(live.status()["agreement"], OPERATING_AGREEMENT)
+            self.assertIn("opt-in only", text)
+            self.assertIn("not a credential", text)
         finally:
             h.close()
 

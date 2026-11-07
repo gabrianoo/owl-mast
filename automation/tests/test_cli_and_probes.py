@@ -1,6 +1,7 @@
 import io
 import json
 import subprocess
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -63,9 +64,9 @@ class CliTests(unittest.TestCase):
         for present in ("reserve", "bind-receipt", "authorize-review", "authorize-repair", "record-task-terminal"):
             self.assertIn(present, choices)
 
-    def test_live_state_commands_refuse_on_the_real_transport_before_any_gh_call(self):
-        """The CLI only ever builds the live gh transport; every state command must refuse."""
-        import automation.unattended.cli as cli_mod
+    def test_live_state_commands_refuse_on_the_real_transport_without_activation_before_any_gh_call(self):
+        """The CLI only ever builds the live gh transport; without --activation every state
+        command (status included) refuses activation-required and no run state is created."""
         from automation.unattended.github import GhCliTransport
 
         calls = []
@@ -73,10 +74,12 @@ class CliTests(unittest.TestCase):
         GhCliTransport._run = lambda self, args, stdin=None: calls.append(args) or "{}"
         try:
             with tempfile.TemporaryDirectory() as state_dir:
-                for argv in (["reserve", "OM-01.02", "--baseline", "c"], ["resume", "OM-01.02"], ["cancel-run", "--reason", "r"]):
+                for argv in (["reserve", "OM-01.02", "--baseline", "c"], ["resume", "OM-01.02"], ["cancel-run", "--reason", "r"], ["status"]):
                     code, out = run_cli("--policy", str(self.policy), "--state-dir", state_dir, "--run-id", "r", "--live", *argv)
                     self.assertEqual(code, 3, argv)
-                    self.assertEqual(out["error"]["code"], "live-execution-disabled", argv)
+                    self.assertEqual(out["error"]["code"], "activation-required", argv)
+                    self.assertIn("accepting residual risk is not activation", out["error"]["message"])
+                self.assertEqual(os.listdir(state_dir), [])
         finally:
             GhCliTransport._run = original
         self.assertEqual(calls, [])
