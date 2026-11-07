@@ -37,7 +37,7 @@ The foundation refuses every real-transport state command unconditionally (`live
 | `automation/examples/activation-om-01-02.candidate.toml` | unapproved candidate (cannot dispatch when copied) |
 | `automation/tests/test_activation.py` | 11 tests for AC1–AC7 |
 | `automation/tests/test_{cli_and_probes,coordinator,sync,transport,lifecycle_smoke,repair_pass_2_findings}.py` | gate expectations moved to `activation-required` |
-| `docs/unattended-execution.md`, `automation/README.md`, `docs/engineering-tracking.md`, `automation/policy.toml` | opt-in semantics, candidate, trust model |
+| `docs/unattended-execution.md`, `automation/README.md`, `docs/engineering-tracking.md` | opt-in semantics, candidate, trust model (`automation/policy.toml` stays byte-identical: committed legacy fixtures bind to its digest) |
 | `_bmad-output/implementation-artifacts/eng-01-enabling-preflight-20261107.md` | sanitized OM-01.02 activation preflight |
 
 ## Out of scope / blockers kept explicit
