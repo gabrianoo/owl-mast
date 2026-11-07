@@ -352,14 +352,12 @@ class LifecycleTests(unittest.TestCase):
         for needle in ("pr merge", "mergePullRequest", "updateProjectV2ItemFieldValue", "set_project_status", "updateIssue", "closeIssue"):
             self.assertNotIn(needle, source)
 
-    def test_every_operation_refuses_live_before_any_call(self):
+    def test_live_transport_without_activation_refuses_before_any_call_and_creates_no_run(self):
         self.h.fake.live = True
-        live = Coordinator(self.h.fake, self.h.policy, Store(self.h.state_dir, "run-live"), live=True)
         self.h.fake.calls = []
-        for op in (lambda: live.reserve("OM-01.02", self.h.snapshot, "b"), lambda: live.resume("OM-01.02"), lambda: live.cancel_run("x"),
-                   lambda: live.rebase_revisions("OM-01.02", "x"), lambda: live.block("OM-01.02", "x")):
-            with self.assertRaises(Refused) as ctx:
-                op()
-            self.assertEqual(ctx.exception.code, "live-execution-disabled")
+        store = Store(self.h.state_dir, "run-live")
+        with self.assertRaises(Refused) as ctx:
+            Coordinator(self.h.fake, self.h.policy, store, live=True)
+        self.assertEqual(ctx.exception.code, "activation-required")
         self.assertEqual(self.h.fake.calls, [])
-        self.assertEqual(live.status()["environment"], "live")
+        self.assertIsNone(store.load_run())

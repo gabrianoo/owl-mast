@@ -215,11 +215,10 @@ class CoordinatorOverTransportTests(unittest.TestCase):
     def test_live_transport_flag_blocks_admission_before_any_call(self):
         self.t.live = True
         snap = take_snapshot(self.t, "gabrianoo/owl-mast", "now")
-        live = Coordinator(self.t, self.policy, Store(Path(self.tmp.name) / "runs", "run-live"), live=True)
         before = len(self.gh.calls)
         with self.assertRaises(Refused) as ctx:
-            live.reserve("OM-01.02", snap, "base")
-        self.assertEqual(ctx.exception.code, "live-execution-disabled")
+            Coordinator(self.t, self.policy, Store(Path(self.tmp.name) / "runs", "run-live"), live=True)
+        self.assertEqual(ctx.exception.code, "activation-required")
         self.assertEqual(len(self.gh.calls), before)
         with self.assertRaises(Refused) as ctx:
             Coordinator(self.t, self.policy, Store(Path(self.tmp.name) / "runs", "run-t"), live=True)  # fixture-born state

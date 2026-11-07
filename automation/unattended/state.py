@@ -31,6 +31,7 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .activation import Activation, refresh_activation, validate_binding, validate_high_water, validate_stop_record
 from .errors import Refused
 
 PHASES = ("claim-incomplete", "reserved", "claimed", "implemented", "checks-passed", "checks-failed", "review-authorized", "review-requested", "review-approved", "changes-requested", "repair-authorized", "proposed", "blocked", "cancelled", "conflict")
@@ -85,6 +86,9 @@ class RunState:
     repair_rounds: int = 0
     cancelled: bool = False
     stop_reason: str | None = None
+    activation: dict | None = None  # live runs only: the activation binding record (activation.BINDING_RECORD_KEYS) the run was created under
+    last_observed_at: str | None = None  # live runs only: the latest injected/current time an operation observed under the lock (clock-regression high-water)
+    activation_stop: dict | None = None  # live runs only: a durable observed stop {code, observed_at, message}; once recorded the run never advances again, whatever the clock says
 
 
 @dataclass
@@ -304,28 +308,125 @@ class Store:
     def run_path(self) -> Path:
         return self.root / "run.json"
 
+    RUN_KEYS = frozenset(f.name for f in fields(RunState))
+    OPTIONAL_RUN_KEYS = frozenset({"activation", "last_observed_at", "activation_stop"})  # live-only controls, absent from records written before the opt-in (read as null; never added by a load)
+    ENVIRONMENTS = ("fixture", "live")
+
     def load_run(self) -> RunState | None:
+        """The run record as persisted, validated at this one load boundary before anything reads
+        it: exactly the :class:`RunState` fields with their types, the ``run_id`` **equal to the
+        run this store was opened for** (a genuine record restored from another run directory is
+        a foreign record, not this run: ``run-identity-mismatch``), and well-formed time controls
+        (``last_observed_at`` null or a strict UTC time; ``activation_stop`` null or a complete stop
+        record). A malformed record refuses ``run-state-invalid`` and is never rewritten, migrated
+        or read as the absence of a control. The live activation record itself is validated by
+        :meth:`bound_run`."""
         if not self.run_path.exists():
             return None
-        return RunState(**json.loads(self.run_path.read_text(encoding="utf-8")))
+        try:
+            raw = json.loads(self.run_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            raise Refused(f"run {self.run_id}: run.json is not readable JSON ({exc}); nothing is advanced or released on it", code="run-state-invalid") from exc
+        if not isinstance(raw, dict) or not (self.RUN_KEYS - self.OPTIONAL_RUN_KEYS) <= set(raw) <= self.RUN_KEYS:
+            raise Refused(f"run {self.run_id}: run.json keys {sorted(set(raw) ^ self.RUN_KEYS) if isinstance(raw, dict) else type(raw).__name__} differ from the run record shape; no silent migration (restore run.json from the run that wrote it, or recover by hand)", code="run-state-invalid")
+        raw = {**{k: None for k in self.OPTIONAL_RUN_KEYS}, **raw}
+        problems: list[str] = []
+        for key in ("run_id", "repo", "policy_digest", "started_at", "environment"):
+            if not isinstance(raw[key], str) or not raw[key].strip():
+                problems.append(f"{key} must be a non-empty string")
+        if raw["environment"] not in self.ENVIRONMENTS:
+            problems.append(f"environment {raw['environment']!r} is not one of {list(self.ENVIRONMENTS)}")
+        for key in ("stories_claimed", "delegated_tasks", "repair_rounds"):
+            if not isinstance(raw[key], int) or isinstance(raw[key], bool) or raw[key] < 0:
+                problems.append(f"{key} must be a non-negative integer")
+        if not isinstance(raw["cancelled"], bool):
+            problems.append("cancelled must be a boolean")
+        if raw["stop_reason"] is not None and not isinstance(raw["stop_reason"], str):
+            problems.append("stop_reason must be null or a string")
+        if problems:
+            raise Refused(f"run {self.run_id}: run.json is not a valid run record: " + "; ".join(problems) + "; nothing is advanced or released on it (restore run.json from the run that wrote it, or recover by hand)", code="run-state-invalid", problems=problems)
+        if raw["run_id"] != self.run_id:
+            raise Refused(f"run {self.run_id}: run.json records run {raw['run_id']!r}; a record restored from another run is not this run and authorizes nothing here (its approvals and obligations belong to {raw['run_id']!r}); nothing is advanced, released or rewritten", code="run-identity-mismatch", recorded_run_id=raw["run_id"])
+        validate_high_water(raw["last_observed_at"], self.run_id)
+        validate_stop_record(raw["activation_stop"], self.run_id)
+        return RunState(**raw)
 
     def save_run(self, run: RunState) -> None:
         atomic_write_text(self.run_path, json.dumps(asdict(run), indent=1, sort_keys=True))
 
-    def ensure_run(self, repo: str, policy_digest: str, environment: str) -> RunState:
-        """Create the run or validate its binding. A run belongs to exactly one repository,
-        policy digest and transport environment (fixture or live); any other pairing is
-        refused before recovery or effects, so synthetic state can never drive production."""
+    def retained_artifacts(self) -> list[str]:
+        """Run artifacts present without run metadata: story checkpoints and the journal."""
+        found = []
+        if self.journal_path.exists():
+            found.append("journal.jsonl")
+        folder = self.root / "stories"
+        if folder.exists():
+            found.extend(f"stories/{p.name}" for p in sorted(folder.glob("*.json")))
+        return found
+
+    def bound_run(self) -> RunState | None:
+        """The run as persisted (:meth:`load_run`: shape, time controls and run identity), with a
+        live run's activation binding re-validated strictly against **the run selected by this
+        store** (``Store.run_id``), never against identities read from the same file. A live run
+        whose record is missing is returned as is (its consumers report ``activation-required``);
+        a partial, foreign or inconsistent record refuses ``activation-binding-invalid`` and
+        nothing is advanced or released."""
+        run = self.load_run()
+        if run is not None and run.environment == "live" and run.activation is not None:
+            validate_binding(run.activation, self.run_id, run.repo, run.policy_digest)
+        return run
+
+    def ensure_run(self, repo: str, policy_digest: str, environment: str, activation: Activation | None = None, policy=None, now: str | None = None) -> RunState:
+        """Create the run or validate its binding, under the store lock. A run belongs to exactly
+        one repository, policy digest and transport environment (fixture or live); any other
+        pairing is refused before recovery or effects, so synthetic state can never drive
+        production.
+
+        This is the only place a live run is created. It needs the loaded :class:`Activation`
+        itself (never a dictionary), the :class:`Policy` in use and the current time, and it
+        re-reads the activation source under the lock (a missing, changed or malformed source
+        refuses: the loaded object is a cache, the file is the approval) and persists the binding
+        record only after ``Activation.problems`` of the fresh document is empty for exactly this
+        run id, policy and moment. Retained run artifacts (story checkpoints, a journal) without
+        run metadata are an incomplete restore: no new run is created around them and nothing is
+        written (``run-metadata-missing``). An existing live run's record is re-validated on every
+        call; a presented activation must be the one the run was created under."""
         with self.locked():
-            run = self.load_run()
+            run = self.bound_run()
             if run is None:
-                run = RunState(self.run_id, repo, policy_digest, utcnow(), environment=environment)
+                retained = self.retained_artifacts()
+                if retained:
+                    raise Refused(f"run {self.run_id}: run.json is missing but {len(retained)} run artifact(s) are retained ({', '.join(retained[:4])}{'…' if len(retained) > 4 else ''}); refusing to create a new {environment} run around state of unknown provenance; restore the run metadata or recover by hand (nothing written)", code="run-metadata-missing", retained=retained)
+                binding = None
+                if environment == "live":
+                    if not isinstance(activation, Activation) or policy is None or now is None:
+                        raise Refused(f"run {self.run_id}: a live run is created only under a loaded, validated activation authorization (Activation, policy and current time); a binding dictionary or an unvalidated record is refused", code="activation-required")
+                    # the loaded object is a cache: the source is re-read here, under the lock, and only the
+                    # document as it is now can create the binding (missing: nothing is presented; changed or
+                    # malformed: a different document; both refuse before any metadata or journal write)
+                    activation = refresh_activation(activation, "run-start")
+                    if activation is None:
+                        raise Refused(f"run {self.run_id}: the activation source is gone; a live run is created only under a currently presented, approved activation (nothing written)", code="activation-required")
+                    problems = activation.problems(policy, self.run_id, now)
+                    if problems:
+                        raise Refused(f"run {self.run_id}: activation {activation.id} does not currently authorize this run: " + "; ".join(m for _, m in problems), code=Activation.stop_code(problems), problems=[m for _, m in problems])
+                    if (activation.repository, activation.policy_digest) != (repo, policy_digest):
+                        raise Refused(f"run {self.run_id}: activation {activation.id} binds {activation.repository} / {activation.policy_digest[:12]}, not {repo} / {policy_digest[:12]}", code="activation-mismatch")
+                    binding = validate_binding(activation.binding(validated_at=now), self.run_id, repo, policy_digest)
+                run = RunState(self.run_id, repo, policy_digest, utcnow(), environment=environment, activation=binding)
                 self.save_run(run)
-                self.journal(None, "run-started", {"repo": repo, "policy_digest": policy_digest, "environment": environment})
+                self.journal(None, "run-started", {"repo": repo, "policy_digest": policy_digest, "environment": environment, "activation": run.activation})
             elif (run.repo, run.policy_digest) != (repo, policy_digest):
                 raise Refused(f"run {self.run_id} is bound to {run.repo} / policy {run.policy_digest[:12]}; refusing {repo} / {policy_digest[:12]}", code="run-binding-mismatch")
             elif run.environment != environment:
                 raise Refused(f"run {self.run_id} state belongs to the {run.environment!r} environment; refusing to reuse it with a {environment!r} transport", code="environment-mismatch")
+            elif environment == "live" and activation is not None:
+                if not isinstance(activation, Activation):
+                    raise Refused(f"run {self.run_id}: an activation is presented as the loaded document, not as a dictionary", code="activation-invalid")
+                if not run.activation:
+                    raise Refused(f"run {self.run_id} was never activated; activation {activation.id} cannot adopt it (a run is activated only at creation)", code="activation-required")
+                if not activation.matches(run.activation):
+                    raise Refused(f"run {self.run_id} was created under activation {run.activation.get('id')!r}; refusing activation {activation.id!r} (digest {activation.digest[:12]})", code="activation-mismatch")
             return run
 
     # -- stories -------------------------------------------------------------------------

@@ -429,7 +429,7 @@ class RP2F1UnresolvedAuthorizationsAreOwnershipObligations(unittest.TestCase):
                     buf = io.StringIO()
                     with redirect_stdout(buf):
                         code = cli.main(["--policy", str(policy), "--state-dir", tmp, "--run-id", "r", "--live", *argv])
-                    self.assertEqual((code, json.loads(buf.getvalue())["error"]["code"]), (3, "live-execution-disabled"), argv)
+                    self.assertEqual((code, json.loads(buf.getvalue())["error"]["code"]), (3, "activation-required"), argv)
         finally:
             GhCliTransport._run = original
         self.assertEqual(calls, [])

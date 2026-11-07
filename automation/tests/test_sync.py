@@ -348,15 +348,14 @@ class DenialOutageAndLiveGateTests(unittest.TestCase):
         self.assertEqual(state.blocked["github_error"]["code"], "outage")
         self.assertEqual([i.op for i in state.pending_intents()], ["block"])
 
-    def test_live_transport_refuses_product_admission(self):
+    def test_live_transport_refuses_product_admission_without_activation(self):
         self.h.fake.live = True
-        live = Coordinator(self.h.fake, self.h.policy, Store(self.h.state_dir, "run-live"), live=True)
+        self.h.fake.calls = []
         with self.assertRaises(Refused) as ctx:
-            live.reserve("OM-01.02", self.h.snapshot, "base")
-        self.assertEqual(ctx.exception.code, "live-execution-disabled")
-        self.assertTrue(ctx.exception.detail["gaps"])
-        self.assertIsNone(self.h.store.load_story("OM-01.02"))
-        self.assertEqual(self.h.fake.comments[21], [])
+            Coordinator(self.h.fake, self.h.policy, Store(self.h.state_dir, "run-live"), live=True)
+        self.assertEqual(ctx.exception.code, "activation-required")
+        self.assertEqual(self.h.fake.calls, [])
+        self.assertIsNone(Store(self.h.state_dir, "run-live").load_run())
 
     def test_fixture_state_cannot_be_reused_with_a_live_transport(self):
         """Round-1 findings R1-B1/E1: recovery and every other operation refuse on live."""
@@ -378,7 +377,7 @@ class DenialOutageAndLiveGateTests(unittest.TestCase):
                    lambda: self.h.coordinator.run_checks("OM-01.02", "s", str(self.h.worktree)), lambda: self.h.coordinator.bind_receipt("OM-01.02", IMPLEMENTER, str(self.h.worktree), "t3/om-01-02", ok_worktree)):
             with self.assertRaises(Refused) as ctx:
                 op()
-            self.assertEqual(ctx.exception.code, "live-execution-disabled")
+            self.assertEqual(ctx.exception.code, "activation-required")  # a run that was never activated releases nothing either
         self.assertEqual(self.h.fake.comments[21], [])
         self.assertEqual(self.h.store.load_story("OM-01.02").phase, "claim-incomplete")
 
