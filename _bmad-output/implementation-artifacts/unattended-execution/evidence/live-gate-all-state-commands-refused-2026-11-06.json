@@ -1,0 +1,8 @@
+{
+ "when": "2026-11-06 remediation pass 1",
+ "command_prefix": "python3 -m automation.unattended --policy automation/examples/first-run-om-01-02.toml --live --run-id eng01-rp1-gate --state-dir <scratch>",
+ "commands": ["reserve OM-01.02 --baseline a0fa769ee5cd8dfb44fa02cae181bf0d37fad6ee", "authorize-review OM-01.02 --sha a0fa769e", "bind-receipt OM-01.02 --receipt {}", "record-task-terminal OM-01.02 --task-evidence {}", "resume OM-01.02", "cancel-run --reason test"],
+ "result": "every command exits 3 with error code live-execution-disabled before any GitHub read; run.json records environment \"live\" with zero stories, zero authorizations; no gh call was made (the CLI test test_live_state_commands_refuse_on_the_real_transport_before_any_gh_call asserts the same with a scripted gh)",
+ "github_writes": 0,
+ "github_reads": 0
+}

@@ -1,0 +1,7 @@
+# automation
+
+Engineering automation for Owl Mast, separate from the product backend.
+
+- `unattended/` — the unattended execution foundation (ENG-01): GitHub-authoritative dispatch, synchronization and T3 coordination policy. Every state command refuses the real GitHub transport until the T3 execution protocol and a bounded credential are qualified; the foundation is not qualified for unattended use. Guide: [docs/unattended-execution.md](../docs/unattended-execution.md).
+- `policy.toml` — default policy (empty allowlist: nothing dispatchable). `examples/first-run-om-01-02.toml` is the candidate first activation.
+- `tests/` — stdlib `unittest` qualification suite with an in-memory GitHub transport and the real backlog snapshot fixture. Run `python3 -m unittest discover -s automation/tests -t .` from the repository root (Python 3.12, no dependencies). `tests/test_final_findings.py` covers the six defects of the final PR #107 disposition, `tests/test_fresh_review_findings.py` the four code findings of the fresh review of remediation pass 1 and `tests/test_repair_pass_2_findings.py` the two findings of the fresh review of repair pass 1 (unresolved task authorizations as ownership obligations; done-intent reconciliation behind every fresh-attempt gate); `PYTHONPATH=. python3 automation/tests/probe_final_findings.py`, `… probe_fresh_review_findings.py` and `… probe_repair_pass_2_findings.py` re-run those scenarios as readable transcripts.

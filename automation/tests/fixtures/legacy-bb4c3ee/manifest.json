@@ -1,0 +1,1482 @@
+{
+ "ref": "bb4c3ee480ed9094a67f1a18030e65be9a2a782c",
+ "scenarios": {
+  "implementer-cancelled-checks-failed": {
+   "approved_sha": null,
+   "description": "\u2026then the baseline ran failing checks",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "checks-failed",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "cancelled",
+     "successful": true,
+     "taskId": "task-impl-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmp0otb3loz/wt"
+  },
+  "implementer-cancelled-checks-passed": {
+   "approved_sha": null,
+   "description": "\u2026then the baseline ran passing checks",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "checks-passed",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "cancelled",
+     "successful": true,
+     "taskId": "task-impl-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpnvpsx_ho/wt"
+  },
+  "implementer-cancelled-done-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approved and proposed (done); LABELLED SYNTHETIC MUTATION: phase reset to review-approved (transition not persisted)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": 1001,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "done"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": "phase reset from proposed to review-approved after generation (completed proposal whose transition was not persisted)",
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "cancelled",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmp0pehy1bv/wt"
+  },
+  "implementer-cancelled-head-recorded": {
+   "approved_sha": null,
+   "description": "implementer released as cancelled, head recorded by the baseline (bug for unsuccessful)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "implemented",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "cancelled",
+     "successful": true,
+     "taskId": "task-impl-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpdnc6al_k/wt"
+  },
+  "implementer-cancelled-landed-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approved, proposal landed, crash before checkpoint (pending intent, marker on the issue)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": null,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "pending"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "cancelled",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpt2_0si48/wt"
+  },
+  "implementer-cancelled-pending-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approved, proposal POST failed once (pending intent, nothing landed)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": null,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "pending"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "cancelled",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpouqnqanm/wt"
+  },
+  "implementer-cancelled-review-approved": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026checks passed, a completed reviewer approved",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "cancelled",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpcjl5zwn2/wt"
+  },
+  "implementer-completed-checks-failed": {
+   "approved_sha": null,
+   "description": "\u2026then the baseline ran failing checks",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "checks-failed",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpwlq7or65/wt"
+  },
+  "implementer-completed-checks-passed": {
+   "approved_sha": null,
+   "description": "\u2026then the baseline ran passing checks",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "checks-passed",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmppe78xna4/wt"
+  },
+  "implementer-completed-done-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approved and proposed (done); LABELLED SYNTHETIC MUTATION: phase reset to review-approved (transition not persisted)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": 1001,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "done"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": "phase reset from proposed to review-approved after generation (completed proposal whose transition was not persisted)",
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpxgy19g55/wt"
+  },
+  "implementer-completed-head-recorded": {
+   "approved_sha": null,
+   "description": "implementer released as completed, head recorded by the baseline (bug for unsuccessful)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "implemented",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpfhda06rj/wt"
+  },
+  "implementer-completed-landed-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approved, proposal landed, crash before checkpoint (pending intent, marker on the issue)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": null,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "pending"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpz3oeim4r/wt"
+  },
+  "implementer-completed-pending-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approved, proposal POST failed once (pending intent, nothing landed)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": null,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "pending"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmply499ol9/wt"
+  },
+  "implementer-completed-review-approved": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026checks passed, a completed reviewer approved",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpxbpt2kph/wt"
+  },
+  "implementer-failed-checks-failed": {
+   "approved_sha": null,
+   "description": "\u2026then the baseline ran failing checks",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "checks-failed",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "failed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmp1t_lvug9/wt"
+  },
+  "implementer-failed-checks-passed": {
+   "approved_sha": null,
+   "description": "\u2026then the baseline ran passing checks",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "checks-passed",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "failed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpj8wmqn5h/wt"
+  },
+  "implementer-failed-done-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approved and proposed (done); LABELLED SYNTHETIC MUTATION: phase reset to review-approved (transition not persisted)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": 1001,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "done"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": "phase reset from proposed to review-approved after generation (completed proposal whose transition was not persisted)",
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "failed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpbj9ay6ra/wt"
+  },
+  "implementer-failed-head-recorded": {
+   "approved_sha": null,
+   "description": "implementer released as failed, head recorded by the baseline (bug for unsuccessful)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "implemented",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "failed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmp2tr3zrco/wt"
+  },
+  "implementer-failed-landed-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approved, proposal landed, crash before checkpoint (pending intent, marker on the issue)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": null,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "pending"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "failed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmprq9z88no/wt"
+  },
+  "implementer-failed-pending-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approved, proposal POST failed once (pending intent, nothing landed)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": null,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "pending"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "failed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpvill6v9j/wt"
+  },
+  "implementer-failed-review-approved": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026checks passed, a completed reviewer approved",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "failed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmphh35b4s9/wt"
+  },
+  "implementer-interrupted-checks-failed": {
+   "approved_sha": null,
+   "description": "\u2026then the baseline ran failing checks",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "checks-failed",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "interrupted",
+     "successful": false,
+     "taskId": "task-impl-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmp24r1djs9/wt"
+  },
+  "implementer-interrupted-checks-passed": {
+   "approved_sha": null,
+   "description": "\u2026then the baseline ran passing checks",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "checks-passed",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "interrupted",
+     "successful": false,
+     "taskId": "task-impl-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpummu_vtj/wt"
+  },
+  "implementer-interrupted-done-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approved and proposed (done); LABELLED SYNTHETIC MUTATION: phase reset to review-approved (transition not persisted)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": 1001,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "done"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": "phase reset from proposed to review-approved after generation (completed proposal whose transition was not persisted)",
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "interrupted",
+     "successful": false,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpzwyl04kx/wt"
+  },
+  "implementer-interrupted-head-recorded": {
+   "approved_sha": null,
+   "description": "implementer released as interrupted, head recorded by the baseline (bug for unsuccessful)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "implemented",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "interrupted",
+     "successful": false,
+     "taskId": "task-impl-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpd7z2aymy/wt"
+  },
+  "implementer-interrupted-landed-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approved, proposal landed, crash before checkpoint (pending intent, marker on the issue)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": null,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "pending"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "interrupted",
+     "successful": false,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmp1mecv02o/wt"
+  },
+  "implementer-interrupted-pending-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approved, proposal POST failed once (pending intent, nothing landed)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": null,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "pending"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "interrupted",
+     "successful": false,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmp1pph4a8z/wt"
+  },
+  "implementer-interrupted-review-approved": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026checks passed, a completed reviewer approved",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "interrupted",
+     "successful": false,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpw3e1qzdv/wt"
+  },
+  "reviewer-cancelled-done-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approval over a cancelled reviewer, proposed (done); LABELLED SYNTHETIC MUTATION: phase reset to review-approved",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": 1001,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "done"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": "phase reset from proposed to review-approved after generation (completed proposal whose transition was not persisted)",
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "cancelled",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpfuu19eoz/wt"
+  },
+  "reviewer-cancelled-landed-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approval over a cancelled reviewer, proposal landed, crash before checkpoint",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": null,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "pending"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "cancelled",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpbov8ycj0/wt"
+  },
+  "reviewer-cancelled-pending-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approval over a cancelled reviewer, proposal POST failed once (pending intent)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": null,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "pending"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "cancelled",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpod3c2tpo/wt"
+  },
+  "reviewer-cancelled-review-approved": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "completed implementer, reviewer released as cancelled, approval recorded by the baseline (bug for unsuccessful)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "cancelled",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpgxg9qk43/wt"
+  },
+  "reviewer-completed-done-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approval over a completed reviewer, proposed (done); LABELLED SYNTHETIC MUTATION: phase reset to review-approved",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": 1001,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "done"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": "phase reset from proposed to review-approved after generation (completed proposal whose transition was not persisted)",
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpp_bntuf3/wt"
+  },
+  "reviewer-completed-landed-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approval over a completed reviewer, proposal landed, crash before checkpoint",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": null,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "pending"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmp8czalixp/wt"
+  },
+  "reviewer-completed-pending-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approval over a completed reviewer, proposal POST failed once (pending intent)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": null,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "pending"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmp9lc9em11/wt"
+  },
+  "reviewer-completed-review-approved": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "completed implementer, reviewer released as completed, approval recorded by the baseline (bug for unsuccessful)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpifms539v/wt"
+  },
+  "reviewer-failed-done-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approval over a failed reviewer, proposed (done); LABELLED SYNTHETIC MUTATION: phase reset to review-approved",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": 1001,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "done"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": "phase reset from proposed to review-approved after generation (completed proposal whose transition was not persisted)",
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "failed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmp7gce61vm/wt"
+  },
+  "reviewer-failed-landed-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approval over a failed reviewer, proposal landed, crash before checkpoint",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": null,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "pending"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "failed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpco3n9ybo/wt"
+  },
+  "reviewer-failed-pending-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approval over a failed reviewer, proposal POST failed once (pending intent)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": null,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "pending"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "failed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmp98ooz689/wt"
+  },
+  "reviewer-failed-review-approved": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "completed implementer, reviewer released as failed, approval recorded by the baseline (bug for unsuccessful)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "failed",
+     "successful": true,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmp8c2onqz0/wt"
+  },
+  "reviewer-interrupted-done-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approval over a interrupted reviewer, proposed (done); LABELLED SYNTHETIC MUTATION: phase reset to review-approved",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": 1001,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "done"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": "phase reset from proposed to review-approved after generation (completed proposal whose transition was not persisted)",
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "interrupted",
+     "successful": false,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpqiwnyx2o/wt"
+  },
+  "reviewer-interrupted-landed-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approval over a interrupted reviewer, proposal landed, crash before checkpoint",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": null,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "pending"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "interrupted",
+     "successful": false,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpjv3sa8v0/wt"
+  },
+  "reviewer-interrupted-pending-proposal": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "\u2026approval over a interrupted reviewer, proposal POST failed once (pending intent)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    },
+    {
+     "comment_id": null,
+     "op": "proposal-0399856038fd-pr7",
+     "status": "pending"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "interrupted",
+     "successful": false,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmpw7ebspwt/wt"
+  },
+  "reviewer-interrupted-review-approved": {
+   "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "description": "completed implementer, reviewer released as interrupted, approval recorded by the baseline (bug for unsuccessful)",
+   "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "intents": [
+    {
+     "comment_id": 1000,
+     "op": "claim",
+     "status": "done"
+    }
+   ],
+   "phase": "review-approved",
+   "synthetic_mutation": null,
+   "task_history": [
+    {
+     "authorization": "run-1:OM-01.02:1",
+     "role": "implementer",
+     "runId": "task-impl-1:run:1",
+     "status": "completed",
+     "successful": true,
+     "taskId": "task-impl-1"
+    },
+    {
+     "authorization": "run-1:OM-01.02:2",
+     "role": "reviewer",
+     "runId": "task-review-1:run:1",
+     "status": "interrupted",
+     "successful": false,
+     "taskId": "task-review-1"
+    }
+   ],
+   "worktree_path_at_generation": "/tmp/tmp467mqz7e/wt"
+  }
+ },
+ "sha": "0399856038fd9fd1eac8bd25460edb159ae6e011"
+}

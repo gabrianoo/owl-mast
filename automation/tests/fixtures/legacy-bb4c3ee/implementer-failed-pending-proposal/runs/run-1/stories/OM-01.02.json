@@ -1,0 +1,287 @@
+{
+ "active_task": null,
+ "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+ "authorizations": [
+  {
+   "bound_at": "2026-11-07T12:06:35Z",
+   "id": "run-1:OM-01.02:1",
+   "issued_at": "2026-11-07T12:06:35Z",
+   "purpose": "implementation",
+   "reason": null,
+   "role": "implementer",
+   "round": null,
+   "run_id": "task-impl-1:run:1",
+   "sha": null,
+   "status": "consumed",
+   "task_id": "task-impl-1"
+  },
+  {
+   "bound_at": "2026-11-07T12:06:35Z",
+   "id": "run-1:OM-01.02:2",
+   "issued_at": "2026-11-07T12:06:35Z",
+   "purpose": "review",
+   "reason": null,
+   "role": "reviewer",
+   "round": null,
+   "run_id": "task-review-1:run:1",
+   "sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "status": "consumed",
+   "task_id": "task-review-1"
+  }
+ ],
+ "blocked": null,
+ "checks": [
+  {
+   "at": "2026-11-07T12:06:35Z",
+   "clean_after": true,
+   "clean_before": true,
+   "commands": [
+    {
+     "command": "./gradlew build --console=plain",
+     "returncode": 0,
+     "stderr_tail": "",
+     "stdout_tail": "ok\n"
+    },
+    {
+     "command": "scripts/verify-quality-gates.sh",
+     "returncode": 0,
+     "stderr_tail": "",
+     "stdout_tail": "ok\n"
+    },
+    {
+     "command": "python3 -m unittest discover -s automation/tests -t .",
+     "returncode": 0,
+     "stderr_tail": "",
+     "stdout_tail": "ok\n"
+    }
+   ],
+   "dirt_after": "",
+   "executed": true,
+   "head_after": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "head_before": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "passed": true,
+   "sha": "0399856038fd9fd1eac8bd25460edb159ae6e011"
+  }
+ ],
+ "claim": {
+  "baseline_sha": "c5d9d2e",
+  "branch": "t3/om-01-02",
+  "claimed_at": "2026-11-07T12:06:35Z",
+  "reserved_at": "2026-11-07T12:06:35Z",
+  "scope": "dispatchable",
+  "worktree_path": "/tmp/tmpvill6v9j/wt"
+ },
+ "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+ "implementer_receipts": [
+  {
+   "authorization": "run-1:OM-01.02:1",
+   "isolation": "worktree",
+   "model": "claude-fable-5-1",
+   "options": {
+    "effort": "high"
+   },
+   "providerInstanceId": "claudeAgent",
+   "retained": false,
+   "role": "implementer",
+   "runId": "task-impl-1:run:1",
+   "taskId": "task-impl-1",
+   "title": ""
+  }
+ ],
+ "intents": [
+  {
+   "body": "<!-- unattended kind=claim op=claim run=run-1 story=OM-01.02 -->\nUnattended reservation by run `run-1` from `c5d9d2e` (scope: dispatchable). An implementer task is delegated only after this reservation; its receipt is bound to the reservation. Project Status is owner-maintained; completion still requires checks, independent review and owner acceptance.",
+   "comment_id": 1000,
+   "completed_at": "2026-11-07T12:06:35Z",
+   "created_at": "2026-11-07T12:06:35Z",
+   "kind": "claim",
+   "marker": {
+    "kind": "claim",
+    "op": "claim",
+    "run": "run-1",
+    "story": "OM-01.02"
+   },
+   "op": "claim",
+   "preconditions": {
+    "revisions": {
+     "E01": {
+      "body_sha256": "41cb53556d7211158ae046b2c0bee76bca39a90665d199a12d00ce6457a203b4",
+      "issue_updated_at": "2026-11-06T10:00:00Z",
+      "item_id": "PVTI_1",
+      "item_updated_at": "2026-11-06T13:00:01Z",
+      "state": "OPEN",
+      "state_reason": null,
+      "status": "Backlog"
+     },
+     "OM-01.01": {
+      "body_sha256": "e181c818d92d62a75913b748a84e359bca91fddaf4169eff1ed3f9cccf39ad2e",
+      "issue_updated_at": "2026-11-06T10:00:00Z",
+      "item_id": "PVTI_20",
+      "item_updated_at": "2026-11-06T13:00:05Z",
+      "state": "CLOSED",
+      "state_reason": "COMPLETED",
+      "status": "Done"
+     },
+     "OM-01.02": {
+      "body_sha256": "753593b2524577073e0f3287ea8b4fdd172d4fe6e0098f55af6678261bbfe899",
+      "issue_updated_at": "2026-11-06T10:00:00Z",
+      "item_id": "PVTI_21",
+      "item_updated_at": "2026-11-06T13:00:06Z",
+      "state": "OPEN",
+      "state_reason": null,
+      "status": "Ready"
+     }
+    }
+   },
+   "reason": null,
+   "status": "done"
+  },
+  {
+   "body": "<!-- unattended kind=proposal op=proposal-0399856038fd-pr7 pr=7 run=run-1 sha=0399856038fd9fd1eac8bd25460edb159ae6e011 story=OM-01.02 -->\nEvidence proposal from run `run-1` at exact commit `0399856038fd9fd1eac8bd25460edb159ae6e011` (PR #7, CI rollup: SUCCESS).\nsummary\n\nProposed task completion for owner application (the machine does not tick checkboxes or change Project Status):\n- [ ] OM-01.02-T1\n\nChecked boxes, CI pass, review approval, acceptance, merge and deployment remain distinct facts; this comment records review-approved implementation only.",
+   "comment_id": null,
+   "completed_at": null,
+   "created_at": "2026-11-07T12:06:35Z",
+   "kind": "proposal",
+   "marker": {
+    "kind": "proposal",
+    "op": "proposal-0399856038fd-pr7",
+    "pr": "7",
+    "run": "run-1",
+    "sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+    "story": "OM-01.02"
+   },
+   "op": "proposal-0399856038fd-pr7",
+   "preconditions": {
+    "pr": 7,
+    "revisions": {
+     "E01": {
+      "body_sha256": "41cb53556d7211158ae046b2c0bee76bca39a90665d199a12d00ce6457a203b4",
+      "issue_updated_at": "2026-11-06T10:00:00Z",
+      "item_id": "PVTI_1",
+      "item_updated_at": "2026-11-06T13:00:01Z",
+      "state": "OPEN",
+      "state_reason": null,
+      "status": "Backlog"
+     },
+     "OM-01.01": {
+      "body_sha256": "e181c818d92d62a75913b748a84e359bca91fddaf4169eff1ed3f9cccf39ad2e",
+      "issue_updated_at": "2026-11-06T10:00:00Z",
+      "item_id": "PVTI_20",
+      "item_updated_at": "2026-11-06T13:00:05Z",
+      "state": "CLOSED",
+      "state_reason": "COMPLETED",
+      "status": "Done"
+     },
+     "OM-01.02": {
+      "body_sha256": "753593b2524577073e0f3287ea8b4fdd172d4fe6e0098f55af6678261bbfe899",
+      "issue_updated_at": "2026-11-06T10:00:00Z",
+      "item_id": "PVTI_21",
+      "item_updated_at": "2026-11-06T13:00:06Z",
+      "state": "OPEN",
+      "state_reason": null,
+      "status": "Ready"
+     }
+    },
+    "sha": "0399856038fd9fd1eac8bd25460edb159ae6e011"
+   },
+   "reason": null,
+   "status": "pending"
+  }
+ ],
+ "issue": 21,
+ "item_id": "PVTI_21",
+ "phase": "review-approved",
+ "proposal": {
+  "at": "2026-11-07T12:06:35Z",
+  "ci": "SUCCESS",
+  "pr": 7,
+  "sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+  "tasks": [
+   "OM-01.02-T1"
+  ]
+ },
+ "repair_rounds": 0,
+ "reviewer_receipts": [
+  {
+   "authorization": "run-1:OM-01.02:2",
+   "isolation": "",
+   "model": "gpt-6-astra",
+   "options": {
+    "reasoningEffort": "high"
+   },
+   "providerInstanceId": "codex",
+   "retained": false,
+   "role": "reviewer",
+   "runId": "task-review-1:run:1",
+   "sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "taskId": "task-review-1",
+   "title": ""
+  }
+ ],
+ "reviews": [
+  {
+   "at": "2026-11-07T12:06:35Z",
+   "regression": false,
+   "report": "report.md",
+   "sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
+   "verdict": "approved"
+  }
+ ],
+ "revisions": {
+  "E01": {
+   "body_sha256": "41cb53556d7211158ae046b2c0bee76bca39a90665d199a12d00ce6457a203b4",
+   "issue_updated_at": "2026-11-06T10:00:00Z",
+   "item_id": "PVTI_1",
+   "item_updated_at": "2026-11-06T13:00:01Z",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog"
+  },
+  "OM-01.01": {
+   "body_sha256": "e181c818d92d62a75913b748a84e359bca91fddaf4169eff1ed3f9cccf39ad2e",
+   "issue_updated_at": "2026-11-06T10:00:00Z",
+   "item_id": "PVTI_20",
+   "item_updated_at": "2026-11-06T13:00:05Z",
+   "state": "CLOSED",
+   "state_reason": "COMPLETED",
+   "status": "Done"
+  },
+  "OM-01.02": {
+   "body_sha256": "753593b2524577073e0f3287ea8b4fdd172d4fe6e0098f55af6678261bbfe899",
+   "issue_updated_at": "2026-11-06T10:00:00Z",
+   "item_id": "PVTI_21",
+   "item_updated_at": "2026-11-06T13:00:06Z",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Ready"
+  }
+ },
+ "run_id": "run-1",
+ "schema": 3,
+ "story": "OM-01.02",
+ "task_history": [
+  {
+   "at": "2026-11-07T12:06:35Z",
+   "authorization": "run-1:OM-01.02:1",
+   "evidence_shape": "normalized",
+   "operation": "record-task-terminal",
+   "role": "implementer",
+   "runId": "task-impl-1:run:1",
+   "status": "failed",
+   "successful": true,
+   "taskId": "task-impl-1"
+  },
+  {
+   "at": "2026-11-07T12:06:35Z",
+   "authorization": "run-1:OM-01.02:2",
+   "evidence_shape": "normalized",
+   "operation": "record-task-terminal",
+   "role": "reviewer",
+   "runId": "task-review-1:run:1",
+   "status": "completed",
+   "successful": true,
+   "taskId": "task-review-1"
+  }
+ ],
+ "updated_at": "2026-11-07T12:06:35Z"
+}

@@ -54,3 +54,15 @@ jobs:
           validate-wrappers: true
       - name: Inject violations and assert each gate fails with its diagnostic
         run: scripts/verify-quality-gates.sh
+
+  automation-tests:
+    name: Unattended execution foundation (policy, sync and coordinator tests)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Qualification suite (fixtures only, no GitHub access)
+        run: python3 -m unittest discover -s automation/tests -t . -v

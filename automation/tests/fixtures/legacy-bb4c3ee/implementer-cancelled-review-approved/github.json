@@ -1,0 +1,10 @@
+{
+ "comments": [
+  {
+   "issue": 21,
+   "comment_id": 1000,
+   "body": "<!-- unattended kind=claim op=claim run=run-1 story=OM-01.02 -->\nUnattended reservation by run `run-1` from `c5d9d2e` (scope: dispatchable). An implementer task is delegated only after this reservation; its receipt is bound to the reservation. Project Status is owner-maintained; completion still requires checks, independent review and owner acceptance."
+  }
+ ],
+ "pull_requests": {}
+}
