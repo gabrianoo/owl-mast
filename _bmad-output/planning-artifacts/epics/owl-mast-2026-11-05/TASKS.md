@@ -30,10 +30,10 @@ Prerequisites: OM-01.01
 
 Prerequisites: OM-01.01
 
-- **OM-01.03-T1** — Define the durable-work and minimal audit-envelope contracts, owner APIs and versioning rules consumed by later modules.
-- **OM-01.03-T2** — Implement only the work/audit infrastructure tables, atomic business-change/work/audit-intent commit through module APIs and reactive transaction integration; keep failed-attempt audit independent of rolled-back business writes.
-- **OM-01.03-T3** — Implement bounded claiming, lease recovery, retry/backoff, failure visibility and authorization recheck hooks; schedule wakeups without an external job service.
-- **OM-01.03-T4** — Exercise rollback-before-enqueue, crash-after-commit-before-audit-publication, failed-attempt recording, stale-owner completion, concurrent claims and duplicate effect recovery.
+- **OM-01.03-T1** — Define and document the versioned durable-work and audit-envelope contracts (AC3 fields; outcome and actor-kind vocabularies aligned with OM-16.01; a compatibility rule for added fields and versions), the audited-mutation and enqueue owner APIs, the backend service identity used by processors, and the authorization recheck port with its fail-closed default.
+- **OM-01.03-T2** — Implement only the jobs- and audit-owned infrastructure tables; atomic business-change/work/audit-intent commit through module APIs and reactive transaction integration; the idempotent audit-intent publisher; and failed/denied outcome recording in a separate transaction independent of rolled-back business writes.
+- **OM-01.03-T3** — Implement tenant-scoped bounded claiming, lease expiry and reclaim, persisted retry/backoff with terminal failure, an operator failure listing without payloads and the dispatch-time authorization recheck; wake processors with in-process Spring scheduling only.
+- **OM-01.03-T4** — Exercise, with Testcontainers PostgreSQL and a test-owned fixture module: rollback before and after enqueue, fault-injected crash after commit before audit publication with repeated recovery, failed and denied attempt recording, secret non-disclosure, stale-owner completion, concurrent claims, duplicate effect recovery, retry exhaustion, process-restart recovery, fail-closed authorization and two-tenant isolation.
 
 ### [OM-01.04 — Open an accessible workspace shell](epic-01.md#om-01-04)
 
