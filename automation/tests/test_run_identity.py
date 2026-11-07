@@ -376,3 +376,111 @@ class HistoricalCopyTests(unittest.TestCase):
                 self.assertEqual(smoke.main(argv), 0)  # idempotent
             # the immutable backup was not touched
             self.assertEqual(json.loads((HISTORICAL / "runs/eng01-trusted-20261106/stories/OM-99.01.json").read_text())["authorizations"][2]["status"], "revoked")
+
+
+# Real-transport shape of a deliberately cancelled run (task_cancel): the engineering-only
+# cancellation smoke of 2026-11-07 reported task_status status "interrupted", workState
+# "result_available", hasPendingChildRuns false and latestTerminalStatus "interrupted" for the
+# matching latestTerminalRunId. The ids below reproduce T3's percent-encoded identity format.
+T3_TASK = "node:delegated-task:command%3Amcp%3A00000000-0000-4000-8000-000000000000%3Adelegate-task%3Aeng01-active-cancel-smoke"
+T3_RUN = "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253A00000000-0000-4000-8000-000000000000%253Adelegate-task%253Aeng01-active-cancel-smoke:ordinal:1"
+
+
+def t3_interrupted(task_id=T3_TASK, run_id=T3_RUN, **extra):
+    """Raw ``task_status`` of an interrupted (cancelled) run, every field the transport reports."""
+    return {"taskId": task_id, "childThreadId": task_id.replace("node:", "thread:", 1), "childRunId": run_id, "childNodeId": task_id,
+            "status": "interrupted", "workState": "result_available", "hasPendingChildRuns": False,
+            "latestTerminalRunId": run_id, "latestTerminalStatus": "interrupted", "latestTerminalSummary": None, "latestTerminalResultContextTransferId": None,
+            "providerInstanceId": "claudeAgent", "model": "claude-fable-5-1", "options": [{"id": "effort", "value": "high"}],
+            "summary": "Reporting checkout state, then running the single finite timer command.", "hasPendingQuestion": False, "pendingApproval": None, "waitTimedOut": False, **extra}
+
+
+class InterruptedTerminalEvidenceTests(unittest.TestCase):
+    """The real transport terminates a cancelled run as ``interrupted``: terminal for release and
+    cleanup, never a success, never inferred past pending children or a cancel request."""
+
+    def setUp(self):
+        self.h = Harness(small_backlog())
+        self.c = self.h.coordinator
+
+    def tearDown(self):
+        self.h.close()
+
+    def restarted(self) -> Coordinator:
+        return Coordinator(self.h.fake, self.h.policy, Store(self.h.state_dir, "run-1"), live=True)
+
+    def test_raw_t3_interrupted_task_status_normalizes_to_the_latest_terminal_pair(self):
+        e = normalize_task_evidence(t3_interrupted())
+        self.assertEqual(e, {"taskId": T3_TASK, "runId": T3_RUN, "status": "interrupted", "shape": "task_status"})
+        e = normalize_task_evidence({"taskId": OWNER, "runId": run_of(OWNER, 1), "status": "interrupted"})
+        self.assertEqual((e["status"], e["shape"]), ("interrupted", "normalized"))
+
+    def test_interrupted_with_pending_children_live_work_or_a_cancel_request_refuses(self):
+        for bad, code in ((t3_interrupted(hasPendingChildRuns=True), "worker-not-terminal"),
+                          (t3_interrupted(workState="working"), "worker-not-terminal"),
+                          (t3_interrupted(workState="cancel_requested"), "worker-not-terminal"),
+                          (t3_interrupted(latestTerminalStatus="cancel_requested"), "worker-not-terminal"),
+                          (t3_interrupted(latestTerminalRunId=None), "run-identity-missing"),
+                          (t3_interrupted(runId=T3_RUN + "-other"), "run-identity-ambiguous"),
+                          ({"taskId": T3_TASK, "runId": T3_RUN, "status": "cancel_requested"}, "worker-not-terminal"),
+                          ({"taskId": T3_TASK, "status": "interrupted"}, "run-identity-missing")):
+            with self.assertRaises(Refused) as ctx:
+                normalize_task_evidence(bad)
+            self.assertEqual(ctx.exception.code, code, bad)
+
+    def test_cancel_releases_the_owned_task_on_interrupted_evidence_for_the_exact_pair(self):
+        self.h.claim()
+        raw = {**t3_interrupted(OWNER, run_of(OWNER, 1)), "childRunId": run_of(OWNER, 1)}
+        with self.assertRaises(Refused) as ctx:  # another run of the same task releases nothing
+            self.c.cancel(S, "smoke", {**raw, "latestTerminalRunId": run_of(OWNER, 2)})
+        self.assertEqual(ctx.exception.code, "run-mismatch")
+        self.assertEqual(self.h.store.load_story(S).active_task["runId"], run_of(OWNER, 1))
+        state = self.c.cancel(S, "cancellation smoke", raw)
+        self.assertEqual((state.phase, state.active_task), ("cancelled", None))
+        record = state.task_history[-1]
+        self.assertEqual((record["taskId"], record["runId"], record["status"], record["successful"], record["evidence_shape"], record["operation"]),
+                         (OWNER, run_of(OWNER, 1), "interrupted", False, "task_status", "cancelled"))
+        self.assertEqual((state.head_sha, state.approved_sha, state.reviews), (None, None, []))  # nothing advanced
+
+    def test_record_task_terminal_then_cleanup_and_restart_keep_the_interrupted_record(self):
+        self.h.claim()
+        state = self.c.record_task_terminal(S, evidence(OWNER, status="interrupted"))
+        self.assertEqual((state.phase, state.active_task, state.task_history[-1]["status"]), ("claimed", None, "interrupted"))
+        state = self.restarted().cancel(S, "released after interruption")
+        self.assertEqual((state.phase, state.active_task), ("cancelled", None))
+        reloaded = Store(self.h.state_dir, "run-1").load_story(S)
+        self.assertEqual([r["status"] for r in reloaded.task_history], ["interrupted"])
+        self.assertTrue(reloaded.predecessor_terminal(OWNER))  # an interrupted predecessor is terminal, not inferred live
+        self.assertEqual(self.restarted().resume(S, ok_worktree).phase, "cancelled")
+
+    def test_interrupted_implementer_evidence_cannot_record_a_head(self):
+        self.h.claim()
+        for bad in (evidence(OWNER, status="interrupted"), {**t3_interrupted(OWNER, run_of(OWNER, 1)), "childRunId": run_of(OWNER, 1)}):
+            with self.assertRaises(Refused) as ctx:
+                self.c.record_head(S, self.h.sha, bad)
+            self.assertEqual(ctx.exception.code, "worker-interrupted")
+            state = self.h.store.load_story(S)
+            self.assertEqual((state.phase, state.head_sha, state.active_task["runId"], state.task_history), ("claimed", None, run_of(OWNER, 1), []))
+        state = self.c.record_head(S, self.h.sha, self.h.terminal())  # a successful completion of the same pair still advances
+        self.assertEqual((state.phase, state.head_sha, state.active_task), ("implemented", self.h.sha, None))
+
+    def test_interrupted_reviewer_evidence_cannot_record_a_verdict(self):
+        self.h.claim()
+        self.h.checks()
+        self.h.request_review()
+        with self.assertRaises(Refused) as ctx:
+            self.c.record_review(S, self.h.sha, "approved", "report.md", self.h.terminal(status="interrupted"))
+        self.assertEqual(ctx.exception.code, "worker-interrupted")
+        state = self.h.store.load_story(S)
+        self.assertEqual((state.phase, state.approved_sha, state.reviews, state.active_task["taskId"]), ("review-requested", None, [], "task-review-1"))
+        state = self.c.cancel(S, "reviewer interrupted", self.h.terminal(status="interrupted"))  # release is the only way out
+        self.assertEqual((state.phase, state.active_task, state.task_history[-1]["status"]), ("cancelled", None, "interrupted"))
+
+    def test_cancel_run_releases_an_interrupted_worker_and_keeps_a_pending_children_one_owned(self):
+        self.h.claim()
+        raw = {**t3_interrupted(OWNER, run_of(OWNER, 1)), "childRunId": run_of(OWNER, 1)}
+        result = self.c.cancel_run("budget", {S: {**raw, "hasPendingChildRuns": True}})
+        self.assertEqual(([s["phase"] for s in result["cancelled"]], [a["story"] for a in result["awaiting_worker_termination"]]), ([], [S]))
+        self.assertEqual(self.h.store.load_story(S).active_task["taskId"], OWNER)
+        state = self.restarted().cancel(S, "budget", raw)
+        self.assertEqual((state.phase, state.active_task, state.task_history[-1]["status"]), ("cancelled", None, "interrupted"))

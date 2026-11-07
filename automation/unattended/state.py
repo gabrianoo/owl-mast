@@ -176,7 +176,7 @@ class StoryState:
             pairs.add((self.active_task["taskId"], self.active_task["runId"]))
         return pairs
 
-    TERMINAL_STATUSES = ("completed", "cancelled", "failed", "result_available", "terminal")
+    TERMINAL_STATUSES = ("completed", "cancelled", "failed", "result_available", "terminal", "interrupted")  # the real transport reports a cancelled run as interrupted
 
     def predecessor_terminal(self, task_id: str, identified: bool = True) -> bool:
         """True when ``task_id`` is not the active task and a terminal record exists for it.

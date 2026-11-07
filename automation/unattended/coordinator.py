@@ -97,7 +97,15 @@ LIVE_EXECUTION_GAPS = (
     "disclosed, not certified: the operator credential is broad (repository admin, excess scopes); check-permissions reports facts only and never certifies a bounded credential; restricted credentials are used where practical",
     "manual by agreement: Project Status and acceptance are owner actions; machine comments are evidence proposals, not synchronization",
 )
-TERMINAL_TASK_STATES = ("result_available", "completed", "failed", "cancelled", "terminal")
+# Terminal statuses the real T3 transport reports. A deliberately cancelled (task_cancel) run
+# terminates as ``interrupted`` (task_status: status/latestTerminalStatus "interrupted", workState
+# "result_available", hasPendingChildRuns false); it is an acknowledged termination, never a success.
+TERMINAL_TASK_STATES = ("result_available", "completed", "failed", "cancelled", "terminal", "interrupted")
+# Terminal statuses that acknowledge termination without any completed work. They release
+# ownership (record-task-terminal, cancel, block, cancel-run) but can never stand in for the
+# successful completion that an advancing operation records.
+NON_SUCCESS_TERMINAL_TASK_STATES = ("interrupted",)
+ADVANCING_EVIDENCE_OPERATIONS = ("record-head", "record-review")
 CLEANUP_KINDS = ("release", "block")
 # purpose -> (phase in which the authorization is issued, phase after the receipt is bound, role)
 AUTHORIZATION_FLOW = {
@@ -161,7 +169,8 @@ def normalize_task_evidence(task_evidence) -> dict:
       latest terminal fields; ``childRunId``, ``status`` and ``summary`` are the stale first-run
       fields and are ignored. Live or pending child work, a missing latest terminal run, a
       non-terminal or ``cancel_requested`` status, or a disagreement between the two shapes
-      refuses; nothing is inferred."""
+      refuses; nothing is inferred. ``interrupted`` (the real transport's terminal status of a
+      cancelled run) is terminal for release and cleanup but never a success."""
     if not isinstance(task_evidence, dict) or not task_evidence.get("taskId"):
         raise Refused("terminal evidence must be a JSON object naming taskId", code="worker-not-terminal")
     task_id = str(task_evidence["taskId"])
@@ -423,7 +432,10 @@ class Coordinator:
         if evidence["runId"] != active["runId"]:
             raise Refused(f"{operation}: {active['role']} task {active['taskId']} of {state.story} is still owned; the evidence is for run {evidence['runId']}, the bound execution is run {active['runId']}",
                           code="run-mismatch", task_id=active["taskId"], role=active["role"], authorization=active.get("authorization"), bound_run=active["runId"], evidence_run=evidence["runId"])
-        record = {"taskId": active["taskId"], "runId": active["runId"], "role": active["role"], "status": evidence["status"], "at": self.now(), "operation": operation, "authorization": active.get("authorization"), "evidence_shape": evidence["shape"]}
+        if operation in ADVANCING_EVIDENCE_OPERATIONS and evidence["status"] in NON_SUCCESS_TERMINAL_TASK_STATES:
+            raise Refused(f"{operation}: {active['role']} task {active['taskId']} of {state.story} terminated as {evidence['status']!r} (run {active['runId']}); an interrupted execution completed nothing and cannot advance the story; it stays owned until released (record-task-terminal, cancel or block)",
+                          code="worker-interrupted", task_id=active["taskId"], role=active["role"], authorization=active.get("authorization"), status=evidence["status"], run_id=active["runId"])
+        record = {"taskId": active["taskId"], "runId": active["runId"], "role": active["role"], "status": evidence["status"], "successful": evidence["status"] not in NON_SUCCESS_TERMINAL_TASK_STATES, "at": self.now(), "operation": operation, "authorization": active.get("authorization"), "evidence_shape": evidence["shape"]}
         state.task_history.append(record)
         state.active_task = None
         return record
