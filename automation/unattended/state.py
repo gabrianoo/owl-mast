@@ -31,7 +31,7 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .activation import Activation, validate_binding, validate_high_water, validate_stop_record
+from .activation import Activation, refresh_activation, validate_binding, validate_high_water, validate_stop_record
 from .errors import Refused
 
 PHASES = ("claim-incomplete", "reserved", "claimed", "implemented", "checks-passed", "checks-failed", "review-authorized", "review-requested", "review-approved", "changes-requested", "repair-authorized", "proposed", "blocked", "cancelled", "conflict")
@@ -384,7 +384,9 @@ class Store:
 
         This is the only place a live run is created. It needs the loaded :class:`Activation`
         itself (never a dictionary), the :class:`Policy` in use and the current time, and it
-        persists the binding record only after ``Activation.problems`` is empty for exactly this
+        re-reads the activation source under the lock (a missing, changed or malformed source
+        refuses: the loaded object is a cache, the file is the approval) and persists the binding
+        record only after ``Activation.problems`` of the fresh document is empty for exactly this
         run id, policy and moment. Retained run artifacts (story checkpoints, a journal) without
         run metadata are an incomplete restore: no new run is created around them and nothing is
         written (``run-metadata-missing``). An existing live run's record is re-validated on every
@@ -399,6 +401,12 @@ class Store:
                 if environment == "live":
                     if not isinstance(activation, Activation) or policy is None or now is None:
                         raise Refused(f"run {self.run_id}: a live run is created only under a loaded, validated activation authorization (Activation, policy and current time); a binding dictionary or an unvalidated record is refused", code="activation-required")
+                    # the loaded object is a cache: the source is re-read here, under the lock, and only the
+                    # document as it is now can create the binding (missing: nothing is presented; changed or
+                    # malformed: a different document; both refuse before any metadata or journal write)
+                    activation = refresh_activation(activation, "run-start")
+                    if activation is None:
+                        raise Refused(f"run {self.run_id}: the activation source is gone; a live run is created only under a currently presented, approved activation (nothing written)", code="activation-required")
                     problems = activation.problems(policy, self.run_id, now)
                     if problems:
                         raise Refused(f"run {self.run_id}: activation {activation.id} does not currently authorize this run: " + "; ".join(m for _, m in problems), code=Activation.stop_code(problems), problems=[m for _, m in problems])

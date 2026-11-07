@@ -2,7 +2,7 @@
 
 Companion to `spec-eng-01-enabling-preflight.md`. Everything below was read, never written: no status, checkbox, Project field, issue comment, cluster, service or credential was changed. Sanitized: no tokens, no private Notion content.
 
-**Status: activation target unspecified and unqualified. The enabling change was reviewed at 96ad53a with changes requested (six findings R1–R6); repair round 1 is applied and a fresh review is pending. Not eligible for activation approval, not approved, not enabled; activation itself stays blocked on the owner decisions listed at the end. OM-01.02 remains Backlog; PR #107 remains unmerged at f71167b.**
+**Status: activation target unspecified and unqualified. The enabling change was reviewed with changes requested at 96ad53a (R1–R6, repaired at aa80168), at aa80168 (F1–F3, repaired at ce0320e) and at ce0320e (FINAL-1/FINAL-2, owner-authorized repair round 3 applied); a fresh exact-commit review of the round-3 head is pending. Not eligible for activation approval, not approved, not enabled; activation itself stays blocked on the owner decisions listed at the end. OM-01.02 remains Backlog; PR #107 remains unmerged at f71167b.**
 
 ## Verified (read-only, this machine)
 
@@ -19,14 +19,14 @@ Companion to `spec-eng-01-enabling-preflight.md`. Everything below was read, nev
 | Candidate policy | `automation/examples/first-run-om-01-02.toml`: allow `["OM-01.02"]`, E17/E19 excluded, no exceptions, 1 story, 1 implementer, 2 repairs, 6 tasks, 240 min; implementer `claudeAgent`/`claude-fable-5-1`/worktree/effort high; reviewer `codex`/`gpt-6-astra`/reasoningEffort high; checks `./gradlew build --console=plain`, `scripts/verify-quality-gates.sh`, `python3 -m unittest discover -s automation/tests -t .` (45 min); probes as above (60 s) |
 | Candidate activation | `automation/examples/activation-om-01-02.candidate.toml`: `check-activation` against the candidate policy exits 2, stop `activation-mismatch`, problems: unapproved, zero policy digest, placeholder run id, expired window — cannot dispatch when copied |
 | Local tooling present | `kubectl` client v1.36.1, `helm` v3.16.3 installed; **no cluster was contacted** |
-| Checks on this change | 324 unit tests OK at repair round 2 (305 at the aa80168 review, 288 at 96ad53a); `./gradlew build --console=plain` BUILD SUCCESSFUL; `scripts/verify-quality-gates.sh` all gates OK |
+| Checks on this change | 336 unit tests OK at repair round 3 (324 at repair round 2, 305 at the aa80168 review, 288 at 96ad53a); `./gradlew build --console=plain` BUILD SUCCESSFUL; `scripts/verify-quality-gates.sh` all gates OK |
 
 ## Missing or unverified (explicit blockers, not guessed)
 
 | Gate | State |
 | --- | --- |
 | Owner acceptance | OM-01.02 is Backlog; `Ready` is an owner Project action, not taken |
-| Enabling change | this PR: independently reviewed with changes requested at 96ad53a (R1-R6, repaired at aa80168) and at aa80168 (F1-F3, repaired in round 2); **fresh review of the round-2 head pending; not approved, not merged**; PR #107 (f71167b) not merged |
+| Enabling change | this PR: independently reviewed with changes requested at 96ad53a (R1-R6, repaired at aa80168), at aa80168 (F1-F3, repaired at ce0320e) and at ce0320e (FINAL-1/FINAL-2, owner-authorized round 3 applied); **fresh exact-commit review of the round-3 head pending; not approved, not merged**; PR #107 (f71167b) not merged |
 | Approved activation | none exists; the owner would write a private run-specific copy with `approved = true`, exact run id, sha256 of the exact policy file, ≤ 24 h window and the smoke/review references |
 | Kubernetes target (OM-01.02 AC1 "qualified Kubernetes/storage target") | **unspecified**: no cluster, context, namespace, storage class or node selection is recorded anywhere read; none was probed or chosen here |
 | Durable storage / persistent-volume ownership (T3) | unspecified; no evidence |

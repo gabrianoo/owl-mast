@@ -246,6 +246,27 @@ def load_activation(path: Path) -> Activation:
     )
 
 
+def refresh_activation(activation: Activation | None, operation: str) -> Activation | None:
+    """Re-read the source the presented document was loaded from. The file is the approval; the
+    loaded object is a cache and is never trusted across a decision boundary. Returns the fresh
+    document, or ``None`` when the source is gone (nothing is presented any more). A source that
+    no longer loads refuses ``activation-invalid``; one whose digest changed refuses
+    ``activation-mismatch``: both are a different document from the one presented, for every
+    operation, run creation included. An object without a source path (tests) is returned as is."""
+    if activation is None or not activation.path:
+        return activation
+    path = Path(activation.path)
+    if not path.exists():
+        return None
+    try:
+        fresh = load_activation(path)
+    except Refused as exc:
+        raise Refused(f"{operation}: the activation source {path} no longer loads ({exc}); a malformed source is not the document that was presented; omit --activation to clean up on the recorded binding", code="activation-invalid", problems=exc.detail.get("problems")) from exc
+    if fresh.digest != activation.digest:
+        raise Refused(f"{operation}: the activation source {path} changed since it was loaded (digest {fresh.digest[:12]} vs {activation.digest[:12]}); a changed document is refused for every operation, cleanup included; omit --activation to clean up on the recorded binding", code="activation-mismatch")
+    return fresh
+
+
 class BindingError(Refused):
     code = "activation-binding-invalid"
 
