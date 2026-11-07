@@ -61,8 +61,8 @@ together with the release it owes (when its claim comment landed) in one write.
 A run's state is bound to the environment (fixture or live) it was created in. On a live
 transport nothing runs by default: a live run can only be created with, and admission and
 every advancing operation require, a current run-bound activation authorization
-(``automation/unattended/activation.py``, ``--activation``); without one every state command
-refuses ``activation-required``. Cleanup of a run that was activated earlier (cancel, block,
+(``automation/unattended/activation.py``, ``--activation``); without one no live run is created
+and every admitting or advancing command refuses ``activation-required``. Cleanup of a run that was activated earlier (cancel, block,
 terminal records, cancel-run, the cleanup part of resume) needs only the run's recorded
 binding; an expired activation stops advancement like a wall-clock expiry and a different
 activation is refused everywhere. The activation is a trusted-coordinator engineering
@@ -291,7 +291,7 @@ class Coordinator:
         """Why a live run advances nothing: a durable observed stop, else no, expired or non-matching activation. ``None`` on fixtures."""
         if self.environment != "live":
             return None
-        if self.run.activation_stop:
+        if self.run.activation_stop is not None:
             return self.run.activation_stop["code"]
         return Activation.stop_code(self._activation_problems())
 
@@ -330,13 +330,15 @@ class Coordinator:
         observation (``clock-regression``). Once recorded the run never advances again, after a
         clock correction, a rollback or a restart; cleanup, late receipts (cleanup only) and
         terminal evidence stay allowed; approvals, obligations and budgets are untouched."""
-        if self.run.activation_stop or not self.run.activation:
+        if self.run.activation_stop is not None or self.run.activation is None:
             return
         problems: list[str] = []
         now, expires = _parse_time(self.now(), "now", problems), _parse_time(self.run.activation["expires_at"], "expires_at", problems)
-        if problems:
+        # the high-water mark is the latest observation, else the validated creation moment (both strict at load); a parse problem refuses, it is never replaced by now
+        source = ("last_observed_at", self.run.last_observed_at) if self.run.last_observed_at is not None else ("activation.validated_at", self.run.activation["validated_at"])
+        high_water = _parse_time(source[1], source[0], problems)
+        if problems or high_water is None:
             raise Refused(f"{operation}: cannot evaluate the activation window: " + "; ".join(problems), code="activation-invalid", problems=problems)
-        high_water = _parse_time(self.run.last_observed_at or self.run.activation.get("validated_at") or self.run.activation["issued_at"], "last_observed_at", problems) or now
         stop = None
         if now > expires:
             stop = {"code": "activation-expired", "observed_at": self.now(), "message": f"now {self.now()} is after the recorded expires_at {self.run.activation['expires_at']}"}
@@ -376,7 +378,7 @@ class Coordinator:
         if self.store._lock_depth:
             self._observe_stop(operation)
         if advancing:
-            if self.run.activation_stop:
+            if self.run.activation_stop is not None:
                 stop = self.run.activation_stop
                 raise BudgetExhausted(f"{operation}: {STOP_REASONS[stop['code']]} (observed {stop['observed_at']} during {stop.get('operation')}: {stop['message']}); the run never advances again; only cancel, block, record-task-terminal, record-no-launch, cancel-run, resume (cleanup) and status are allowed", code=stop["code"], stop=stop)
             self._refuse_unless_current(operation)
@@ -407,7 +409,7 @@ class Coordinator:
         if code == "run-cancelled":
             return f"run is cancelled ({self.run.stop_reason})"
         if code in ACTIVATION_STOPS:
-            if self.run.activation_stop and self.run.activation_stop["code"] == code:
+            if self.run.activation_stop is not None and self.run.activation_stop["code"] == code:
                 return STOP_REASONS[code] + f" (durable stop observed {self.run.activation_stop['observed_at']}: {self.run.activation_stop['message']})"
             return STOP_REASONS[code] + ": " + "; ".join(m for _, m in self._activation_problems())
         return f"wall clock budget of {self.policy.max_wall_clock_minutes} minutes exceeded ({int(self._elapsed().total_seconds() // 60)} minutes elapsed since {self.run.started_at})"
@@ -1405,6 +1407,13 @@ class Coordinator:
             return state
 
     def status(self) -> dict:
+        """A coherent snapshot taken under the same locked gate as every other consumer: the run
+        is reloaded and validated (identity, record shape, binding), the activation source is
+        re-read, and an observed expiry or clock regression is recorded durably before it is
+        reported, so a stop that status reports survives rollback and restart like one observed by
+        record-head. A valid recorded binding without the file is reported, never refused; a
+        changed or malformed source, a foreign or malformed record refuse structurally."""
         with self.store.locked(self):
+            self.require_activation("status", advancing=False)
             counts = self._counts()
         return {"run": self.run.__dict__, "budgets": counts, "environment": self.environment, "stories": [s.to_dict() for s in self.store.list_stories()], "journal_events": self.store.journal_count(), "live": self.live, "activation": {"recorded": self.run.activation, "recorded_stop": self.run.activation_stop, "presented": self.activation.binding() if self.activation else None, "stop": self._activation_stop(), "problems": [m for _, m in self._activation_problems()] if self.environment == "live" else []}, "agreement": OPERATING_AGREEMENT, "gaps": list(LIVE_EXECUTION_GAPS)}

@@ -1,8 +1,9 @@
 """Explicit, run-bound activation authorization for the live transport (ENG-01 opt-in).
 
 The unconditional ``live-execution-disabled`` refusal is replaced by this document. Nothing
-is activated by default: without ``--activation`` every real-transport state command still
-refuses (``activation-required``). An activation is a TOML file the trusted coordinator or
+is activated by default: without ``--activation`` no live run is created and every admitting or
+advancing real-transport command refuses (``activation-required``); cleanup and ``status`` of a
+run activated earlier work on its validated recorded binding without the file. An activation is a TOML file the trusted coordinator or
 owner writes for exactly one run. It is an engineering approval under the trusted-machine
 operating agreement, **not** a credential and **not** cryptographic authentication: anyone
 who can write to the coordinator machine can write one. What it adds is an explicit,
@@ -39,6 +40,10 @@ TARGET_KEYS = {"provider", "model", "options", "isolation"}
 # operation needs to re-check without the file: the document identity (id, digest), the approval window,
 # and the run binding it was validated against. Anything short of exactly this shape is not a binding.
 BINDING_RECORD_KEYS = {"id", "digest", "approver", "issued_at", "expires_at", "path", "repository", "policy_digest", "environment", "run_id", "approved", "validated_at"}
+# The durable observed stop a live run persists (``RunState.activation_stop``): exactly this shape, one of these
+# codes, a strict UTC observation time. Anything else is not "no stop": it is a malformed record and refuses.
+STOP_RECORD_KEYS = {"code", "observed_at", "message", "operation"}
+STOP_RECORD_CODES = ("activation-expired", "clock-regression")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 BUDGET_KEYS = ("max_stories_per_run", "max_concurrent_implementers", "max_repair_rounds", "max_delegated_tasks", "max_wall_clock_minutes")
 EVIDENCE_KEYS = ("lifecycle_smoke", "fresh_review")
@@ -248,8 +253,9 @@ class BindingError(Refused):
 def validate_binding(binding, run_id: str, repo: str, policy_digest: str) -> dict:
     """The persisted activation record of a live run, re-checked strictly on every load: exactly
     :data:`BINDING_RECORD_KEYS`, a well-formed id and file digest, strict UTC timestamps in
-    order, ``approved`` exactly true, and a run binding equal to the run it is stored in (run id,
-    repository, policy digest, ``live``). A partial, foreign, unapproved or otherwise inconsistent
+    order within the maximum window, a non-null ``validated_at`` inside that window (the moment
+    ``ensure_run`` validated the document), ``approved`` exactly true, and a run binding equal to
+    the run selected by the caller (run id, repository, policy digest, ``live``). A partial, foreign, unapproved or otherwise inconsistent
     record is not a binding: it refuses with ``activation-binding-invalid`` and the run's
     obligations stay where they are (nothing is replaced, migrated or inferred). ``None`` or an
     empty value is reported separately by the caller as ``activation-required``."""
@@ -267,14 +273,53 @@ def validate_binding(binding, run_id: str, repo: str, policy_digest: str) -> dic
         problems.append("digest is not a sha256 hex digest")
     if binding.get("approved") is not True:
         problems.append("approved is not exactly true")
-    if binding.get("validated_at") is not None and _parse_time(binding.get("validated_at"), "validated_at", problems) is None:
-        pass
     issued, expires = _parse_time(binding.get("issued_at"), "issued_at", problems), _parse_time(binding.get("expires_at"), "expires_at", problems)
-    if issued and expires and expires <= issued:
-        problems.append("expires_at must be after issued_at")
+    validated = _parse_time(binding.get("validated_at"), "validated_at", problems)  # the creation moment is required: a record without it was never persisted by ensure_run
+    if issued and expires:
+        if expires <= issued:
+            problems.append("expires_at must be after issued_at")
+        elif expires - issued > timedelta(minutes=MAX_WINDOW_MINUTES):
+            problems.append(f"approval window exceeds {MAX_WINDOW_MINUTES} minutes")
+        if validated is not None and not (issued <= validated <= expires):
+            problems.append(f"validated_at {binding.get('validated_at')!r} is outside the approval window {binding.get('issued_at')!r}..{binding.get('expires_at')!r}; no validated creation can have happened then")
     for key, expected in (("run_id", run_id), ("repository", repo), ("policy_digest", policy_digest), ("environment", "live")):
         if binding.get(key) != expected:
             problems.append(f"{key} {binding.get(key)!r} is not this run's {expected!r}")
     if problems:
         raise BindingError(f"run {run_id}: persisted activation binding is not a valid binding for this run: " + "; ".join(problems) + "; nothing is advanced or released on it (restore run.json from the run that created it, or recover by hand)", code="activation-binding-invalid", problems=problems)
     return binding
+
+
+def validate_stop_record(stop, run_id: str) -> dict | None:
+    """The persisted durable stop of a live run: ``None`` (no stop observed) or exactly
+    :data:`STOP_RECORD_KEYS` with a code from :data:`STOP_RECORD_CODES`, a strict UTC
+    ``observed_at`` and non-empty ``message`` / ``operation`` strings. Nothing else is read as
+    the absence of a stop: ``false``, a list, a string, a partial or unknown-code record refuse
+    ``run-state-invalid`` (no truthiness, no silent replacement)."""
+    if stop is None:
+        return None
+    problems: list[str] = []
+    if not isinstance(stop, dict):
+        raise Refused(f"run {run_id}: persisted activation_stop is {type(stop).__name__}, not a stop record or null; a malformed stop is never read as 'no stop' (restore run.json from the run that wrote it, or recover by hand)", code="run-state-invalid")
+    if set(stop) != STOP_RECORD_KEYS:
+        problems.append(f"keys {sorted(set(stop) ^ STOP_RECORD_KEYS)} differ from the stop record shape {sorted(STOP_RECORD_KEYS)}")
+    if stop.get("code") not in STOP_RECORD_CODES:
+        problems.append(f"code {stop.get('code')!r} is not a recorded stop code {list(STOP_RECORD_CODES)}")
+    _parse_time(stop.get("observed_at"), "observed_at", problems)
+    for key in ("message", "operation"):
+        if not isinstance(stop.get(key), str) or not stop.get(key, "").strip():
+            problems.append(f"{key} must be a non-empty string")
+    if problems:
+        raise Refused(f"run {run_id}: persisted activation_stop is not a valid stop record: " + "; ".join(problems) + "; the run neither advances nor releases on it (restore run.json from the run that wrote it, or recover by hand)", code="run-state-invalid", problems=problems)
+    return stop
+
+
+def validate_high_water(value, run_id: str) -> str | None:
+    """``RunState.last_observed_at``: ``None`` or a strict UTC timestamp. A malformed value is
+    refused (``run-state-invalid``), never replaced by the current time."""
+    if value is None:
+        return None
+    problems: list[str] = []
+    if _parse_time(value, "last_observed_at", problems) is None:
+        raise Refused(f"run {run_id}: persisted last_observed_at is not a valid observation time: " + "; ".join(problems) + "; the clock-regression high-water mark cannot be trusted (restore run.json from the run that wrote it, or recover by hand)", code="run-state-invalid", problems=problems)
+    return value

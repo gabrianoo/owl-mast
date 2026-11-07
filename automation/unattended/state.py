@@ -31,7 +31,7 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .activation import Activation, validate_binding
+from .activation import Activation, validate_binding, validate_high_water, validate_stop_record
 from .errors import Refused
 
 PHASES = ("claim-incomplete", "reserved", "claimed", "implemented", "checks-passed", "checks-failed", "review-authorized", "review-requested", "review-approved", "changes-requested", "repair-authorized", "proposed", "blocked", "cancelled", "conflict")
@@ -308,10 +308,48 @@ class Store:
     def run_path(self) -> Path:
         return self.root / "run.json"
 
+    RUN_KEYS = frozenset(f.name for f in fields(RunState))
+    OPTIONAL_RUN_KEYS = frozenset({"activation", "last_observed_at", "activation_stop"})  # live-only controls, absent from records written before the opt-in (read as null; never added by a load)
+    ENVIRONMENTS = ("fixture", "live")
+
     def load_run(self) -> RunState | None:
+        """The run record as persisted, validated at this one load boundary before anything reads
+        it: exactly the :class:`RunState` fields with their types, the ``run_id`` **equal to the
+        run this store was opened for** (a genuine record restored from another run directory is
+        a foreign record, not this run: ``run-identity-mismatch``), and well-formed time controls
+        (``last_observed_at`` null or a strict UTC time; ``activation_stop`` null or a complete stop
+        record). A malformed record refuses ``run-state-invalid`` and is never rewritten, migrated
+        or read as the absence of a control. The live activation record itself is validated by
+        :meth:`bound_run`."""
         if not self.run_path.exists():
             return None
-        return RunState(**json.loads(self.run_path.read_text(encoding="utf-8")))
+        try:
+            raw = json.loads(self.run_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            raise Refused(f"run {self.run_id}: run.json is not readable JSON ({exc}); nothing is advanced or released on it", code="run-state-invalid") from exc
+        if not isinstance(raw, dict) or not (self.RUN_KEYS - self.OPTIONAL_RUN_KEYS) <= set(raw) <= self.RUN_KEYS:
+            raise Refused(f"run {self.run_id}: run.json keys {sorted(set(raw) ^ self.RUN_KEYS) if isinstance(raw, dict) else type(raw).__name__} differ from the run record shape; no silent migration (restore run.json from the run that wrote it, or recover by hand)", code="run-state-invalid")
+        raw = {**{k: None for k in self.OPTIONAL_RUN_KEYS}, **raw}
+        problems: list[str] = []
+        for key in ("run_id", "repo", "policy_digest", "started_at", "environment"):
+            if not isinstance(raw[key], str) or not raw[key].strip():
+                problems.append(f"{key} must be a non-empty string")
+        if raw["environment"] not in self.ENVIRONMENTS:
+            problems.append(f"environment {raw['environment']!r} is not one of {list(self.ENVIRONMENTS)}")
+        for key in ("stories_claimed", "delegated_tasks", "repair_rounds"):
+            if not isinstance(raw[key], int) or isinstance(raw[key], bool) or raw[key] < 0:
+                problems.append(f"{key} must be a non-negative integer")
+        if not isinstance(raw["cancelled"], bool):
+            problems.append("cancelled must be a boolean")
+        if raw["stop_reason"] is not None and not isinstance(raw["stop_reason"], str):
+            problems.append("stop_reason must be null or a string")
+        if problems:
+            raise Refused(f"run {self.run_id}: run.json is not a valid run record: " + "; ".join(problems) + "; nothing is advanced or released on it (restore run.json from the run that wrote it, or recover by hand)", code="run-state-invalid", problems=problems)
+        if raw["run_id"] != self.run_id:
+            raise Refused(f"run {self.run_id}: run.json records run {raw['run_id']!r}; a record restored from another run is not this run and authorizes nothing here (its approvals and obligations belong to {raw['run_id']!r}); nothing is advanced, released or rewritten", code="run-identity-mismatch", recorded_run_id=raw["run_id"])
+        validate_high_water(raw["last_observed_at"], self.run_id)
+        validate_stop_record(raw["activation_stop"], self.run_id)
+        return RunState(**raw)
 
     def save_run(self, run: RunState) -> None:
         atomic_write_text(self.run_path, json.dumps(asdict(run), indent=1, sort_keys=True))
@@ -327,13 +365,15 @@ class Store:
         return found
 
     def bound_run(self) -> RunState | None:
-        """The run as persisted, with a live run's activation binding re-validated strictly
-        against the run it is stored in. A live run whose record is missing is returned as is
-        (its consumers report ``activation-required``); a partial, foreign or inconsistent
-        record refuses ``activation-binding-invalid`` and nothing is advanced or released."""
+        """The run as persisted (:meth:`load_run`: shape, time controls and run identity), with a
+        live run's activation binding re-validated strictly against **the run selected by this
+        store** (``Store.run_id``), never against identities read from the same file. A live run
+        whose record is missing is returned as is (its consumers report ``activation-required``);
+        a partial, foreign or inconsistent record refuses ``activation-binding-invalid`` and
+        nothing is advanced or released."""
         run = self.load_run()
         if run is not None and run.environment == "live" and run.activation is not None:
-            validate_binding(run.activation, run.run_id, run.repo, run.policy_digest)
+            validate_binding(run.activation, self.run_id, run.repo, run.policy_digest)
         return run
 
     def ensure_run(self, repo: str, policy_digest: str, environment: str, activation: Activation | None = None, policy=None, now: str | None = None) -> RunState:

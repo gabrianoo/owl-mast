@@ -16,14 +16,14 @@ The foundation refuses every real-transport state command unconditionally (`live
 
 ## Acceptance criteria
 
-- AC1 Without `--activation`, every real-transport state command (`status` included) refuses `activation-required` before any GitHub call and creates no state. (`test_cli_and_probes`, `test_coordinator`, `test_sync`, `test_transport`, `test_lifecycle_smoke`)
+- AC1 Without `--activation`, no live run is created and every admitting or advancing real-transport state command refuses `activation-required` before any GitHub call (on a run that was never activated `status` and cleanup refuse too); cleanup and `status` of a run activated earlier work on its validated recorded binding without the file. (`test_cli_and_probes`, `test_coordinator`, `test_sync`, `test_transport`, `test_lifecycle_smoke`)
 - AC2 The shipped policy and the committed candidate activation never authorize a run through the CLI (`check-activation` exit 2; `reserve` refuses, no state, no calls). (`test_activation.CandidateAndLoaderTests`)
 - AC3 Malformed, unknown-key, secret-like, non-story-scope, missing-evidence and unreadable activations refuse at load. (`test_malformed_activations_refuse_at_load`)
 - AC4 A current activation on a live-marked synthetic transport admits OM-01.02 and advances through claim, head, checks, review authorization and approved review; the run records the binding. (`test_current_activation_admits_and_advances…`)
 - AC5 Foreign run id, foreign repository, policy digest drift, scope drift, implementer/reviewer model drift, budget drift, non-live environment, over-long or inverted window, not-yet-valid and expired activations refuse at run start with the specific code, no calls, no run state. Policy drift after activation refuses the existing run (`run-binding-mismatch`) and a new one (`activation-mismatch`). (`test_foreign_scope_and_drift…`, `test_policy_drift…`)
 - AC6 After expiry every advancing operation refuses `activation-expired`; a late receipt binds for cleanup only; cancel with terminal evidence, record-task-terminal, resume (cleanup only), cancel-run work with the same or no activation and never advance; restart replays cleanup but abandons advancing intents. (`ExpiryAndCleanupTests`)
 - AC7 A changed or different activation refuses every operation including cleanup. (`test_changed_activation…`)
-- AC8 All previously qualified safeguards and the existing suite stay green: 305 tests (277 + 11 + 17), `./gradlew build --console=plain`, `scripts/verify-quality-gates.sh`. `.java-version`, backend, product specs and CI untouched.
+- AC8 All previously qualified safeguards and the existing suite stay green: 324 tests (277 + 11 + 17 + 19), `./gradlew build --console=plain`, `scripts/verify-quality-gates.sh`. `.java-version`, backend, product specs and CI untouched.
 - AC9 Preflight evidence is recorded with verified vs missing items and explicit blockers; no status, checkbox, Project or environment mutation.
 
 ## Code map
@@ -37,13 +37,14 @@ The foundation refuses every real-transport state command unconditionally (`live
 | `automation/examples/activation-om-01-02.candidate.toml` | unapproved candidate (cannot dispatch when copied) |
 | `automation/tests/test_activation.py` | 11 tests for AC1–AC7 |
 | `automation/tests/test_enabling_repair_1.py` | 17 tests for the repair-round-1 findings R1–R6 below |
+| `automation/tests/test_enabling_repair_2.py` | 19 tests for the repair-round-2 findings F1–F3 below (foreign run record, persisted temporal facts, status under the gate) |
 | `automation/tests/test_{cli_and_probes,coordinator,sync,transport,lifecycle_smoke,repair_pass_2_findings}.py` | gate expectations moved to `activation-required` |
 | `docs/unattended-execution.md`, `automation/README.md`, `docs/engineering-tracking.md` | opt-in semantics, candidate, trust model (`automation/policy.toml` stays byte-identical: committed legacy fixtures bind to its digest) |
 | `_bmad-output/implementation-artifacts/eng-01-enabling-preflight-20261107.md` | sanitized OM-01.02 activation preflight |
 
 ## Review triage (independent review of 96ad53a: CHANGES REQUESTED; repair round 1)
 
-Status: **implemented; reviewed with changes requested at 96ad53a; repair round 1 applied; fresh review pending; not eligible for activation approval; not approved; not enabled.** Findings and the shared fix (one validation in `Coordinator.require_activation`, run under the existing operation lock by every advancing and cleanup consumer, reading fresh locked state, never the cached run):
+Status: **implemented; reviewed with changes requested at 96ad53a (repair round 1 applied at aa80168) and at aa80168 (repair round 2 applied, below); fresh review of the round-2 head pending; not eligible for activation approval; not approved; not enabled.** Findings and the shared fix (one validation in `Coordinator.require_activation`, run under the existing operation lock by every advancing and cleanup consumer, reading fresh locked state, never the cached run):
 
 | Finding | Fix | Code |
 | --- | --- | --- |
@@ -55,6 +56,18 @@ Status: **implemented; reviewed with changes requested at 96ad53a; repair round 
 | R6 observed expiry reversible after clock rollback/restart | `_observe_stop` persists the first observed expiry (from the recorded window) or a clock regression past the last observed time (5 min tolerance) in `run.json` (`activation_stop`, `last_observed_at`); the run never advances again, cleanup, late receipts (cleanup only) and terminal evidence stay allowed; approvals and budgets untouched | `activation-expired`, `clock-regression` |
 
 Unchanged: the trusted-machine boundary (no credential scheme, no signatures), `automation/policy.toml` (byte-identical to f71167b), the default empty allowlist, the unapproved committed candidate. One existing assertion changed: after an observed expiry the bare restart reports the durable `activation-expired` stop instead of `activation-required` (`test_cleanup_after_expiry_works_with_the_same_or_no_activation_but_never_advances`).
+
+## Review triage (independent review of aa80168: CHANGES REQUESTED; repair round 2, final)
+
+One validation boundary again, this time on the persisted run record: `Store.load_run` validates shape, types, time controls and **run identity against the selected `Store.run_id`**, `Store.bound_run` validates the activation record against that same selected identity, and `status` joins every other consumer under `require_activation`.
+
+| Finding | Fix | Code |
+| --- | --- | --- |
+| F1 a genuine `run.json` restored from another run authorized cleanup (binding checked against ids read from the same file) | `load_run` refuses a record whose `run_id` is not the store's; `bound_run`/`validate_binding` check the activation record against `Store.run_id`; applies at construction, every fresh locked reload, cancel, cancel-run, late receipts, pending cleanup replay, `status`, CLI and the public `Store` entrypoints; nothing rewritten, zero transport calls | `run-identity-mismatch`, `activation-binding-invalid` |
+| F2 persisted temporal facts accepted without validity (`validated_at` null/outside window; malformed `last_observed_at` replaced by now; `activation_stop` `[]`/`false` read as absent) | `validate_binding` requires a non-null strict `validated_at` inside `issued_at..expires_at` (window ≤ 24 h); `validate_high_water` / `validate_stop_record` at the load boundary (null or exactly the supported record with a recognized code and typed fields); `_observe_stop` refuses on any parse problem instead of substituting now; `is not None` everywhere instead of truthiness; valid expired cleanup unchanged | `activation-binding-invalid`, `run-state-invalid` |
+| F3 `status` observed expiry without recording it; rollback/restart resumed work; cached run/file facts could go stale | `status` calls `require_activation("status", advancing=False)` under the lock: fresh reload/validation, source re-read, durable expiry/clock-regression observation, coherent snapshot of the persisted run; no-file status on a valid binding kept; changed/malformed source refuses like every other consumer | `activation-expired`, `clock-regression`, `activation-mismatch`, `activation-invalid` |
+
+Legacy records written before the opt-in (no `activation`, `last_observed_at`, `activation_stop` keys) still load with those controls read as null; the committed legacy fixtures and their regeneration are unchanged. `automation/policy.toml` stays byte-identical to f71167b. Regressions: `automation/tests/test_enabling_repair_2.py` (19 tests). No further repair rounds without owner authorization.
 
 ## Out of scope / blockers kept explicit
 

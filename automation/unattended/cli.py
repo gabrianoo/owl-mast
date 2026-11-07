@@ -2,8 +2,10 @@
 
 Every command prints one JSON document. Read-only commands never write to GitHub. Commands
 that write require ``--live``; without it they refuse and say so. On the real transport every
-state command additionally needs ``--activation`` naming a current run-bound activation
-authorization; without one it refuses ``activation-required`` before any GitHub call.
+state command that admits or advances additionally needs ``--activation`` naming a current
+run-bound activation authorization; without one it refuses ``activation-required`` before any
+GitHub call, and no live run is created without one. Cleanup and ``status`` of a run that was
+activated earlier work on the run's validated recorded binding without the file.
 """
 
 from __future__ import annotations
@@ -54,7 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--repo-root", default=".")
     p.add_argument("--snapshot", default=None, help="use a saved snapshot JSON instead of reading GitHub")
     p.add_argument("--live", action="store_true", help="allow GitHub writes (reserve, authorize-repair, block, cancel, cancel-run, resume, rebase-revisions, probe-write)")
-    p.add_argument("--activation", default=None, help="run-bound activation authorization TOML (see automation/examples/activation-om-01-02.candidate.toml); required on the real transport for every state command; the shipped candidate is unapproved and refuses")
+    p.add_argument("--activation", default=None, help="run-bound activation authorization TOML (see automation/examples/activation-om-01-02.candidate.toml); required on the real transport to create a live run and for every admitting/advancing command; cleanup and status of a run activated earlier work on its recorded binding without it; the shipped candidate is unapproved and refuses")
     sub = p.add_subparsers(dest="command", required=True)
 
     sub.add_parser("snapshot", help="read-only normalized backlog snapshot").add_argument("--out", default=None)
