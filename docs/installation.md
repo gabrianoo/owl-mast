@@ -172,14 +172,19 @@ HTTPRoute, and the selected pods' controller chain pod → ReplicaSet → Deploy
 readability): an existing object must carry the expected identity's label exactly, an unreadable
 ownership (denied, outage, partial discovery, unexpected output) refuses, and only an explicit API
 NotFound (`--ignore-not-found` exit 0 with no object) counts as absence. The one optional kind,
-HTTPRoute, counts as absent only when the typed `/apis` APIGroupList (which the API server builds from
-every registered APIService and every established CRD group, available or not) has no
-`gateway.networking.k8s.io` entry; when the group is listed, `/apis/gateway.networking.k8s.io/v1` must
-return the APIResourceList of exactly that version naming `httproutes`/`HTTPRoute`, otherwise (stale
-backend, 503, 403, malformed or wrong document) preflight refuses. `kubectl api-versions` is not used:
-its listing silently drops versions whose aggregated discovery is Stale. Nothing is mutated when
-preflight refuses. `deploy/tests/test_discovery_client.py` drives the real kubectl against a loopback
-discovery server to prove these outcomes end to end. Pod replacement deletes only the pods whose chain was proven
+HTTPRoute, counts as absent only when the typed `/apis` APIGroupList returned by the responding API server
+advertises no `gateway.networking.k8s.io` group at that read, and only after the whole document validated
+against the metav1 contract (kind `APIGroupList`, apiVersion `v1`, every group an object with a non-empty
+string name, a non-empty versions list whose `groupVersion` equals `name/version`, a coherent
+preferredVersion, no duplicate names); a malformed document is an error, never absence. When the group is
+listed, `/apis/gateway.networking.k8s.io/v1` must be the `APIResourceList` with apiVersion `v1` and exactly
+that `groupVersion`, listing `httproutes` of kind `HTTPRoute` whose own `group`/`version`/scope fields, if
+present, agree with it; stale backend, 503, 403, malformed, contradictory or wrong documents refuse.
+`kubectl api-versions` is not used: its listing silently drops versions whose aggregated discovery is Stale.
+Nothing is mutated when preflight refuses. This is the server's registration view at the moment of the read
+(the aggregator lists registered APIServices and auto-registered CRD groups whether or not they are
+available); it is not an atomic proof about CRD storage or future registrations. `deploy/tests/test_discovery_client.py`
+drives the real kubectl against a loopback discovery server to prove these outcomes end to end. Pod replacement deletes only the pods whose chain was proven
 immediately before, by name. It then prepares the run-owned StorageClass, namespaces and quotas (6 CPU / 12Gi /
 40Gi combined), generates synthetic secrets into the cluster only, deploys synthetic external
 PostgreSQL/Keycloak fixtures, installs all four combinations sequentially, proves pod replacement,

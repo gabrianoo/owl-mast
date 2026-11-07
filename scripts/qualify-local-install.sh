@@ -122,18 +122,37 @@ _typed_discovery() { # _typed_discovery <path> <python-check> : prints the check
   echo "$verdict"
 }
 optional_httproute_state() {
+  # Both documents are validated field by field against the metav1 contracts (APIGroupList/APIGroup/
+  # GroupVersionForDiscovery and APIResourceList/APIResource: kind, apiVersion "v1", string identities,
+  # coherent groupVersion = name/version). Any malformed or contradictory document is an error, never
+  # absence and never served.
   local groups version
   groups="$(_typed_discovery /apis 'import json,sys
 group=sys.argv[1]
+def bad(msg):
+    print("error:/apis APIGroupList malformed: "+msg); sys.exit(0)
+def nonempty_str(v):
+    return isinstance(v,str) and v.strip()!="" and v==v.strip()
 try:
     doc=json.load(sys.stdin)
 except Exception as exc:
     print("error:/apis is not JSON: "+str(exc)[:80]); sys.exit(0)
 if not isinstance(doc,dict) or doc.get("kind")!="APIGroupList" or doc.get("apiVersion")!="v1" or not isinstance(doc.get("groups"),list):
     print("error:/apis did not return a typed APIGroupList v1 (got kind=%r apiVersion=%r)"%(doc.get("kind") if isinstance(doc,dict) else type(doc).__name__, doc.get("apiVersion") if isinstance(doc,dict) else None)); sys.exit(0)
-names=[g.get("name") for g in doc["groups"] if isinstance(g,dict)]
-if any(n is None for n in names) or len(names)!=len(doc["groups"]):
-    print("error:/apis APIGroupList has malformed group entries"); sys.exit(0)
+names=[]
+for i,g in enumerate(doc["groups"]):
+    if not isinstance(g,dict): bad("groups[%d] is not an object"%i)
+    name=g.get("name")
+    if not nonempty_str(name): bad("groups[%d].name is not a non-empty string (%r)"%(i,name))
+    versions=g.get("versions")
+    if not isinstance(versions,list) or not versions: bad("groups[%d] (%s) has no versions list"%(i,name))
+    for j,v in enumerate(versions):
+        if not isinstance(v,dict) or not nonempty_str(v.get("groupVersion")) or not nonempty_str(v.get("version")): bad("groups[%d].versions[%d] of %s lacks string groupVersion/version"%(i,j,name))
+        if v["groupVersion"]!=name+"/"+v["version"]: bad("groups[%d].versions[%d] groupVersion %r contradicts %s/%s"%(i,j,v["groupVersion"],name,v["version"]))
+    pv=g.get("preferredVersion")
+    if pv is not None and (not isinstance(pv,dict) or not nonempty_str(pv.get("groupVersion")) or not nonempty_str(pv.get("version")) or pv["groupVersion"]!=name+"/"+pv["version"]): bad("groups[%d] (%s) preferredVersion is incoherent"%(i,name))
+    names.append(name)
+if len(set(names))!=len(names): bad("duplicate group names")
 print("listed" if group in names else "unlisted")')"
   case "$groups" in
     unlisted) echo absent; return ;;
@@ -142,13 +161,31 @@ print("listed" if group in names else "unlisted")')"
   esac
   version="$(_typed_discovery "/apis/$OPTIONAL_KIND_HTTPROUTE_GROUP/$OPTIONAL_KIND_HTTPROUTE_VERSION" 'import json,sys
 group,version=sys.argv[1],sys.argv[2]
+def bad(msg):
+    print("error:version document malformed: "+msg); sys.exit(0)
+def nonempty_str(v):
+    return isinstance(v,str) and v.strip()!="" and v==v.strip()
 try:
     doc=json.load(sys.stdin)
 except Exception as exc:
     print("error:version document is not JSON: "+str(exc)[:80]); sys.exit(0)
-if not isinstance(doc,dict) or doc.get("kind")!="APIResourceList" or doc.get("groupVersion")!=group+"/"+version or not isinstance(doc.get("resources"),list):
-    print("error:version document is not the APIResourceList of %s/%s (kind=%r groupVersion=%r)"%(group,version,doc.get("kind") if isinstance(doc,dict) else None, doc.get("groupVersion") if isinstance(doc,dict) else None)); sys.exit(0)
-match=[r for r in doc["resources"] if isinstance(r,dict) and r.get("name")=="httproutes" and r.get("kind")=="HTTPRoute"]
+if not isinstance(doc,dict) or doc.get("kind")!="APIResourceList" or doc.get("apiVersion")!="v1" or doc.get("groupVersion")!=group+"/"+version or not isinstance(doc.get("resources"),list):
+    print("error:version document is not the APIResourceList v1 of %s/%s (kind=%r apiVersion=%r groupVersion=%r)"%(group,version,doc.get("kind") if isinstance(doc,dict) else None, doc.get("apiVersion") if isinstance(doc,dict) else None, doc.get("groupVersion") if isinstance(doc,dict) else None)); sys.exit(0)
+match=None
+for i,r in enumerate(doc["resources"]):
+    if not isinstance(r,dict): bad("resources[%d] is not an object"%i)
+    if not nonempty_str(r.get("name")) or not nonempty_str(r.get("kind")): bad("resources[%d] lacks string name/kind"%i)
+    if "namespaced" in r and not isinstance(r["namespaced"],bool): bad("resources[%d] (%s) namespaced is not boolean"%(i,r["name"]))
+    if "verbs" in r and (not isinstance(r["verbs"],list) or not all(isinstance(x,str) for x in r["verbs"])): bad("resources[%d] (%s) verbs is not a string list"%(i,r["name"]))
+    # APIResource.group/version are set only for resources served from another group/version (subresources);
+    # for the resource under test they must agree with the document identity.
+    if r["name"]=="httproutes":
+        if r["kind"]!="HTTPRoute": bad("resource httproutes has kind %r, expected HTTPRoute"%r["kind"])
+        if "group" in r and r["group"]!=group: bad("resource httproutes declares group %r under %s"%(r["group"],group))
+        if "version" in r and r["version"]!=version: bad("resource httproutes declares version %r under %s"%(r["version"],version))
+        if r.get("namespaced") is False: bad("resource httproutes is declared cluster-scoped; HTTPRoute is namespaced")
+        if match is not None: bad("resource httproutes is listed twice")
+        match=r
 print("served" if match else "error:%s/%s is served but does not list the httproutes resource of kind HTTPRoute"%(group,version))')"
   echo "$version"
 }

@@ -60,6 +60,7 @@ if [[ "$args" == *" get --raw /apis"* ]]; then
       unavailable) echo 'Error from server (ServiceUnavailable): the server is currently unable to handle the request' >&2; exit 1 ;;
       malformed) printf '<html>503 Service Unavailable</html>'; exit 0 ;;
       wrongkind) printf '{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"apps/v1","resources":[]}'; exit 0 ;;
+      badname) printf '{"kind":"APIGroupList","apiVersion":"v1","groups":[{"name":["gateway.networking.k8s.io"],"versions":[{"groupVersion":"gateway.networking.k8s.io/v1","version":"v1"}]}]}'; exit 0 ;;
       aggregated) printf '{"kind":"APIGroupDiscoveryList","apiVersion":"apidiscovery.k8s.io/v2","items":[]}'; exit 0 ;;
       *) printf '%s%s]}' "$groups" "$gw"; exit 0 ;;   # current, stale, noresource, wronggv list the group
     esac
@@ -68,6 +69,8 @@ if [[ "$args" == *" get --raw /apis"* ]]; then
     stale) echo 'Error from server (ServiceUnavailable): the server is currently unable to handle the request' >&2; exit 1 ;;
     noresource) printf '{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"gateway.networking.k8s.io/v1","resources":[{"name":"gateways","kind":"Gateway","namespaced":true}]}'; exit 0 ;;
     wronggv) printf '{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"gateway.networking.k8s.io/v1beta1","resources":[{"name":"httproutes","kind":"HTTPRoute","namespaced":true}]}'; exit 0 ;;
+    resourceversion) printf '{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"gateway.networking.k8s.io/v1","resources":[{"name":"httproutes","kind":"HTTPRoute","namespaced":true,"version":"v1beta1"}]}'; exit 0 ;;
+    noapiversion) printf '{"kind":"APIResourceList","groupVersion":"gateway.networking.k8s.io/v1","resources":[{"name":"httproutes","kind":"HTTPRoute","namespaced":true}]}'; exit 0 ;;
     *) printf '{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"gateway.networking.k8s.io/v1","resources":[{"name":"httproutes","kind":"HTTPRoute","namespaced":true},{"name":"gateways","kind":"Gateway","namespaced":true}]}'; exit 0 ;;
   esac
 fi
@@ -367,7 +370,8 @@ class PreflightTests(unittest.TestCase):
             ("stale", "GET /apis/gateway.networking.k8s.io/v1 failed"),     # group registered, version backend unavailable: never absence
             ("forbidden", "GET /apis failed"), ("unavailable", "GET /apis failed"),
             ("malformed", "/apis is not JSON"), ("wrongkind", "did not return a typed APIGroupList"), ("aggregated", "did not return a typed APIGroupList"),
-            ("noresource", "does not list the httproutes resource"), ("wronggv", "is not the APIResourceList of gateway.networking.k8s.io/v1"),
+            ("noresource", "does not list the httproutes resource"), ("wronggv", "is not the APIResourceList v1 of gateway.networking.k8s.io/v1"),
+            ("badname", "/apis APIGroupList malformed"), ("resourceversion", "declares version 'v1beta1'"), ("noapiversion", "is not the APIResourceList v1"),
         ):
             r = self.run_refused(BASE_WORLD + f"discovery - gateway {discovery}\n", "bundled-bundled")
             self.assertIn(message, r.stdout, discovery)

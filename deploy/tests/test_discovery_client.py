@@ -60,6 +60,17 @@ class DiscoveryServer(http.server.BaseHTTPRequestHandler):
         if path == "/api":
             return self.reply(200, {"kind": "APIVersions", "versions": ["v1"], "serverAddressByClientCIDRs": [{"clientCIDR": "0.0.0.0/0", "serverAddress": "127.0.0.1"}]})
         if path == "/apis":
+            if s.startswith("badname-"):  # group entries whose name is not a non-empty string
+                name = {"badname-list": [GROUP], "badname-int": 123, "badname-empty": "", "badname-null": None, "badname-space": "  "}[s]
+                return self.reply(200, {"kind": "APIGroupList", "apiVersion": "v1", "groups": [LEGACY_APPS, {"name": name, "versions": [{"groupVersion": f"{GROUP}/v1", "version": "v1"}]}]})
+            if s == "badgroup-notobject":
+                return self.reply(200, {"kind": "APIGroupList", "apiVersion": "v1", "groups": [LEGACY_APPS, "gateway.networking.k8s.io"]})
+            if s == "badgroup-contradiction":  # versions[].groupVersion disagrees with the group name
+                return self.reply(200, {"kind": "APIGroupList", "apiVersion": "v1", "groups": [LEGACY_APPS, {"name": "other.example", "versions": [{"groupVersion": f"{GROUP}/v1", "version": "v1"}]}]})
+            if s == "badgroup-noversions":
+                return self.reply(200, {"kind": "APIGroupList", "apiVersion": "v1", "groups": [LEGACY_APPS, {"name": "other.example", "versions": []}]})
+            if s == "badlist-apiversion":
+                return self.reply(200, {"kind": "APIGroupList", "apiVersion": "garbage/v99", "groups": [LEGACY_APPS]})
             if s == "forbidden":
                 return self.reply(403, status(403, "Forbidden", 'forbidden: User "system:anonymous" cannot get path "/apis"'))
             if s == "unavailable":
@@ -79,6 +90,20 @@ class DiscoveryServer(http.server.BaseHTTPRequestHandler):
                 return self.reply(200, {**VERSION_DOC, "resources": VERSION_DOC["resources"][1:]})
             if s == "wronggv":
                 return self.reply(200, {**VERSION_DOC, "groupVersion": f"{GROUP}/v1beta1"})
+            if s == "version-apiversion-garbage":
+                return self.reply(200, {**VERSION_DOC, "apiVersion": "garbage/v99"})
+            if s == "version-apiversion-missing":
+                return self.reply(200, {k: v for k, v in VERSION_DOC.items() if k != "apiVersion"})
+            if s == "version-kind-status":
+                return self.reply(200, {**VERSION_DOC, "kind": "Status"})
+            if s.startswith("resource-"):  # contradictory identity of the httproutes entry
+                route = dict(VERSION_DOC["resources"][0])
+                if s == "resource-version-v1beta1": route["version"] = "v1beta1"
+                if s == "resource-group-other": route["group"] = "other.example"
+                if s == "resource-kind-gateway": route["kind"] = "Gateway"
+                if s == "resource-clusterscoped": route["namespaced"] = False
+                if s == "resource-name-int": route["name"] = 7
+                return self.reply(200, {**VERSION_DOC, "resources": [route, VERSION_DOC["resources"][1]]})
             if s == "absent":
                 return self.reply(404, status(404, "NotFound", "the server could not find the requested resource"))
             return self.reply(200, VERSION_DOC)
@@ -157,10 +182,35 @@ class RealClientDiscoveryTests(unittest.TestCase):
         self.assertIn("preflight httproute owl-mast-test/owl-mast: owned by this run", r.stdout)
         self.assertTrue(any(f" get httproutes.v1.{GROUP} owl-mast --ignore-not-found" in c for c in calls))
 
+    def test_malformed_group_entries_are_never_absence(self):
+        """Review (541a654): a group whose name is a list, integer, empty, blank or null, a non-object entry, a
+        contradictory groupVersion or a list with the wrong representation version must refuse before any effect,
+        even though the gateway group is not named: malformed is not evidence of absence."""
+        for scenario in ("badname-list", "badname-int", "badname-empty", "badname-null", "badname-space", "badgroup-notobject", "badgroup-contradiction", "badgroup-noversions", "badlist-apiversion"):
+            r, calls, mutations = self.run_scenario(scenario, BASE_WORLD + "httproute owl-mast-test owl-mast foreign:other\n")
+            self.assertEqual(r.returncode, 2, (scenario, r.stdout[-700:], r.stderr[-300:]))
+            self.assertIn("REFUSED", r.stdout, scenario)
+            self.assertIn("/apis", r.stdout, scenario)
+            self.assertNotIn("preflight passed", r.stdout, scenario)
+            self.assertEqual(mutations, [], scenario)
+            self.assertTrue(all(" upgrade " not in c for c in calls), scenario)
+
+    def test_version_document_identity_is_validated(self):
+        """Review (541a654): the APIResourceList must carry apiVersion v1 and coherent resource identity; a
+        contradictory httproutes entry (other version, group, kind or scope) refuses. World: the object would be
+        owned, so only the document check can stop the step."""
+        for scenario in ("version-apiversion-garbage", "version-apiversion-missing", "version-kind-status", "resource-version-v1beta1", "resource-group-other", "resource-kind-gateway", "resource-clusterscoped", "resource-name-int"):
+            r, calls, mutations = self.run_scenario(scenario, BASE_WORLD + "httproute owl-mast-test owl-mast owned\n")
+            self.assertEqual(r.returncode, 2, (scenario, r.stdout[-700:], r.stderr[-300:]))
+            self.assertIn("REFUSED", r.stdout, scenario)
+            self.assertIn("version document", r.stdout, scenario)
+            self.assertEqual(mutations, [], scenario)
+            self.assertTrue(all(" upgrade " not in c and "httproutes" not in c for c in calls), scenario)
+
     def test_permission_outage_malformed_and_wrong_shape_refuse_with_zero_mutations(self):
         for scenario, message in (("forbidden", "GET /apis failed"), ("unavailable", "GET /apis failed"), ("malformed", "/apis is not JSON"),
                                   ("aggregated-only", "did not return a typed APIGroupList"), ("noresource", "does not list the httproutes resource"),
-                                  ("wronggv", f"is not the APIResourceList of {GROUP}/v1")):
+                                  ("wronggv", f"is not the APIResourceList v1 of {GROUP}/v1")):
             r, calls, mutations = self.run_scenario(scenario)
             self.assertEqual(r.returncode, 2, (scenario, r.stdout[-800:], r.stderr[-300:]))
             self.assertIn(message, r.stdout, scenario)
