@@ -41,17 +41,34 @@ state_of() { # kind ns name
 }
 ns="-"; set -- "$@"; argv=("$@")
 for ((i=0;i<${#argv[@]};i++)); do [ "${argv[$i]}" = "-n" ] && ns="${argv[$((i+1))]}"; done
-# Discovery: world line `apiversions - gateway.networking.k8s.io/v1 <nogateway|partial|forbidden|unavailable|garbage>`; no line = served.
-if [[ "$args" == *" api-versions"* ]]; then
-  state="$(state_of apiversions - gateway.networking.k8s.io/v1)"
-  base=$'apps/v1\nbatch/v1\nnetworking.k8s.io/v1\nstorage.k8s.io/v1\nv1'
+# Discovery: `get --raw /apis` and `get --raw /apis/gateway.networking.k8s.io/v1` answer typed documents from the world line
+# `discovery - gateway <current|nogateway|stale|forbidden|unavailable|malformed|wrongkind|aggregated|noresource|wronggv>`; no line = current.
+# When STUB_DISCOVERY_SERVER is set, these two reads are forwarded to the REAL kubectl ($STUB_REAL_KUBECTL) against that
+# loopback server with --kubeconfig=/dev/null, so the actual client behaviour is what the script sees.
+if [[ "$args" == *" get --raw /apis"* ]]; then
+  path="$(sed -E 's/.* get --raw ([^ ]+).*/\1/' <<<"$args")"
+  if [ -n "${STUB_DISCOVERY_SERVER:-}" ]; then
+    exec "$STUB_REAL_KUBECTL" --kubeconfig=/dev/null --server="$STUB_DISCOVERY_SERVER" --cache-dir="$STUB_CACHE_DIR" --request-timeout=10s get --raw "$path"
+  fi
+  state="$(state_of discovery - gateway)"; [ "$state" = absent ] && state=current
+  groups='{"kind":"APIGroupList","apiVersion":"v1","groups":[{"name":"apps","versions":[{"groupVersion":"apps/v1","version":"v1"}],"preferredVersion":{"groupVersion":"apps/v1","version":"v1"}}'
+  gw=',{"name":"gateway.networking.k8s.io","versions":[{"groupVersion":"gateway.networking.k8s.io/v1","version":"v1"}],"preferredVersion":{"groupVersion":"gateway.networking.k8s.io/v1","version":"v1"}}'
+  if [ "$path" = "/apis" ]; then
+    case "$state" in
+      nogateway) printf '%s]}' "$groups"; exit 0 ;;
+      forbidden) echo 'Error from server (Forbidden): forbidden: User "system:anonymous" cannot get path "/apis"' >&2; exit 1 ;;
+      unavailable) echo 'Error from server (ServiceUnavailable): the server is currently unable to handle the request' >&2; exit 1 ;;
+      malformed) printf '<html>503 Service Unavailable</html>'; exit 0 ;;
+      wrongkind) printf '{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"apps/v1","resources":[]}'; exit 0 ;;
+      aggregated) printf '{"kind":"APIGroupDiscoveryList","apiVersion":"apidiscovery.k8s.io/v2","items":[]}'; exit 0 ;;
+      *) printf '%s%s]}' "$groups" "$gw"; exit 0 ;;   # current, stale, noresource, wronggv list the group
+    esac
+  fi
   case "$state" in
-    nogateway) printf '%s\n' "$base"; exit 0 ;;
-    partial) printf '%s\n' "$base"; echo "E1107 memcache.go:287] couldn't get resource list for gateway.networking.k8s.io/v1: the server is currently unable to handle the request" >&2; exit 1 ;;
-    forbidden) echo "error: couldn't get available api versions from server: forbidden" >&2; exit 1 ;;
-    unavailable) echo "error: couldn't get available api versions from server: the server is currently unable to handle the request" >&2; exit 1 ;;
-    garbage) echo "<html>503</html>"; exit 0 ;;
-    *) printf '%s\ngateway.networking.k8s.io/v1\n' "$base"; exit 0 ;;
+    stale) echo 'Error from server (ServiceUnavailable): the server is currently unable to handle the request' >&2; exit 1 ;;
+    noresource) printf '{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"gateway.networking.k8s.io/v1","resources":[{"name":"gateways","kind":"Gateway","namespaced":true}]}'; exit 0 ;;
+    wronggv) printf '{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"gateway.networking.k8s.io/v1beta1","resources":[{"name":"httproutes","kind":"HTTPRoute","namespaced":true}]}'; exit 0 ;;
+    *) printf '{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"gateway.networking.k8s.io/v1","resources":[{"name":"httproutes","kind":"HTTPRoute","namespaced":true},{"name":"gateways","kind":"Gateway","namespaced":true}]}'; exit 0 ;;
   esac
 fi
 if [[ "$args" == *" get "* && "$args" == *"--ignore-not-found"* && "$args" == *"metadata.labels.owlmast"* ]]; then
@@ -333,19 +350,26 @@ class PreflightTests(unittest.TestCase):
                 finally:
                     h.close()
 
-    def test_absent_gateway_api_is_established_only_by_complete_discovery(self):
-        """N4: the optional HTTPRoute kind is absent only when a complete, successful discovery listing lacks its
-        group/version; the object is then never queried. Every discovery failure refuses with zero mutations."""
-        h = Harness(BASE_WORLD + "apiversions - gateway.networking.k8s.io/v1 nogateway\nhttproute owl-mast-test owl-mast mixed-forbidden\n")
+    def test_absent_gateway_api_is_established_only_by_the_typed_group_list(self):
+        """N4: the optional HTTPRoute kind is absent only when a well-formed APIGroupList lacks its group; the
+        object is then never queried. Every other discovery state refuses with zero mutations."""
+        h = Harness(BASE_WORLD + "discovery - gateway nogateway\nhttproute owl-mast-test owl-mast mixed-forbidden\n")
         try:
             r = h.run("bundled-bundled")
-            self.assertIn("is not among the served API versions (complete discovery succeeded without it)", r.stdout)
+            self.assertIn("the typed /apis APIGroupList has no group gateway.networking.k8s.io", r.stdout)
             self.assertNotIn("REFUSED", r.stdout)
-            self.assertTrue(all("httproutes" not in c for c in h.calls.read_text().splitlines()), "the unserved kind was still queried")
+            calls = h.calls.read_text().splitlines()
+            self.assertTrue(all("httproutes" not in c for c in calls), "the unlisted kind was still queried")
+            self.assertTrue(any(" get --raw /apis" in c and not c.endswith("/v1") for c in calls))
         finally:
             h.close()
-        for discovery, message in (("partial", "discovery incomplete or failed"), ("forbidden", "discovery incomplete or failed"), ("unavailable", "discovery incomplete or failed"), ("garbage", "unexpected discovery output")):
-            r = self.run_refused(BASE_WORLD + f"apiversions - gateway.networking.k8s.io/v1 {discovery}\n", "bundled-bundled")
+        for discovery, message in (
+            ("stale", "GET /apis/gateway.networking.k8s.io/v1 failed"),     # group registered, version backend unavailable: never absence
+            ("forbidden", "GET /apis failed"), ("unavailable", "GET /apis failed"),
+            ("malformed", "/apis is not JSON"), ("wrongkind", "did not return a typed APIGroupList"), ("aggregated", "did not return a typed APIGroupList"),
+            ("noresource", "does not list the httproutes resource"), ("wronggv", "is not the APIResourceList of gateway.networking.k8s.io/v1"),
+        ):
+            r = self.run_refused(BASE_WORLD + f"discovery - gateway {discovery}\n", "bundled-bundled")
             self.assertIn(message, r.stdout, discovery)
             self.assertIn("ownership unreadable", r.stdout, discovery)
 

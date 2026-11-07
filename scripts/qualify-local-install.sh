@@ -76,7 +76,8 @@ assert_supported_targets() {
 }
 STORAGE_CLASS="owl-mast-local-retain"
 
-k() { kubectl --context "$CONTEXT" "$@"; }
+KUBECTL_BIN="${OWLMAST_KUBECTL:-kubectl}"
+k() { "$KUBECTL_BIN" --context "$CONTEXT" "$@"; }
 h() { "$OWLMAST_HELM" --kube-context "$CONTEXT" "$@"; }
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$OUT/qualification.log"; }
 record() { # record <name> <command...>: run, save output to evidence, echo status
@@ -95,23 +96,62 @@ refuse() { log "REFUSED: $*"; exit 2; }
 # -- ownership -------------------------------------------------------------------------------------
 # resource_state <namespace|-> <kind> <name>: prints absent | owned | foreign:<owner or unlabelled> | error:<message>.
 # Only an explicit NotFound is absence; any other failure (denied, outage, unreadable) is an error.
-# api_version_served <group/version>: served | not-served | error:<message>. Absence of an API kind is established
-# only by a SUCCESSFUL, COMPLETE discovery listing (exit 0 and no diagnostics) that lacks the group/version;
-# permission, transport, partial-discovery and unexpected output are errors.
-api_version_served() {
-  local gv="$1" out err rc=0
+# optional_httproute_state: absent | served | error:<message>
+# Absence of the one optional kind is established from TYPED discovery documents, never from error text,
+# exit status alone or a lossy version listing:
+#  1. GET /apis must return a well-formed APIGroupList (kind, apiVersion v1, groups). The API server builds
+#     this legacy list from every registered APIService and every established CRD group, regardless of
+#     availability, so a group that is Stale/unavailable in aggregated discovery is still listed here.
+#     Only a listing that does not contain the group is positive, typed absence.
+#  2. If the group is listed, GET /apis/<group>/<version> must return a well-formed APIResourceList for
+#     exactly that groupVersion naming the `httproutes` resource of kind HTTPRoute: then the kind is served.
+#     A failing or malformed version document (stale backend, 503, 403, wrong kind/version, resource missing)
+#     is an error: the kind may exist but cannot be verified, so preflight refuses.
+# Any non-zero status, stderr output or unparseable body at either step is an error (fail closed).
+OPTIONAL_KIND_HTTPROUTE_GROUP="gateway.networking.k8s.io"
+OPTIONAL_KIND_HTTPROUTE_VERSION="v1"
+_typed_discovery() { # _typed_discovery <path> <python-check> : prints the check's verdict, or error:<message>
+  local path="$1" check="$2" out err rc=0 verdict
   err="$(mktemp)"
-  out="$(k api-versions 2>"$err")" || rc=$?
+  out="$(k get --raw "$path" 2>"$err")" || rc=$?
   if [ "$rc" -ne 0 ] || [ -s "$err" ]; then
-    echo "error:discovery incomplete or failed: $(tr '\n' ' ' <"$err" | cut -c1-200)"; rm -f "$err"; return
+    echo "error:GET $path failed (exit $rc): $(tr '\n' ' ' <"$err" | cut -c1-160)"; rm -f "$err"; return
   fi
   rm -f "$err"
-  if ! grep -qE '^[a-z0-9.-]+(/[a-z0-9]+)?$|^v1$' <<<"$out"; then echo "error:unexpected discovery output"; return; fi
-  if grep -qx -- "$gv" <<<"$out"; then echo served; else echo not-served; fi
+  verdict="$(printf '%s' "$out" | python3 -c "$check" "$OPTIONAL_KIND_HTTPROUTE_GROUP" "$OPTIONAL_KIND_HTTPROUTE_VERSION" 2>&1)" || verdict="error:discovery document check failed: $(tr '\n' ' ' <<<"$verdict" | cut -c1-120)"
+  echo "$verdict"
 }
-# Only this optional kind may be legitimately unserved: the chart renders it solely when routing.gateway is
-# enabled, which the qualification never does; any other kind that cannot be resolved is an error.
-OPTIONAL_KIND_HTTPROUTE_GV="gateway.networking.k8s.io/v1"
+optional_httproute_state() {
+  local groups version
+  groups="$(_typed_discovery /apis 'import json,sys
+group=sys.argv[1]
+try:
+    doc=json.load(sys.stdin)
+except Exception as exc:
+    print("error:/apis is not JSON: "+str(exc)[:80]); sys.exit(0)
+if not isinstance(doc,dict) or doc.get("kind")!="APIGroupList" or doc.get("apiVersion")!="v1" or not isinstance(doc.get("groups"),list):
+    print("error:/apis did not return a typed APIGroupList v1 (got kind=%r apiVersion=%r)"%(doc.get("kind") if isinstance(doc,dict) else type(doc).__name__, doc.get("apiVersion") if isinstance(doc,dict) else None)); sys.exit(0)
+names=[g.get("name") for g in doc["groups"] if isinstance(g,dict)]
+if any(n is None for n in names) or len(names)!=len(doc["groups"]):
+    print("error:/apis APIGroupList has malformed group entries"); sys.exit(0)
+print("listed" if group in names else "unlisted")')"
+  case "$groups" in
+    unlisted) echo absent; return ;;
+    listed) ;;
+    *) echo "$groups"; return ;;
+  esac
+  version="$(_typed_discovery "/apis/$OPTIONAL_KIND_HTTPROUTE_GROUP/$OPTIONAL_KIND_HTTPROUTE_VERSION" 'import json,sys
+group,version=sys.argv[1],sys.argv[2]
+try:
+    doc=json.load(sys.stdin)
+except Exception as exc:
+    print("error:version document is not JSON: "+str(exc)[:80]); sys.exit(0)
+if not isinstance(doc,dict) or doc.get("kind")!="APIResourceList" or doc.get("groupVersion")!=group+"/"+version or not isinstance(doc.get("resources"),list):
+    print("error:version document is not the APIResourceList of %s/%s (kind=%r groupVersion=%r)"%(group,version,doc.get("kind") if isinstance(doc,dict) else None, doc.get("groupVersion") if isinstance(doc,dict) else None)); sys.exit(0)
+match=[r for r in doc["resources"] if isinstance(r,dict) and r.get("name")=="httproutes" and r.get("kind")=="HTTPRoute"]
+print("served" if match else "error:%s/%s is served but does not list the httproutes resource of kind HTTPRoute"%(group,version))')"
+  echo "$version"
+}
 OPTIONAL_KIND_HTTPROUTE_RESOURCE="httproutes.v1.gateway.networking.k8s.io"
 resource_state() {
   local ns="$1" kind="$2" name="$3" owner="${4:-$RUN_ID}" out err rc=0 served
@@ -119,9 +159,9 @@ resource_state() {
   local -a nsarg=()
   [ "$ns" != "-" ] && nsarg=(-n "$ns")
   if [ "$kind" = httproute ]; then
-    served="$(api_version_served "$OPTIONAL_KIND_HTTPROUTE_GV")"
+    served="$(optional_httproute_state)"
     case "$served" in
-      not-served) echo kind-unavailable; return ;;
+      absent) echo kind-unavailable; return ;;
       served) resource="$OPTIONAL_KIND_HTTPROUTE_RESOURCE" ;;
       *) echo "$served"; return ;;
     esac
@@ -221,7 +261,7 @@ preflight_resource() { # preflight_resource <namespace|-> <kind> <name> [owner]
   printf '%s %s/%s %s\n' "$2" "$1" "$3" "$state" >>"$OUT/preflight/resources.txt"
   case "$state" in
     absent) log "preflight $2 $1/$3: absent" ;;
-    kind-unavailable) log "preflight $2 $1/$3: $OPTIONAL_KIND_HTTPROUTE_GV is not among the served API versions (complete discovery succeeded without it): the optional HTTPRoute kind cannot exist here and routing.gateway stays disabled" ;;
+    kind-unavailable) log "preflight $2 $1/$3: the typed /apis APIGroupList has no group $OPTIONAL_KIND_HTTPROUTE_GROUP (no APIService or established CRD registers it): the optional HTTPRoute kind cannot exist here and routing.gateway stays disabled" ;;
     owned) log "preflight $2 $1/$3: owned by this run" ;;
     foreign:*) log "preflight $2 $1/$3: exists but owner is '${state#foreign:}', not ${4:-$RUN_ID}: no adoption, overwrite or deletion"; PREFLIGHT_FAILED=1 ;;
     *) log "preflight $2 $1/$3: ownership unreadable (${state#error:}): refusing rather than assuming absence"; PREFLIGHT_FAILED=1 ;;
