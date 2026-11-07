@@ -20,6 +20,9 @@ spec:
       labels:
         {{- include "owl-mast.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: postgresql
+        {{- with .Values.commonLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       annotations:
         checksum/init: {{ include (print $.Template.BasePath "/postgresql-init-configmap.yaml") . | sha256sum }}
     spec:
@@ -108,16 +111,31 @@ spec:
             - name: init
               mountPath: /docker-entrypoint-initdb.d
               readOnly: true
+            - name: provisioning
+              mountPath: /owl-mast
+              readOnly: true
             - name: run
               mountPath: /var/run/postgresql
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: {{ default (printf "%s-data" (include "owl-mast.postgresql.fullname" .)) .Values.postgresql.persistence.existingClaim }}
+        # Only the first-initialisation script is auto-executed by the entrypoint; the provisioning
+        # helper is mounted separately and called explicitly (a disabled identity bundle must not fail init).
         - name: init
           configMap:
             name: {{ include "owl-mast.postgresql.fullname" . }}-init
             defaultMode: 0555
+            items:
+              - key: 10-owl-mast-databases.sh
+                path: 10-owl-mast-databases.sh
+        - name: provisioning
+          configMap:
+            name: {{ include "owl-mast.postgresql.fullname" . }}-init
+            defaultMode: 0555
+            items:
+              - key: provision-keycloak.sh
+                path: provision-keycloak.sh
         - name: run
           emptyDir: {}
 {{- end }}

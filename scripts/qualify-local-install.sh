@@ -10,6 +10,7 @@
 # invocation with exit 2 before anything is created, applied, labelled, deleted or installed.
 # Usage: KUBECONFIG=<run kubeconfig> OWLMAST_HELM=<helm4> EVIDENCE_DIR=<private dir> scripts/qualify-local-install.sh [step...]
 # Steps: prepare fixtures bundled-bundled persistence bundled-external external-bundled external-external failure-paths inventory all
+#        first-enable (needs OWLMAST_FOLLOWUP_RUN_ID; a fresh run-owned volume: app-only init, enable identity via the pre-upgrade hook, retry)
 # Optional: BACKEND_IMAGE_TAG (default 0.1.0), BACKEND_IMAGE_ID (expected local image id the node must run).
 set -euo pipefail
 
@@ -22,9 +23,15 @@ NS="${NS:-owl-mast-test}"
 EXT_NS="${EXT_NS:-owl-mast-test-external}"
 RELEASE="${RELEASE:-owl-mast}"
 CHART="$ROOT/deploy/helm/owl-mast"
-RUN_ID="om-01-02-local-20261107-01"
+# Ownership identity of the retained qualification resource set (namespaces, Secrets, fixtures, retained
+# claims). Objects carry exactly this label; a later authorized run that reuses them keeps the label and
+# records its own authorization in its evidence. The first-enable fixture (step first-enable) has its own
+# explicit identity, FE_RUN_ID, and never touches resources of the retained set beyond reading them.
+RUN_ID="${OWLMAST_RUN_ID:-om-01-02-local-20261107-01}"
 RUN_LABEL_KEY="owlmast.aisquad.com/run"
 RUN_LABEL="$RUN_LABEL_KEY=$RUN_ID"
+FE_RUN_ID="${OWLMAST_FOLLOWUP_RUN_ID:-}"
+FE_RELEASE="${FE_RELEASE:-owl-mast-fe}"
 BACKEND_IMAGE_TAG="${BACKEND_IMAGE_TAG:-0.1.0}"
 BACKEND_IMAGE_ID="${BACKEND_IMAGE_ID:-}"
 KIND_NODE="${KIND_NODE:-owl-mast-om0102-control-plane}"
@@ -52,57 +59,83 @@ refuse() { log "REFUSED: $*"; exit 2; }
 # resource_state <namespace|-> <kind> <name>: prints absent | owned | foreign:<owner or unlabelled> | error:<message>.
 # Only an explicit NotFound is absence; any other failure (denied, outage, unreadable) is an error.
 resource_state() {
-  local ns="$1" kind="$2" name="$3" out rc=0
+  local ns="$1" kind="$2" name="$3" owner="${4:-$RUN_ID}" out rc=0
   local -a nsarg=()
   [ "$ns" != "-" ] && nsarg=(-n "$ns")
   out="$(k "${nsarg[@]}" get "$kind" "$name" -o jsonpath="{.metadata.labels.owlmast\.aisquad\.com/run}" 2>&1)" || rc=$?
   if [ "$rc" -eq 0 ]; then
-    if [ "$out" = "$RUN_ID" ]; then echo owned
+    if [ "$out" = "$owner" ]; then echo owned
     elif [ -z "$out" ]; then echo "foreign:unlabelled"
     else echo "foreign:$out"; fi
   elif grep -q '(NotFound)' <<<"$out"; then echo absent
   else echo "error:$(tr '\n' ' ' <<<"$out" | cut -c1-200)"; fi
 }
-release_state() { # release_state <release>: absent | owned | foreign:<why> | error:<message>
-  local rel="$1" out rc=0 dep
+release_state() { # release_state <release>: absent | present | error:<message>  (Helm's own record; resources are checked one by one)
+  local rel="$1" out rc=0
   out="$(h status "$rel" -n "$NS" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ]; then echo present
+  elif grep -qi 'release: not found' <<<"$out"; then echo absent
+  else echo "error:$(tr '\n' ' ' <<<"$out" | cut -c1-200)"; fi
+}
+RELEASE_KINDS_AND_SUFFIXES=( "deployment:-backend" "deployment:-postgresql" "deployment:-keycloak" "deployment:-frontend"
+  "service:-backend" "service:-postgresql" "service:-keycloak" "service:-frontend"
+  "configmap:-postgresql-init" "configmap:-keycloak-realm" "configmap:-postgresql-provision-scripts"
+  "job:-postgresql-provision-keycloak" "ingress:" "pvc:-postgresql-data" )
+preflight_pods() { # preflight_pods <release> <component> <owner>: every selected pod must carry the owner label and belong to the release's ReplicaSet
+  local rel="$1" comp="$2" owner="$3" out rc=0 line name label ref
+  out="$(k -n "$NS" get pods -l "app.kubernetes.io/instance=$rel,app.kubernetes.io/component=$comp" -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.labels.owlmast\.aisquad\.com/run}{"|"}{.metadata.ownerReferences[0].kind}/{.metadata.ownerReferences[0].name}{"\n"}{end}' 2>&1)" || rc=$?
   if [ "$rc" -ne 0 ]; then
-    if grep -qi 'release: not found' <<<"$out"; then echo absent; else echo "error:$(tr '\n' ' ' <<<"$out" | cut -c1-200)"; fi
-    return
+    printf 'pods %s/%s(%s) error:%s\n' "$NS" "$rel" "$comp" "$(tr '\n' ' ' <<<"$out" | cut -c1-200)" >>"$OUT/preflight/resources.txt"
+    log "preflight pods $NS/$rel ($comp): selection unreadable: refusing"; PREFLIGHT_FAILED=1; return
   fi
-  dep="$(resource_state "$NS" deployment "$rel-backend")"
-  case "$dep" in
-    owned) echo owned ;;
-    absent) echo "foreign:release exists without this run's backend deployment" ;;
-    *) echo "$dep" ;;
+  while IFS='|' read -r name label ref; do
+    [ -n "$name" ] || continue
+    printf 'pod %s/%s label=%s owner=%s\n' "$NS" "$name" "$label" "$ref" >>"$OUT/preflight/resources.txt"
+    if [ "$label" != "$owner" ] || [[ "$ref" != ReplicaSet/$rel-$comp-* ]]; then
+      log "preflight pod $NS/$name: label '$label' / owner '$ref' is not this release's $comp ReplicaSet owned by $owner: refusing"; PREFLIGHT_FAILED=1
+    else
+      log "preflight pod $NS/$name: owned ($ref)"
+    fi
+  done <<<"$out"
+}
+preflight_release() { # preflight_release <release> [owner]: Helm record plus every resource the chart can render, hooks included, plus selected pods
+  local rel="$1" owner="${2:-$RUN_ID}" state entry kind suffix
+  state="$(release_state "$rel")"
+  printf 'release %s/%s %s\n' "$NS" "$rel" "$state" >>"$OUT/preflight/resources.txt"
+  case "$state" in
+    absent|present) log "preflight release $NS/$rel: $state (each of its resources is checked below)" ;;
+    *) log "preflight release $NS/$rel: Helm record unreadable (${state#error:}): refusing"; PREFLIGHT_FAILED=1 ;;
   esac
+  for entry in "${RELEASE_KINDS_AND_SUFFIXES[@]}"; do
+    kind="${entry%%:*}"; suffix="${entry#*:}"
+    preflight_resource "$NS" "$kind" "$rel$suffix" "$owner"
+  done
+  for kind in backend postgresql keycloak; do preflight_pods "$rel" "$kind" "$owner"; done
 }
 PREFLIGHT_FAILED=0
-preflight_resource() { # preflight_resource <namespace|-> <kind> <name>
-  local state; state="$(resource_state "$1" "$2" "$3")"
+preflight_resource() { # preflight_resource <namespace|-> <kind> <name> [owner]
+  local state; state="$(resource_state "$1" "$2" "$3" "${4:-$RUN_ID}")"
   printf '%s %s/%s %s\n' "$2" "$1" "$3" "$state" >>"$OUT/preflight/resources.txt"
   case "$state" in
     absent) log "preflight $2 $1/$3: absent" ;;
     owned) log "preflight $2 $1/$3: owned by this run" ;;
-    foreign:*) log "preflight $2 $1/$3: exists but owner is '${state#foreign:}', not $RUN_ID: no adoption, overwrite or deletion"; PREFLIGHT_FAILED=1 ;;
+    foreign:*) log "preflight $2 $1/$3: exists but owner is '${state#foreign:}', not ${4:-$RUN_ID}: no adoption, overwrite or deletion"; PREFLIGHT_FAILED=1 ;;
     *) log "preflight $2 $1/$3: ownership unreadable (${state#error:}): refusing rather than assuming absence"; PREFLIGHT_FAILED=1 ;;
-  esac
-}
-preflight_release() { # preflight_release <release>
-  local state; state="$(release_state "$1")"
-  printf 'release %s/%s %s\n' "$NS" "$1" "$state" >>"$OUT/preflight/resources.txt"
-  case "$state" in
-    absent) log "preflight release $NS/$1: absent" ;;
-    owned) log "preflight release $NS/$1: owned by this run (its steps upgrade or uninstall it)" ;;
-    foreign:*) log "preflight release $NS/$1: ${state#foreign:}: refusing"; PREFLIGHT_FAILED=1 ;;
-    *) log "preflight release $NS/$1: state unreadable (${state#error:}): refusing"; PREFLIGHT_FAILED=1 ;;
   esac
 }
 preflight_secrets_of() { # the four synthetic Secrets of a namespace
   local ns="$1" s
   for s in owl-mast-postgres-admin owl-mast-db owl-mast-keycloak-db owl-mast-keycloak-bootstrap; do preflight_resource "$ns" secret "$s"; done
 }
-preflight_install_target() { preflight_release "$RELEASE"; preflight_resource "$NS" pvc "$RELEASE-postgresql-data"; preflight_resource "$NS" namespace "$NS" >/dev/null 2>&1 || true; }
+preflight_install_common() { # what every product install in $NS consumes
+  preflight_resource - storageclass owl-mast-local-retain
+  preflight_resource - namespace "$NS"
+}
+preflight_fixture_endpoints() { # what every external combination consumes from the fixture namespace (read-only use)
+  preflight_resource - namespace "$EXT_NS"
+  preflight_resource "$EXT_NS" service external-postgresql; preflight_resource "$EXT_NS" deployment external-postgresql
+  preflight_resource "$EXT_NS" service external-keycloak; preflight_resource "$EXT_NS" deployment external-keycloak
+}
 preflight() { # preflight <step...>: every resource the selected steps consume or change, before any mutation
   log "== preflight for: $*"
   : >"$OUT/preflight/resources.txt"
@@ -116,25 +149,42 @@ preflight() { # preflight <step...>: every resource the selected steps consume o
         preflight_secrets_of "$NS"; preflight_secrets_of "$EXT_NS"
         preflight_resource "$NS" secret owl-mast-external-db; preflight_resource "$NS" secret owl-mast-external-keycloak-db ;;
       fixtures)
+        preflight_resource - namespace "$EXT_NS"
+        preflight_secrets_of "$EXT_NS"
         preflight_resource "$EXT_NS" configmap external-postgresql-init; preflight_resource "$EXT_NS" configmap external-keycloak-realm
         preflight_resource "$EXT_NS" pvc external-postgresql-data
         preflight_resource "$EXT_NS" service external-postgresql; preflight_resource "$EXT_NS" service external-keycloak
         preflight_resource "$EXT_NS" deployment external-postgresql; preflight_resource "$EXT_NS" deployment external-keycloak ;;
-      bundled-bundled|persistence|bundled-external|external-bundled|external-external)
-        preflight_release "$RELEASE"; preflight_resource "$NS" pvc "$RELEASE-postgresql-data" ;;
+      bundled-bundled|persistence)
+        preflight_install_common; preflight_secrets_of "$NS"; preflight_release "$RELEASE" ;;
+      bundled-external)
+        preflight_install_common; preflight_resource "$NS" secret owl-mast-postgres-admin; preflight_resource "$NS" secret owl-mast-db
+        preflight_fixture_endpoints; preflight_release "$RELEASE" ;;
+      external-bundled)
+        preflight_install_common; preflight_resource "$NS" secret owl-mast-external-db; preflight_resource "$NS" secret owl-mast-external-keycloak-db
+        preflight_resource "$NS" secret owl-mast-keycloak-bootstrap; preflight_fixture_endpoints; preflight_release "$RELEASE" ;;
+      external-external)
+        preflight_install_common; preflight_resource "$NS" secret owl-mast-external-db; preflight_fixture_endpoints; preflight_release "$RELEASE" ;;
+      first-enable)
+        [ -n "$FE_RUN_ID" ] || refuse "step first-enable needs OWLMAST_FOLLOWUP_RUN_ID, the explicit identity of its fixture"
+        preflight_install_common; preflight_fixture_endpoints
+        local s; for s in postgres-admin db keycloak-db keycloak-bootstrap; do preflight_resource "$NS" secret "$FE_RELEASE-$s" "$FE_RUN_ID"; done
+        preflight_release "$FE_RELEASE" "$FE_RUN_ID" ;;
       failure-paths)
-        preflight_resource "$NS" secret owl-mast-db-broken; preflight_release "$RELEASE-broken"; preflight_release "$RELEASE-wrongidp" ;;
+        preflight_install_common; preflight_fixture_endpoints
+        preflight_resource "$NS" secret owl-mast-db-broken; preflight_resource "$NS" secret owl-mast-external-db
+        preflight_release "$RELEASE-broken"; preflight_release "$RELEASE-wrongidp" ;;
       inventory) ;;
     esac
   done
   if [ "$PREFLIGHT_FAILED" -ne 0 ]; then refuse "preflight found resources this run does not own or cannot read; nothing was mutated (see $OUT/preflight/resources.txt)"; fi
-  log "preflight passed: every existing resource is owned by $RUN_ID"
+  log "preflight passed: every existing resource is owned by its expected identity"
 }
 
 # -- secrets (values never leave the cluster or an in-memory pipe) ----------------------------------
-ensure_secret() { # ensure_secret <namespace> <name> <username>: random password, created only if absent and owned if present
-  local ns="$1" name="$2" user="$3" state
-  state="$(resource_state "$ns" secret "$name")"
+ensure_secret() { # ensure_secret <namespace> <name> <username> [owner]: random password, created only if absent and owned if present
+  local ns="$1" name="$2" user="$3" owner="${4:-$RUN_ID}" state
+  state="$(resource_state "$ns" secret "$name" "$owner")"
   case "$state" in
     owned) log "secret $ns/$name exists and is owned by this run (kept)"; return ;;
     absent) ;;
@@ -142,7 +192,7 @@ ensure_secret() { # ensure_secret <namespace> <name> <username>: random password
   esac
   local password; password="$(openssl rand -base64 30 | tr -d '/+=' | cut -c1-32)"
   k -n "$ns" create secret generic "$name" --from-literal=username="$user" --from-literal=password="$password" >/dev/null
-  k -n "$ns" label secret "$name" "$RUN_LABEL" >/dev/null  # newly created by this run: labelled once, never --overwrite
+  k -n "$ns" label secret "$name" "$RUN_LABEL_KEY=$owner" >/dev/null  # newly created: labelled once with its explicit identity, never --overwrite
   log "secret $ns/$name created (synthetic, value not recorded)"
 }
 replicate_secret() { # replicate_secret <src-ns> <src-name> <dst-ns> <dst-name>: same values, owned source only, piped in memory only
@@ -391,6 +441,72 @@ step_external_external() {
   record external-external-uninstall h uninstall "$RELEASE" -n "$NS" --wait
 }
 
+step_first_enable() {
+  # F1/F2 on the real target: a fresh run-owned volume is initialised with the identity bundle disabled
+  # and no Keycloak credentials, then the identity bundle is enabled with the pre-upgrade provisioning
+  # hook under `helm upgrade --wait`, then the transition is retried as a no-op. Explicit fixture identity
+  # $FE_RUN_ID; the retained qualification set is only read (external issuer fixture).
+  log "== first-enable transition on a fresh volume (release $FE_RELEASE, identity $FE_RUN_ID)"
+  local s
+  ensure_secret "$NS" "$FE_RELEASE-postgres-admin" owlmast_admin "$FE_RUN_ID"
+  ensure_secret "$NS" "$FE_RELEASE-db" owlmast_app "$FE_RUN_ID"
+  ensure_secret "$NS" "$FE_RELEASE-keycloak-db" keycloak_app "$FE_RUN_ID"
+  ensure_secret "$NS" "$FE_RELEASE-keycloak-bootstrap" temp-admin "$FE_RUN_ID"
+  local -a common=(--set backend.image.tag="$BACKEND_IMAGE_TAG" --set backend.image.pullPolicy=Never
+    --set commonLabels."owlmast\.aisquad\.com/run"="$FE_RUN_ID" --set postgresql.persistence.storageClass=owl-mast-local-retain
+    --set postgresql.adminExistingSecret="$FE_RELEASE-postgres-admin" --set database.existingSecret="$FE_RELEASE-db"
+    --set identity.keycloak.database.existingSecret="$FE_RELEASE-keycloak-db" --set identity.keycloak.bootstrapExistingSecret="$FE_RELEASE-keycloak-bootstrap")
+  record fe1-install-external-identity h upgrade --install "$FE_RELEASE" "$CHART" -n "$NS" --wait --timeout 10m "${common[@]}" \
+    --set identity.bundled=false --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast"
+  record fe1-postgresql-pod k -n "$NS" get pods -l "app.kubernetes.io/instance=$FE_RELEASE,app.kubernetes.io/component=postgresql" -o custom-columns=NAME:.metadata.name,READY:.status.containerStatuses[0].ready,RESTARTS:.status.containerStatuses[0].restartCount
+  grep -qE '^\S+ +true +0$' "$OUT/fe1-postgresql-pod.txt" || { log "FAIL fresh PostgreSQL did not initialise on its first start without restarts"; return 1; }
+  record fe1-postgresql-init-log k -n "$NS" logs "deploy/$FE_RELEASE-postgresql"
+  grep -q 'identity bundle disabled; no Keycloak database or principal provisioned' "$OUT/fe1-postgresql-init-log.txt" && grep -q 'PostgreSQL init process complete' "$OUT/fe1-postgresql-init-log.txt" \
+    && ! grep -qE 'provision-keycloak.sh|parameter null or not set' "$OUT/fe1-postgresql-init-log.txt" \
+    && log "ok   fe1-fresh-init-without-keycloak (complete first initialisation, helper never auto-executed)" || { log "FAIL fresh app-only initialisation evidence"; return 1; }
+  record fe1-no-keycloak-role k -n "$NS" exec "deploy/$FE_RELEASE-postgresql" -- sh -c 'psql -U "$POSTGRES_USER" -h 127.0.0.1 -d postgres -Atc "select count(*) from pg_roles where rolname='"'"'keycloak_app'"'"'; select count(*) from pg_database where datname='"'"'keycloak'"'"'"'
+  [ "$(grep -cx 0 "$OUT/fe1-no-keycloak-role.txt")" -eq 2 ] || { log "FAIL app-only volume already has Keycloak objects"; return 1; }
+  record fe1-backend-readiness proxy_get "$NS" "$FE_RELEASE-backend:http" /actuator/health/readiness
+  grep -q '"status":"UP"' "$OUT/fe1-backend-readiness.txt" || { log "FAIL backend not UP on external identity"; return 1; }
+  local fe_pvc_uid; fe_pvc_uid="$(k get pvc "$FE_RELEASE-postgresql-data" -n "$NS" -o jsonpath='{.metadata.uid}')"
+  record fe1-app-marker k -n "$NS" exec "deploy/$FE_RELEASE-postgresql" -- sh -c 'PGPASSWORD="$OWLMAST_APP_PASSWORD" psql -v ON_ERROR_STOP=1 -U "$OWLMAST_APP_USERNAME" -h 127.0.0.1 -d owlmast -Atc "create table if not exists qualification_marker(v text primary key); insert into qualification_marker values ('"'"'before-enable'"'"') on conflict do nothing; select v from qualification_marker"'
+  grep -q before-enable "$OUT/fe1-app-marker.txt" || { log "FAIL marker"; return 1; }
+  log "== enable the identity bundle with the pre-upgrade provisioning hook (helm upgrade --wait)"
+  record fe2-enable-upgrade h upgrade "$FE_RELEASE" "$CHART" -n "$NS" --wait --timeout 10m "${common[@]}" \
+    --set identity.bundled=true --set postgresql.provisionKeycloakDatabase=true
+  record fe2-hook-job k -n "$NS" get job "$FE_RELEASE-postgresql-provision-keycloak" -o jsonpath='{.status.succeeded} {.status.failed}{"\n"}'
+  grep -q '^1 ' "$OUT/fe2-hook-job.txt" || { log "FAIL provisioning hook did not succeed exactly once"; return 1; }
+  record fe2-hook-log k -n "$NS" logs "job/$FE_RELEASE-postgresql-provision-keycloak"
+  grep -q 'CREATE ROLE' "$OUT/fe2-hook-log.txt" && grep -q 'CREATE DATABASE' "$OUT/fe2-hook-log.txt" && grep -q 'GRANT' "$OUT/fe2-hook-log.txt" \
+    && log "ok   fe2-first-enable-provisioned (role and database created by the pre-upgrade hook)" || { log "FAIL first-enable hook log"; return 1; }
+  record fe2-keycloak-ready proxy_get "$NS" "$FE_RELEASE-keycloak:management" /health/ready
+  record fe2-keycloak-discovery proxy_get "$NS" "$FE_RELEASE-keycloak:http" /realms/owl-mast/.well-known/openid-configuration
+  grep -q "\"issuer\":\"http://$FE_RELEASE-keycloak:8080/realms/owl-mast\"" "$OUT/fe2-keycloak-discovery.txt" || { log "FAIL bundled issuer after enable"; return 1; }
+  record fe2-backend-readiness proxy_get "$NS" "$FE_RELEASE-backend:http" /actuator/health/readiness
+  grep -q '"status":"UP"' "$OUT/fe2-backend-readiness.txt" || { log "FAIL backend not UP on the bundled issuer"; return 1; }
+  record fe2-backend-issuer-env k get deploy "$FE_RELEASE-backend" -n "$NS" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="OWLMAST_IDENTITY_ISSUER_URI")].value}'
+  record fe2-pvc-same-uid k get pvc "$FE_RELEASE-postgresql-data" -n "$NS" -o jsonpath='{.metadata.uid} {.status.phase}'
+  grep -q "$fe_pvc_uid Bound" "$OUT/fe2-pvc-same-uid.txt" || { log "FAIL volume changed across enable"; return 1; }
+  record fe2-app-marker k -n "$NS" exec "deploy/$FE_RELEASE-postgresql" -- sh -c 'PGPASSWORD="$OWLMAST_APP_PASSWORD" psql -v ON_ERROR_STOP=1 -U "$OWLMAST_APP_USERNAME" -h 127.0.0.1 -d owlmast -Atc "select v from qualification_marker"'
+  grep -q before-enable "$OUT/fe2-app-marker.txt" && log "ok   fe2-app-data-preserved" || { log "FAIL app data after enable"; return 1; }
+  local saved_release="$RELEASE"; RELEASE="$FE_RELEASE"
+  check_shared_postgres "$NS" "$FE_RELEASE-postgresql" || { RELEASE="$saved_release"; return 1; }
+  RELEASE="$saved_release"
+  log "== retry the same transition: idempotent no-op"
+  record fe3-retry-upgrade h upgrade "$FE_RELEASE" "$CHART" -n "$NS" --wait --timeout 10m "${common[@]}" \
+    --set identity.bundled=true --set postgresql.provisionKeycloakDatabase=true
+  record fe3-hook-log k -n "$NS" logs "job/$FE_RELEASE-postgresql-provision-keycloak"
+  grep -q 'GRANT' "$OUT/fe3-hook-log.txt" && ! grep -qE 'CREATE ROLE|CREATE DATABASE' "$OUT/fe3-hook-log.txt" \
+    && log "ok   fe3-retry-no-op (grants re-applied, nothing recreated)" || { log "FAIL retry was not a no-op"; return 1; }
+  record fe3-app-marker k -n "$NS" exec "deploy/$FE_RELEASE-postgresql" -- sh -c 'PGPASSWORD="$OWLMAST_APP_PASSWORD" psql -v ON_ERROR_STOP=1 -U "$OWLMAST_APP_USERNAME" -h 127.0.0.1 -d owlmast -Atc "select v from qualification_marker"'
+  grep -q before-enable "$OUT/fe3-app-marker.txt" || { log "FAIL app data after retry"; return 1; }
+  record fe3-keycloak-schema k -n "$NS" exec "deploy/$FE_RELEASE-postgresql" -- sh -c 'PGPASSWORD="$OWLMAST_KEYCLOAK_PASSWORD" psql -U "$OWLMAST_KEYCLOAK_USERNAME" -h 127.0.0.1 -d keycloak -Atc "select count(*) > 10 from information_schema.tables where table_schema='"'"'public'"'"'"'
+  grep -qx t "$OUT/fe3-keycloak-schema.txt" || { log "FAIL keycloak schema after retry"; return 1; }
+  record fe4-uninstall h uninstall "$FE_RELEASE" -n "$NS" --wait
+  record fe4-retained-claim k get pvc "$FE_RELEASE-postgresql-data" -n "$NS" -o jsonpath='{.metadata.uid} {.status.phase} {.metadata.labels.owlmast\.aisquad\.com/run}{"\n"}'
+  grep -q "$fe_pvc_uid Bound $FE_RUN_ID" "$OUT/fe4-retained-claim.txt" && log "ok   fe4-fixture-claim-retained (owned by $FE_RUN_ID, not deleted)" || { log "FAIL fixture claim"; return 1; }
+}
+
 step_failure_paths() {
   log "== failure paths: missing secret key, wrong issuer"
   ensure_broken_secret
@@ -425,12 +541,13 @@ step_failure_paths() {
 }
 
 step_inventory() {
-  record inventory-all k get all,pvc,pv,secrets,configmap,resourcequota -A -l "$RUN_LABEL" -o custom-columns=KIND:.kind,NS:.metadata.namespace,NAME:.metadata.name,CREATED:.metadata.creationTimestamp
+  record inventory-all k get all,pvc,pv,secrets,configmap,resourcequota -A -l "$RUN_LABEL_KEY" -o custom-columns=KIND:.kind,NS:.metadata.namespace,NAME:.metadata.name,OWNER:.metadata.labels.owlmast\.aisquad\.com/run,CREATED:.metadata.creationTimestamp
   record inventory-pv k get pv -o custom-columns=NAME:.metadata.name,CLAIM:.spec.claimRef.name,NS:.spec.claimRef.namespace,RECLAIM:.spec.persistentVolumeReclaimPolicy,CLASS:.spec.storageClassName,PHASE:.status.phase
   record inventory-helm h list -A
 }
 
 ALL_STEPS=(prepare fixtures bundled-bundled persistence bundled-external external-bundled external-external failure-paths inventory)
+# first-enable is run explicitly (it needs OWLMAST_FOLLOWUP_RUN_ID) and is not part of `all`.
 main() {
   local steps=("$@") step
   [ ${#steps[@]} -eq 0 ] && steps=(all)
@@ -438,7 +555,7 @@ main() {
   for step in "${steps[@]}"; do
     case "$step" in
       all) expanded+=("${ALL_STEPS[@]}") ;;
-      prepare|fixtures|bundled-bundled|persistence|bundled-external|external-bundled|external-external|failure-paths|inventory) expanded+=("$step") ;;
+      prepare|fixtures|bundled-bundled|persistence|bundled-external|external-bundled|external-external|first-enable|failure-paths|inventory) expanded+=("$step") ;;
       *) echo "unknown step $step"; exit 2 ;;
     esac
   done

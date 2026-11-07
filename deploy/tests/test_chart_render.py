@@ -152,9 +152,14 @@ class ChartRenderTest(unittest.TestCase):
         docs = render("--set", "postgresql.provisionKeycloakDatabase=true")
         job = by_kind(docs, "Job")
         self.assertEqual(len(job), 1)
-        self.assertEqual(job[0]["metadata"]["annotations"]["helm.sh/hook"], "post-install,post-upgrade")
+        self.assertEqual(job[0]["metadata"]["annotations"]["helm.sh/hook"], "pre-upgrade")  # F2: provisions before Helm waits for the consumers
         self.assertEqual(job[0]["spec"]["template"]["spec"]["containers"][0]["command"], ["bash", "/owl-mast/provision-keycloak.sh"])
+        self.assertEqual(job[0]["spec"]["template"]["spec"]["volumes"][0]["configMap"]["name"], "t-owl-mast-postgresql-provision-scripts")
+        hook_cm = {d["metadata"]["name"]: d for d in by_kind(docs, "ConfigMap")}["t-owl-mast-postgresql-provision-scripts"]
+        self.assertEqual((hook_cm["metadata"]["annotations"]["helm.sh/hook"], hook_cm["metadata"]["annotations"]["helm.sh/hook-weight"]), ("pre-upgrade", "-5"))
         script = {d["metadata"]["name"]: d for d in by_kind(docs, "ConfigMap")}["t-owl-mast-postgresql-init"]["data"]["provision-keycloak.sh"]
+        self.assertEqual(hook_cm["data"]["provision-keycloak.sh"], script)  # the hook carries the same script, independent of the release ConfigMap
+        self.assertIn("pg_isready", script)  # bounded readiness wait before provisioning over the network
         self.assertIn("WHERE NOT EXISTS (SELECT 1 FROM pg_roles", script)
         self.assertIn("WHERE NOT EXISTS (SELECT 1 FROM pg_database", script)
         self.assertNotIn("DROP", script.upper())
@@ -211,6 +216,12 @@ class ChartRenderTest(unittest.TestCase):
         ingress = by_kind(docs, "Ingress")[0]
         paths = {p["path"]: p["backend"]["service"]["name"] for p in ingress["spec"]["rules"][0]["http"]["paths"]}
         self.assertEqual(paths, {"/api": "t-owl-mast-backend", "/actuator": "t-owl-mast-backend", "/": "t-owl-mast-frontend"})
+
+    def test_common_labels_reach_pod_templates(self):
+        docs = render("--set", "commonLabels.owlmast\\.aisquad\\.com/run=run-x", "--set", "postgresql.provisionKeycloakDatabase=true")
+        for d in by_kind(docs, "Deployment") + by_kind(docs, "Job"):
+            self.assertEqual(d["spec"]["template"]["metadata"]["labels"]["owlmast.aisquad.com/run"], "run-x", d["metadata"]["name"])
+            self.assertEqual(d["metadata"]["labels"]["owlmast.aisquad.com/run"], "run-x")
 
     def test_no_ingress_or_frontend_by_default(self):
         docs = render()

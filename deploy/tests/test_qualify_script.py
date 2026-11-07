@@ -53,6 +53,18 @@ if [[ "$args" == *" get "* && "$args" == *"jsonpath={.metadata.labels.owlmast"* 
   esac
   exit 0
 fi
+if [[ "$args" == *" get pods -l "* && "$args" == *"ownerReferences"* ]]; then
+  sel="$(sed -E 's/.* -l ([^ ]+).*/\1/' <<<"$args")"; rel="${sel#app.kubernetes.io/instance=}"; rel="${rel%%,*}"; comp="${sel##*component=}"
+  state="$(state_of pods "$ns" "$rel-$comp")"
+  case "$state" in
+    absent) exit 0 ;;
+    owned) printf '%s-%s-abc12-xyz|%s|ReplicaSet/%s-%s-abc12\n' "$rel" "$comp" "$STUB_RUN_ID" "$rel" "$comp"; exit 0 ;;
+    foreign:owner) printf '%s-%s-abc12-xyz|%s|ReplicaSet/other-%s-abc12\n' "$rel" "$comp" "$STUB_RUN_ID" "$comp"; exit 0 ;;
+    foreign:unlabelled) printf '%s-%s-abc12-xyz||ReplicaSet/%s-%s-abc12\n' "$rel" "$comp" "$rel" "$comp"; exit 0 ;;
+    foreign:*) printf '%s-%s-abc12-xyz|%s|ReplicaSet/%s-%s-abc12\n' "$rel" "$comp" "${state#foreign:}" "$rel" "$comp"; exit 0 ;;
+    *) echo "Unable to connect to the server: dial tcp 10.0.0.1:6443: connect: connection refused" >&2; exit 1 ;;
+  esac
+fi
 if [[ "$args" == *" get secret"* ]]; then
   if [[ "$args" == *"-o json"* || "$args" == *"-o yaml"* || ( "$args" == *".data"* && "$args" != *'$k, $v := .data}}{{$k}}'* ) ]]; then
     printf '{"apiVersion":"v1","kind":"Secret","type":"Opaque","metadata":{"name":"x","namespace":"%s"},"data":{"username":"dXNlcg==","password":"%s"}}\n' "$ns" "$STUB_SENTINEL"
@@ -190,11 +202,73 @@ class PreflightTests(unittest.TestCase):
         self.run_refused(BASE_WORLD + "service owl-mast-test-external external-postgresql foreign:other\n", "fixtures")
         self.run_refused(BASE_WORLD + "resourcequota owl-mast-test owl-mast-test-budget foreign:unlabelled\n", "prepare")
 
-    def test_existing_release_without_this_runs_backend_refuses(self):
-        r = self.run_refused(BASE_WORLD + "release - owl-mast owned\n", "bundled-bundled")  # release exists, deployment absent/unlabelled
-        self.assertIn("release exists without this run's backend deployment", r.stdout)
+    def test_existing_release_resources_are_checked_one_by_one(self):
         self.run_refused(BASE_WORLD + "release - owl-mast owned\ndeployment owl-mast-test owl-mast-backend foreign:unlabelled\n", "persistence")
+        self.run_refused(BASE_WORLD + "release - owl-mast owned\nservice owl-mast-test owl-mast-keycloak foreign:other\n", "bundled-bundled")
+        self.run_refused(BASE_WORLD + "configmap owl-mast-test owl-mast-postgresql-init foreign:unlabelled\n", "external-bundled")
         self.run_refused(BASE_WORLD + "release - owl-mast-wrongidp error\n", "failure-paths")
+
+    def test_review_omission_cases_now_refuse(self):
+        """The three omissions reproduced by the final review (F3), each before any mutation."""
+        r = self.run_refused(BASE_WORLD + "secret owl-mast-test owl-mast-db foreign:another-run\n", "bundled-external")
+        self.assertIn("preflight secret owl-mast-test/owl-mast-db", r.stdout)
+        r = self.run_refused(BASE_WORLD + "secret owl-mast-test-external owl-mast-keycloak-db foreign:another-run\n", "fixtures")
+        self.assertIn("preflight secret owl-mast-test-external/owl-mast-keycloak-db", r.stdout)
+        r = self.run_refused(BASE_WORLD + "job owl-mast-test owl-mast-postgresql-provision-keycloak foreign:another-run\n", "all")
+        self.assertIn("preflight job owl-mast-test/owl-mast-postgresql-provision-keycloak", r.stdout)
+        self.run_refused(BASE_WORLD + "configmap owl-mast-test owl-mast-postgresql-provision-scripts foreign:unlabelled\n", "bundled-bundled")
+        self.run_refused(BASE_WORLD + "secret owl-mast-test owl-mast-external-db foreign:unlabelled\n", "external-external")
+        self.run_refused(BASE_WORLD + "secret owl-mast-test owl-mast-keycloak-bootstrap foreign:unlabelled\n", "external-bundled")
+        self.run_refused(BASE_WORLD + "secret owl-mast-test owl-mast-postgres-admin foreign:unlabelled\n", "bundled-external")
+        self.run_refused(BASE_WORLD + "deployment owl-mast-test-external external-keycloak foreign:unlabelled\n", "external-external")
+
+    def test_selected_pods_must_belong_to_the_release_and_carry_the_label(self):
+        r = self.run_refused(BASE_WORLD + "pods owl-mast-test owl-mast-postgresql foreign:owner\n", "persistence")
+        self.assertIn("is not this release's postgresql ReplicaSet", r.stdout)
+        self.run_refused(BASE_WORLD + "pods owl-mast-test owl-mast-backend foreign:another-run\n", "bundled-bundled")
+        self.run_refused(BASE_WORLD + "pods owl-mast-test owl-mast-backend foreign:unlabelled\n", "bundled-bundled")  # an unlabelled pod of the right ReplicaSet is still not proven
+        self.run_refused(BASE_WORLD + "pods owl-mast-test owl-mast-keycloak error\n", "bundled-bundled")
+
+    def test_first_enable_needs_its_own_identity_and_checks_its_own_resources(self):
+        h = Harness(BASE_WORLD)
+        try:
+            r = h.run("first-enable")
+            self.assertEqual(r.returncode, 2); self.assertIn("needs OWLMAST_FOLLOWUP_RUN_ID", r.stdout); self.assertEqual(h.mutating_calls(), [])
+        finally:
+            h.close()
+        h = Harness(BASE_WORLD + "secret owl-mast-test owl-mast-fe-db foreign:other\n")
+        try:
+            r = h.run("first-enable", OWLMAST_FOLLOWUP_RUN_ID="fe-run")
+            self.assertEqual(r.returncode, 2, r.stdout); self.assertIn("not fe-run", r.stdout); self.assertEqual(h.mutating_calls(), [])
+        finally:
+            h.close()
+        h = Harness(BASE_WORLD + "pvc owl-mast-test owl-mast-fe-postgresql-data foreign:" + RUN_ID + "\n")  # even the retained set's label is foreign to the fixture identity
+        try:
+            r = h.run("first-enable", OWLMAST_FOLLOWUP_RUN_ID="fe-run")
+            self.assertEqual(r.returncode, 2, r.stdout); self.assertEqual(h.mutating_calls(), [])
+        finally:
+            h.close()
+
+    def test_positive_control_every_resource_owned_passes_preflight_for_all_steps(self):
+        world = BASE_WORLD + "storageclass - owl-mast-local-retain owned\nresourcequota owl-mast-test owl-mast-test-budget owned\nresourcequota owl-mast-test-external owl-mast-test-external-budget owned\n"
+        for ns in ("owl-mast-test", "owl-mast-test-external"):
+            for sec in ("owl-mast-postgres-admin", "owl-mast-db", "owl-mast-keycloak-db", "owl-mast-keycloak-bootstrap"):
+                world += f"secret {ns} {sec} owned\n"
+        world += "secret owl-mast-test owl-mast-external-db owned\nsecret owl-mast-test owl-mast-external-keycloak-db owned\nsecret owl-mast-test owl-mast-db-broken owned\n"
+        world += "pvc owl-mast-test owl-mast-postgresql-data owned\njob owl-mast-test owl-mast-postgresql-provision-keycloak owned\nrelease - owl-mast owned\ndeployment owl-mast-test owl-mast-backend owned\npods owl-mast-test owl-mast-backend owned\n"
+        for obj in ("configmap external-postgresql-init", "configmap external-keycloak-realm", "pvc external-postgresql-data", "service external-postgresql", "service external-keycloak", "deployment external-postgresql", "deployment external-keycloak"):
+            world += f"{obj.split()[0]} owl-mast-test-external {obj.split()[1]} owned\n"
+        h = Harness(world)
+        try:
+            r = h.source("preflight prepare fixtures bundled-bundled persistence bundled-external external-bundled external-external failure-paths inventory")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("preflight passed", r.stdout)
+            self.assertIn("preflight pod owl-mast-test/owl-mast-backend-abc12-xyz: owned", r.stdout)
+            self.assertEqual(h.mutating_calls(), [])
+            resources = (h.evidence / "runtime" / "preflight" / "resources.txt").read_text()
+            self.assertGreaterEqual(len(resources.splitlines()), 60)
+        finally:
+            h.close()
 
     def test_replication_requires_an_owned_source(self):
         self.run_refused(BASE_WORLD + "secret owl-mast-test-external owl-mast-db foreign:unlabelled\n", "prepare")

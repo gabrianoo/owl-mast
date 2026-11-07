@@ -17,6 +17,9 @@ spec:
       labels:
         {{- include "owl-mast.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: keycloak
+        {{- with .Values.commonLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       annotations:
         owlmast.aisquad.com/database-mode: {{ ternary "bundled" "external" .Values.database.bundled | quote }}
     spec:

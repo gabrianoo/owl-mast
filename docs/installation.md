@@ -69,14 +69,25 @@ separation; the init script is the reference.
 The first-initialisation script of the bundled PostgreSQL runs once, when the data directory is
 empty. A volume initialised with `identity.bundled=false` therefore has no `keycloak` database or
 `keycloak_app` role, and simply switching to `identity.bundled=true` leaves Keycloak failing
-authentication (unready, nothing destroyed). The explicit transition is one upgrade with
-`postgresql.provisionKeycloakDatabase=true`, which runs a post-upgrade Job
-(`<release>-postgresql-provision-keycloak`) executing the idempotent `provision-keycloak.sh` from the
-init ConfigMap with the admin principal: the role is created only if absent (an existing role keeps
-its password, so the Secret must match it), the database only if absent, and the restricted grants are
-re-applied. Nothing is dropped or recreated. The value is rejected unless both bundles are enabled;
-leave it `false` afterwards. Disabling the identity bundle later keeps the existing Keycloak database
-and principal untouched.
+authentication (unready, nothing destroyed). The explicit transition is one `helm upgrade --wait`
+with `identity.bundled=true` and `postgresql.provisionKeycloakDatabase=true`. It renders a
+**pre-upgrade** hook (`<release>-postgresql-provision-keycloak`, with its own hook ConfigMap
+`<release>-postgresql-provision-scripts`) that runs against the PostgreSQL of the release as it is
+before the upgrade: it waits, bounded, for `pg_isready`, then executes the idempotent
+`provision-keycloak.sh` with the admin principal, so Keycloak's role and database exist before Helm
+applies and waits for the Keycloak and backend consumers. The role is created only if absent (an
+existing role keeps its password, so the Secret must match it), the database only if absent, and the
+restricted grants are re-applied; nothing is dropped or recreated. The Keycloak database Secret must
+exist before the upgrade (the hook fails before anything else changes otherwise). The value is rejected
+unless both bundles are enabled, is meaningful only on an upgrade of an existing release (a fresh
+install provisions at first initialisation), and should be left `false` afterwards. Disabling the
+identity bundle later keeps the existing Keycloak database and principal untouched.
+
+Initialisation layout: only `10-owl-mast-databases.sh` is placed in `/docker-entrypoint-initdb.d`
+(the image's entrypoint auto-executes every `*.sh` there); the provisioning helper is mounted at
+`/owl-mast/provision-keycloak.sh` and invoked explicitly, so a volume initialised with the identity
+bundle disabled completes initialisation on the first start. `deploy/tests/test_postgresql_init.py`
+exercises both fresh initialisations and the first-enable/retry transition against the pinned image.
 
 ## Probes and resources (AC1)
 
