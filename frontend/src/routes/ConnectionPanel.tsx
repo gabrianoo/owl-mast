@@ -27,8 +27,11 @@ function probesEqual(a: Probe, b: Probe): boolean {
   return true;
 }
 
-/** Permission or scope removal overrides retention: a denied answer replaces shown content at once. */
-function replacesImmediately(_current: Probe, next: Probe): boolean {
+/**
+ * Permission or scope removal overrides retention: a denied answer replaces shown content at once and
+ * invalidates every check issued before it, so only a check sent afterwards can bring content back.
+ */
+function invalidatesView(next: Probe): boolean {
   return next.kind === 'denied';
 }
 
@@ -54,7 +57,7 @@ export function ConnectionPanel({ pollIntervalMs = CONNECTION_POLL_MS }: { pollI
     intervalMs: pollIntervalMs,
     isEqual: probesEqual,
     enabled: online,
-    applyImmediately: replacesImmediately,
+    invalidates: invalidatesView,
   });
 
   const probe = resource.current;
@@ -78,7 +81,9 @@ export function ConnectionPanel({ pollIntervalMs = CONNECTION_POLL_MS }: { pollI
           <p>Waiting for the backend to publish its API contract. No values are shown until it answers.</p>
         </StateMessage>
       ) : null}
-      {probe ? <ProbeView probe={probe} stale={!online} /> : null}
+      {/* Values from before the connection was lost stay labelled stale until a post-reconnect check
+          confirms or replaces them. */}
+      {probe ? <ProbeView probe={probe} stale={!online || resource.stale} /> : null}
       {checkedAt ? <p className="meta">{checkedAt}</p> : null}
       <NewUpdates count={resource.pendingCount} onApply={resource.applyPending} focusTarget={() => headingRef.current} />
     </section>

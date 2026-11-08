@@ -44,7 +44,7 @@ behaviour, so `src/app/router.tsx` wraps the History API in about 100 lines.
 | `npm test` / `npm run test:coverage` | Vitest + Testing Library in jsdom: tokens against DESIGN.md, owl mark against the accepted SVG, contrast arithmetic, theme, router, primitives, connection states, preferences. |
 | `npm run build` | Production bundle in `dist/`. |
 | `npm run test:e2e` | Playwright `shell` project against `vite preview`: axe WCAG 2.2 AA in light and dark at 1280 px and 320 px, keyboard flow, dialog return, 320 px reflow, 200 % text size, 44 px targets, reduced motion, every connection state (API mocked per test). |
-| `npm run test:e2e:smoke` | Playwright `smoke` project: starts the real backend (`bootTestRun`, disposable VectorChord container) and checks the browser → backend path through the routing contract. Needs Docker. |
+| `npm run test:e2e:smoke` | Playwright `smoke` project: starts the real backend (`bootTestRun`, disposable VectorChord container) and checks the browser → backend path through the routing contract. Needs Docker and free ports 18080 and 4174: neither server is reused, so a leftover listener fails the run instead of testing a stale backend. Both servers stop on SIGTERM when the run ends. |
 | `scripts/verify-frontend-artifact.sh` (repo root) | Builds the image and proves its runtime contract (non-root, 8080, SPA fallback, `/owlmast-config.json`, headers, no JDK). |
 | `scripts/check-api-compatibility.py` (repo root) | Static or live frontend/backend contract check, see [api-compatibility.md](api-compatibility.md). |
 

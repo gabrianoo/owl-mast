@@ -16,10 +16,14 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   projects: [{ name: 'shell', use: { ...devices['Desktop Chrome'] } }],
+  // `vite preview` binds the address `localhost` resolves to first; on the CI runners that is ::1, so
+  // a server polled at 127.0.0.1 never answered. The host is pinned to the address polled here, and
+  // the preview output is piped so the bound URL appears in the job log.
   webServer: {
-    command: 'npm run build && npm run preview -- --port 4173 --strictPort',
+    command: 'npm run build && npm run preview -- --host 127.0.0.1 --port 4173 --strictPort',
     url: 'http://127.0.0.1:4173/',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
+    stdout: 'pipe',
   },
 });

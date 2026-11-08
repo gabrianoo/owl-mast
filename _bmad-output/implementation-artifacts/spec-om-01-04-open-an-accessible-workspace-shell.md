@@ -4,7 +4,7 @@ type: 'feature'
 created: '2026-11-08'
 status: 'in-review'
 route: 'dispatch'
-review_loop_iteration: 1
+review_loop_iteration: 2
 baseline_commit: 'eff1971d1d731ba352e001ba078235a950338142'
 context:
   - '{project-root}/_bmad-output/implementation-artifacts/epic-1-context.md'
@@ -102,3 +102,18 @@ context:
 - `cd frontend && npx playwright test --project=smoke` -- expected: real backend (`bootTestRun`) answers `/api/compatibility`, the shell shows "Compatible".
 - `scripts/verify-frontend-artifact.sh` -- expected: image builds, serves `/`, `/focus`, `/owlmast-config.json` on 8080 as UID 101, contains no Java.
 - `scripts/check-api-compatibility.py` -- expected: static pair compatible, exit 0.
+
+## Review Triage Log
+
+Round 1 (GPT-6 Astra High on `3d2f91a`) was triaged and repaired in `379e07c` and `e509d10`; its table is in the PR #112 description.
+
+Round 2: coordinator review of `8570ec6`, plus CI runs 42441700521 (`3d2f91a`) and 42442580262 (`8570ec6`). Triaged 2026-11-08 in an interactive `/bmad-build` repair.
+
+| # | Finding | Verdict | Route | Evidence and repair |
+|---|---------|---------|-------|---------------------|
+| R2-1 | P1 (AC3) `useRevalidatingResource.ts:118`: with A and B outstanding, A's denial did not invalidate B; B's late success had a higher token, became pending, and "Show update" restored denied content although no request was issued after the denial | high | patch | Verified: `accept` compared only against `accepted` and the offline floor, so B (token 3 > A's 2) passed. Repair: an `invalidates` response, which for the panel is a denial, raises the ledger floor to every token issued when it is accepted. Only a later-issued load can restore content. The option `applyImmediately(current, next)` became `invalidates(next)`, since its only caller was the denial rule. Tests: `denial barrier` suite with the exact A/B/A-denied/B-late order (nothing restored, `pendingCount` 0, `applyPending` no-op) and a post-denial request C that restores content through "Show update". Both fail with the floor raise removed. |
+| R2-2 | P2 `ConnectionPanel.tsx:81`: `stale={!online}` showed "Compatible frontend and backend" again as soon as the connection returned, before any re-check | medium | patch | Verified: the label depended only on `online`. Repair: the hook records the token that produced or last confirmed the shown value and a disconnect floor, and reports `stale` until a load issued after reconnecting either confirms it (equal answer) or replaces it (applied update). The panel uses `!online \|\| resource.stale`. Tests: hook `stale until a post-reconnect load` case and panel `keeps "Last known values" after reconnecting until the post-reconnect check succeeds`. The panel test fails with the old `stale={!online}`. |
+| R2-3 | CI: both Playwright jobs timed out after 120 s waiting for `config.webServer` | high | patch | Root cause: `vite preview` without `--host` binds the first address `localhost` resolves to. On the GitHub Ubuntu runners `/etc/hosts` maps `localhost` to `::1` as well, and glibc orders `::1` first, so the preview listened on `[::1]:4173`/`4174` while Playwright polled `127.0.0.1`. On this WSL machine `localhost` resolves only to 127.0.0.1, which is why it passed locally. Reproduced locally: a preview bound to `::1` answers `[::1]` and refuses 127.0.0.1. The job logs gave no hint because webServer stdout was not piped. Repair: both configs pass `--host 127.0.0.1` and pipe preview stdout (the bound URL is now logged), and CI prints `getent ahosts localhost` before each browser step. The smoke's `curl: (56) Connection reset by peer` came from the readiness wait in `scripts/verify-frontend-artifact.sh` (Docker's port proxy resets while nginx starts). It was harmless, since all 11 checks passed, and the wait loop is now silent. |
+| R2-4 | Local smoke needed a manual backend restart | low | patch | Not reproduced: the old config left no orphan in a fresh run, because the Gradle daemon cancels `bootTestRun` when the client dies. The plausible cause is `reuseExistingServer: !CI`, which silently reuses whatever already listens on 18080. Repair: neither smoke server is reused, so a leftover listener fails loudly. Gradle runs with `--no-daemon`, matching CI. Both servers get `gracefulShutdown: SIGTERM`. Two consecutive local runs (3/3 each) left nothing on 18080/4174 and no backend JVM. |
+
+Gates on the round-2 tree (local, no manual restarts): `npm run lint` 0 errors; `npm run typecheck` 0 errors; `npm test` 79/79; `npm run build` OK; the new hook and panel tests 25 consecutive runs, 25/25; `CI=1 npx playwright test` 40/40; `npm run test:e2e:smoke` twice back to back, 3/3 each; `scripts/verify-frontend-artifact.sh` 11/11.

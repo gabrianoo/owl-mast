@@ -193,6 +193,55 @@ describe('Daily Work connection panel (AC3/AC4)', () => {
     }
   });
 
+  it('keeps "Last known values" after reconnecting until the post-reconnect check succeeds', async () => {
+    vi.useFakeTimers();
+    try {
+      let answer: () => void = () => undefined;
+      let calls = 0;
+      const client: ApiClient = {
+        get: <T,>() => {
+          calls += 1;
+          if (calls === 1) return Promise.resolve({ kind: 'ok', value: compatible } as ApiResult<T>);
+          // The post-reconnect check stalls until the test answers it.
+          return new Promise<ApiResult<T>>((resolve) => {
+            answer = () => {
+              resolve({ kind: 'ok', value: compatible } as ApiResult<T>);
+            };
+          });
+        },
+      };
+      renderApp(client, '/', 60_000);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByText('Compatible frontend and backend')).toBeInTheDocument();
+      vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(false);
+      act(() => {
+        window.dispatchEvent(new Event('offline'));
+      });
+      expect(screen.getByText('Last known values')).toBeInTheDocument();
+
+      vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(true);
+      await act(async () => {
+        window.dispatchEvent(new Event('online'));
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(calls).toBe(2);
+      expect(screen.queryByText('You are offline')).toBeNull();
+      expect(screen.getByText('Last known values')).toBeInTheDocument();
+      expect(screen.queryByText('Compatible frontend and backend')).toBeNull();
+
+      await act(async () => {
+        answer();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByText('Compatible frontend and backend')).toBeInTheDocument();
+      expect(screen.queryByText('Last known values')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('holds a changed backend version behind "New updates" until applied', async () => {
     vi.useFakeTimers();
     try {

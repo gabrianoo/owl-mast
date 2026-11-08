@@ -113,6 +113,8 @@ jobs:
         run: npm run build
       - name: Qualified Chromium for Playwright
         run: npx playwright install --with-deps chromium
+      - name: Loopback name resolution (the preview servers bind 127.0.0.1 explicitly)
+        run: getent ahosts localhost
       - name: Browser suite (axe WCAG 2.2 AA light/dark, keyboard, 320px/200%, 44px, reduced motion, states)
         run: npx playwright test
       - name: Static API compatibility pair check
@@ -154,6 +156,9 @@ jobs:
         working-directory: frontend
       - name: Qualified Chromium for Playwright
         run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - name: Loopback name resolution (the preview servers bind 127.0.0.1 explicitly)
+        run: getent ahosts localhost
         working-directory: frontend
       - name: Browser → real backend smoke (bootTestRun with VectorChord container)
         run: npm run test:e2e:smoke

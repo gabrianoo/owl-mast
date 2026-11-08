@@ -19,8 +19,10 @@ echo "== run as the image's own user with OWLMAST_API_PATH_PREFIX=$PREFIX"
 docker run -d --name "$NAME" -e "OWLMAST_API_PATH_PREFIX=$PREFIX" -p 127.0.0.1::8080 "$IMAGE" >/dev/null
 PORT="$(docker port "$NAME" 8080/tcp | head -n1 | sed 's/.*://')"
 BASE="http://127.0.0.1:$PORT"
+# Readiness wait: Docker's port proxy accepts and resets connections until nginx listens, so the
+# attempts stay silent; the checks below report any real failure.
 for _ in $(seq 1 50); do
-  if curl -fsS -o /dev/null "$BASE/"; then break; fi
+  if curl -fs -o /dev/null "$BASE/"; then break; fi
   sleep 0.2
 done
 

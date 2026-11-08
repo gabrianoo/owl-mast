@@ -7,12 +7,14 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
  *
  * Response ordering: every request carries its own token and only a response newer than the last
  * accepted one can take effect (latest issued wins). A response that invalidates the view (for the
- * connection panel: a denial) is applied at once, clears any pending update and, by being the newest
- * accepted response, makes every older outstanding request obsolete; the view can only come back
- * through a fresh load issued afterwards. Disabling the resource (offline) raises the invalidation
- * floor over every issued request, so outstanding responses and the pending update are discarded and
- * nothing received or held before the connection was lost can be shown until a load issued after
- * reconnecting succeeds.
+ * connection panel: a denial) is applied at once, clears any pending update and raises the
+ * invalidation floor over every request issued before it was accepted, older or newer than itself:
+ * a request already in flight when the denial arrived was sent without knowing about it, so its
+ * success can never restore the view. Only a load issued after the denial can. Disabling the
+ * resource (offline) raises the same floor, so outstanding responses and the pending update are
+ * discarded and nothing received or held before the connection was lost can be shown until a load
+ * issued after reconnecting succeeds. The value received before the connection was lost is reported
+ * `stale` until a later load confirms it (an equal answer) or replaces it.
  */
 export interface RevalidatingResource<T> {
   /** The value currently shown, or undefined before the first load settles. */
@@ -23,6 +25,11 @@ export interface RevalidatingResource<T> {
   pendingCount: number;
   /** Time the current value was received, for freshness labels. */
   receivedAt: Date | undefined;
+  /**
+   * True while the value shown was received before the last invalidation (going offline) and no load
+   * issued since has confirmed it with an equal answer or replaced it.
+   */
+  stale: boolean;
   /** Shows the pending value; a no-op while disabled or when nothing applicable is pending. */
   applyPending: () => void;
   /** Forces a load now; the result still waits behind "New updates" unless nothing was shown yet. */
@@ -35,8 +42,12 @@ export interface RevalidatingOptions<T> {
   isEqual: (a: T, b: T) => boolean;
   /** When false, no loads run and outstanding or pending values are discarded (for example offline). */
   enabled?: boolean;
-  /** When true, the next value replaces the current one immediately (and clears the pending update). */
-  applyImmediately?: (current: T, next: T) => boolean;
+  /**
+   * When true, the response invalidates the view (for example a denial): it replaces the current
+   * value immediately, clears the pending update and invalidates every request issued before it was
+   * accepted, so only a load issued afterwards can show anything else.
+   */
+  invalidates?: (next: T) => boolean;
 }
 
 /**
@@ -46,11 +57,17 @@ export interface RevalidatingOptions<T> {
  */
 interface RequestLedger {
   issue: () => number;
-  /** Records the token as accepted when it is newer than everything accepted or invalidated so far. */
-  accept: (token: number) => boolean;
+  /**
+   * Records the token as accepted when it is newer than everything accepted or invalidated so far.
+   * An invalidating acceptance also raises the floor to every token issued until now.
+   */
+  accept: (token: number, invalidating: boolean) => boolean;
+  /** Disabling (offline): raises the floor and marks everything received so far as unconfirmed. */
   invalidateOutstanding: () => void;
   isApplicable: (token: number) => boolean;
   floor: () => number;
+  /** Tokens at or below this were issued before the last disable; their values are stale. */
+  disconnectFloor: () => number;
   subscribe: (listener: () => void) => () => void;
 }
 
@@ -58,25 +75,32 @@ function createRequestLedger(): RequestLedger {
   let issued = 0;
   let accepted = 0;
   let floor = 0;
+  let disconnectFloor = 0;
   const listeners = new Set<() => void>();
+  const raiseFloor = () => {
+    floor = issued;
+    listeners.forEach((listener) => {
+      listener();
+    });
+  };
   return {
     issue: () => {
       issued += 1;
       return issued;
     },
-    accept: (token) => {
+    accept: (token, invalidating) => {
       if (token <= floor || token <= accepted) return false;
       accepted = token;
+      if (invalidating) raiseFloor();
       return true;
     },
     invalidateOutstanding: () => {
-      floor = issued;
-      listeners.forEach((listener) => {
-        listener();
-      });
+      disconnectFloor = issued;
+      raiseFloor();
     },
     isApplicable: (token) => token > floor,
     floor: () => floor,
+    disconnectFloor: () => disconnectFloor,
     subscribe: (listener) => {
       listeners.add(listener);
       return () => {
@@ -94,8 +118,12 @@ export function useRevalidatingResource<T>(options: RevalidatingOptions<T>): Rev
   // The pending update remembers the token of the response that produced it; it is applicable only
   // while enabled and while that token is above the invalidation floor.
   const [pending, setPending] = useState<{ value: T; token: number } | undefined>(undefined);
+  // Token of the response that produced (or last confirmed) the shown value; at or under the
+  // disconnect floor it was received before the connection was lost and is stale.
+  const [shownToken, setShownToken] = useState(0);
   const [ledger] = useState(createRequestLedger);
   const floor = useSyncExternalStore(ledger.subscribe, ledger.floor);
+  const disconnectFloor = useSyncExternalStore(ledger.subscribe, ledger.disconnectFloor);
   const currentRef = useRef<T | undefined>(undefined);
   const enabledRef = useRef(enabled);
   // Callbacks are read through a ref so a new inline function never restarts the schedule.
@@ -107,25 +135,31 @@ export function useRevalidatingResource<T>(options: RevalidatingOptions<T>): Rev
   const runLoad = useCallback(async () => {
     if (!enabledRef.current) return;
     const token = ledger.issue();
-    const { load, isEqual, applyImmediately } = optionsRef.current;
+    const { load, isEqual, invalidates } = optionsRef.current;
     let next: T;
     try {
       next = await load();
     } catch {
       return;
     }
-    // Obsolete: disabled meanwhile, invalidated while in flight, or older than an accepted response.
-    if (!enabledRef.current || !ledger.accept(token)) return;
+    if (!enabledRef.current) return;
+    const invalidating = invalidates?.(next) ?? false;
+    // Obsolete: invalidated while in flight (offline, or a denial accepted after it was issued) or
+    // older than an accepted response.
+    if (!ledger.accept(token, invalidating)) return;
     const shown = currentRef.current;
-    if (shown === undefined || applyImmediately?.(shown, next)) {
+    if (shown === undefined || invalidating) {
       currentRef.current = next;
       setCurrent(next);
+      setShownToken(token);
       setReceivedAt(new Date());
       setLoading(false);
       setPending(undefined);
       return;
     }
     if (isEqual(shown, next)) {
+      // A fresh answer equal to what is shown confirms it (clears a stale label after reconnecting).
+      setShownToken(token);
       setPending(undefined);
       return;
     }
@@ -155,6 +189,7 @@ export function useRevalidatingResource<T>(options: RevalidatingOptions<T>): Rev
       if (waiting !== undefined && ledger.isApplicable(waiting.token)) {
         currentRef.current = waiting.value;
         setCurrent(waiting.value);
+        setShownToken(waiting.token);
         setReceivedAt(new Date());
       }
       return undefined;
@@ -170,6 +205,7 @@ export function useRevalidatingResource<T>(options: RevalidatingOptions<T>): Rev
     loading,
     pendingCount: enabled && pending !== undefined && pending.token > floor ? 1 : 0,
     receivedAt,
+    stale: current !== undefined && shownToken <= disconnectFloor,
     applyPending,
     refresh,
   };
