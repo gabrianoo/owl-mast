@@ -4,8 +4,12 @@ import { cleanup } from '@testing-library/react';
 
 // jsdom has no layout engine and does not implement the <dialog> modal API or matchMedia.
 // Provide minimal, behaviour-preserving shims so component tests can exercise the primitives;
-// the real browser behaviour is covered by the Playwright suite.
+// the real browser behaviour is covered by the Playwright suite. Tests that opt into the node
+// environment (`@vitest-environment node`) have no DOM, so the shims and cleanup are skipped there.
+const hasDom = typeof window !== 'undefined';
+
 beforeEach(() => {
+  if (!hasDom) return;
   if (!window.matchMedia) {
     window.matchMedia = (query: string): MediaQueryList =>
       ({
@@ -34,6 +38,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  if (!hasDom) return;
   cleanup();
   window.localStorage.clear();
   document.documentElement.removeAttribute('data-owl-theme');
