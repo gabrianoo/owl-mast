@@ -1,0 +1,118 @@
+/*
+ * Exact design tokens from DESIGN.md (ux-owl-mast-2026-11-05). Every unsuffixed colour applies in
+ * light mode and its `-dark` counterpart in dark mode; the device theme is followed initially and
+ * an explicit override is expressed as `data-owl-theme="light|dark"` on <html>. Font sizes are the
+ * DESIGN px values expressed in rem so browser text scaling applies (28px = 1.75rem at the 16px root).
+ * tokens.test.ts asserts every value here against the DESIGN.md frontmatter.
+ */
+:root {
+  --owl-canvas: #F5F7FB;
+  --owl-card: #FFFFFF;
+  --owl-secondary-surface: #EAF0F8;
+  --owl-text: #172337;
+  --owl-secondary-text: #52627A;
+  --owl-divider: #D7E0EC;
+  --owl-control-outline: #74849B;
+  --owl-primary: #2456D6;
+  --owl-on-primary: #FFFFFF;
+  --owl-knowledge: #086A7B;
+  --owl-attention: #845900;
+  --owl-success: #176B50;
+  --owl-error: #B23549;
+  --owl-identity-iris: #6B4CC2;
+  --owl-identity-mulberry: #943B75;
+  --owl-identity-clay: #8F4D40;
+  --owl-identity-slate: #556579;
+  color-scheme: light;
+
+  --owl-font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --owl-font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+
+  --owl-type-title-size: 1.75rem;
+  --owl-type-title-weight: 650;
+  --owl-type-title-line: 1.2;
+  --owl-type-title-tracking: -0.02em;
+  --owl-type-title-compact-size: 1.5625rem;
+  --owl-type-title-compact-weight: 650;
+  --owl-type-title-compact-line: 1.25;
+  --owl-type-heading-size: 1.125rem;
+  --owl-type-heading-weight: 600;
+  --owl-type-heading-line: 1.4;
+  --owl-type-body-size: 1rem;
+  --owl-type-body-weight: 400;
+  --owl-type-body-line: 1.5;
+  --owl-type-row-size: 0.875rem;
+  --owl-type-row-weight: 400;
+  --owl-type-row-line: 1.5;
+  --owl-type-label-size: 0.875rem;
+  --owl-type-label-weight: 600;
+  --owl-type-label-line: 1.5;
+  --owl-type-meta-size: 0.75rem;
+  --owl-type-meta-weight: 400;
+  --owl-type-meta-line: 1.5;
+  --owl-type-identifier-size: 0.875rem;
+  --owl-type-identifier-weight: 400;
+  --owl-type-identifier-line: 1.5;
+
+  --owl-radius-sm: 6px;
+  --owl-radius-md: 8px;
+  --owl-radius-lg: 12px;
+  --owl-radius-full: 9999px;
+
+  --owl-space-1: 4px;
+  --owl-space-2: 8px;
+  --owl-space-3: 12px;
+  --owl-space-4: 16px;
+  --owl-space-5: 24px;
+  --owl-space-6: 32px;
+  --owl-space-page-compact: 16px;
+  --owl-space-page-wide: 32px;
+  --owl-control-target: 44px;
+
+  --owl-focus-width: 3px;
+  --owl-focus-offset: 2px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-owl-theme="light"]) {
+    --owl-canvas: #0B1018;
+    --owl-card: #121A27;
+    --owl-secondary-surface: #1B2738;
+    --owl-text: #EAF1FA;
+    --owl-secondary-text: #A5B5CB;
+    --owl-divider: #2E3C50;
+    --owl-control-outline: #73869E;
+    --owl-primary: #91B5FF;
+    --owl-on-primary: #0B1730;
+    --owl-knowledge: #70D7E7;
+    --owl-attention: #F0C268;
+    --owl-success: #72D6AF;
+    --owl-error: #FF95A5;
+    --owl-identity-iris: #C4B0FF;
+    --owl-identity-mulberry: #F0ADDA;
+    --owl-identity-clay: #F0B5A8;
+    --owl-identity-slate: #B7C8DD;
+    color-scheme: dark;
+  }
+}
+
+:root[data-owl-theme="dark"] {
+  --owl-canvas: #0B1018;
+  --owl-card: #121A27;
+  --owl-secondary-surface: #1B2738;
+  --owl-text: #EAF1FA;
+  --owl-secondary-text: #A5B5CB;
+  --owl-divider: #2E3C50;
+  --owl-control-outline: #73869E;
+  --owl-primary: #91B5FF;
+  --owl-on-primary: #0B1730;
+  --owl-knowledge: #70D7E7;
+  --owl-attention: #F0C268;
+  --owl-success: #72D6AF;
+  --owl-error: #FF95A5;
+  --owl-identity-iris: #C4B0FF;
+  --owl-identity-mulberry: #F0ADDA;
+  --owl-identity-clay: #F0B5A8;
+  --owl-identity-slate: #B7C8DD;
+  color-scheme: dark;
+}

@@ -1,0 +1,594 @@
+/* Shell styles. Visual contract: DESIGN.md; behaviour: EXPERIENCE.md. Colours only via tokens. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--owl-canvas);
+  color: var(--owl-text);
+  font-family: var(--owl-font-sans);
+  font-size: 100%;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--owl-canvas);
+  color: var(--owl-text);
+  font-size: var(--owl-type-body-size);
+  font-weight: var(--owl-type-body-weight);
+  line-height: var(--owl-type-body-line);
+  overflow-wrap: anywhere;
+}
+
+h1,
+h2,
+h3,
+p,
+dl,
+dd,
+ul {
+  margin: 0;
+}
+
+h1 {
+  font-size: var(--owl-type-title-compact-size);
+  font-weight: var(--owl-type-title-compact-weight);
+  line-height: var(--owl-type-title-compact-line);
+}
+
+@media (min-width: 1024px) {
+  h1 {
+    font-size: var(--owl-type-title-size);
+    font-weight: var(--owl-type-title-weight);
+    line-height: var(--owl-type-title-line);
+    letter-spacing: var(--owl-type-title-tracking);
+  }
+}
+
+h2 {
+  font-size: var(--owl-type-heading-size);
+  font-weight: var(--owl-type-heading-weight);
+  line-height: var(--owl-type-heading-line);
+}
+
+h3 {
+  font-size: var(--owl-type-body-size);
+  font-weight: var(--owl-type-label-weight);
+  line-height: var(--owl-type-body-line);
+}
+
+a {
+  color: var(--owl-primary);
+  text-underline-offset: 3px;
+}
+
+code,
+.identifier {
+  font-family: var(--owl-font-mono);
+  font-size: var(--owl-type-identifier-size);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Every control has a 44px minimum hit area in both dimensions and grows with text (DESIGN.md). */
+a,
+button,
+select,
+input,
+summary,
+[role="button"] {
+  min-height: var(--owl-control-target);
+}
+
+button,
+select,
+input {
+  font: inherit;
+  color: inherit;
+  max-width: 100%;
+}
+
+a,
+button,
+summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--owl-space-2);
+}
+
+/* Focus: 3px control outline with a 2px offset in both themes (UX-DR04). */
+:focus-visible {
+  outline: var(--owl-focus-width) solid var(--owl-control-outline);
+  outline-offset: var(--owl-focus-offset);
+}
+
+[tabindex="-1"]:focus {
+  outline: var(--owl-focus-width) solid var(--owl-control-outline);
+  outline-offset: var(--owl-focus-offset);
+}
+
+/* Skip link: hidden until focused, never covered by sticky UI (none is used). */
+.skip-link {
+  position: absolute;
+  left: -10000px;
+  top: var(--owl-space-2);
+  z-index: 10;
+  padding: var(--owl-space-2) var(--owl-space-3);
+  background: var(--owl-card);
+  color: var(--owl-primary);
+  border: 1px solid var(--owl-control-outline);
+  border-radius: var(--owl-radius-md);
+}
+
+.skip-link:focus {
+  left: var(--owl-space-2);
+}
+
+/* App frame */
+.app {
+  display: flex;
+  min-height: 100vh;
+  flex-direction: column;
+}
+
+.app__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--owl-space-3);
+  padding: var(--owl-space-2) var(--owl-space-page-compact);
+  background: var(--owl-canvas);
+  border-bottom: 1px solid var(--owl-divider);
+}
+
+@media (min-width: 1024px) {
+  .app__header {
+    padding-inline: var(--owl-space-page-wide);
+  }
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--owl-space-3);
+  padding: var(--owl-space-2) 0;
+  color: var(--owl-text);
+  text-decoration: none;
+  font-weight: var(--owl-type-title-weight);
+  font-size: var(--owl-type-heading-size);
+}
+
+.brand svg {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  color: var(--owl-primary);
+}
+
+.app__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  flex: 1;
+}
+
+@media (min-width: 1024px) {
+  .app__body {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+}
+
+/* surface-navigation: text labels with a blue selection indicator; compact uses a labelled menu. */
+.nav {
+  background: var(--owl-canvas);
+  color: var(--owl-secondary-text);
+  padding: var(--owl-space-3) var(--owl-space-page-compact);
+  border-bottom: 1px solid var(--owl-divider);
+}
+
+@media (min-width: 1024px) {
+  .nav {
+    padding: var(--owl-space-3);
+    border-bottom: none;
+    border-right: 1px solid var(--owl-divider);
+  }
+}
+
+.nav__toggle {
+  width: 100%;
+  justify-content: space-between;
+  padding: var(--owl-space-2) var(--owl-space-3);
+  background: var(--owl-card);
+  color: var(--owl-text);
+  border: 1px solid var(--owl-control-outline);
+  border-radius: var(--owl-radius-md);
+  font-weight: var(--owl-type-label-weight);
+  font-size: var(--owl-type-label-size);
+  text-align: left;
+}
+
+.nav__toggle[aria-expanded="true"] {
+  background: var(--owl-secondary-surface);
+}
+
+.nav__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--owl-space-2);
+}
+
+.nav__list[hidden] {
+  display: none;
+}
+
+.nav__toggle + .nav__list {
+  margin-top: var(--owl-space-2);
+}
+
+.nav__link {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: var(--owl-space-2) var(--owl-space-3);
+  color: var(--owl-text);
+  text-decoration: none;
+  border-radius: var(--owl-radius-sm);
+  font-size: var(--owl-type-label-size);
+  font-weight: var(--owl-type-label-weight);
+  line-height: var(--owl-type-label-line);
+  border-left: 3px solid transparent;
+}
+
+.nav__link[aria-current="page"] {
+  background: var(--owl-secondary-surface);
+  border-left-color: var(--owl-primary);
+}
+
+.nav__current {
+  font-weight: var(--owl-type-label-weight);
+  color: var(--owl-text);
+}
+
+/* Main reading area */
+.main {
+  min-width: 0;
+  padding: var(--owl-space-page-compact);
+  display: grid;
+  gap: var(--owl-space-5);
+  align-content: start;
+  max-width: 1440px;
+}
+
+@media (min-width: 1024px) {
+  .main {
+    padding: var(--owl-space-page-wide);
+  }
+}
+
+.main:focus {
+  outline: none;
+}
+
+.page-header {
+  display: grid;
+  gap: var(--owl-space-2);
+}
+
+.lede {
+  color: var(--owl-secondary-text);
+  max-width: 70ch;
+}
+
+/* scope-bar: project/company, source identity and period stay visible; wraps on phone. */
+.scope-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--owl-space-3) var(--owl-space-5);
+  padding: var(--owl-space-4);
+  background: var(--owl-card);
+  color: var(--owl-text);
+  border: 1px solid var(--owl-divider);
+  border-radius: var(--owl-radius-lg);
+  font-size: var(--owl-type-label-size);
+  line-height: var(--owl-type-label-line);
+}
+
+.scope-bar__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--owl-space-2) var(--owl-space-5);
+  flex: 1 1 240px;
+}
+
+.scope-bar__fact {
+  display: grid;
+  gap: var(--owl-space-1);
+  min-width: 0;
+}
+
+.scope-bar__fact dt {
+  color: var(--owl-secondary-text);
+  font-weight: var(--owl-type-label-weight);
+}
+
+.scope-bar__fact dd {
+  font-weight: var(--owl-type-label-weight);
+}
+
+/* Panels and definition lists */
+.panel {
+  display: grid;
+  gap: var(--owl-space-3);
+  padding: var(--owl-space-4);
+  background: var(--owl-card);
+  border: 1px solid var(--owl-divider);
+  border-radius: var(--owl-radius-lg);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--owl-space-2) var(--owl-space-4);
+  font-size: var(--owl-type-row-size);
+  line-height: var(--owl-type-row-line);
+}
+
+@media (min-width: 600px) {
+  .facts {
+    grid-template-columns: max-content minmax(0, 1fr);
+  }
+}
+
+.facts dt {
+  color: var(--owl-secondary-text);
+  font-weight: var(--owl-type-label-weight);
+}
+
+.facts dd {
+  font-variant-numeric: tabular-nums;
+}
+
+.meta {
+  color: var(--owl-secondary-text);
+  font-size: var(--owl-type-row-size);
+}
+
+/* state-message: plain title, scope-safe explanation and a useful next step. Kind is text, not colour. */
+.state-message {
+  display: grid;
+  gap: var(--owl-space-2);
+  padding: var(--owl-space-4);
+  background: var(--owl-secondary-surface);
+  color: var(--owl-text);
+  border-radius: var(--owl-radius-md);
+  font-size: var(--owl-type-row-size);
+  line-height: var(--owl-type-row-line);
+  border-left: 4px solid var(--owl-divider);
+}
+
+.state-message__kind {
+  font-size: var(--owl-type-label-size);
+  font-weight: var(--owl-type-label-weight);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--owl-secondary-text);
+}
+
+.state-message__title {
+  font-size: var(--owl-type-body-size);
+  font-weight: var(--owl-type-label-weight);
+  color: var(--owl-text);
+}
+
+.state-message[data-kind="error"],
+.state-message[data-kind="denied"] {
+  border-left-color: var(--owl-error);
+}
+
+.state-message[data-kind="error"] .state-message__kind,
+.state-message[data-kind="denied"] .state-message__kind {
+  color: var(--owl-error);
+}
+
+.state-message[data-kind="offline"],
+.state-message[data-kind="stale"],
+.state-message[data-kind="unsupported"] {
+  border-left-color: var(--owl-attention);
+}
+
+.state-message[data-kind="offline"] .state-message__kind,
+.state-message[data-kind="stale"] .state-message__kind,
+.state-message[data-kind="unsupported"] .state-message__kind {
+  color: var(--owl-attention);
+}
+
+.state-message[data-kind="loading"] .state-message__kind {
+  color: var(--owl-primary);
+}
+
+.state-message[data-kind="ready"] {
+  border-left-color: var(--owl-success);
+}
+
+.state-message[data-kind="ready"] .state-message__kind {
+  color: var(--owl-success);
+}
+
+.state-message__title:focus {
+  outline: var(--owl-focus-width) solid var(--owl-control-outline);
+  outline-offset: var(--owl-focus-offset);
+}
+
+/* action-control (and its dark export, driven by the same tokens) */
+.action {
+  padding: var(--owl-space-3);
+  border-radius: var(--owl-radius-md);
+  border: 1px solid transparent;
+  font-size: var(--owl-type-label-size);
+  font-weight: var(--owl-type-label-weight);
+  line-height: var(--owl-type-label-line);
+  cursor: pointer;
+}
+
+.action--primary {
+  background: var(--owl-primary);
+  color: var(--owl-on-primary);
+}
+
+.action--secondary {
+  background: var(--owl-card);
+  color: var(--owl-primary);
+  border-color: var(--owl-control-outline);
+}
+
+.action[aria-disabled="true"] {
+  cursor: default;
+  opacity: 1;
+}
+
+.action-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--owl-space-3);
+}
+
+.action-result {
+  font-size: var(--owl-type-row-size);
+}
+
+.action-result[data-outcome="failed"] {
+  color: var(--owl-error);
+}
+
+/* external-link: underlined descriptive label with a text destination indicator; no launch icon. */
+.external-link {
+  text-decoration: underline;
+  font-size: var(--owl-type-label-size);
+  font-weight: var(--owl-type-label-weight);
+}
+
+.external-link__indicator {
+  color: var(--owl-secondary-text);
+  font-weight: var(--owl-type-row-weight);
+}
+
+/* settings-field: persistent label and description above the control; validation stays visible. */
+.settings-field {
+  display: grid;
+  gap: var(--owl-space-2);
+  padding: var(--owl-space-3);
+  background: var(--owl-card);
+  border: 1px solid var(--owl-divider);
+  border-radius: var(--owl-radius-md);
+}
+
+.settings-field__label {
+  font-weight: var(--owl-type-label-weight);
+}
+
+.settings-field__description {
+  color: var(--owl-secondary-text);
+  font-size: var(--owl-type-row-size);
+}
+
+.choice-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--owl-space-2);
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+
+.choice {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--owl-space-2);
+  min-height: var(--owl-control-target);
+  padding: 0 var(--owl-space-3);
+  border: 1px solid var(--owl-control-outline);
+  border-radius: var(--owl-radius-md);
+  background: var(--owl-card);
+  cursor: pointer;
+}
+
+.choice:has(input:checked) {
+  background: var(--owl-secondary-surface);
+  border-color: var(--owl-primary);
+  box-shadow: inset 0 -3px 0 var(--owl-primary);
+}
+
+.choice input {
+  width: 20px;
+  height: 20px;
+  min-height: 0;
+  margin: 0;
+  accent-color: var(--owl-primary);
+}
+
+/* Modal dialog: native <dialog>; the backdrop is a restrained shade, the boundary is the border. */
+.dialog {
+  width: min(100% - 2 * var(--owl-space-page-compact), 36rem);
+  padding: var(--owl-space-4);
+  background: var(--owl-card);
+  color: var(--owl-text);
+  border: 1px solid var(--owl-control-outline);
+  border-radius: var(--owl-radius-lg);
+  box-shadow: 0 8px 24px rgb(11 16 24 / 0.25);
+}
+
+.dialog::backdrop {
+  background: rgb(11 16 24 / 0.45);
+}
+
+.dialog__body {
+  display: grid;
+  gap: var(--owl-space-4);
+}
+
+/* New updates control */
+.new-updates {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--owl-space-3);
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Motion: nothing essential moves; reduced motion disables what little there is. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (forced-colors: active) {
+  .nav__link[aria-current="page"],
+  .choice:has(input:checked) {
+    outline: 2px solid Highlight;
+  }
+}
