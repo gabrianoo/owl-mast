@@ -19,7 +19,7 @@ Both contracts carry an integer version: `WorkItemContract.VERSION = 1` and `Aud
 | Type | Role |
 | --- | --- |
 | `WorkEnqueue.enqueue(EnqueueRequest)` | Inserts a work record for the tenant bound in the caller's `ScopeContext`. Joins the caller's active scoped transaction, so a business row and its work record commit or roll back together; rejects a different scope; fails closed without one. |
-| `EnqueueRequest(type, payload, correlationId)` | `WorkType`, identifier-only payload (`Map<String,String>`, at most 32 entries, keys ≤ 64 and values ≤ 512 characters), optional correlation id (≤ 128). |
+| `EnqueueRequest(type, payload, correlationId)` | `WorkType`, identifier-only payload (`Map<String,String>`, at most 32 entries, keys ≤ 64 and values ≤ 512 characters), optional correlation id (≤ 256, the same bound as the audit envelope's correlation id: an audited mutation's correlation id becomes its publish item's). |
 | `WorkHandler` | A Spring bean per `WorkType`: `registration()` and `handle(WorkItem) → Mono<EffectOutcome>`. Invoked inside a scoped transaction bound to the item's tenant under the backend service identity; its database writes commit with the item's completion. |
 | `WorkRegistration(type, tenantInternalSystemWork)` | `tenantInternalSystemWork = true` declares the handler changes only the tenant's own records under the service identity with no disclosure or external effect on anyone's behalf. |
 | `WorkItem` | Handler view: `id`, `tenant`, `type`, `contractVersion`, `payload`, `attempt`, `maxAttempts`, `correlationId`, plus the derived `idempotencyKey()` = `owlmast-work:<id>`, identical on every attempt and reclaim. |
@@ -89,7 +89,7 @@ A **covered mutation** is any mutation made through `AuditedMutations`; later fe
 | Reason | `reason` | `reason` | Module-produced safe text only: exception class chain or a denial reason code. |
 | Occurred time | `occurredAt` | `occurred_at` | `timestamptz`, from the application clock when the attempt started. |
 | Recorded time | `recordedAt` | `recorded_at` | `timestamptz`, database time of the write. |
-| Correlation id | `correlationId` | `correlation_id` | Ties the record to the request and the publish work item. |
+| Correlation id | `correlationId` | `correlation_id` | Ties the record to the request and the publish work item; at most 256 characters, validated before any business work runs (`WorkItemContract.MAX_CORRELATION_ID_LENGTH`). |
 
 There is **no free-form payload field**, by design. All fields are bounded single-line identifiers or codes (≤ 256 characters); a secret in the business input has no place to land. Producers must never put request values into `reason`, `action` or `objectType`.
 
@@ -98,7 +98,7 @@ There is **no free-form payload field**, by design. All fields are bounded singl
 1. `audit.publication_intent` row (`SUCCEEDED`) and an `audit.publish` work item commit with the business change.
 2. The publisher handler (`AuditPublishHandler`, tenant-internal) copies the intent into `audit.event` with `ON CONFLICT (event_id) DO NOTHING` and sets `published_at`, inside the processor's scoped transaction. Repeating it inserts nothing new; recovery after a crash before publication yields exactly one history row.
 3. `FAILED`, `DENIED` and `UNRESOLVED` outcomes are written straight into `audit.event` by the separate outcome path; no intent is needed because no business write exists to be atomic with.
-4. When `execute` joined an enclosing transaction and that transaction later rolls back, a synchronization on the physical transaction records `FAILED` with reason `enclosing-transaction-rolled-back` for the same event id (the success intent is gone with the rollback); an unknown completion status records `UNRESOLVED` with reason `transaction-completion-unknown`. Each execution writes at most one outcome record.
+4. A synchronization is registered on the physical transaction before the business function runs, so every non-committing end is recorded for the same event id through the separate path: a business error or denial keeps its exception class chain or denial code; a cancelled subscription records `FAILED` with reason `execution-cancelled`; a rollback of an enclosing transaction after this call succeeded records `FAILED` with reason `enclosing-transaction-rolled-back` (the success intent is gone with the rollback); an unknown completion status records `UNRESOLVED` with reason `transaction-completion-unknown`. Each execution writes at most one outcome record.
 
 ### Storage
 

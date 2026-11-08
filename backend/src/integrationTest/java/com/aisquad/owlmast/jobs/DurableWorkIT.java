@@ -35,10 +35,16 @@ import com.aisquad.owlmast.testing.ContainersConfiguration;
 import com.aisquad.owlmast.testing.StubIdentityConfiguration;
 import java.lang.reflect.RecordComponent;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -288,7 +294,7 @@ class DurableWorkIT {
   }
 
   @Test
-  void aLeaseThatExpiresNaturallyWhileTheHandlerRunsCannotCommit() {
+  void aLeaseThatExpiresNaturallyWhileTheHandlerRunsCannotCommit() throws Exception {
     createNote(TENANT_A, Failure.NONE);
     UUID itemId = db.workItems().get(0).id();
     String key = "owlmast-work:" + itemId;
@@ -299,12 +305,25 @@ class DurableWorkIT {
             registry,
             new TenantInternalOnlyDispatchAuthorization(),
             new RetryPolicy(
-                3, Duration.ofMillis(100), Duration.ofMillis(400), Duration.ofMillis(400), 1),
+                3, Duration.ofMillis(100), Duration.ofMillis(400), Duration.ofSeconds(1), 1),
             "short-lease-processor");
-    followUp.behaveOnce(
-        item -> Mono.delay(Duration.ofMillis(900)).then(followUp.applyEffect(item)));
+    CompletableFuture<Void> release = new CompletableFuture<>();
+    followUp.behaveOnce(item -> Mono.fromFuture(release).then(followUp.applyEffect(item)));
 
-    shortLease.processTenant(TENANT_A.tenant()).block();
+    CompletableFuture<Long> run = shortLease.processTenant(TENANT_A.tenant()).toFuture();
+    await()
+        .atMost(Duration.ofSeconds(10))
+        .pollInterval(Duration.ofMillis(50))
+        .untilAsserted(() ->
+            assertThat(
+                    db.count(
+                        "select count(*) from jobs.work_item where id = '"
+                            + itemId
+                            + "' and status = 'RUNNING' and lease_expires_at <= clock_timestamp()"))
+                .as("the lease ran out on the wall clock while the handler was still working")
+                .isEqualTo(1));
+    release.complete(null);
+    assertThat(run.get(10, TimeUnit.SECONDS)).isEqualTo(1);
 
     WorkRow stale = db.work(itemId);
     assertThat(stale.status())
@@ -312,7 +331,7 @@ class DurableWorkIT {
         .isEqualTo("RUNNING");
     assertThat(stale.attempts()).isEqualTo(1);
     assertThat(stale.effectOutcome()).isNull();
-    assertThat(stale.leaseExpiresAt()).isBefore(db.work(itemId).updatedAt().plusSeconds(1));
+    assertThat(effects.received(key)).as("the handler did run to its effect").isEqualTo(1);
 
     processor.runOnce().block();
 
@@ -325,33 +344,57 @@ class DurableWorkIT {
   }
 
   @Test
-  void itemsWaitingInABatchDoNotConsumeTheirLeases() {
+  void itemsWaitingInABatchStayUnclaimedUntilTheirOwnDispatch() throws Exception {
     for (int i = 0; i < 5; i++) {
       createNote(TENANT_A, Failure.NONE);
     }
-    WorkProcessor shortLease =
-        new WorkProcessor(
-            transactions,
-            repository,
-            registry,
-            new TenantInternalOnlyDispatchAuthorization(),
-            new RetryPolicy(
-                3, Duration.ofMillis(100), Duration.ofMillis(400), Duration.ofMillis(1000), 5),
-            "batch-processor");
-    followUp.behave(item -> Mono.delay(Duration.ofMillis(300)).then(followUp.applyEffect(item)));
+    List<UUID> started = new CopyOnWriteArrayList<>();
+    ConcurrentMap<UUID, CompletableFuture<Void>> gates = new ConcurrentHashMap<>();
+    followUp.behave(item -> {
+      started.add(item.id());
+      return Mono.fromFuture(gates.computeIfAbsent(item.id(), id -> new CompletableFuture<>()))
+          .then(followUp.applyEffect(item));
+    });
 
-    long dispatched = shortLease.processTenant(TENANT_A.tenant()).block();
+    CompletableFuture<Long> run = processor.processTenant(TENANT_A.tenant()).toFuture();
+    List<WorkRow> finished = new ArrayList<>();
+    for (int position = 0; position < 5; position++) {
+      int expectedStarts = position + 1;
+      await()
+          .atMost(Duration.ofSeconds(10))
+          .pollInterval(Duration.ofMillis(50))
+          .until(() -> started.size() == expectedStarts);
+      UUID current = started.get(position);
+      WorkRow running = db.work(current);
+      assertThat(running.status()).isEqualTo("RUNNING");
+      assertThat(running.attempts()).isEqualTo(1);
+      assertThat(db.workItems())
+          .filteredOn(row -> !row.id().equals(current) && !started.contains(row.id()))
+          .as("items behind the running one hold no lease yet")
+          .hasSize(4 - position)
+          .allSatisfy(row -> {
+            assertThat(row.status()).isEqualTo("PENDING");
+            assertThat(row.leaseToken()).isNull();
+            assertThat(row.leaseOwner()).isNull();
+            assertThat(row.attempts()).isZero();
+          });
+      gates.computeIfAbsent(current, id -> new CompletableFuture<>()).complete(null);
+      await()
+          .atMost(Duration.ofSeconds(10))
+          .pollInterval(Duration.ofMillis(50))
+          .until(() -> db.work(current).status().equals("SUCCEEDED"));
+      finished.add(db.work(current));
+    }
+    assertThat(run.get(10, TimeUnit.SECONDS)).isEqualTo(5);
 
-    assertThat(dispatched).as("the whole batch took longer than one lease").isEqualTo(5);
-    assertThat(db.workItems())
-        .hasSize(5)
-        .allSatisfy(row -> {
-          assertThat(row.status()).isEqualTo("SUCCEEDED");
-          assertThat(row.attempts()).as("no item lost its lease while waiting").isEqualTo(1);
-          assertThat(Duration.between(row.leaseExpiresAt().minusSeconds(1), row.finishedAt()))
-              .as("each lease started just before its own dispatch")
-              .isLessThan(Duration.ofMillis(900));
-        });
+    assertThat(finished).hasSize(5).allSatisfy(row -> assertThat(row.attempts()).isEqualTo(1));
+    for (int position = 1; position < finished.size(); position++) {
+      WorkRow previous = finished.get(position - 1);
+      WorkRow next = finished.get(position);
+      assertThat(next.leaseExpiresAt().minus(policy.leaseDuration()))
+          .as("each lease was taken after the previous item finished")
+          .isAfterOrEqualTo(previous.finishedAt());
+    }
     assertThat(effects.totalReceived()).isEqualTo(5);
   }
 
@@ -363,7 +406,7 @@ class DurableWorkIT {
     UUID itemId = db.workItems().get(0).id();
     followUp.behave(item -> Mono.error(new IllegalStateException("handler saw " + SECRET)));
 
-    processor.runOnce().block();
+    singleItemProcessor().processTenant(TENANT_A.tenant()).block();
     WorkRow first = db.work(itemId);
     assertThat(first.status()).isEqualTo("PENDING");
     assertThat(first.attempts()).isEqualTo(1);
@@ -450,7 +493,7 @@ class DurableWorkIT {
             registry,
             (item, registration) ->
                 Mono.error(new IllegalStateException("authorization unavailable")),
-            policy,
+            singleItemPolicy(),
             "undecided-processor");
     WorkProcessor silent =
         new WorkProcessor(
@@ -458,7 +501,7 @@ class DurableWorkIT {
             repository,
             registry,
             (item, registration) -> Mono.just(DispatchDecision.UNDECIDED),
-            policy,
+            singleItemPolicy(),
             "silent-processor");
 
     undecided.processTenant(TENANT_A.tenant()).block();
@@ -485,7 +528,7 @@ class DurableWorkIT {
   void anUnregisteredWorkTypeIsRetriedWithASafeReason() {
     UUID itemId = enqueueOnly(TENANT_A, WorkType.of("fixture.unknown"));
 
-    processor.runOnce().block();
+    singleItemProcessor().processTenant(TENANT_A.tenant()).block();
 
     WorkRow row = db.work(itemId);
     assertThat(row.status()).isEqualTo("PENDING");
@@ -576,12 +619,7 @@ class DurableWorkIT {
         repository,
         registry,
         new TenantInternalOnlyDispatchAuthorization(),
-        new RetryPolicy(
-            policy.maxAttempts(),
-            policy.backoffBase(),
-            policy.backoffCap(),
-            policy.leaseDuration(),
-            1),
+        singleItemPolicy(),
         "single-item-processor");
   }
 
@@ -593,14 +631,21 @@ class DurableWorkIT {
         .untilAsserted(() -> assertThat(processor.runOnce().block()).isZero());
   }
 
+  /** One claim per run: the retry becomes due by backoff, never by a same-run reclaim. */
   private void awaitAttempt(UUID itemId, int attempt) {
+    WorkProcessor single = singleItemProcessor();
     await()
         .atMost(Duration.ofSeconds(5))
         .pollInterval(Duration.ofMillis(50))
         .untilAsserted(() -> {
-          processor.runOnce().block();
+          single.processTenant(TENANT_A.tenant()).block();
           assertThat(db.work(itemId).attempts()).isEqualTo(attempt);
         });
+  }
+
+  private RetryPolicy singleItemPolicy() {
+    return new RetryPolicy(
+        policy.maxAttempts(), policy.backoffBase(), policy.backoffCap(), policy.leaseDuration(), 1);
   }
 
   private static Duration backoffOf(WorkRow row) {

@@ -44,7 +44,13 @@ public final class WorkItemContract {
   public static final int MAX_PAYLOAD_KEY_LENGTH = 64;
   public static final int MAX_PAYLOAD_VALUE_LENGTH = 512;
   public static final int MAX_WORK_TYPE_LENGTH = 100;
-  public static final int MAX_CORRELATION_ID_LENGTH = 128;
+
+  /**
+   * Shared with the audit envelope: an audited mutation's correlation id becomes the publish
+   * item's.
+   */
+  public static final int MAX_CORRELATION_ID_LENGTH = 256;
+
   public static final int MAX_EFFECT_REFERENCE_LENGTH = 256;
 
   private WorkItemContract() {}

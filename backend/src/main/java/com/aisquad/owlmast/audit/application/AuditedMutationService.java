@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.transaction.reactive.TransactionSynchronization;
 import org.springframework.transaction.reactive.TransactionSynchronizationManager;
@@ -29,22 +30,24 @@ import reactor.util.context.Context;
 
 /**
  * Covered mutations (AD-6, AC3). Success: business change, {@code SUCCEEDED} intent and the {@code
- * audit.publish} work item commit together through the scoped transaction. Failure or denial: the
- * business transaction rolls back and the outcome record commits through a {@code REQUIRES_NEW}
- * scoped transaction that is independent of any transaction the caller may hold, so it survives the
- * rollback. Reasons are exception class chains or fixed codes only.
+ * audit.publish} work item commit together through the scoped transaction. Anything else ends with
+ * exactly one outcome record written through a {@code REQUIRES_NEW} scoped transaction that is
+ * independent of the transaction being rolled back, so the evidence survives.
  *
- * <p>When the call joins an enclosing transaction and succeeds, the intent is only as durable as
- * that transaction. A synchronization registered on the physical transaction observes its
- * completion: a rollback after the successful call records a {@code FAILED} outcome with reason
- * {@value #REASON_ENCLOSING_ROLLBACK}; an unknown completion status records {@code UNRESOLVED}.
- * Both use the separate path, detached from the completed transaction, and each execution writes at
- * most one outcome record.
+ * <p>The outcome is decided by a synchronization registered on the physical transaction
+ * <em>before</em> the business function runs, so every way the transaction can end without
+ * committing is observed: a business error or denial (recorded with the original exception class
+ * chain or denial code), a cancelled subscription ({@value #REASON_CANCELLED}), a rollback of an
+ * enclosing transaction after this call succeeded ({@value #REASON_ENCLOSING_ROLLBACK}), or an
+ * unknown completion status ({@code UNRESOLVED}, {@value #REASON_COMPLETION_UNKNOWN}). The error
+ * path records too, for transactions that end before the synchronization could run; a guard keeps
+ * it to one record per execution.
  */
 @Slf4j
 public final class AuditedMutationService implements AuditedMutations {
 
   static final String REASON_ENCLOSING_ROLLBACK = "enclosing-transaction-rolled-back";
+  static final String REASON_CANCELLED = "execution-cancelled";
   static final String REASON_COMPLETION_UNKNOWN = "transaction-completion-unknown";
 
   private final ScopedTransactions transactions;
@@ -81,11 +84,15 @@ public final class AuditedMutationService implements AuditedMutations {
         });
   }
 
+  /** Observer first, business work second: no way of ending the transaction goes unseen. */
   private <T> Mono<AuditedResult<T>> commitWithIntent(Attempt<T> attempt) {
-    return Scopes.current()
+    return watchCompletion(attempt)
+        .then(Scopes.current())
         .flatMap(scope -> Mono.defer(() -> attempt.mutation().business().apply(scope)))
         .switchIfEmpty(Mono.error(MissingMutationOutcomeException::new))
-        .flatMap(outcome -> recordSuccess(attempt, outcome));
+        .flatMap(outcome -> recordSuccess(attempt, outcome))
+        .doOnError(attempt::failed)
+        .doOnCancel(attempt::cancelled);
   }
 
   private <T> Mono<AuditedResult<T>> recordSuccess(Attempt<T> attempt, MutationOutcome<T> outcome) {
@@ -100,11 +107,10 @@ public final class AuditedMutationService implements AuditedMutations {
     return store
         .recordIntent(record)
         .then(enqueue.enqueue(publish))
-        .then(watchCompletion(attempt))
         .thenReturn(new AuditedResult<>(outcome.value(), attempt.eventId()));
   }
 
-  /** Registers the completion observer on the physical transaction the intent was written in. */
+  /** Registers the completion observer on the physical transaction before any business work. */
   private Mono<Void> watchCompletion(Attempt<?> attempt) {
     return TransactionSynchronizationManager.forCurrentTransaction()
         .doOnNext(manager -> manager.registerSynchronization(new CompletionWatch(attempt)))
@@ -154,12 +160,16 @@ public final class AuditedMutationService implements AuditedMutations {
         : SafeFailure.describe(error);
   }
 
-  /** One execution: its identity, scope, start time and whether an outcome was written. */
+  /**
+   * One execution: identity, scope, start time, how it ended and whether an outcome was written.
+   */
   private static final class Attempt<T> {
     private final AuditedMutation<T> mutation;
     private final ScopeContext scope;
     private final OffsetDateTime occurredAt;
     private final UUID eventId = UUID.randomUUID();
+    private final AtomicReference<Throwable> failure = new AtomicReference<>();
+    private final AtomicBoolean cancelled = new AtomicBoolean();
     private final AtomicBoolean outcomeRecorded = new AtomicBoolean();
 
     private Attempt(AuditedMutation<T> mutation, ScopeContext scope, OffsetDateTime occurredAt) {
@@ -184,12 +194,34 @@ public final class AuditedMutationService implements AuditedMutations {
       return eventId;
     }
 
+    void failed(Throwable error) {
+      failure.compareAndSet(null, error);
+    }
+
+    void cancelled() {
+      cancelled.set(true);
+    }
+
     boolean claimOutcome() {
       return outcomeRecorded.compareAndSet(false, true);
     }
+
+    /** What a rollback means for this attempt: the original error or denial wins. */
+    AuditOutcome rollbackOutcome() {
+      Throwable error = failure.get();
+      return error != null ? outcomeFor(error) : AuditOutcome.FAILED;
+    }
+
+    String rollbackReason() {
+      Throwable error = failure.get();
+      if (error != null) {
+        return reasonFor(error);
+      }
+      return cancelled.get() ? REASON_CANCELLED : REASON_ENCLOSING_ROLLBACK;
+    }
   }
 
-  /** Records the outcome when the transaction carrying the intent does not commit. */
+  /** Records the outcome when the transaction carrying the attempt does not commit. */
   private final class CompletionWatch implements TransactionSynchronization {
     private final Attempt<?> attempt;
 
@@ -202,7 +234,7 @@ public final class AuditedMutationService implements AuditedMutations {
       return switch (status) {
         case STATUS_COMMITTED -> Mono.empty();
         case STATUS_ROLLED_BACK ->
-            recordOutcome(attempt, AuditOutcome.FAILED, REASON_ENCLOSING_ROLLBACK);
+            recordOutcome(attempt, attempt.rollbackOutcome(), attempt.rollbackReason());
         default -> recordOutcome(attempt, AuditOutcome.UNRESOLVED, REASON_COMPLETION_UNKNOWN);
       };
     }

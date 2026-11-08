@@ -28,7 +28,7 @@ public record AuditedMutation<T>(
     AuditIdentifiers.requireIdentifier(objectType, "object type");
     Objects.requireNonNull(objectId, "objectId");
     AuditIdentifiers.requireIdentifier(action, "action");
-    AuditIdentifiers.requireIdentifier(correlationId, "correlation id");
+    AuditIdentifiers.requireCorrelationId(correlationId);
     Objects.requireNonNull(business, "business");
     project.ifPresent(value -> AuditIdentifiers.requireIdentifier(value, "project"));
     objectId.ifPresent(value -> AuditIdentifiers.requireIdentifier(value, "object id"));

@@ -1,6 +1,7 @@
 package com.aisquad.owlmast.audit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 
 import com.aisquad.owlmast.audit.api.ActorKind;
@@ -16,6 +17,7 @@ import com.aisquad.owlmast.fixtures.notes.DbProbe.WorkRow;
 import com.aisquad.owlmast.fixtures.notes.NotesFixture;
 import com.aisquad.owlmast.fixtures.notes.NotesFixture.AuditedMode;
 import com.aisquad.owlmast.fixtures.notes.NotesFixtureConfiguration;
+import com.aisquad.owlmast.jobs.api.WorkItemContract;
 import com.aisquad.owlmast.jobs.application.WorkProcessor;
 import com.aisquad.owlmast.platform.authorization.OperationDeniedException;
 import com.aisquad.owlmast.platform.persistence.ScopedTransactions;
@@ -27,6 +29,8 @@ import com.aisquad.owlmast.testing.StubIdentityConfiguration;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -36,6 +40,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.Import;
+import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
@@ -260,6 +265,58 @@ class AuditedMutationIT {
   }
 
   @Test
+  void aCancellationAfterTheBusinessWriteStillRecordsAFailedOutcome() {
+    CountDownLatch written = new CountDownLatch(1);
+    Disposable subscription =
+        notes
+            .auditedCreateHanging("half done", ACTOR, "corr-6d", written::countDown)
+            .contextWrite(Scopes.bind(TENANT_A))
+            .subscribe(result -> {}, error -> {});
+
+    assertThat(awaitLatch(written)).as("the business write completed").isTrue();
+    subscription.dispose();
+
+    await()
+        .atMost(Duration.ofSeconds(10))
+        .pollInterval(Duration.ofMillis(50))
+        .untilAsserted(() -> assertThat(db.auditEvents()).hasSize(1));
+    assertThat(notes.noteIds().block()).as("the business write rolled back").isEmpty();
+    assertThat(db.intents()).isEmpty();
+    assertThat(db.workItems()).isEmpty();
+    assertThat(db.auditEvents())
+        .singleElement()
+        .satisfies(event -> {
+          assertThat(event.outcome()).isEqualTo("FAILED");
+          assertThat(event.reason()).isEqualTo("execution-cancelled");
+          assertThat(event.tenant()).isEqualTo("tenant-a");
+          assertThat(event.correlationId()).isEqualTo("corr-6d");
+        });
+  }
+
+  @Test
+  void aCorrelationIdAtTheSharedBoundTravelsThroughIntentWorkItemAndHistory() {
+    String atLimit = "c".repeat(WorkItemContract.MAX_CORRELATION_ID_LENGTH);
+    UUID eventId = auditedCreate(TENANT_A, "bounded", atLimit, AuditedMode.SUCCEED).eventId();
+
+    processor.runOnce().block();
+
+    assertThat(db.workItems())
+        .singleElement()
+        .satisfies(work -> {
+          assertThat(work.correlationId()).isEqualTo(atLimit);
+          assertThat(work.status()).isEqualTo("SUCCEEDED");
+        });
+    assertThat(find(TENANT_A, eventId).block().correlationId()).isEqualTo(atLimit);
+    assertThatThrownBy(
+            () -> notes.auditedCreate("too long", ACTOR, atLimit + "x", AuditedMode.SUCCEED))
+        .as("rejected while building the mutation, before any subscription or business work")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("correlation id");
+    assertThat(notes.noteIds().block()).hasSize(1);
+    assertThat(db.auditEvents()).hasSize(1);
+  }
+
+  @Test
   void anEnclosingCommitAfterASuccessfulCallRecordsNothingExtra() {
     Mono<UUID> flow =
         transactions
@@ -411,6 +468,15 @@ class AuditedMutationIT {
 
   private long unpublished(ScopeContext scope) {
     return history.countUnpublishedIntents().contextWrite(Scopes.bind(scope)).block();
+  }
+
+  private static boolean awaitLatch(CountDownLatch latch) {
+    try {
+      return latch.await(10, TimeUnit.SECONDS);
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      return false;
+    }
   }
 
   private long historyRows(UUID eventId) {

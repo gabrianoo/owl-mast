@@ -101,6 +101,25 @@ public final class NotesFixture {
             scope -> insert(scope, noteId, body).then(outcomeFor(mode, noteId, body))));
   }
 
+  /**
+   * A covered mutation whose business function writes the note, signals {@code written} and then
+   * never completes, so a test can cancel the subscription at a known point (AC3, cancellation).
+   */
+  public Mono<AuditedResult<UUID>> auditedCreateHanging(
+      String body, AuditActor actor, String correlationId, Runnable written) {
+    UUID noteId = UUID.randomUUID();
+    return audited.execute(
+        AuditedMutation.creating(
+            actor,
+            OBJECT_TYPE,
+            CREATE_ACTION,
+            correlationId,
+            scope ->
+                insert(scope, noteId, body)
+                    .then(Mono.fromRunnable(written))
+                    .then(Mono.<MutationOutcome<UUID>>never())));
+  }
+
   public Mono<List<UUID>> noteIds() {
     return databaseClient
         .sql("select id from " + TABLE + " order by id")

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.aisquad.owlmast.audit.domain.AuditRecord;
+import com.aisquad.owlmast.jobs.api.WorkItemContract;
 import com.aisquad.owlmast.platform.authorization.OperationDeniedException;
 import com.aisquad.owlmast.platform.scope.ServiceIdentity;
 import com.aisquad.owlmast.platform.scope.TenantId;
@@ -106,6 +107,28 @@ class AuditContractTypesTest {
     assertThatThrownBy(
             () -> AuditRecord.unsuccessful(eventId, mutation, AuditOutcome.SUCCEEDED, "x", NOW))
         .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void correlationIdsAreValidatedUpFrontAgainstTheSharedBound() {
+    String atLimit = "c".repeat(WorkItemContract.MAX_CORRELATION_ID_LENGTH);
+    assertThat(AuditIdentifiers.MAX_LENGTH).isEqualTo(WorkItemContract.MAX_CORRELATION_ID_LENGTH);
+    assertThat(mutation(atLimit).correlationId()).isEqualTo(atLimit);
+    assertThatThrownBy(() -> mutation(atLimit + "x"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("correlation id");
+    assertThatThrownBy(() -> mutation(" "))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("correlation id");
+  }
+
+  private static AuditedMutation<String> mutation(String correlationId) {
+    return AuditedMutation.creating(
+        AuditActor.unknown(ActorKind.SYSTEM),
+        "note",
+        "note.create",
+        correlationId,
+        scope -> Mono.just(new MutationOutcome<>("ok", "n-1", "1")));
   }
 
   @Test

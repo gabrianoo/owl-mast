@@ -54,6 +54,16 @@ class WorkContractTypesTest {
   }
 
   @Test
+  void correlationIdBoundaryMatchesTheAuditEnvelope() {
+    assertThat(WorkItemContract.MAX_CORRELATION_ID_LENGTH).isEqualTo(256);
+    String atLimit = "c".repeat(WorkItemContract.MAX_CORRELATION_ID_LENGTH);
+    assertThat(EnqueueRequest.of(TYPE, Map.of(), atLimit).correlationId()).contains(atLimit);
+    assertThatThrownBy(() -> EnqueueRequest.of(TYPE, Map.of(), atLimit + "x"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("correlation");
+  }
+
+  @Test
   void workTypesAreLowerCaseDottedSegments() {
     assertThat(WorkType.of("audit.publish").value()).isEqualTo("audit.publish");
     assertThatThrownBy(() -> WorkType.of("Audit.Publish"))
