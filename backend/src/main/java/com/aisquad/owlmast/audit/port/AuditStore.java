@@ -16,9 +16,11 @@ public interface AuditStore {
   Mono<Void> recordIntent(AuditRecord record);
 
   /**
-   * Copies the intent into the history ({@code ON CONFLICT DO NOTHING}) and marks it published.
-   * Returns the number of history rows inserted: 1 the first time, 0 on a repeat. Errors when the
-   * intent does not exist for the bound tenant.
+   * Copies the intent into the history and marks it published. A repeat leaves the existing row; an
+   * unsuccessful row for the same event (written when the commit's outcome was unknown although it
+   * landed) is replaced by the intent, which proves the commit. Returns the number of history rows
+   * inserted or upgraded: 1 the first time, 0 on a repeat. Errors when the intent does not exist
+   * for the bound tenant.
    */
   Mono<Long> publish(UUID eventId);
 

@@ -105,7 +105,9 @@ class R2dbcWorkRepository implements WorkRepository {
                 + " lease_expires_at = "
                 + WALL_CLOCK
                 + " + make_interval(secs => :leaseSeconds),"
-                + " updated_at = now() from due where w.id = due.id"
+                + " updated_at = "
+                + WALL_CLOCK
+                + " from due where w.id = due.id"
                 + " returning w.id, w.tenant_id, w.work_type, w.contract_version,"
                 + " w.payload::text as payload, w.attempt_count, w.max_attempts, w.correlation_id,"
                 + " w.lease_token, w.lease_expires_at")
@@ -121,7 +123,11 @@ class R2dbcWorkRepository implements WorkRepository {
     return databaseClient
         .sql(
             "update jobs.work_item set status = 'FAILED', failure_reason = :reason,"
-                + " finished_at = now(), updated_at = now() where tenant_id = "
+                + " finished_at = "
+                + WALL_CLOCK
+                + ", updated_at = "
+                + WALL_CLOCK
+                + " where tenant_id = "
                 + BOUND_TENANT
                 + " and status = 'RUNNING' and lease_expires_at <= "
                 + WALL_CLOCK
@@ -141,7 +147,10 @@ class R2dbcWorkRepository implements WorkRepository {
     return databaseClient
         .sql(
             "update jobs.work_item set status = :status, effect_outcome = :effect,"
-                + " effect_reference = :reference, finished_at = now(), updated_at = now()"
+                + " effect_reference = :reference, finished_at = "
+                + WALL_CLOCK
+                + ", updated_at = "
+                + WALL_CLOCK
                 + LEASE_IS_CURRENT)
         .bind("status", status.name())
         .bind("effect", effect)
@@ -159,9 +168,13 @@ class R2dbcWorkRepository implements WorkRepository {
     return databaseClient
         .sql(
             "update jobs.work_item set status = :status, failure_reason = :reason,"
-                + " next_attempt_at = now() + make_interval(secs => :backoffSeconds),"
-                + " finished_at = case when :terminal then now() else null end,"
-                + " updated_at = now()"
+                + " next_attempt_at = "
+                + WALL_CLOCK
+                + " + make_interval(secs => :backoffSeconds),"
+                + " finished_at = case when :terminal then "
+                + WALL_CLOCK
+                + " else null end, updated_at = "
+                + WALL_CLOCK
                 + LEASE_IS_CURRENT)
         .bind("status", terminal ? WorkStatus.FAILED.name() : WorkStatus.PENDING.name())
         .bind("reason", safeReason)
@@ -179,7 +192,10 @@ class R2dbcWorkRepository implements WorkRepository {
     return databaseClient
         .sql(
             "update jobs.work_item set status = 'DENIED', failure_reason = :reason,"
-                + " finished_at = now(), updated_at = now()"
+                + " finished_at = "
+                + WALL_CLOCK
+                + ", updated_at = "
+                + WALL_CLOCK
                 + LEASE_IS_CURRENT)
         .bind("reason", safeReason)
         .bind("id", id)
@@ -190,12 +206,23 @@ class R2dbcWorkRepository implements WorkRepository {
   }
 
   @Override
+  public Mono<Void> limitStatementTime(Duration timeout) {
+    return databaseClient
+        .sql("select set_config('statement_timeout', :millis, true)")
+        .bind("millis", Long.toString(Math.max(1, timeout.toMillis())))
+        .fetch()
+        .rowsUpdated()
+        .then();
+  }
+
+  @Override
   public Flux<TenantId> tenantsWithDueWork(int limit) {
     return databaseClient
         .sql(
-            "select distinct tenant_id from jobs.work_item where "
+            "select tenant_id from jobs.work_item where "
                 + DUE
-                + " order by tenant_id limit :limit")
+                + " group by tenant_id order by min(case when status = 'PENDING' then"
+                + " next_attempt_at else lease_expires_at end), tenant_id limit :limit")
         .bind("limit", (long) limit)
         .map(row -> new TenantId(row.get("tenant_id", String.class)))
         .all();

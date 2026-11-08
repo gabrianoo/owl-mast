@@ -109,9 +109,10 @@ public final class AuditedMutationService implements AuditedMutations {
         AuditRecord.succeeded(attempt.eventId(), mutation, outcome, attempt.occurredAt());
     EnqueueRequest publish =
         EnqueueRequest.of(
-            AuditEnvelopeContract.PUBLISH_WORK_TYPE,
-            Map.of(AuditEnvelopeContract.PAYLOAD_EVENT_ID, attempt.eventId().toString()),
-            mutation.correlationId());
+                AuditEnvelopeContract.PUBLISH_WORK_TYPE,
+                Map.of(AuditEnvelopeContract.PAYLOAD_EVENT_ID, attempt.eventId().toString()),
+                mutation.correlationId())
+            .withMaxAttempts(AuditEnvelopeContract.PUBLISH_MAX_ATTEMPTS);
     return store
         .recordIntent(record)
         .then(enqueue.enqueue(publish))

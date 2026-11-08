@@ -36,7 +36,7 @@ public final class WorkEnqueueService implements WorkEnqueue {
             UUID.randomUUID(),
             request,
             WorkItemContract.VERSION,
-            policy.maxAttempts(),
+            request.maxAttempts().orElse(policy.maxAttempts()),
             scope.principal()));
   }
 }

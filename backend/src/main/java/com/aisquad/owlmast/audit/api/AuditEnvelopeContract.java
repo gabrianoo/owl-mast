@@ -18,5 +18,12 @@ public final class AuditEnvelopeContract {
   /** Payload key of the publish work item carrying the event id. */
   public static final String PAYLOAD_EVENT_ID = "eventId";
 
+  /**
+   * Attempt limit of every publish work item: effectively unbounded, so a committed mutation's
+   * intent is retried (at most every {@code owlmast.jobs.backoff-cap}) until it reaches the history
+   * instead of being abandoned after {@code owlmast.jobs.max-attempts} (AC4).
+   */
+  public static final int PUBLISH_MAX_ATTEMPTS = Integer.MAX_VALUE;
+
   private AuditEnvelopeContract() {}
 }

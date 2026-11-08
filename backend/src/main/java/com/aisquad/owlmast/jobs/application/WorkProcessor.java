@@ -32,6 +32,10 @@ import reactor.core.publisher.Mono;
  *       errors are recorded as a blocked attempt and retried with backoff (AC7).
  *   <li>The handler and the completion write share one transaction fenced by the lease token: a
  *       stale lease rolls back the handler's database effects and the write changes nothing (AC2).
+ *   <li>A handler still running at {@link RetryPolicy#handlerDeadline()} is cancelled and the
+ *       attempt fails with {@value #REASON_DEADLINE_EXCEEDED}; its statements are bounded on the
+ *       server by {@link RetryPolicy#statementTimeout()}, so one hung handler, including one
+ *       blocked inside the database, cannot stall the dispatch of every other item and tenant.
  *   <li>Failed attempts persist the attempt count, a capped backoff and the exception class chain
  *       only; the last permitted attempt makes the item terminal (AC5).
  * </ul>
@@ -44,6 +48,7 @@ public final class WorkProcessor {
   static final String REASON_AUTHORIZATION_UNDECIDED = "authorization-undecided";
   static final String REASON_LEASE_EXHAUSTED = "lease-expired-attempts-exhausted";
   static final String REASON_NO_EFFECT_OUTCOME = "handler-returned-no-effect-outcome";
+  static final String REASON_DEADLINE_EXCEEDED = "handler-deadline-exceeded";
   static final int MAX_TENANTS_PER_WAKE = 100;
 
   private final ScopedTransactions transactions;
@@ -143,7 +148,12 @@ public final class WorkProcessor {
     WorkItem item = claimed.item();
     return transactions
         .inTransaction(current ->
-            Mono.defer(() -> handler.handle(item))
+            repository
+                .limitStatementTime(policy.statementTimeout())
+                .then(Mono.defer(() -> handler.handle(item)))
+                .timeout(
+                    policy.handlerDeadline(),
+                    Mono.defer(() -> Mono.error(new HandlerDeadlineExceededException())))
                 .switchIfEmpty(Mono.error(NoEffectOutcomeException::new))
                 .flatMap(outcome -> completeFenced(claimed, outcome)))
         .doOnNext(outcome ->
@@ -162,6 +172,12 @@ public final class WorkProcessor {
                   item.type().value());
               return Mono.empty();
             })
+        .onErrorResume(
+            HandlerDeadlineExceededException.class,
+            overrun -> recordFailure(claimed, REASON_DEADLINE_EXCEEDED))
+        .onErrorResume(
+            NoEffectOutcomeException.class,
+            empty -> recordFailure(claimed, REASON_NO_EFFECT_OUTCOME))
         .onErrorResume(error -> recordFailure(claimed, SafeFailure.describe(error)));
   }
 
@@ -193,9 +209,20 @@ public final class WorkProcessor {
                 safeReason,
                 policy.backoffFor(item.attempt()),
                 terminal))
-        .doOnNext(written ->
-            logWrite(
-                written, item, terminal ? "failed terminally" : "scheduled for retry", safeReason))
+        .doOnNext(written -> {
+          logWrite(
+              written, item, terminal ? "failed terminally" : "scheduled for retry", safeReason);
+          if (written && !terminal && policy.exhausted(item.attempt())) {
+            log.warn(
+                "Work item {} ({}) has used {} attempts, reaching or passing the configured {}, and is"
+                    + " still being retried under its own limit: {}",
+                item.id(),
+                item.type().value(),
+                item.attempt(),
+                policy.maxAttempts(),
+                safeReason);
+          }
+        })
         .then();
   }
 
@@ -215,6 +242,15 @@ public final class WorkProcessor {
           item.id(),
           item.type().value(),
           outcome);
+    }
+  }
+
+  /** The handler was cancelled at its deadline; recorded as {@value #REASON_DEADLINE_EXCEEDED}. */
+  static final class HandlerDeadlineExceededException extends IllegalStateException {
+    private static final long serialVersionUID = 1L;
+
+    HandlerDeadlineExceededException() {
+      super(REASON_DEADLINE_EXCEEDED);
     }
   }
 

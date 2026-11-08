@@ -20,7 +20,9 @@ import org.springframework.transaction.support.DefaultTransactionDefinition;
 /**
  * Wires the audit owner. The separate outcome path uses a {@code PROPAGATION_REQUIRES_NEW} scoped
  * transaction so a failed or denied record commits even when the caller holds a transaction that is
- * rolling back (AC3).
+ * rolling back (AC3). That transaction takes a second connection while the failing one still holds
+ * its own; connections are unpooled, so this fails fast at the server limit instead of waiting. A
+ * future pool must leave that headroom (see the contract document, durability path step 5).
  */
 @Configuration(proxyBeanMethods = false)
 class AuditConfiguration {

@@ -119,4 +119,14 @@ class WorkContractTypesTest {
         3,
         Optional.empty());
   }
+
+  @Test
+  void aPerItemAttemptLimitIsOptionalAndAtLeastOne() {
+    EnqueueRequest plain = EnqueueRequest.of(WorkType.of("fixture.limit"), Map.of());
+
+    assertThat(plain.maxAttempts()).isEmpty();
+    assertThat(plain.withMaxAttempts(7).maxAttempts()).hasValue(7);
+    assertThat(plain.withMaxAttempts(7).type()).isEqualTo(plain.type());
+    assertThatThrownBy(() -> plain.withMaxAttempts(0)).isInstanceOf(IllegalArgumentException.class);
+  }
 }

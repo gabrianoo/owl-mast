@@ -39,7 +39,9 @@ public final class NotesFixture {
   public enum AuditedMode {
     SUCCEED,
     FAIL_AFTER_WRITE,
-    DENY
+    DENY,
+    /** The business function writes the note and then completes without a MutationOutcome. */
+    COMPLETE_EMPTY
   }
 
   private final DatabaseClient databaseClient;
@@ -91,14 +93,19 @@ public final class NotesFixture {
   /** A covered mutation creating a note; the body is the business input a secret may hide in. */
   public Mono<AuditedResult<UUID>> auditedCreate(
       String body, AuditActor actor, String correlationId, AuditedMode mode) {
+    return audited.execute(mutation(body, actor, correlationId, mode));
+  }
+
+  /** The covered mutation {@link #auditedCreate} runs, for tests that wire their own service. */
+  public AuditedMutation<UUID> mutation(
+      String body, AuditActor actor, String correlationId, AuditedMode mode) {
     UUID noteId = UUID.randomUUID();
-    return audited.execute(
-        AuditedMutation.creating(
-            actor,
-            OBJECT_TYPE,
-            CREATE_ACTION,
-            correlationId,
-            scope -> insert(scope, noteId, body).then(outcomeFor(mode, noteId, body))));
+    return AuditedMutation.creating(
+        actor,
+        OBJECT_TYPE,
+        CREATE_ACTION,
+        correlationId,
+        scope -> insert(scope, noteId, body).then(outcomeFor(mode, noteId, body)));
   }
 
   /**
@@ -158,6 +165,7 @@ public final class NotesFixture {
       case FAIL_AFTER_WRITE ->
           Mono.error(new IllegalStateException("fixture failure with input " + body));
       case DENY -> Mono.error(new OperationDeniedException("fixture-denied"));
+      case COMPLETE_EMPTY -> Mono.empty();
     };
   }
 }

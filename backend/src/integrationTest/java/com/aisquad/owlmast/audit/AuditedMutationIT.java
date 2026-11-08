@@ -35,6 +35,7 @@ import com.aisquad.owlmast.platform.scope.ScopeContext;
 import com.aisquad.owlmast.platform.scope.Scopes;
 import com.aisquad.owlmast.testing.ContainersConfiguration;
 import com.aisquad.owlmast.testing.StubIdentityConfiguration;
+import io.r2dbc.spi.ConnectionFactory;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.OffsetDateTime;
@@ -53,9 +54,13 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.Import;
+import org.springframework.r2dbc.connection.R2dbcTransactionManager;
 import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.transaction.ReactiveTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionSystemException;
+import org.springframework.transaction.reactive.GenericReactiveTransaction;
+import org.springframework.transaction.reactive.TransactionSynchronizationManager;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import org.springframework.transaction.support.DefaultTransactionDefinition;
 import reactor.core.Disposable;
@@ -104,6 +109,7 @@ class AuditedMutationIT {
   @Autowired private WorkRepository workRepository;
   @Autowired private HandlerRegistry registry;
   @Autowired private RetryPolicy policy;
+  @Autowired private ConnectionFactory connectionFactory;
 
   @BeforeEach
   void reset() {
@@ -524,7 +530,147 @@ class AuditedMutationIT {
     assertThat(db.intents()).isEmpty();
   }
 
+  @Test
+  void anEmptyBusinessResultRollsBackAndRecordsAFailedOutcome() {
+    StepVerifier.create(
+            notes
+                .auditedCreate("empty", ACTOR, "corr-empty", AuditedMode.COMPLETE_EMPTY)
+                .contextWrite(Scopes.bind(TENANT_A)))
+        .expectErrorMatches(
+            error -> error.getClass().getSimpleName().equals("MissingMutationOutcomeException"))
+        .verify();
+
+    assertThat(notes.noteIds().block()).as("the business write rolled back").isEmpty();
+    assertThat(db.intents()).isEmpty();
+    assertThat(db.workItems()).isEmpty();
+    assertThat(db.auditEvents())
+        .singleElement()
+        .satisfies(event -> {
+          assertThat(event.outcome()).isEqualTo("FAILED");
+          assertThat(event.reason()).isEqualTo("MissingMutationOutcomeException");
+        });
+  }
+
+  @Test
+  void anUnknownCommitOutcomeIsRecordedAsUnresolved() {
+    StepVerifier.create(
+            auditedOver(auditStore, UnknownCommitOutcome.ROLLED_BACK)
+                .execute(notes.mutation("unknown", ACTOR, "corr-unknown", AuditedMode.SUCCEED))
+                .contextWrite(Scopes.bind(TENANT_A)))
+        .expectError(TransactionSystemException.class)
+        .verify();
+
+    assertThat(notes.noteIds().block()).as("the commit never landed").isEmpty();
+    assertThat(db.intents()).isEmpty();
+    assertThat(db.workItems()).isEmpty();
+    assertThat(db.auditEvents())
+        .singleElement()
+        .satisfies(event -> {
+          assertThat(event.outcome()).isEqualTo("UNRESOLVED");
+          assertThat(event.reason()).isEqualTo("transaction-completion-unknown");
+          assertThat(event.correlationId()).isEqualTo("corr-unknown");
+        });
+  }
+
+  @Test
+  void aCommitThatLandedWithAnUnknownOutcomeIsPublishedAsSucceeded() {
+    StepVerifier.create(
+            auditedOver(auditStore, UnknownCommitOutcome.COMMITTED)
+                .execute(notes.mutation("landed", ACTOR, "corr-landed", AuditedMode.SUCCEED))
+                .contextWrite(Scopes.bind(TENANT_A)))
+        .expectError(TransactionSystemException.class)
+        .verify();
+
+    assertThat(notes.noteIds().block()).as("the commit landed").hasSize(1);
+    UUID eventId = db.intents().get(0).eventId();
+    assertThat(db.auditEvents())
+        .singleElement()
+        .satisfies(event -> {
+          assertThat(event.eventId()).isEqualTo(eventId);
+          assertThat(event.outcome()).isEqualTo("UNRESOLVED");
+        });
+
+    awaitPublishedAsSucceeded(eventId);
+
+    assertThat(historyRows(eventId)).isEqualTo(1);
+    AuditEnvelope published = find(TENANT_A, eventId).block();
+    assertThat(published.outcome())
+        .as("the intent proves the commit and replaces the unresolved record")
+        .isEqualTo(AuditOutcome.SUCCEEDED);
+    assertThat(published.reason()).isEmpty();
+    assertThat(published.objectId()).isPresent();
+    assertThat(
+            db.count(
+                "select count(*) from audit.event e join audit.publication_intent i using (event_id)"
+                    + " where e.published_at >= i.recorded_at and e.recorded_at = i.recorded_at"))
+        .as("the corrected row carries the intent's times and its own publication time")
+        .isEqualTo(1);
+    assertThat(unpublished(TENANT_A)).isZero();
+
+    processor.runOnce().block();
+    assertThat(find(TENANT_A, eventId).block().outcome()).isEqualTo(AuditOutcome.SUCCEEDED);
+  }
+
+  @Test
+  void aLandedCommitRecordedAsFailedWhenTheUnresolvedWriteFailedIsCorrectedByPublication() {
+    OutcomeCountingStore store = OutcomeCountingStore.failingFirst(auditStore);
+    StepVerifier.create(
+            auditedOver(store, UnknownCommitOutcome.COMMITTED)
+                .execute(notes.mutation("landed", ACTOR, "corr-landed-2", AuditedMode.SUCCEED))
+                .contextWrite(Scopes.bind(TENANT_A)))
+        .expectError(TransactionSystemException.class)
+        .verify();
+
+    assertThat(store.outcomeWrites()).as("observer failed, error path wrote").isEqualTo(2);
+    UUID eventId = db.intents().get(0).eventId();
+    assertThat(db.auditEvents())
+        .singleElement()
+        .satisfies(event -> {
+          assertThat(event.outcome()).isEqualTo("FAILED");
+          assertThat(event.reason()).isEqualTo("TransactionSystemException");
+        });
+
+    awaitPublishedAsSucceeded(eventId);
+
+    assertThat(historyRows(eventId)).isEqualTo(1);
+  }
+
   // --- AC4 ---------------------------------------------------------------------------------
+
+  @Test
+  void aPublishItemKeepsRetryingPastTheConfiguredMaximumUntilTheIntentIsPublished(
+      CapturedOutput output) {
+    UUID eventId = auditedCreate(TENANT_A, "persistent", "corr-p", AuditedMode.SUCCEED).eventId();
+    WorkRow item = db.workItems().get(0);
+    assertThat(item.maxAttempts()).isEqualTo(AuditEnvelopeContract.PUBLISH_MAX_ATTEMPTS);
+    db.installAuditEventFault();
+
+    WorkProcessor single = singleItemProcessor();
+    int beyondTheConfiguredMaximum = policy.maxAttempts() + 1;
+    await()
+        .atMost(Duration.ofSeconds(10))
+        .pollInterval(Duration.ofMillis(50))
+        .untilAsserted(() -> {
+          single.processTenant(TENANT_A.tenant()).block();
+          assertThat(db.work(item.id()).attempts()).isEqualTo(beyondTheConfiguredMaximum);
+        });
+    assertThat(db.work(item.id()).status()).as("never abandoned").isEqualTo("PENDING");
+    assertThat(historyRows(eventId)).isZero();
+    assertThat(output.getAll())
+        .as("an item past the configured attempts is surfaced to operators")
+        .contains("reaching or passing the configured " + policy.maxAttempts());
+
+    db.removeAuditEventFault();
+    await()
+        .atMost(Duration.ofSeconds(5))
+        .pollInterval(Duration.ofMillis(50))
+        .untilAsserted(() -> {
+          processor.runOnce().block();
+          assertThat(historyRows(eventId)).isEqualTo(1);
+        });
+    assertThat(db.work(item.id()).status()).isEqualTo("SUCCEEDED");
+    assertThat(unpublished(TENANT_A)).isZero();
+  }
 
   @Test
   void recoveryAfterAFaultBeforePublicationYieldsExactlyOneHistoryRecord() {
@@ -634,6 +780,51 @@ class AuditedMutationIT {
     return new AuditedMutationService(transactions, separateTransactions(), store, enqueue, clock);
   }
 
+  /** The same wiring, but the business transaction's commit reports an unknown outcome. */
+  private AuditedMutationService auditedOver(AuditStore store, UnknownCommitOutcome commit) {
+    ScopedTransactions business =
+        new ScopedTransactions(
+            TransactionalOperator.create(
+                new UnknownCommitOutcomeTransactionManager(connectionFactory, commit)),
+            databaseClient);
+    return new AuditedMutationService(business, separateTransactions(), store, enqueue, clock);
+  }
+
+  /** What really happened to a commit that is then reported as failed with an unknown outcome. */
+  private enum UnknownCommitOutcome {
+    COMMITTED,
+    ROLLED_BACK
+  }
+
+  /**
+   * Commits or rolls back for real, then fails the commit with a {@code TransactionException}, so
+   * Spring completes the transaction with {@code STATUS_UNKNOWN}, as when a connection drops while
+   * the commit is in flight.
+   */
+  private static final class UnknownCommitOutcomeTransactionManager
+      extends R2dbcTransactionManager {
+    private static final long serialVersionUID = 1L;
+    private final UnknownCommitOutcome outcome;
+
+    private UnknownCommitOutcomeTransactionManager(
+        ConnectionFactory connectionFactory, UnknownCommitOutcome outcome) {
+      super(connectionFactory);
+      this.outcome = outcome;
+    }
+
+    @Override
+    protected Mono<Void> doCommit(
+        TransactionSynchronizationManager synchronizationManager,
+        GenericReactiveTransaction status) {
+      Mono<Void> real =
+          outcome == UnknownCommitOutcome.COMMITTED
+              ? super.doCommit(synchronizationManager, status)
+              : doRollback(synchronizationManager, status);
+      return real.then(
+          Mono.error(new TransactionSystemException("fixture: commit outcome unknown")));
+    }
+  }
+
   /** {@code REQUIRES_NEW} scoped transactions, as the separate outcome path uses. */
   private ScopedTransactions separateTransactions() {
     DefaultTransactionDefinition requiresNew = new DefaultTransactionDefinition();
@@ -681,6 +872,19 @@ class AuditedMutationIT {
       Thread.currentThread().interrupt();
       return false;
     }
+  }
+
+  /** Drives the processor until the intent's history row reads {@code SUCCEEDED}. */
+  private void awaitPublishedAsSucceeded(UUID eventId) {
+    await()
+        .atMost(Duration.ofSeconds(5))
+        .pollInterval(Duration.ofMillis(50))
+        .untilAsserted(() -> {
+          processor.runOnce().block();
+          assertThat(find(TENANT_A, eventId).block().outcome())
+              .as("the intent proves the commit and corrects the unsuccessful record")
+              .isEqualTo(AuditOutcome.SUCCEEDED);
+        });
   }
 
   private long historyRows(UUID eventId) {

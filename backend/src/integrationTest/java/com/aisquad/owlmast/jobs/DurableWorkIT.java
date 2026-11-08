@@ -24,9 +24,11 @@ import com.aisquad.owlmast.jobs.application.HandlerRegistry;
 import com.aisquad.owlmast.jobs.application.TenantInternalOnlyDispatchAuthorization;
 import com.aisquad.owlmast.jobs.application.WorkProcessor;
 import com.aisquad.owlmast.jobs.domain.RetryPolicy;
+import com.aisquad.owlmast.jobs.port.ClaimedWork;
 import com.aisquad.owlmast.jobs.port.WorkRepository;
 import com.aisquad.owlmast.platform.persistence.ScopedTransactions;
 import com.aisquad.owlmast.platform.scope.MissingScopeException;
+import com.aisquad.owlmast.platform.scope.PrincipalId;
 import com.aisquad.owlmast.platform.scope.ScopeContext;
 import com.aisquad.owlmast.platform.scope.Scopes;
 import com.aisquad.owlmast.platform.scope.ServiceIdentity;
@@ -35,6 +37,7 @@ import com.aisquad.owlmast.testing.ContainersConfiguration;
 import com.aisquad.owlmast.testing.StubIdentityConfiguration;
 import java.lang.reflect.RecordComponent;
 import java.time.Duration;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -54,6 +57,8 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.r2dbc.core.DatabaseClient;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 import reactor.util.context.Context;
@@ -96,6 +101,7 @@ class DurableWorkIT {
   @Autowired private WorkRepository repository;
   @Autowired private HandlerRegistry registry;
   @Autowired private RetryPolicy policy;
+  @Autowired private DatabaseClient databaseClient;
 
   @BeforeEach
   void reset() {
@@ -298,17 +304,19 @@ class DurableWorkIT {
     createNote(TENANT_A, Failure.NONE);
     UUID itemId = db.workItems().get(0).id();
     String key = "owlmast-work:" + itemId;
+    CompletableFuture<Void> release = new CompletableFuture<>();
+    // The handler applies its effect at once; its completion write, in the same transaction,
+    // waits until the lease has run out on the wall clock. The handler deadline bounds only the
+    // handler, so the fence alone must reject this write.
     WorkProcessor shortLease =
         new WorkProcessor(
             transactions,
-            repository,
+            new CompletionHeldUntil(repository, release),
             registry,
             new TenantInternalOnlyDispatchAuthorization(),
             new RetryPolicy(
                 3, Duration.ofMillis(100), Duration.ofMillis(400), Duration.ofSeconds(1), 1),
             "short-lease-processor");
-    CompletableFuture<Void> release = new CompletableFuture<>();
-    followUp.behaveOnce(item -> Mono.fromFuture(release).then(followUp.applyEffect(item)));
 
     CompletableFuture<Long> run = shortLease.processTenant(TENANT_A.tenant()).toFuture();
     await()
@@ -320,7 +328,7 @@ class DurableWorkIT {
                         "select count(*) from jobs.work_item where id = '"
                             + itemId
                             + "' and status = 'RUNNING' and lease_expires_at <= clock_timestamp()"))
-                .as("the lease ran out on the wall clock while the handler was still working")
+                .as("the lease ran out on the wall clock before the completion write")
                 .isEqualTo(1));
     release.complete(null);
     assertThat(run.get(10, TimeUnit.SECONDS)).isEqualTo(1);
@@ -464,6 +472,103 @@ class DurableWorkIT {
     assertThat(followUp.invocations()).hasSize(1);
   }
 
+  @Test
+  void aHandlerStillRunningAtItsDeadlineIsCancelledAndTheRestOfTheBatchRuns() {
+    createNote(TENANT_A, Failure.NONE);
+    createNote(TENANT_A, Failure.NONE);
+    followUp.behaveOnce(item -> Mono.never());
+
+    assertThat(
+            shortDeadlineProcessor().processTenant(TENANT_A.tenant()).block(Duration.ofSeconds(10)))
+        .as("the hung handler did not stall the batch")
+        .isEqualTo(2L);
+
+    assertThat(db.workItems())
+        .extracting(WorkRow::status)
+        .containsExactlyInAnyOrder("PENDING", "SUCCEEDED");
+    WorkRow overrun =
+        db.workItems().stream()
+            .filter(row -> row.status().equals("PENDING"))
+            .findFirst()
+            .orElseThrow();
+    assertThat(overrun.attempts()).isEqualTo(1);
+    assertThat(overrun.reason()).isEqualTo("handler-deadline-exceeded");
+    assertThat(overrun.nextAttemptAt()).isAfter(overrun.updatedAt());
+  }
+
+  @Test
+  void aHandlerBlockedInsideTheDatabaseIsCancelledByTheServerBeforeItsLeaseRunsOut() {
+    createNote(TENANT_A, Failure.NONE);
+    UUID itemId = db.workItems().get(0).id();
+    followUp.behaveOnce(item ->
+        databaseClient
+            .sql("select pg_sleep(60)")
+            .fetch()
+            .rowsUpdated()
+            .then(Mono.<EffectOutcome>never()));
+
+    assertThat(
+            shortDeadlineProcessor().processTenant(TENANT_A.tenant()).block(Duration.ofSeconds(10)))
+        .as("the rollback did not wait behind the sleeping statement")
+        .isEqualTo(1L);
+
+    WorkRow row = db.work(itemId);
+    assertThat(row.status()).isEqualTo("PENDING");
+    assertThat(row.attempts()).isEqualTo(1);
+    assertThat(row.reason()).isEqualTo("handler-deadline-exceeded");
+  }
+
+  @Test
+  void aHandlerThatCompletesWithoutAnEffectOutcomeIsRetriedWithASafeReason() {
+    createNote(TENANT_A, Failure.NONE);
+    UUID itemId = db.workItems().get(0).id();
+    followUp.behave(item -> Mono.empty());
+
+    singleItemProcessor().processTenant(TENANT_A.tenant()).block();
+
+    WorkRow row = db.work(itemId);
+    assertThat(row.status()).isEqualTo("PENDING");
+    assertThat(row.attempts()).isEqualTo(1);
+    assertThat(row.reason()).isEqualTo("handler-returned-no-effect-outcome");
+    assertThat(row.effectOutcome()).isNull();
+  }
+
+  @Test
+  void aPerItemAttemptLimitOverridesTheConfiguredMaximum() {
+    UUID itemId =
+        transactions
+            .inTransaction(scope ->
+                enqueue.enqueue(
+                    EnqueueRequest.of(FollowUpHandler.TYPE, Map.of()).withMaxAttempts(1)))
+            .contextWrite(Scopes.bind(TENANT_A))
+            .block();
+    followUp.behave(item -> Mono.error(new IllegalStateException("always fails")));
+
+    singleItemProcessor().processTenant(TENANT_A.tenant()).block();
+
+    WorkRow row = db.work(itemId);
+    assertThat(row.maxAttempts()).isEqualTo(1);
+    assertThat(row.status()).isEqualTo("FAILED");
+    assertThat(row.attempts()).isEqualTo(1);
+  }
+
+  @Test
+  void aCompletionRecordsTheWallClockTimeTheHandlerFinished() {
+    createNote(TENANT_A, Failure.NONE);
+    UUID itemId = db.workItems().get(0).id();
+    followUp.behaveOnce(
+        item -> Mono.delay(Duration.ofMillis(400)).then(followUp.applyEffect(item)));
+
+    singleItemProcessor().processTenant(TENANT_A.tenant()).block();
+
+    WorkRow row = db.work(itemId);
+    assertThat(row.status()).isEqualTo("SUCCEEDED");
+    OffsetDateTime claimedAt = row.leaseExpiresAt().minus(policy.leaseDuration());
+    assertThat(Duration.between(claimedAt, row.finishedAt()))
+        .as("finished_at is taken when the completion is written, not when its transaction began")
+        .isGreaterThanOrEqualTo(Duration.ofMillis(350));
+  }
+
   // --- AC7 ---------------------------------------------------------------------------------
 
   @Test
@@ -580,7 +685,182 @@ class DurableWorkIT {
         .verify();
   }
 
+  @Test
+  void oneTenantsProcessingFailureDoesNotStopTheOtherTenants(CapturedOutput output) {
+    createNote(TENANT_A, Failure.NONE);
+    createNote(TENANT_B, Failure.NONE);
+    WorkProcessor isolating =
+        new WorkProcessor(
+            transactions,
+            new FailingForTenant(repository, TENANT_A.tenant()),
+            registry,
+            new TenantInternalOnlyDispatchAuthorization(),
+            policy,
+            "isolating-processor");
+
+    assertThat(isolating.runOnce().block()).isEqualTo(1L);
+
+    assertThat(db.workItems())
+        .filteredOn(row -> row.tenant().equals("tenant-b"))
+        .singleElement()
+        .satisfies(row -> assertThat(row.status()).isEqualTo("SUCCEEDED"));
+    assertThat(db.workItems())
+        .filteredOn(row -> row.tenant().equals("tenant-a"))
+        .singleElement()
+        .satisfies(row -> assertThat(row.status()).isEqualTo("PENDING"));
+    assertThat(output.getAll())
+        .contains("Processing work for tenant tenant-a failed: IllegalStateException")
+        .doesNotContain("fixture: tenant-level fault");
+  }
+
+  @Test
+  void tenantsAreDiscoveredByTheirLongestWaitingDueItem() {
+    createNote(TENANT_A, Failure.NONE);
+    createNote(TENANT_B, Failure.NONE);
+    db.runSql(
+        "update jobs.work_item set next_attempt_at = now() - interval '1 second'"
+            + " where tenant_id = 'tenant-a'");
+    db.runSql(
+        "update jobs.work_item set next_attempt_at = now() - interval '1 minute'"
+            + " where tenant_id = 'tenant-b'");
+
+    assertThat(repository.tenantsWithDueWork(1).collectList().block())
+        .as("a bounded wake-up reaches the tenant that waited longest, not the lowest id")
+        .containsExactly(TENANT_B.tenant());
+    assertThat(repository.tenantsWithDueWork(2).collectList().block())
+        .containsExactly(TENANT_B.tenant(), TENANT_A.tenant());
+  }
+
+  @Test
+  void anExpiredLeaseCountsAsWaitingSinceItsLeaseRanOut() {
+    createNote(TENANT_A, Failure.NONE);
+    createNote(TENANT_B, Failure.NONE);
+    db.runSql(
+        "update jobs.work_item set status = 'RUNNING', lease_token = gen_random_uuid(),"
+            + " lease_owner = 'gone', lease_expires_at = now() - interval '2 minutes',"
+            + " next_attempt_at = now() - interval '1 second', attempt_count = 1"
+            + " where tenant_id = 'tenant-a'");
+    db.runSql(
+        "update jobs.work_item set next_attempt_at = now() - interval '1 minute'"
+            + " where tenant_id = 'tenant-b'");
+
+    assertThat(repository.tenantsWithDueWork(1).collectList().block())
+        .as("a reclaimable lease waits from its expiry, not from its original due time")
+        .containsExactly(TENANT_A.tenant());
+  }
+
   // --- helpers -----------------------------------------------------------------------------
+
+  /** A 5 s lease with a 0.5 s handler deadline: ample margin for the rollback and failure write. */
+  private WorkProcessor shortDeadlineProcessor() {
+    return new WorkProcessor(
+        transactions,
+        repository,
+        registry,
+        new TenantInternalOnlyDispatchAuthorization(),
+        new RetryPolicy(
+            policy.maxAttempts(),
+            policy.backoffBase(),
+            policy.backoffCap(),
+            Duration.ofSeconds(5),
+            10,
+            Duration.ofMillis(500)),
+        "short-deadline-processor");
+  }
+
+  /** Delegates everything, but fails the per-tenant expiry sweep for one tenant. */
+  private static final class FailingForTenant extends DelegatingWorkRepository {
+    private final TenantId failing;
+
+    private FailingForTenant(WorkRepository delegate, TenantId failing) {
+      super(delegate);
+      this.failing = failing;
+    }
+
+    @Override
+    public Mono<Long> failExhaustedExpiredLeases(String safeReason) {
+      return Scopes.current()
+          .flatMap(scope ->
+              scope.tenant().equals(failing)
+                  ? Mono.error(new IllegalStateException("fixture: tenant-level fault"))
+                  : super.failExhaustedExpiredLeases(safeReason));
+    }
+  }
+
+  /** Delegates everything, but holds each completion write until {@code release} completes. */
+  private static final class CompletionHeldUntil extends DelegatingWorkRepository {
+    private final CompletableFuture<Void> release;
+
+    private CompletionHeldUntil(WorkRepository delegate, CompletableFuture<Void> release) {
+      super(delegate);
+      this.release = release;
+    }
+
+    @Override
+    public Mono<Boolean> complete(UUID id, UUID leaseToken, EffectOutcome outcome) {
+      return Mono.fromFuture(release).then(super.complete(id, leaseToken, outcome));
+    }
+  }
+
+  /** Plain delegation, for fixtures that change one repository call. */
+  private abstract static class DelegatingWorkRepository implements WorkRepository {
+    private final WorkRepository delegate;
+
+    DelegatingWorkRepository(WorkRepository delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public Mono<Long> failExhaustedExpiredLeases(String safeReason) {
+      return delegate.failExhaustedExpiredLeases(safeReason);
+    }
+
+    @Override
+    public Mono<Void> limitStatementTime(Duration timeout) {
+      return delegate.limitStatementTime(timeout);
+    }
+
+    @Override
+    public Mono<UUID> insert(
+        UUID id,
+        EnqueueRequest request,
+        int contractVersion,
+        int maxAttempts,
+        PrincipalId enqueuedBy) {
+      return delegate.insert(id, request, contractVersion, maxAttempts, enqueuedBy);
+    }
+
+    @Override
+    public Flux<ClaimedWork> claim(int limit, Duration lease, String leaseOwner) {
+      return delegate.claim(limit, lease, leaseOwner);
+    }
+
+    @Override
+    public Mono<Boolean> complete(UUID id, UUID leaseToken, EffectOutcome outcome) {
+      return delegate.complete(id, leaseToken, outcome);
+    }
+
+    @Override
+    public Mono<Boolean> fail(
+        UUID id, UUID leaseToken, String safeReason, Duration backoff, boolean terminal) {
+      return delegate.fail(id, leaseToken, safeReason, backoff, terminal);
+    }
+
+    @Override
+    public Mono<Boolean> deny(UUID id, UUID leaseToken, String safeReason) {
+      return delegate.deny(id, leaseToken, safeReason);
+    }
+
+    @Override
+    public Flux<TenantId> tenantsWithDueWork(int limit) {
+      return delegate.tenantsWithDueWork(limit);
+    }
+
+    @Override
+    public Flux<FailedWorkItem> listTerminalFailures(int limit) {
+      return delegate.listTerminalFailures(limit);
+    }
+  }
 
   private UUID createNote(ScopeContext scope, Failure failure) {
     return createNote(scope, failure, "note body");

@@ -22,7 +22,8 @@ import reactor.core.publisher.Mono;
 /**
  * Audit-owned tables {@code audit.publication_intent} and {@code audit.event} (V003). Every
  * statement filters on the tenant bound to the transaction; every history insert (publication and
- * separate outcome) is keyed on the event id, so a repeated or overlapping write is a no-op.
+ * separate outcome) is keyed on the event id, so a repeated or overlapping write is a no-op, except
+ * that publication corrects an unsuccessful outcome for an execution that did commit.
  */
 @Repository
 @RequiredArgsConstructor
@@ -34,6 +35,22 @@ class R2dbcAuditStore implements AuditStore {
       "event_id, envelope_version, tenant_id, actor_kind, actor_id, project_id, object_type,"
           + " object_id, object_version, action, outcome, reason, occurred_at, recorded_at,"
           + " correlation_id";
+
+  /**
+   * Publication replaces a separate-path row for the same event that is not {@code SUCCEEDED}: the
+   * intent exists only because the business transaction committed, so it is the truth about that
+   * execution, whatever an outcome writer concluded while the commit's result was unknown. A repeat
+   * publication (an existing {@code SUCCEEDED} row) is kept unchanged.
+   */
+  private static final String CORRECT_UNSUCCESSFUL =
+      " on conflict (event_id) do update set envelope_version = excluded.envelope_version,"
+          + " actor_kind = excluded.actor_kind, actor_id = excluded.actor_id,"
+          + " project_id = excluded.project_id, object_type = excluded.object_type,"
+          + " object_id = excluded.object_id, object_version = excluded.object_version,"
+          + " action = excluded.action, outcome = excluded.outcome, reason = excluded.reason,"
+          + " occurred_at = excluded.occurred_at, recorded_at = excluded.recorded_at,"
+          + " correlation_id = excluded.correlation_id, published_at = now()"
+          + " where audit.event.outcome <> 'SUCCEEDED' and audit.event.tenant_id = excluded.tenant_id";
 
   private final DatabaseClient databaseClient;
 
@@ -58,7 +75,7 @@ class R2dbcAuditStore implements AuditStore {
                     + ENVELOPE_COLUMNS
                     + " from audit.publication_intent where event_id = :eventId and tenant_id = "
                     + BOUND_TENANT
-                    + " on conflict (event_id) do nothing")
+                    + CORRECT_UNSUCCESSFUL)
             .bind("eventId", eventId)
             .fetch()
             .rowsUpdated();

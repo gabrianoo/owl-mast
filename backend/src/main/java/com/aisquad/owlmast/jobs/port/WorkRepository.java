@@ -39,7 +39,14 @@ public interface WorkRepository {
 
   Mono<Boolean> deny(UUID id, UUID leaseToken, String safeReason);
 
-  /** Identifier-only discovery across tenants, outside any scope; drives per-tenant processing. */
+  /** Bounds every later statement of the current transaction on the server side. */
+  Mono<Void> limitStatementTime(Duration timeout);
+
+  /**
+   * Identifier-only discovery across tenants, outside any scope; drives per-tenant processing.
+   * Tenants are ordered by their longest-waiting due item, so a bounded wake-up never starves the
+   * tenants that sort after the limit.
+   */
   Flux<TenantId> tenantsWithDueWork(int limit);
 
   Flux<FailedWorkItem> listTerminalFailures(int limit);

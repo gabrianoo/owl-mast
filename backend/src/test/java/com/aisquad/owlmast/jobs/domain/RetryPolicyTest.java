@@ -60,4 +60,37 @@ class RetryPolicyTest {
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("lease");
   }
+
+  @Test
+  void handlersAreCancelledAtNineTenthsOfTheLeaseSoTheFailureIsWrittenUnderIt() {
+    RetryPolicy policy =
+        new RetryPolicy(3, Duration.ofSeconds(1), Duration.ofSeconds(5), Duration.ofSeconds(30), 1);
+
+    assertThat(policy.handlerDeadline()).isEqualTo(Duration.ofSeconds(27));
+    assertThat(RetryPolicy.DEFAULTS.handlerDeadline())
+        .isLessThan(WorkItemContract.DEFAULT_LEASE_DURATION)
+        .isPositive();
+    assertThatThrownBy(() ->
+            new RetryPolicy(
+                3,
+                Duration.ofSeconds(1),
+                Duration.ofSeconds(5),
+                Duration.ofSeconds(30),
+                1,
+                Duration.ZERO))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() ->
+            new RetryPolicy(
+                3,
+                Duration.ofSeconds(1),
+                Duration.ofSeconds(5),
+                Duration.ofSeconds(30),
+                1,
+                Duration.ofSeconds(30)))
+        .as("the deadline must leave the failure write inside the lease")
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThat(policy.statementTimeout())
+        .as("server-side bound halfway between the deadline and the lease expiry")
+        .isEqualTo(Duration.ofMillis(28_500));
+  }
 }
