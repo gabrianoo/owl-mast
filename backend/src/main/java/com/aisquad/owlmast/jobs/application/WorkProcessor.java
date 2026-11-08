@@ -15,6 +15,7 @@ import com.aisquad.owlmast.platform.scope.Scopes;
 import com.aisquad.owlmast.platform.scope.ServiceIdentity;
 import com.aisquad.owlmast.platform.scope.TenantId;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
@@ -87,20 +88,27 @@ public final class WorkProcessor {
         .reduce(0L, Long::sum);
   }
 
-  /** Claims one bounded batch for the tenant and dispatches it under that tenant's scope. */
+  /**
+   * Dispatches up to one batch for the tenant under that tenant's scope. Items are leased one at a
+   * time, each immediately before its dispatch, so a lease never ticks while the item waits behind
+   * others in the batch; the batch size only bounds how many items one wake-up handles.
+   */
   public Mono<Long> processTenant(TenantId tenant) {
     ScopeContext scope = ServiceIdentity.backendScope(tenant);
     return transactions
-        .inTransaction(current ->
-            repository
-                .failExhaustedExpiredLeases(REASON_LEASE_EXHAUSTED)
-                .thenMany(
-                    repository.claim(policy.claimBatchSize(), policy.leaseDuration(), leaseOwner))
-                .collectList())
-        .flatMapMany(Flux::fromIterable)
+        .inTransaction(current -> repository.failExhaustedExpiredLeases(REASON_LEASE_EXHAUSTED))
+        .thenMany(Flux.range(1, policy.claimBatchSize()))
+        .concatMap(slot -> claimNext().map(Optional::of).defaultIfEmpty(Optional.empty()))
+        .takeWhile(Optional::isPresent)
+        .map(Optional::orElseThrow)
         .concatMap(this::dispatch)
         .count()
         .contextWrite(Scopes.bind(scope));
+  }
+
+  private Mono<ClaimedWork> claimNext() {
+    return transactions.inTransaction(
+        current -> repository.claim(1, policy.leaseDuration(), leaseOwner).next());
   }
 
   private Mono<UUID> dispatch(ClaimedWork claimed) {

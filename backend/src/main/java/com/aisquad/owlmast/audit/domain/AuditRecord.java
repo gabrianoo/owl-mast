@@ -62,7 +62,9 @@ public record AuditRecord(
         mutation.correlationId());
   }
 
-  /** Failed or denied attempt: object id as requested (possibly Unknown), no version. */
+  /**
+   * Failed, denied or unresolved attempt: object id as requested (possibly Unknown), no version.
+   */
   public static AuditRecord unsuccessful(
       UUID eventId,
       AuditedMutation<?> mutation,
@@ -70,7 +72,8 @@ public record AuditRecord(
       String safeReason,
       OffsetDateTime occurredAt) {
     if (!outcome.separateOutcomePath()) {
-      throw new IllegalArgumentException("only FAILED or DENIED use the separate outcome path");
+      throw new IllegalArgumentException(
+          "only FAILED, DENIED or UNRESOLVED use the separate outcome path");
     }
     return new AuditRecord(
         AuditEnvelopeContract.VERSION,

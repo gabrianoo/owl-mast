@@ -198,7 +198,7 @@ class DurableWorkIT {
             .applyEffect(item)
             .flatMap(outcome -> db.expireLeaseAsync(item.id()).thenReturn(outcome)));
 
-    processor.runOnce().block();
+    singleItemProcessor().processTenant(TENANT_A.tenant()).block();
     WorkRow stale = db.work(itemId);
     assertThat(stale.status()).as("rejected write changed nothing").isEqualTo("RUNNING");
     assertThat(stale.attempts()).isEqualTo(1);
@@ -246,7 +246,7 @@ class DurableWorkIT {
     followUp.behaveOnce(item ->
         db.expireLeaseAsync(item.id()).then(Mono.error(new IllegalStateException("late failure"))));
 
-    processor.runOnce().block();
+    singleItemProcessor().processTenant(TENANT_A.tenant()).block();
     WorkRow stale = db.work(itemId);
     assertThat(stale.status()).isEqualTo("RUNNING");
     assertThat(stale.attempts()).isEqualTo(1);
@@ -285,6 +285,74 @@ class DurableWorkIT {
                     + itemId
                     + "'"))
         .isInstanceOf(DataIntegrityViolationException.class);
+  }
+
+  @Test
+  void aLeaseThatExpiresNaturallyWhileTheHandlerRunsCannotCommit() {
+    createNote(TENANT_A, Failure.NONE);
+    UUID itemId = db.workItems().get(0).id();
+    String key = "owlmast-work:" + itemId;
+    WorkProcessor shortLease =
+        new WorkProcessor(
+            transactions,
+            repository,
+            registry,
+            new TenantInternalOnlyDispatchAuthorization(),
+            new RetryPolicy(
+                3, Duration.ofMillis(100), Duration.ofMillis(400), Duration.ofMillis(400), 1),
+            "short-lease-processor");
+    followUp.behaveOnce(
+        item -> Mono.delay(Duration.ofMillis(900)).then(followUp.applyEffect(item)));
+
+    shortLease.processTenant(TENANT_A.tenant()).block();
+
+    WorkRow stale = db.work(itemId);
+    assertThat(stale.status())
+        .as("completion after natural expiry changes nothing")
+        .isEqualTo("RUNNING");
+    assertThat(stale.attempts()).isEqualTo(1);
+    assertThat(stale.effectOutcome()).isNull();
+    assertThat(stale.leaseExpiresAt()).isBefore(db.work(itemId).updatedAt().plusSeconds(1));
+
+    processor.runOnce().block();
+
+    WorkRow done = db.work(itemId);
+    assertThat(done.status()).isEqualTo("SUCCEEDED");
+    assertThat(done.attempts()).isEqualTo(2);
+    assertThat(done.leaseOwner()).isEqualTo(processor.leaseOwner());
+    assertThat(effects.received(key)).isEqualTo(2);
+    assertThat(effects.applied(key)).isEqualTo(1);
+  }
+
+  @Test
+  void itemsWaitingInABatchDoNotConsumeTheirLeases() {
+    for (int i = 0; i < 5; i++) {
+      createNote(TENANT_A, Failure.NONE);
+    }
+    WorkProcessor shortLease =
+        new WorkProcessor(
+            transactions,
+            repository,
+            registry,
+            new TenantInternalOnlyDispatchAuthorization(),
+            new RetryPolicy(
+                3, Duration.ofMillis(100), Duration.ofMillis(400), Duration.ofMillis(1000), 5),
+            "batch-processor");
+    followUp.behave(item -> Mono.delay(Duration.ofMillis(300)).then(followUp.applyEffect(item)));
+
+    long dispatched = shortLease.processTenant(TENANT_A.tenant()).block();
+
+    assertThat(dispatched).as("the whole batch took longer than one lease").isEqualTo(5);
+    assertThat(db.workItems())
+        .hasSize(5)
+        .allSatisfy(row -> {
+          assertThat(row.status()).isEqualTo("SUCCEEDED");
+          assertThat(row.attempts()).as("no item lost its lease while waiting").isEqualTo(1);
+          assertThat(Duration.between(row.leaseExpiresAt().minusSeconds(1), row.finishedAt()))
+              .as("each lease started just before its own dispatch")
+              .isLessThan(Duration.ofMillis(900));
+        });
+    assertThat(effects.totalReceived()).isEqualTo(5);
   }
 
   // --- AC5 ---------------------------------------------------------------------------------
@@ -342,7 +410,7 @@ class DurableWorkIT {
     followUp.behaveOnce(item ->
         db.expireLeaseAsync(item.id()).then(Mono.error(new IllegalStateException("holder died"))));
 
-    processor.runOnce().block();
+    singleItemProcessor().processTenant(TENANT_A.tenant()).block();
     assertThat(db.work(itemId).status()).isEqualTo("RUNNING");
     assertThat(db.work(itemId).attempts()).isEqualTo(3);
 
@@ -499,6 +567,22 @@ class DurableWorkIT {
         new TenantInternalOnlyDispatchAuthorization(),
         policy,
         owner);
+  }
+
+  /** Dispatches one item per run, so state between a stale write and the reclaim is visible. */
+  private WorkProcessor singleItemProcessor() {
+    return new WorkProcessor(
+        transactions,
+        repository,
+        registry,
+        new TenantInternalOnlyDispatchAuthorization(),
+        new RetryPolicy(
+            policy.maxAttempts(),
+            policy.backoffBase(),
+            policy.backoffCap(),
+            policy.leaseDuration(),
+            1),
+        "single-item-processor");
   }
 
   /** Runs the processor until a wake-up dispatches nothing. */

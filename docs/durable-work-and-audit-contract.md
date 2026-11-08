@@ -36,8 +36,8 @@ Processors run as `ServiceIdentity.BACKEND` (`service:owl-mast-backend`, platfor
 
 Statuses (`WorkStatus`): `PENDING` → `RUNNING` → `SUCCEEDED` | `FAILED` | `DENIED` | `OUTCOME_UNCERTAIN`; the last four are terminal.
 
-- **Claiming** is tenant-scoped and bounded: per wake-up, per tenant, at most `claim-batch-size` items that are `PENDING` and due, or `RUNNING` with an expired lease, and that still have attempts left. Each claim increments `attempt`, sets a new lease token and `lease_expires_at = now + lease-duration`. `FOR UPDATE SKIP LOCKED` guarantees one current lease holder per item.
-- **Completion and failure writes are fenced** by the lease token and require an unexpired lease; a write from an expired or reclaimed lease is rejected and changes nothing, and the handler's database effects in that transaction roll back with it.
+- **Claiming** is tenant-scoped and bounded: per wake-up, per tenant, at most `claim-batch-size` items that are `PENDING` and due, or `RUNNING` with an expired lease, and that still have attempts left. Items are leased **one at a time, each immediately before its dispatch**, so a lease never runs while the item waits behind others. Each claim increments `attempt`, sets a new lease token and `lease_expires_at = clock_timestamp() + lease-duration`. `FOR UPDATE SKIP LOCKED` guarantees one current lease holder per item.
+- **Completion and failure writes are fenced** by the lease token and require an unexpired lease measured with the wall clock (`clock_timestamp()`, not the transaction-start `now()`): a write from an expired or reclaimed lease, including one whose lease expired while the handler was still running, is rejected and changes nothing, and the handler's database effects in that transaction roll back with it. Handlers must finish within `lease-duration`; there is no heartbeat in v1.
 - **Effects are at least once**: deduplicate through `WorkItem.idempotencyKey()` or return `Uncertain`, which parks the item in `OUTCOME_UNCERTAIN` for reconciliation (OM-16.05). The database refuses `SUCCEEDED` without an `APPLIED` effect outcome.
 - **Retries**: a failed attempt persists `attempt_count`, the exception class chain (`SafeFailure`, never messages) as `failure_reason`, and `next_attempt_at = now + min(backoff-base × 2^(attempt−1), backoff-cap)`. After `max-attempts` the item is terminal `FAILED`. A `RUNNING` item whose lease expires after its last permitted attempt becomes `FAILED` with reason `lease-expired-attempts-exhausted`.
 - **Authorization recheck**: `DENY` → terminal `DENIED` with reason `authorization-denied`; `UNDECIDED` → a blocked attempt with reason `authorization-undecided`, retried with backoff. The handler is never invoked in either case.
@@ -64,7 +64,7 @@ Statuses (`WorkStatus`): `PENDING` → `RUNNING` → `SUCCEEDED` | `FAILED` | `D
 
 | Type | Role |
 | --- | --- |
-| `AuditedMutations.execute(AuditedMutation<T>) → Mono<AuditedResult<T>>` | Performs a covered mutation. Success: business change, `SUCCEEDED` publication intent and the `audit.publish` work item commit in one scoped transaction. Failure: the business transaction rolls back and a `FAILED` record (or `DENIED` for `OperationDeniedException`) commits in a separate `REQUIRES_NEW` transaction, then the error is re-signalled. |
+| `AuditedMutations.execute(AuditedMutation<T>) → Mono<AuditedResult<T>>` | Performs a covered mutation. Success: business change, `SUCCEEDED` publication intent and the `audit.publish` work item commit in one scoped transaction. Failure: the business transaction rolls back and a `FAILED` record (or `DENIED` for `OperationDeniedException`) commits in a separate `REQUIRES_NEW` transaction, then the error is re-signalled. A rollback of an enclosing transaction after a successful call is observed and recorded as `FAILED` (see Durability path). |
 | `AuditedMutation(actor, project, objectType, objectId, action, correlationId, business)` | Envelope fields known up front; `business: ScopeContext → Mono<MutationOutcome<T>>` performs the change. |
 | `MutationOutcome(value, objectId, objectVersion)` | What the business function reports on success. |
 | `AuditHistoryQuery` | Internal, tenant-scoped reads: `find(eventId)`, `listByObject(type, id, limit)`, `countUnpublishedIntents()`. E16 builds authorized projections on it. |
@@ -97,7 +97,8 @@ There is **no free-form payload field**, by design. All fields are bounded singl
 
 1. `audit.publication_intent` row (`SUCCEEDED`) and an `audit.publish` work item commit with the business change.
 2. The publisher handler (`AuditPublishHandler`, tenant-internal) copies the intent into `audit.event` with `ON CONFLICT (event_id) DO NOTHING` and sets `published_at`, inside the processor's scoped transaction. Repeating it inserts nothing new; recovery after a crash before publication yields exactly one history row.
-3. `FAILED` and `DENIED` outcomes are written straight into `audit.event` by the separate outcome path; no intent is needed because no business write exists to be atomic with.
+3. `FAILED`, `DENIED` and `UNRESOLVED` outcomes are written straight into `audit.event` by the separate outcome path; no intent is needed because no business write exists to be atomic with.
+4. When `execute` joined an enclosing transaction and that transaction later rolls back, a synchronization on the physical transaction records `FAILED` with reason `enclosing-transaction-rolled-back` for the same event id (the success intent is gone with the rollback); an unknown completion status records `UNRESOLVED` with reason `transaction-completion-unknown`. Each execution writes at most one outcome record.
 
 ### Storage
 

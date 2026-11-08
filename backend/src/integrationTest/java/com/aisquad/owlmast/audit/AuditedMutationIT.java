@@ -27,6 +27,7 @@ import com.aisquad.owlmast.testing.StubIdentityConfiguration;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -225,6 +226,59 @@ class AuditedMutationIT {
     assertThat(db.auditEvents())
         .singleElement()
         .satisfies(event -> assertThat(event.outcome()).isEqualTo("FAILED"));
+  }
+
+  @Test
+  void anEnclosingRollbackAfterASuccessfulCallStillRecordsAFailedOutcome() {
+    AtomicReference<UUID> eventId = new AtomicReference<>();
+    Mono<Void> flow =
+        transactions
+            .inTransaction(scope ->
+                notes
+                    .auditedCreate("looked fine", ACTOR, "corr-6b", AuditedMode.SUCCEED)
+                    .doOnNext(result -> eventId.set(result.eventId()))
+                    .then(
+                        Mono.<Void>error(new IllegalStateException("outer failure after success"))))
+            .contextWrite(Scopes.bind(TENANT_A));
+
+    StepVerifier.create(flow).expectError(IllegalStateException.class).verify();
+
+    assertThat(eventId.get()).as("the audited call itself succeeded").isNotNull();
+    assertThat(notes.noteIds().block()).isEmpty();
+    assertThat(db.intents()).as("the success intent rolled back with the business row").isEmpty();
+    assertThat(db.workItems()).isEmpty();
+    assertThat(db.auditEvents())
+        .singleElement()
+        .satisfies(event -> {
+          assertThat(event.eventId()).isEqualTo(eventId.get());
+          assertThat(event.outcome()).isEqualTo("FAILED");
+          assertThat(event.reason()).isEqualTo("enclosing-transaction-rolled-back");
+          assertThat(event.objectVersion()).isNull();
+          assertThat(event.tenant()).isEqualTo("tenant-a");
+        });
+    assertThat(find(TENANT_A, eventId.get()).block().outcome()).isEqualTo(AuditOutcome.FAILED);
+  }
+
+  @Test
+  void anEnclosingCommitAfterASuccessfulCallRecordsNothingExtra() {
+    Mono<UUID> flow =
+        transactions
+            .inTransaction(scope ->
+                notes
+                    .auditedCreate("committed", ACTOR, "corr-6c", AuditedMode.SUCCEED)
+                    .map(AuditedResult::eventId))
+            .contextWrite(Scopes.bind(TENANT_A));
+
+    UUID eventId = flow.block();
+    processor.runOnce().block();
+
+    assertThat(db.auditEvents())
+        .singleElement()
+        .satisfies(event -> {
+          assertThat(event.eventId()).isEqualTo(eventId);
+          assertThat(event.outcome()).isEqualTo("SUCCEEDED");
+        });
+    assertThat(unpublished(TENANT_A)).isZero();
   }
 
   @Test

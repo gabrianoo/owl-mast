@@ -37,13 +37,25 @@ class R2dbcWorkRepository implements WorkRepository {
 
   private static final String BOUND_TENANT =
       "current_setting('" + ScopedTransactions.TENANT_SETTING + "', true)";
+
+  /**
+   * Lease time uses {@code clock_timestamp()} (wall clock at statement execution), never {@code
+   * now()}, which PostgreSQL freezes at transaction start: a handler that started under a valid
+   * lease and finishes after it expired must not be able to commit (AC2).
+   */
+  static final String WALL_CLOCK = "clock_timestamp()";
+
   private static final String LEASE_IS_CURRENT =
       " where id = :id and tenant_id = "
           + BOUND_TENANT
-          + " and status = 'RUNNING' and lease_token = :token and lease_expires_at > now()";
+          + " and status = 'RUNNING' and lease_token = :token and lease_expires_at > "
+          + WALL_CLOCK;
   private static final String DUE =
-      "((status = 'PENDING' and next_attempt_at <= now())"
-          + " or (status = 'RUNNING' and lease_expires_at <= now()))";
+      "((status = 'PENDING' and next_attempt_at <= "
+          + WALL_CLOCK
+          + ") or (status = 'RUNNING' and lease_expires_at <= "
+          + WALL_CLOCK
+          + "))";
   private static final JsonMapper JSON = JsonMapper.builder().build();
   private static final TypeReference<Map<String, String>> PAYLOAD = new TypeReference<>() {};
 
@@ -90,7 +102,9 @@ class R2dbcWorkRepository implements WorkRepository {
                 + " update jobs.work_item w set status = 'RUNNING',"
                 + " attempt_count = w.attempt_count + 1, lease_owner = :owner,"
                 + " lease_token = gen_random_uuid(),"
-                + " lease_expires_at = now() + make_interval(secs => :leaseSeconds),"
+                + " lease_expires_at = "
+                + WALL_CLOCK
+                + " + make_interval(secs => :leaseSeconds),"
                 + " updated_at = now() from due where w.id = due.id"
                 + " returning w.id, w.tenant_id, w.work_type, w.contract_version,"
                 + " w.payload::text as payload, w.attempt_count, w.max_attempts, w.correlation_id,"
@@ -109,7 +123,8 @@ class R2dbcWorkRepository implements WorkRepository {
             "update jobs.work_item set status = 'FAILED', failure_reason = :reason,"
                 + " finished_at = now(), updated_at = now() where tenant_id = "
                 + BOUND_TENANT
-                + " and status = 'RUNNING' and lease_expires_at <= now()"
+                + " and status = 'RUNNING' and lease_expires_at <= "
+                + WALL_CLOCK
                 + " and attempt_count >= max_attempts")
         .bind("reason", safeReason)
         .fetch()

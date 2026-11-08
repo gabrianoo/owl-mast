@@ -15,10 +15,14 @@ public enum AuditOutcome {
   FAILED,
   /** Authorization refused the operation before any change; separate outcome path. */
   DENIED,
-  /** The result could not be determined; awaits reconciliation. */
+  /**
+   * The result could not be determined (for example the enclosing transaction's completion status
+   * was unknown); recorded through the separate outcome path and awaiting reconciliation.
+   */
   UNRESOLVED;
 
+  /** Outcomes written straight into the history, never as a publication intent. */
   public boolean separateOutcomePath() {
-    return this == FAILED || this == DENIED;
+    return this == FAILED || this == DENIED || this == UNRESOLVED;
   }
 }
