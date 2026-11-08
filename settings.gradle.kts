@@ -1,5 +1,6 @@
-// Owl Mast build root. Backend lives in `backend`; the independently built web client (OM-01.04)
-// will be added as a separate artifact, never bundled into the backend image (AD-14).
+// Owl Mast build root. Backend lives in `backend`. The web client (OM-01.04) is an independent
+// artifact in `frontend/` with its own npm toolchain, tests and image; it is never bundled into the
+// backend image (AD-14), so it is deliberately not a Gradle subproject.
 pluginManagement {
     repositories {
         gradlePluginPortal()

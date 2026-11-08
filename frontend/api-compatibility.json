@@ -1,0 +1,7 @@
+{
+  "artifact": "owl-mast-frontend",
+  "frontendVersion": "0.1.0",
+  "supportedApiContract": { "major": 1, "minMinor": 0 },
+  "descriptorPath": "/compatibility",
+  "policy": "../docs/api-compatibility.md"
+}
