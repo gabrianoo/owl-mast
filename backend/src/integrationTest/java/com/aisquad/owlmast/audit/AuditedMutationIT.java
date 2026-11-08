@@ -39,10 +39,10 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
@@ -354,12 +354,51 @@ class AuditedMutationIT {
         .singleElement()
         .satisfies(event -> {
           assertThat(event.outcome()).isEqualTo("FAILED");
-          assertThat(event.reason()).isEqualTo("IllegalStateException");
+          assertThat(event.reason())
+              .as("the observer's row, not the hung write's marked row, which rolled back")
+              .isEqualTo("IllegalStateException")
+              .isNotEqualTo(OutcomeCountingStore.HUNG_WRITE_MARKER);
           assertThat(event.tenant()).isEqualTo("tenant-a");
           assertThat(event.correlationId()).isEqualTo("corr-6e");
         });
     assertThat(hangingFirstOutcome.outcomeWrites())
         .as("the cancelled write plus the completion observer's committing write")
+        .isEqualTo(2);
+  }
+
+  @Test
+  void aFailedSeparateOutcomeWriteIsRecordedByTheCompletionObserver() {
+    OutcomeCountingStore failingFirst = OutcomeCountingStore.failingFirst(auditStore);
+    NotesFixture viaFailingStore =
+        new NotesFixture(databaseClient, transactions, enqueue, auditedOver(failingFirst));
+
+    StepVerifier.create(
+            transactions
+                .inTransaction(scope ->
+                    viaFailingStore
+                        .auditedCreate(
+                            "write failed", ACTOR, "corr-6f", AuditedMode.FAIL_AFTER_WRITE)
+                        .then())
+                .contextWrite(Scopes.bind(TENANT_A)))
+        .expectErrorSatisfies(error ->
+            assertThat(error)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("fixture failure with input"))
+        .verify();
+
+    assertThat(notes.noteIds().block()).as("the business write rolled back").isEmpty();
+    assertThat(db.intents()).isEmpty();
+    assertThat(db.workItems()).isEmpty();
+    assertThat(db.auditEvents())
+        .singleElement()
+        .satisfies(event -> {
+          assertThat(event.outcome()).isEqualTo("FAILED");
+          assertThat(event.reason()).isEqualTo("IllegalStateException");
+          assertThat(event.tenant()).isEqualTo("tenant-a");
+          assertThat(event.correlationId()).isEqualTo("corr-6f");
+        });
+    assertThat(failingFirst.outcomeWrites())
+        .as("the error path's failed write plus the completion observer's committing write")
         .isEqualTo(2);
   }
 
@@ -649,34 +688,48 @@ class AuditedMutationIT {
   }
 
   /**
-   * Counts the outcome writes that reach the real store. When built with {@link #hangingFirst}, the
-   * first outcome write performs the real insert, signals {@code pending} and never completes
-   * (signalling {@code cancelled} when cancelled), so its transaction can only roll back; every
-   * later call delegates.
+   * Counts the outcome writes that reach the real store. {@link #hangingFirst}: the first outcome
+   * write inserts a copy marked {@value #HUNG_WRITE_MARKER}, signals {@code pending} and never
+   * completes (signalling {@code cancelled} when cancelled), so its transaction can only roll back.
+   * {@link #failingFirst}: the first outcome write fails before reaching the database. Every later
+   * call delegates unchanged.
    */
   private static final class OutcomeCountingStore implements AuditStore {
+    static final String HUNG_WRITE_MARKER = "fixture-hung-outcome-write";
+
+    private enum First {
+      DELEGATE,
+      HANG,
+      FAIL
+    }
+
     private final AuditStore delegate;
-    private final AtomicBoolean hangNext;
+    private final AtomicReference<First> first;
     private final CountDownLatch pending;
     private final CountDownLatch cancelled;
     private final AtomicInteger outcomeWrites = new AtomicInteger();
 
     private OutcomeCountingStore(
-        AuditStore delegate, boolean hangFirst, CountDownLatch pending, CountDownLatch cancelled) {
+        AuditStore delegate, First first, CountDownLatch pending, CountDownLatch cancelled) {
       this.delegate = delegate;
-      this.hangNext = new AtomicBoolean(hangFirst);
+      this.first = new AtomicReference<>(first);
       this.pending = pending;
       this.cancelled = cancelled;
     }
 
     static OutcomeCountingStore counting(AuditStore delegate) {
       return new OutcomeCountingStore(
-          delegate, false, new CountDownLatch(0), new CountDownLatch(0));
+          delegate, First.DELEGATE, new CountDownLatch(0), new CountDownLatch(0));
     }
 
     static OutcomeCountingStore hangingFirst(
         AuditStore delegate, CountDownLatch pending, CountDownLatch cancelled) {
-      return new OutcomeCountingStore(delegate, true, pending, cancelled);
+      return new OutcomeCountingStore(delegate, First.HANG, pending, cancelled);
+    }
+
+    static OutcomeCountingStore failingFirst(AuditStore delegate) {
+      return new OutcomeCountingStore(
+          delegate, First.FAIL, new CountDownLatch(0), new CountDownLatch(0));
     }
 
     int outcomeWrites() {
@@ -697,14 +750,33 @@ class AuditedMutationIT {
     public Mono<Void> recordOutcome(AuditRecord record) {
       return Mono.defer(() -> {
         outcomeWrites.incrementAndGet();
-        return hangNext.compareAndSet(true, false)
-            ? delegate
-                .recordOutcome(record)
-                .then(Mono.fromRunnable(pending::countDown))
-                .then(Mono.<Void>never())
-                .doOnCancel(cancelled::countDown)
-            : delegate.recordOutcome(record);
+        return switch (first.getAndSet(First.DELEGATE)) {
+          case DELEGATE -> delegate.recordOutcome(record);
+          case FAIL -> Mono.<Void>error(new IllegalStateException("fixture: outcome write failed"));
+          case HANG ->
+              delegate
+                  .recordOutcome(marked(record))
+                  .then(Mono.fromRunnable(pending::countDown))
+                  .then(Mono.<Void>never())
+                  .doOnCancel(cancelled::countDown);
+        };
       });
+    }
+
+    private static AuditRecord marked(AuditRecord record) {
+      return new AuditRecord(
+          record.envelopeVersion(),
+          record.eventId(),
+          record.actor(),
+          record.project(),
+          record.objectType(),
+          record.objectId(),
+          record.objectVersion(),
+          record.action(),
+          record.outcome(),
+          Optional.of(HUNG_WRITE_MARKER),
+          record.occurredAt(),
+          record.correlationId());
     }
 
     @Override

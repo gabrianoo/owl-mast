@@ -30,9 +30,10 @@ import reactor.util.context.Context;
 
 /**
  * Covered mutations (AD-6, AC3). Success: business change, {@code SUCCEEDED} intent and the {@code
- * audit.publish} work item commit together through the scoped transaction. Anything else ends with
- * exactly one outcome record written through a {@code REQUIRES_NEW} scoped transaction that is
- * independent of the transaction being rolled back, so the evidence survives.
+ * audit.publish} work item commit together through the scoped transaction. Anything else is
+ * recorded as an outcome written through a {@code REQUIRES_NEW} scoped transaction that is
+ * independent of the transaction being rolled back, so the evidence survives; the guarantee below
+ * states exactly when that record exists.
  *
  * <p>The outcome is decided by a synchronization registered on the physical transaction
  * <em>before</em> the business function runs, so every way the transaction can end without

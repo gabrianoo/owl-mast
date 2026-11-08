@@ -73,6 +73,25 @@ context:
 
 **Acceptance Criteria:** AC1–AC9 as stated in issue #22 and `epic-01.md` for OM-01.03; verified by the commands below.
 
+### Review Findings
+
+Code review of PR #111 round 3 (`e3a6083..233d94a`, 2026-11-08; layers: blind-hunter, edge-case-hunter, verification-gap, acceptance-auditor).
+
+- [x] [Review][Patch] An error-path outcome write that fails (an error, not a cancel) and is then handed to the completion observer has no test; adding `markOutcomeRecorded()` to `onErrorResume` would pass every test [backend/src/integrationTest/java/com/aisquad/owlmast/audit/AuditedMutationIT.java]
+- [x] [Review][Patch] The cancellation regression does not prove the hung write rolled back: both writers carry the same reason, so a committed first write would also pass; mark the hung write's record distinctly and assert the marker is absent [backend/src/integrationTest/java/com/aisquad/owlmast/audit/AuditedMutationIT.java]
+- [x] [Review][Patch] The class Javadoc's first paragraph still promises unconditionally that "Anything else ends with exactly one outcome record", contradicting the corrected guarantee below it [backend/src/main/java/com/aisquad/owlmast/audit/application/AuditedMutationService.java:33]
+- [x] [Review][Defer] An `UNRESOLVED` outcome for a transaction whose commit actually landed makes the later `SUCCEEDED` publication a silent no-op while `published_at` is still set [backend/src/main/java/com/aisquad/owlmast/audit/adapter/persistence/R2dbcAuditStore.java:51] — deferred: pre-existing (`publish` conflict clause predates round 3); settle with a forced STATUS_UNKNOWN-on-commit test or in OM-16.05.
+
+Rejected:
+- false — the observer's own outcome write can be cancelled, leaving no writer: the observer runs inside Spring's commit/rollback, which `Flux.usingWhen` (Reactor 3.8.8) runs as a cleanup subscription that downstream cancel does not reach; `aCancellationAfterTheBusinessWriteStillRecordsAFailedOutcome` relies on it.
+- false — `aCommittedOutcomeStopsEveryLaterWriterForThatExecution` is racy: in both paths the first write completes before the second writer subscribes (rollback precedes error propagation; the error path's write precedes outer completion).
+- false — round-3 test counts don't add up: round 2 (e3a6083) ran 67 unit + 58 IT; +3 IT gives 61; the 65/52 line is round 1's.
+- false — PR body correction (d) unverified: the PR #111 description now reads "whenever one of its outcome writes commits".
+- low — overlapping writers can disagree (FAILED vs UNRESOLVED), first commit wins: overlap needs a STATUS_UNKNOWN concurrent with an in-flight error-path write; not demonstrated, fix adds pinning state.
+- low — a losing writer logs "recorded as" for a no-op insert: only in cancellation-after-commit races; fix changes the port signature.
+- low — deferred-work entry wording/fields; no concurrent both-commit test (PostgreSQL unique-index semantics); hand-copied wiring in `auditedOver`/`singleItemProcessor`; raw SQL suffix in `insert`; `dispose()` not in `finally`; no timeout on the hanging `Mono.never()`; commit-without-success-signal not covered end to end.
+- spec edit — round-3 authorization id and `review_loop_iteration` bump: fix edits the spec under review.
+
 ## Implementation Notes
 
 - 2026-11-08: Executed directly by the unattended implementer (coordinator authorization `run-20261108-e01:OM-01.03:1` stands in for the interactive checkpoints, as in OM-01.01). No Open Questions remained: the sprint change proposal already fixed the three owner decisions.
