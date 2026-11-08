@@ -14,6 +14,12 @@ spring:
     locations: classpath:db/migration
     fail-on-missing-locations: true
 
+  webflux:
+    # Common error envelope (OM-01.04): RFC 9457 problem details on every error response. Never
+    # include stack traces, messages or binding errors; the frontend renders its own safe copy.
+    problemdetails:
+      enabled: true
+
 management:
   endpoints:
     web:
