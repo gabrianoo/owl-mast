@@ -10,15 +10,24 @@ import com.aisquad.owlmast.audit.api.AuditEnvelope;
 import com.aisquad.owlmast.audit.api.AuditEnvelopeContract;
 import com.aisquad.owlmast.audit.api.AuditHistoryQuery;
 import com.aisquad.owlmast.audit.api.AuditOutcome;
+import com.aisquad.owlmast.audit.api.AuditedMutation;
 import com.aisquad.owlmast.audit.api.AuditedResult;
+import com.aisquad.owlmast.audit.application.AuditedMutationService;
+import com.aisquad.owlmast.audit.domain.AuditRecord;
+import com.aisquad.owlmast.audit.port.AuditStore;
 import com.aisquad.owlmast.fixtures.notes.DbProbe;
 import com.aisquad.owlmast.fixtures.notes.DbProbe.AuditRow;
 import com.aisquad.owlmast.fixtures.notes.DbProbe.WorkRow;
 import com.aisquad.owlmast.fixtures.notes.NotesFixture;
 import com.aisquad.owlmast.fixtures.notes.NotesFixture.AuditedMode;
 import com.aisquad.owlmast.fixtures.notes.NotesFixtureConfiguration;
+import com.aisquad.owlmast.jobs.api.WorkEnqueue;
 import com.aisquad.owlmast.jobs.api.WorkItemContract;
+import com.aisquad.owlmast.jobs.application.HandlerRegistry;
+import com.aisquad.owlmast.jobs.application.TenantInternalOnlyDispatchAuthorization;
 import com.aisquad.owlmast.jobs.application.WorkProcessor;
+import com.aisquad.owlmast.jobs.domain.RetryPolicy;
+import com.aisquad.owlmast.jobs.port.WorkRepository;
 import com.aisquad.owlmast.platform.authorization.OperationDeniedException;
 import com.aisquad.owlmast.platform.persistence.ScopedTransactions;
 import com.aisquad.owlmast.platform.scope.MissingScopeException;
@@ -26,11 +35,15 @@ import com.aisquad.owlmast.platform.scope.ScopeContext;
 import com.aisquad.owlmast.platform.scope.Scopes;
 import com.aisquad.owlmast.testing.ContainersConfiguration;
 import com.aisquad.owlmast.testing.StubIdentityConfiguration;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -40,7 +53,13 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.Import;
+import org.springframework.r2dbc.core.DatabaseClient;
+import org.springframework.transaction.ReactiveTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.reactive.TransactionalOperator;
+import org.springframework.transaction.support.DefaultTransactionDefinition;
 import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
@@ -77,6 +96,14 @@ class AuditedMutationIT {
   @Autowired private WorkProcessor processor;
   @Autowired private DbProbe db;
   @Autowired private ScopedTransactions transactions;
+  @Autowired private ReactiveTransactionManager transactionManager;
+  @Autowired private DatabaseClient databaseClient;
+  @Autowired private AuditStore auditStore;
+  @Autowired private WorkEnqueue enqueue;
+  @Autowired private Clock clock;
+  @Autowired private WorkRepository workRepository;
+  @Autowired private HandlerRegistry registry;
+  @Autowired private RetryPolicy policy;
 
   @BeforeEach
   void reset() {
@@ -294,6 +321,115 @@ class AuditedMutationIT {
   }
 
   @Test
+  void aCancellationDuringTheSeparateOutcomeWriteStillLeavesOneFailedOutcome() {
+    CountDownLatch pending = new CountDownLatch(1);
+    CountDownLatch cancelled = new CountDownLatch(1);
+    OutcomeCountingStore hangingFirstOutcome =
+        OutcomeCountingStore.hangingFirst(auditStore, pending, cancelled);
+    NotesFixture viaHangingStore =
+        new NotesFixture(databaseClient, transactions, enqueue, auditedOver(hangingFirstOutcome));
+    Disposable subscription =
+        transactions
+            .inTransaction(scope ->
+                viaHangingStore
+                    .auditedCreate("cut short", ACTOR, "corr-6e", AuditedMode.FAIL_AFTER_WRITE)
+                    .then())
+            .contextWrite(Scopes.bind(TENANT_A))
+            .subscribe(ignored -> {}, error -> {});
+
+    assertThat(awaitLatch(pending))
+        .as("the error path's outcome write is in flight, its insert not yet committed")
+        .isTrue();
+    subscription.dispose();
+    assertThat(awaitLatch(cancelled)).as("the in-flight outcome write was cancelled").isTrue();
+
+    await()
+        .atMost(Duration.ofSeconds(10))
+        .pollInterval(Duration.ofMillis(50))
+        .untilAsserted(() -> assertThat(db.auditEvents()).hasSize(1));
+    assertThat(notes.noteIds().block()).as("the business write rolled back").isEmpty();
+    assertThat(db.intents()).isEmpty();
+    assertThat(db.workItems()).isEmpty();
+    assertThat(db.auditEvents())
+        .singleElement()
+        .satisfies(event -> {
+          assertThat(event.outcome()).isEqualTo("FAILED");
+          assertThat(event.reason()).isEqualTo("IllegalStateException");
+          assertThat(event.tenant()).isEqualTo("tenant-a");
+          assertThat(event.correlationId()).isEqualTo("corr-6e");
+        });
+    assertThat(hangingFirstOutcome.outcomeWrites())
+        .as("the cancelled write plus the completion observer's committing write")
+        .isEqualTo(2);
+  }
+
+  @Test
+  void aCommittedOutcomeStopsEveryLaterWriterForThatExecution() {
+    OutcomeCountingStore plain = OutcomeCountingStore.counting(auditStore);
+    StepVerifier.create(
+            new NotesFixture(databaseClient, transactions, enqueue, auditedOver(plain))
+                .auditedCreate("plain failure", ACTOR, "corr-6g", AuditedMode.FAIL_AFTER_WRITE)
+                .contextWrite(Scopes.bind(TENANT_A)))
+        .expectError(IllegalStateException.class)
+        .verify();
+    assertThat(plain.outcomeWrites()).as("error path and observer, one write").isEqualTo(1);
+
+    OutcomeCountingStore enclosed = OutcomeCountingStore.counting(auditStore);
+    NotesFixture viaEnclosed =
+        new NotesFixture(databaseClient, transactions, enqueue, auditedOver(enclosed));
+    StepVerifier.create(
+            transactions
+                .inTransaction(scope ->
+                    viaEnclosed
+                        .auditedCreate("inner", ACTOR, "corr-6h", AuditedMode.FAIL_AFTER_WRITE)
+                        .then())
+                .contextWrite(Scopes.bind(TENANT_A)))
+        .expectError(IllegalStateException.class)
+        .verify();
+    assertThat(enclosed.outcomeWrites())
+        .as("the enclosing rollback's observer skips the committed outcome")
+        .isEqualTo(1);
+    assertThat(db.auditEvents()).hasSize(2);
+  }
+
+  @Test
+  void aRepeatedOutcomeWriteForOneEventIdKeepsTheFirstCommittedRow() {
+    UUID eventId = UUID.randomUUID();
+    AuditedMutation<UUID> mutation =
+        AuditedMutation.<UUID>creating(
+            ACTOR,
+            NotesFixture.OBJECT_TYPE,
+            NotesFixture.CREATE_ACTION,
+            "corr-6f",
+            scope -> Mono.empty());
+    OffsetDateTime occurredAt = OffsetDateTime.now(clock);
+    ScopedTransactions separate = separateTransactions();
+
+    separate
+        .inTransaction(scope ->
+            auditStore.recordOutcome(
+                AuditRecord.unsuccessful(
+                    eventId, mutation, AuditOutcome.FAILED, "first-reason", occurredAt)))
+        .contextWrite(Scopes.bind(TENANT_A))
+        .block();
+    StepVerifier.create(
+            separate
+                .inTransaction(scope ->
+                    auditStore.recordOutcome(
+                        AuditRecord.unsuccessful(
+                            eventId, mutation, AuditOutcome.FAILED, "second-reason", occurredAt)))
+                .contextWrite(Scopes.bind(TENANT_A)))
+        .verifyComplete();
+
+    assertThat(db.auditEvents())
+        .singleElement()
+        .satisfies(event -> {
+          assertThat(event.eventId()).isEqualTo(eventId);
+          assertThat(event.reason()).isEqualTo("first-reason");
+        });
+  }
+
+  @Test
   void aCorrelationIdAtTheSharedBoundTravelsThroughIntentWorkItemAndHistory() {
     String atLimit = "c".repeat(WorkItemContract.MAX_CORRELATION_ID_LENGTH);
     UUID eventId = auditedCreate(TENANT_A, "bounded", atLimit, AuditedMode.SUCCEED).eventId();
@@ -356,7 +492,7 @@ class AuditedMutationIT {
     UUID eventId = auditedCreate(TENANT_A, "faulted", "corr-8", AuditedMode.SUCCEED).eventId();
     db.installAuditEventFault();
 
-    processor.runOnce().block();
+    singleItemProcessor().processTenant(TENANT_A.tenant()).block();
     WorkRow attempt = db.workItems().get(0);
     assertThat(attempt.status()).isEqualTo("PENDING");
     assertThat(attempt.attempts()).isEqualTo(1);
@@ -454,6 +590,35 @@ class AuditedMutationIT {
 
   // --- helpers -----------------------------------------------------------------------------
 
+  /** The same wiring as {@code AuditConfiguration}, over the given store. */
+  private AuditedMutationService auditedOver(AuditStore store) {
+    return new AuditedMutationService(transactions, separateTransactions(), store, enqueue, clock);
+  }
+
+  /** {@code REQUIRES_NEW} scoped transactions, as the separate outcome path uses. */
+  private ScopedTransactions separateTransactions() {
+    DefaultTransactionDefinition requiresNew = new DefaultTransactionDefinition();
+    requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    return new ScopedTransactions(
+        TransactionalOperator.create(transactionManager, requiresNew), databaseClient);
+  }
+
+  /** Dispatches one item per run, so exactly one attempt never depends on the backoff. */
+  private WorkProcessor singleItemProcessor() {
+    return new WorkProcessor(
+        transactions,
+        workRepository,
+        registry,
+        new TenantInternalOnlyDispatchAuthorization(),
+        new RetryPolicy(
+            policy.maxAttempts(),
+            policy.backoffBase(),
+            policy.backoffCap(),
+            policy.leaseDuration(),
+            1),
+        "single-item-processor");
+  }
+
   private AuditedResult<UUID> auditedCreate(
       ScopeContext scope, String body, String correlationId, AuditedMode mode) {
     return notes
@@ -481,5 +646,80 @@ class AuditedMutationIT {
 
   private long historyRows(UUID eventId) {
     return db.count("select count(*) from audit.event where event_id = '" + eventId + "'");
+  }
+
+  /**
+   * Counts the outcome writes that reach the real store. When built with {@link #hangingFirst}, the
+   * first outcome write performs the real insert, signals {@code pending} and never completes
+   * (signalling {@code cancelled} when cancelled), so its transaction can only roll back; every
+   * later call delegates.
+   */
+  private static final class OutcomeCountingStore implements AuditStore {
+    private final AuditStore delegate;
+    private final AtomicBoolean hangNext;
+    private final CountDownLatch pending;
+    private final CountDownLatch cancelled;
+    private final AtomicInteger outcomeWrites = new AtomicInteger();
+
+    private OutcomeCountingStore(
+        AuditStore delegate, boolean hangFirst, CountDownLatch pending, CountDownLatch cancelled) {
+      this.delegate = delegate;
+      this.hangNext = new AtomicBoolean(hangFirst);
+      this.pending = pending;
+      this.cancelled = cancelled;
+    }
+
+    static OutcomeCountingStore counting(AuditStore delegate) {
+      return new OutcomeCountingStore(
+          delegate, false, new CountDownLatch(0), new CountDownLatch(0));
+    }
+
+    static OutcomeCountingStore hangingFirst(
+        AuditStore delegate, CountDownLatch pending, CountDownLatch cancelled) {
+      return new OutcomeCountingStore(delegate, true, pending, cancelled);
+    }
+
+    int outcomeWrites() {
+      return outcomeWrites.get();
+    }
+
+    @Override
+    public Mono<Void> recordIntent(AuditRecord record) {
+      return delegate.recordIntent(record);
+    }
+
+    @Override
+    public Mono<Long> publish(UUID eventId) {
+      return delegate.publish(eventId);
+    }
+
+    @Override
+    public Mono<Void> recordOutcome(AuditRecord record) {
+      return Mono.defer(() -> {
+        outcomeWrites.incrementAndGet();
+        return hangNext.compareAndSet(true, false)
+            ? delegate
+                .recordOutcome(record)
+                .then(Mono.fromRunnable(pending::countDown))
+                .then(Mono.<Void>never())
+                .doOnCancel(cancelled::countDown)
+            : delegate.recordOutcome(record);
+      });
+    }
+
+    @Override
+    public Mono<AuditEnvelope> find(UUID eventId) {
+      return delegate.find(eventId);
+    }
+
+    @Override
+    public Flux<AuditEnvelope> listByObject(String objectType, String objectId, int limit) {
+      return delegate.listByObject(objectType, objectId, limit);
+    }
+
+    @Override
+    public Mono<Long> countUnpublishedIntents() {
+      return delegate.countUnpublishedIntents();
+    }
   }
 }

@@ -22,7 +22,11 @@ public interface AuditStore {
    */
   Mono<Long> publish(UUID eventId);
 
-  /** Writes a failed or denied outcome straight into the history (separate outcome path). */
+  /**
+   * Writes a failed, denied or unresolved outcome straight into the history (separate outcome
+   * path). Idempotent on the event id ({@code ON CONFLICT DO NOTHING}): overlapping writers for one
+   * execution leave exactly one history row, the first to commit.
+   */
   Mono<Void> recordOutcome(AuditRecord record);
 
   Mono<AuditEnvelope> find(UUID eventId);

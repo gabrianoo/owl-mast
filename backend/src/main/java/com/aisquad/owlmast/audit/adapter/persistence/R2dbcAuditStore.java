@@ -21,8 +21,8 @@ import reactor.core.publisher.Mono;
 
 /**
  * Audit-owned tables {@code audit.publication_intent} and {@code audit.event} (V003). Every
- * statement filters on the tenant bound to the transaction; the history insert is keyed on the
- * event id so repeated publication is a no-op.
+ * statement filters on the tenant bound to the transaction; every history insert (publication and
+ * separate outcome) is keyed on the event id, so a repeated or overlapping write is a no-op.
  */
 @Repository
 @RequiredArgsConstructor
@@ -39,12 +39,12 @@ class R2dbcAuditStore implements AuditStore {
 
   @Override
   public Mono<Void> recordIntent(AuditRecord record) {
-    return insert("audit.publication_intent", record, "now()");
+    return insert("audit.publication_intent", record, "");
   }
 
   @Override
   public Mono<Void> recordOutcome(AuditRecord record) {
-    return insert("audit.event", record, "now()");
+    return insert("audit.event", record, " on conflict (event_id) do nothing");
   }
 
   @Override
@@ -117,7 +117,7 @@ class R2dbcAuditStore implements AuditStore {
         .one();
   }
 
-  private Mono<Void> insert(String table, AuditRecord record, String recordedAtExpression) {
+  private Mono<Void> insert(String table, AuditRecord record, String conflictClause) {
     GenericExecuteSpec spec =
         databaseClient
             .sql(
@@ -128,9 +128,9 @@ class R2dbcAuditStore implements AuditStore {
                     + ") values (:eventId, :version, "
                     + BOUND_TENANT
                     + ", :actorKind, :actorId, :projectId, :objectType, :objectId,"
-                    + " :objectVersion, :action, :outcome, :reason, :occurredAt, "
-                    + recordedAtExpression
-                    + ", :correlationId)")
+                    + " :objectVersion, :action, :outcome, :reason, :occurredAt, now(),"
+                    + " :correlationId)"
+                    + conflictClause)
             .bind("eventId", record.eventId())
             .bind("version", record.envelopeVersion())
             .bind("actorKind", record.actor().kind().name())

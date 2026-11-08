@@ -40,8 +40,15 @@ import reactor.util.context.Context;
  * chain or denial code), a cancelled subscription ({@value #REASON_CANCELLED}), a rollback of an
  * enclosing transaction after this call succeeded ({@value #REASON_ENCLOSING_ROLLBACK}), or an
  * unknown completion status ({@code UNRESOLVED}, {@value #REASON_COMPLETION_UNKNOWN}). The error
- * path records too, for transactions that end before the synchronization could run; a guard keeps
- * it to one record per execution.
+ * path records too, for transactions that end before the synchronization could run.
+ *
+ * <p>Guarantee: each execution leaves exactly one durable outcome row as long as one of these
+ * writers commits, and never more than one. The per-execution guard records that an outcome has
+ * <em>committed</em>, not that a writer started: it is set in the success signal of the {@code
+ * REQUIRES_NEW} transaction, so a cancelled or failed outcome write leaves the completion observer
+ * (or any later path) free to write it again. Writers may therefore overlap; {@link
+ * AuditStore#recordOutcome} is idempotent on the event id, so the {@code audit.event} primary key
+ * keeps it to one row even when a commit lands without its success signal.
  */
 @Slf4j
 public final class AuditedMutationService implements AuditedMutations {
@@ -117,24 +124,32 @@ public final class AuditedMutationService implements AuditedMutations {
         .then();
   }
 
-  /** Writes the outcome once per attempt, detached from any transaction in the Reactor context. */
+  /**
+   * Writes the outcome detached from any transaction in the Reactor context, unless one has already
+   * committed for this attempt. The attempt is marked recorded only after the separate transaction
+   * commits; an idempotent insert absorbs overlapping writers.
+   */
   private Mono<Void> recordOutcome(Attempt<?> attempt, AuditOutcome outcome, String reason) {
-    if (!attempt.claimOutcome()) {
-      return Mono.empty();
-    }
+    return Mono.defer(
+        () -> attempt.outcomeRecorded() ? Mono.empty() : writeOutcome(attempt, outcome, reason));
+  }
+
+  private Mono<Void> writeOutcome(Attempt<?> attempt, AuditOutcome outcome, String reason) {
     AuditedMutation<?> mutation = attempt.mutation();
     AuditRecord record =
         AuditRecord.unsuccessful(
             attempt.eventId(), mutation, outcome, reason, attempt.occurredAt());
     return separateTransactions
         .inTransaction(current -> store.recordOutcome(record))
-        .doOnSuccess(ignored ->
-            log.info(
-                "Audited mutation {} on {} recorded as {} ({})",
-                mutation.action(),
-                mutation.objectType(),
-                outcome,
-                reason))
+        .doOnSuccess(ignored -> {
+          attempt.markOutcomeRecorded();
+          log.info(
+              "Audited mutation {} on {} recorded as {} ({})",
+              mutation.action(),
+              mutation.objectType(),
+              outcome,
+              reason);
+        })
         .onErrorResume(secondary -> {
           log.error(
               "Audited mutation {} on {} ended as {} ({}) and its outcome record could not be"
@@ -161,7 +176,8 @@ public final class AuditedMutationService implements AuditedMutations {
   }
 
   /**
-   * One execution: identity, scope, start time, how it ended and whether an outcome was written.
+   * One execution: identity, scope, start time, how it ended and whether an outcome record has
+   * committed.
    */
   private static final class Attempt<T> {
     private final AuditedMutation<T> mutation;
@@ -202,8 +218,13 @@ public final class AuditedMutationService implements AuditedMutations {
       cancelled.set(true);
     }
 
-    boolean claimOutcome() {
-      return outcomeRecorded.compareAndSet(false, true);
+    boolean outcomeRecorded() {
+      return outcomeRecorded.get();
+    }
+
+    /** Called only once the separate outcome transaction has committed. */
+    void markOutcomeRecorded() {
+      outcomeRecorded.set(true);
     }
 
     /** What a rollback means for this attempt: the original error or denial wins. */
