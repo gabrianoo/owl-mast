@@ -127,6 +127,72 @@ describe('Daily Work connection panel (AC3/AC4)', () => {
     }
   });
 
+  it('going offline discards a waiting update and a late response; only a post-reconnect check can offer one', async () => {
+    vi.useFakeTimers();
+    try {
+      let answer: () => void = () => undefined;
+      const results: ApiResult<CompatibilityDescriptor>[] = [
+        { kind: 'ok', value: compatible },
+        { kind: 'ok', value: { ...compatible, backendVersion: '0.2.0' } },
+      ];
+      let calls = 0;
+      const client: ApiClient = {
+        get: <T,>() => {
+          calls += 1;
+          const next = results.shift();
+          if (next) return Promise.resolve(next as ApiResult<T>);
+          // Third call stalls until the test answers it (after the connection dropped).
+          return new Promise<ApiResult<T>>((resolve) => {
+            answer = () => {
+              resolve({ kind: 'ok', value: { ...compatible, backendVersion: '0.3.0' } } as ApiResult<T>);
+            };
+          });
+        },
+      };
+      renderApp(client);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(screen.getByText(/1 new update available/)).toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000); // third poll issued and stalls
+      });
+      expect(calls).toBe(3);
+      vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(false);
+      act(() => {
+        window.dispatchEvent(new Event('offline'));
+      });
+      expect(screen.getByText('You are offline')).toBeInTheDocument();
+      expect(screen.queryByText(/new update available/)).toBeNull();
+      expect(screen.queryByRole('button', { name: /Show 1 new update/ })).toBeNull();
+      await act(async () => {
+        answer();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.queryByText(/new update available/)).toBeNull();
+      expect(screen.getByText('0.1.0-SNAPSHOT')).toBeInTheDocument();
+      expect(screen.queryByText('0.3.0')).toBeNull();
+      vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(true);
+      results.push({ kind: 'ok', value: { ...compatible, backendVersion: '0.4.0' } });
+      await act(async () => {
+        window.dispatchEvent(new Event('online'));
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(calls).toBe(4);
+      expect(screen.getByText(/1 new update available/)).toBeInTheDocument();
+      await act(async () => {
+        screen.getByRole('button', { name: 'Show 1 new update' }).click();
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(screen.getByText('0.4.0')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('holds a changed backend version behind "New updates" until applied', async () => {
     vi.useFakeTimers();
     try {
