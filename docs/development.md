@@ -7,6 +7,7 @@
 | Any JDK 17+ on `PATH` (to launch the Gradle wrapper) | The wrapper provisions the pinned Eclipse Temurin 27.0.1+1 daemon/toolchain automatically (`gradle/gradle-daemon-jvm.properties`) on Linux x86_64/aarch64 and macOS aarch64. The build fails explicitly if the daemon, compiler or test JVM is any other build; with another Temurin 27 patch installed, run with `-Porg.gradle.java.installations.auto-detect=false` to use the pinned archive. Only Linux x86_64 is executably qualified. |
 | Docker Engine or Docker Desktop reachable by Testcontainers | Integration tests, the gate script's CI parity and `bootTestRun` start disposable PostgreSQL/VectorChord containers. |
 | Network access to Maven Central, the Gradle plugin portal and Docker Hub on first build | Dependencies are locked; nothing is vendored. |
+| Node.js 24.21.0 with npm 11 (frontend only) | `frontend/.nvmrc` names the exact version; `npm ci` refuses other engines. The frontend is a separate artifact, not a Gradle subproject: see [frontend.md](frontend.md). |
 
 No other tool is installed globally. Pins and the evidence behind them are in [toolchain-qualification.md](toolchain-qualification.md).
 
@@ -22,6 +23,10 @@ No other tool is installed globally. Pins and the evidence behind them are in [t
 | `./gradlew :backend:bootRun` | Run against an existing database; see below. |
 | `scripts/verify-quality-gates.sh` | Prove that formatting, Error Prone, Lombok, module-rule and qualified-JDK gates each fail with a useful diagnostic on an injected violation. |
 | `./gradlew :backend:dependencies --write-locks` | Refresh `backend/gradle.lockfile` after changing pins. |
+| `cd frontend && npm ci && npm run lint && npm run typecheck && npm test && npm run build` | Frontend gates and unit/component suite ([frontend.md](frontend.md)). |
+| `cd frontend && npm run test:e2e` / `npm run test:e2e:smoke` | Browser accessibility/state suite with a mocked API; browser → real backend smoke (starts `bootTestRun`, needs Docker). |
+| `scripts/verify-frontend-artifact.sh` | Build the frontend image and prove its runtime contract (non-root 8080, SPA fallback, config endpoint, no JDK). |
+| `scripts/check-api-compatibility.py [--backend-url URL]` | Frontend/backend API contract check ([api-compatibility.md](api-compatibility.md)). |
 
 ## Running against your own PostgreSQL
 
@@ -55,10 +60,14 @@ The VectorChord image's default command preloads the extension; the fixture (`Ow
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs two jobs on every push to `main` and every pull request, with actions pinned by commit SHA and the Gradle wrapper validated:
+`.github/workflows/ci.yml` runs these jobs on every push to `main` and every pull request, on the pinned `ubuntu-26.04` runner, with actions pinned by commit SHA and the Gradle wrapper validated:
 
 1. `build`: `./gradlew build` on Temurin 27 (all gates and both test suites), uploading test reports.
-2. `gate-negative-checks`: `scripts/verify-quality-gates.sh`.
+2. `gate-negative-checks`: `scripts/verify-quality-gates.sh` (backend gates plus the frontend jsx-a11y, type, token and API-pair gates).
+3. `package-checks`: `scripts/verify-install-package.sh` (chart render tests, including the API compatibility check's own tests).
+4. `automation-tests`: the unattended-execution qualification suite.
+5. `frontend`: lint, typecheck, unit/component tests, build, Playwright accessibility/state suite and the static API pair check.
+6. `frontend-backend-smoke`: the frontend image contract and the browser → real backend smoke.
 
 ## Layout
 
@@ -77,6 +86,9 @@ backend/
   src/test                    unit, ArchUnit rules and negative fixtures
   src/testFixtures            Testcontainers fixtures for every feature
   src/integrationTest         real-database suite
-docs/                         conventions, toolchain evidence, tracking contract
+frontend/                     independent web shell (OM-01.04): src/, e2e/, Dockerfile, nginx/, api-compatibility.json
+docs/                         conventions, toolchain evidence, frontend and API compatibility, tracking contract
 scripts/verify-quality-gates.sh
+scripts/verify-frontend-artifact.sh
+scripts/check-api-compatibility.py
 ```

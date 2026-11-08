@@ -1,0 +1,30 @@
+# Owl Mast frontend image (OM-01.04-T1). Serves the built shell on 8080 as the unprivileged nginx
+# user. The image never proxies the backend: the ingress/gateway routes `/api` and `/actuator` to the
+# backend service (chart `routing.*`), and this template hands the shell the API path prefix it was
+# deployed with (env OWLMAST_API_PATH_PREFIX, chart `routing.apiPathPrefix`) as /owlmast-config.json.
+server {
+    listen 8080;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+    server_tokens off;
+
+    location = /owlmast-config.json {
+        include /etc/nginx/owlmast-headers.conf;
+        default_type application/json;
+        add_header Cache-Control "no-store" always;
+        return 200 '{"apiPathPrefix":"${OWLMAST_API_PATH_PREFIX}"}';
+    }
+
+    location /assets/ {
+        include /etc/nginx/owlmast-headers.conf;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        try_files $uri =404;
+    }
+
+    location / {
+        include /etc/nginx/owlmast-headers.conf;
+        add_header Cache-Control "no-store" always;
+        try_files $uri /index.html;
+    }
+}
