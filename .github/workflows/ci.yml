@@ -52,7 +52,15 @@ jobs:
       - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
           validate-wrappers: true
-      - name: Inject violations and assert each gate fails with its diagnostic
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Frontend dependencies (locked)
+        run: npm ci
+        working-directory: frontend
+      - name: Inject violations and assert each gate fails with its diagnostic (backend and frontend)
         run: scripts/verify-quality-gates.sh
 
   package-checks:
@@ -78,3 +86,75 @@ jobs:
           python-version: '3.12'
       - name: Qualification suite (fixtures only, no GitHub access)
         run: python3 -m unittest discover -s automation/tests -t . -v
+
+  frontend:
+    name: Frontend shell (lint, typecheck, unit/component, build, browser accessibility suite)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Lint (typescript-eslint strict, jsx-a11y strict, react-hooks)
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit and component tests (tokens, owl mark, theme, router, primitives, states)
+        run: npm run test:coverage
+      - name: Production build
+        run: npm run build
+      - name: Qualified Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+      - name: Browser suite (axe WCAG 2.2 AA light/dark, keyboard, 320px/200%, 44px, reduced motion, states)
+        run: npx playwright test
+      - name: Static API compatibility pair check
+        run: python3 scripts/check-api-compatibility.py
+        working-directory: .
+      - name: Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: frontend-playwright-report
+          path: frontend/playwright-report
+          if-no-files-found: ignore
+
+  frontend-backend-smoke:
+    name: Frontend artifact and browser-to-backend smoke
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: '27.0.1'
+          check-latest: false
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          validate-wrappers: true
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Container runtime
+        run: docker version
+      - name: Independent frontend image (non-root nginx on 8080, SPA fallback, config endpoint, no JDK)
+        run: scripts/verify-frontend-artifact.sh
+      - name: Install locked dependencies
+        run: npm ci
+        working-directory: frontend
+      - name: Qualified Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - name: Browser → real backend smoke (bootTestRun with VectorChord container)
+        run: npm run test:e2e:smoke
+        working-directory: frontend

@@ -119,8 +119,29 @@ not decided here**: local node storage is disposable, and no backup is implied.
 
 ## Frontend and routing values (T2/T4)
 
-`frontend.*` deploys the independent shell artifact (`frontend.image.*`, disabled until OM-01.04
-supplies an image; enabling without a tag or digest fails rendering). `routing.*` defines the path
+`frontend.*` deploys the independent shell artifact delivered by OM-01.04 (`frontend.image.*`;
+disabled by default, and enabling without a tag or digest fails rendering). Build the image from
+`frontend/Dockerfile` (Node 24.21.0 build stage, `nginxinc/nginx-unprivileged:1.31.7-alpine` runtime,
+port 8080, UID 101) and verify its contract with `scripts/verify-frontend-artifact.sh`:
+
+```sh
+docker build -t owl-mast/frontend:0.1.0 frontend
+scripts/verify-frontend-artifact.sh                      # non-root, SPA fallback, /owlmast-config.json, no JDK
+helm upgrade --install owl-mast deploy/helm/owl-mast --set frontend.enabled=true --set frontend.image.tag=0.1.0 …
+```
+
+The container receives `OWLMAST_API_PATH_PREFIX` (= `routing.apiPathPrefix`) and republishes it to
+the shell as `/owlmast-config.json`; the shell then calls `GET <prefix>/compatibility` on the same
+origin, so the route for `routing.apiPathPrefix` must reach the backend's `/api`. Before enabling or
+upgrading the frontend, run the pre-rollout pair check against the deployed backend
+([api-compatibility.md](api-compatibility.md)):
+
+```sh
+scripts/check-api-compatibility.py --backend-url https://<public-origin>   # exit 1 = do not roll out
+```
+
+This story proves the image contract and the browser → backend path locally and in CI; deploying
+the frontend image onto the Kind target remains a live qualification step. `routing.*` defines the path
 contract: `/api` and `/actuator` route to the backend, `/` to the frontend. No exposure is rendered by
 default. Two mutually exclusive mechanisms exist; enabling both is refused as ambiguous:
 
