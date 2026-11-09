@@ -31,7 +31,7 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .activation import Activation, refresh_activation, validate_binding, validate_high_water, validate_stop_record
+from .activation import Activation, _parse_time, record_activation_use, refresh_activation, validate_binding, validate_high_water, validate_stop_record
 from .errors import Refused
 
 PHASES = ("claim-incomplete", "reserved", "claimed", "implemented", "checks-passed", "checks-failed", "review-authorized", "review-requested", "review-approved", "changes-requested", "repair-authorized", "proposed", "blocked", "cancelled", "conflict")
@@ -336,6 +336,8 @@ class Store:
                 problems.append(f"{key} must be a non-empty string")
         if raw["environment"] not in self.ENVIRONMENTS:
             problems.append(f"environment {raw['environment']!r} is not one of {list(self.ENVIRONMENTS)}")
+        if isinstance(raw["started_at"], str) and raw["started_at"].strip():
+            _parse_time(raw["started_at"], "started_at", problems)  # the wall-clock origin: a strict UTC time, or the record refuses instead of crashing in _elapsed
         for key in ("stories_claimed", "delegated_tasks", "repair_rounds"):
             if not isinstance(raw[key], int) or isinstance(raw[key], bool) or raw[key] < 0:
                 problems.append(f"{key} must be a non-negative integer")
@@ -376,22 +378,25 @@ class Store:
             validate_binding(run.activation, self.run_id, run.repo, run.policy_digest)
         return run
 
-    def ensure_run(self, repo: str, policy_digest: str, environment: str, activation: Activation | None = None, policy=None, now: str | None = None) -> RunState:
-        """Create the run or validate its binding, under the store lock. A run belongs to exactly
-        one repository, policy digest and transport environment (fixture or live); any other
-        pairing is refused before recovery or effects, so synthetic state can never drive
-        production.
+    def ensure_run(self, repo: str, policy_digest: str, environment: str, activation: Activation | None = None, policy=None, now: str | None = None, owner: object = None) -> RunState:
+        """Create the run or validate its binding, under the store lock (re-entrant for ``owner``,
+        the coordinator that already holds it). A run belongs to exactly one repository, policy
+        digest and transport environment (fixture or live); any other pairing is refused before
+        recovery or effects, so synthetic state can never drive production.
 
         This is the only place a live run is created. It needs the loaded :class:`Activation`
         itself (never a dictionary), the :class:`Policy` in use and the current time, and it
         re-reads the activation source under the lock (a missing, changed or malformed source
         refuses: the loaded object is a cache, the file is the approval) and persists the binding
-        record only after ``Activation.problems`` of the fresh document is empty for exactly this
-        run id, policy and moment. Retained run artifacts (story checkpoints, a journal) without
-        run metadata are an incomplete restore: no new run is created around them and nothing is
-        written (``run-metadata-missing``). An existing live run's record is re-validated on every
-        call; a presented activation must be the one the run was created under."""
-        with self.locked():
+        record only after ``Activation.creation_problems`` of the fresh document is empty for exactly
+        this run id, policy and moment (current, and with a window that still covers the wall-clock
+        budget). The use of the document is recorded beside it first (``record_activation_use``): one
+        activation creates exactly one run. ``started_at`` is that same validated moment. Retained
+        run artifacts (story checkpoints, a journal) without run metadata are an incomplete restore:
+        no new run is created around them and nothing is written (``run-metadata-missing``). An
+        existing live run's record is re-validated on every call; a presented activation is re-read
+        from its source and must be the one the run was created under."""
+        with self.locked(owner):
             run = self.bound_run()
             if run is None:
                 retained = self.retained_artifacts()
@@ -407,13 +412,14 @@ class Store:
                     activation = refresh_activation(activation, "run-start")
                     if activation is None:
                         raise Refused(f"run {self.run_id}: the activation source is gone; a live run is created only under a currently presented, approved activation (nothing written)", code="activation-required")
-                    problems = activation.problems(policy, self.run_id, now)
+                    problems = activation.creation_problems(policy, self.run_id, now)
                     if problems:
-                        raise Refused(f"run {self.run_id}: activation {activation.id} does not currently authorize this run: " + "; ".join(m for _, m in problems), code=Activation.stop_code(problems), problems=[m for _, m in problems])
+                        raise Refused(f"run {self.run_id}: activation {activation.id} does not currently authorize creating this run: " + "; ".join(m for _, m in problems), code=Activation.stop_code(problems), problems=[m for _, m in problems])
                     if (activation.repository, activation.policy_digest) != (repo, policy_digest):
                         raise Refused(f"run {self.run_id}: activation {activation.id} binds {activation.repository} / {activation.policy_digest[:12]}, not {repo} / {policy_digest[:12]}", code="activation-mismatch")
                     binding = validate_binding(activation.binding(validated_at=now), self.run_id, repo, policy_digest)
-                run = RunState(self.run_id, repo, policy_digest, utcnow(), environment=environment, activation=binding)
+                    record_activation_use(activation, str(self.state_dir), self.run_id, now)  # one document, one run: refused (activation-used) before anything of this run is written
+                run = RunState(self.run_id, repo, policy_digest, now or utcnow(), environment=environment, activation=binding)
                 self.save_run(run)
                 self.journal(None, "run-started", {"repo": repo, "policy_digest": policy_digest, "environment": environment, "activation": run.activation})
             elif (run.repo, run.policy_digest) != (repo, policy_digest):
@@ -425,7 +431,8 @@ class Store:
                     raise Refused(f"run {self.run_id}: an activation is presented as the loaded document, not as a dictionary", code="activation-invalid")
                 if not run.activation:
                     raise Refused(f"run {self.run_id} was never activated; activation {activation.id} cannot adopt it (a run is activated only at creation)", code="activation-required")
-                if not activation.matches(run.activation):
+                activation = refresh_activation(activation, "run-open")  # the file is the approval here too: a source edited or removed since it was loaded is not the presented document
+                if activation is not None and not activation.matches(run.activation):
                     raise Refused(f"run {self.run_id} was created under activation {run.activation.get('id')!r}; refusing activation {activation.id!r} (digest {activation.digest[:12]})", code="activation-mismatch")
             return run
 

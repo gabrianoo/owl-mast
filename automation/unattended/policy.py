@@ -87,7 +87,12 @@ def _target(raw: dict, name: str, problems: list[str]) -> Target | None:
     if not isinstance(options, dict) or not options:
         problems.append(f"targets.{name}.options must name at least one option (e.g. effort)")
         options = {}
-    return Target(str(provider), str(model), {str(k): str(v) for k, v in options.items()}, str(raw.get("isolation", "")))
+    elif not all(isinstance(k, str) and isinstance(v, str) and v.strip() for k, v in options.items()):
+        # the same rule as the activation loader: no coercion of numbers, booleans or tables, so the
+        # two documents compare option values under one typing rule
+        problems.append(f"targets.{name}.options must be a table of non-empty string values (write timeoutMs = \"600000\", not 600000)")
+        options = {k: v for k, v in options.items() if isinstance(k, str) and isinstance(v, str)}
+    return Target(str(provider), str(model), dict(options), str(raw.get("isolation", "")))
 
 
 def load_policy(path: Path) -> Policy:

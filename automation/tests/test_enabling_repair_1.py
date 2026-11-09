@@ -197,22 +197,34 @@ class R3SourceRereadTests(unittest.TestCase):
         refuses(self, lambda: self.c.record_head(S, self.h.h.sha), "activation-required")
         refuses(self, lambda: self.c.authorize_repair(S), "activation-required")
         exc = refuses(self, lambda: self.c.bind_receipt(S, REVIEWER, worktree_check=ok_worktree), "activation-required")
-        self.assertTrue(exc.detail["bound_for_cleanup"])  # late receipt: owned, no work authorized
-        refuses(self, lambda: self.c.record_review(S, self.h.h.sha, "approved", "r.md", self.h.terminal()), "activation-required")
-        self.assertEqual(self.h.h.fake.calls, NO_CALLS)
+        self.assertNotIn("bound_for_cleanup", exc.detail)  # a missing file is not a run stop (PR #108 review): nothing is bound, the slot is not spent for cleanup
         state = self.store.load_story(S)
-        self.assertEqual((state.phase, state.active_task["taskId"]), ("review-authorized", REVIEWER["taskId"]))
+        self.assertEqual((state.phase, state.active_task, state.unresolved_authorization()["status"]), ("review-authorized", None, "pending"))
+        self.assertEqual(self.h.h.fake.calls, NO_CALLS)
+        self.h.path.write_text(activation_text(self.h.h.policy), encoding="utf-8")  # the same document presented again (a fresh instance: this one saw the source go): the receipt binds for work
+        self.assertEqual(self.h.coordinator().bind_receipt(S, REVIEWER, worktree_check=ok_worktree).phase, "review-requested")
+        self.h.path.unlink()
+        refuses(self, lambda: self.c.record_review(S, self.h.h.sha, "approved", "r.md", self.h.terminal()), "activation-required")
+        state = self.store.load_story(S)
+        self.assertEqual((state.phase, state.active_task["taskId"]), ("review-requested", REVIEWER["taskId"]))
         self.assertEqual(self.c.cancel(S, "source gone", self.h.terminal()).phase, "cancelled")
         self.assertTrue(any("kind=release" in c_.body for c_ in self.h.h.fake.comments[21]))
 
-    def test_missing_source_on_resume_abandons_advancing_replays_and_keeps_cleanup(self):
+    def test_missing_source_on_resume_defers_advancing_replays_and_keeps_cleanup(self):
         state = self.store.load_story(S)
         state.intents[0].status = "pending"
         self.store.save_story(state)
         self.h.path.unlink()
         state = self.c.resume(S, ok_worktree)
         self.assertEqual(state.phase, "claimed")
-        self.assertIn("resume-advancing-abandoned", [e["event"] for e in self.store.read_journal()])
+        events = [e["event"] for e in self.store.read_journal()]
+        self.assertIn("resume-advancing-deferred", events)  # a missing file on a healthy run defers the replay (PR #108 review); it never abandons it
+        self.assertNotIn("resume-advancing-abandoned", events)
+        self.assertEqual(self.store.load_story(S).intents[0].status, "pending")
+        self.assertEqual(len([c_ for c_ in self.h.h.fake.comments[21] if "kind=claim" in c_.body]), 1)
+        self.h.path.write_text(activation_text(self.h.h.policy), encoding="utf-8")
+        self.h.coordinator().resume(S, ok_worktree)  # with the same document presented again the replay completes (marker adopted, nothing reposted)
+        self.assertEqual(self.store.load_story(S).intents[0].status, "done")
         self.assertEqual(len([c_ for c_ in self.h.h.fake.comments[21] if "kind=claim" in c_.body]), 1)
 
 

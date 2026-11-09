@@ -5,7 +5,9 @@ that write require ``--live``; without it they refuse and say so. On the real tr
 state command that admits or advances additionally needs ``--activation`` naming a current
 run-bound activation authorization; without one it refuses ``activation-required`` before any
 GitHub call, and no live run is created without one. Cleanup and ``status`` of a run that was
-activated earlier work on the run's validated recorded binding without the file.
+activated earlier work on the run's validated recorded binding without the file. ``status`` is a
+locked state write (it records an observed expiry or clock regression durably) unless
+``--read-only`` is passed.
 """
 
 from __future__ import annotations
@@ -55,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run-id", default=None, help="run identifier (required for state commands)")
     p.add_argument("--repo-root", default=".")
     p.add_argument("--snapshot", default=None, help="use a saved snapshot JSON instead of reading GitHub")
-    p.add_argument("--live", action="store_true", help="allow GitHub writes (reserve, authorize-repair, block, cancel, cancel-run, resume, rebase-revisions, probe-write)")
+    p.add_argument("--live", action="store_true", help=f"allow GitHub writes ({', '.join(sorted(WRITE_COMMANDS))})")
     p.add_argument("--activation", default=None, help="run-bound activation authorization TOML (see automation/examples/activation-om-01-02.candidate.toml); required on the real transport to create a live run and for every admitting/advancing command; cleanup and status of a run activated earlier work on its recorded binding without it; the shipped candidate is unapproved and refuses")
     sub = p.add_subparsers(dest="command", required=True)
 
@@ -67,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--out", default=None)
     sub.add_parser("check-permissions", help="probe the minimum GitHub permissions")
     sub.add_parser("probe", help="run the policy environment probes")
-    sub.add_parser("check-activation", help="read-only: load --activation and report whether it currently authorizes --run-id under --policy (touches no state, no GitHub)")
+    sub.add_parser("check-activation", help="read-only: load --activation and report whether it currently authorizes creating --run-id under --policy, with its whole wall-clock budget inside the window (touches no state, no GitHub); --run-id is required")
     pw = sub.add_parser("probe-write", help="bounded live write probe on an engineering-automation issue")
     pw.add_argument("--issue", type=int, required=True)
 
@@ -93,7 +95,9 @@ def build_parser() -> argparse.ArgumentParser:
     rr.add_argument("story"); rr.add_argument("--authorization", required=True); rr.add_argument("--receipt", required=True, help="JSON receipt of the retained owner task with its runId (and provider/model/options; optional worktree/branch)"); rr.add_argument("--task-evidence", required=True, help=evidence_help); rr.add_argument("--reason", required=True); rr.add_argument("--provenance", required=True, help="who observed the terminal evidence and how (e.g. original coordinator task_status snapshot, user-supplied)")
     rs = sub.add_parser("resume"); rs.add_argument("story")
     rb = sub.add_parser("rebase-revisions", help="explicitly accept changed GitHub revisions after human verification"); rb.add_argument("story"); rb.add_argument("--reason", required=True)
-    sub.add_parser("status")
+    cc = sub.add_parser("clear-clock-regression", help="owner-only, journaled: clear a recorded clock-regression stop under the presented, current activation (an activation-expired stop is never cleared)"); cc.add_argument("--reason", required=True)
+    st = sub.add_parser("status", help="run report; a locked state write by default (records an observed expiry or clock regression durably)")
+    st.add_argument("--read-only", action="store_true", help="report without the store lock and without writing: a would-be stop is reported as would_stop, never recorded")
     return p
 
 
@@ -105,7 +109,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "check-activation":
             if activation is None:
                 raise UnattendedError("check-activation needs --activation", code="activation-required")
-            problems = activation.problems(policy, args.run_id, utcnow())
+            if not args.run_id:
+                raise UnattendedError("check-activation needs --run-id: an activation authorizes exactly one run, so there is no run-less currency to report", code="activation-required")
+            problems = activation.creation_problems(policy, args.run_id, utcnow())
             _json({"activation": activation.binding(), "approved": activation.approved, "run_id": args.run_id, "policy_digest": policy.digest, "current": not problems, "stop": activation.stop_code(problems), "problems": [m for _, m in problems]})
             return 0 if not problems else 2
         transport = GhCliTransport(policy.owner, policy.repo, policy.project_owner, policy.project_number)
@@ -180,8 +186,11 @@ def main(argv: list[str] | None = None) -> int:
             state = coordinator.reconcile_retained_execution(args.story, args.authorization, _load_json_arg(args.receipt), _load_json_arg(args.task_evidence), args.reason, args.provenance)
         elif args.command == "rebase-revisions":
             state = coordinator.rebase_revisions(args.story, args.reason)
+        elif args.command == "clear-clock-regression":
+            _json(coordinator.clear_clock_regression(args.reason))
+            return 0
         elif args.command == "status":
-            _json(coordinator.status())
+            _json(coordinator.status(read_only=bool(args.read_only)))
             return 0
         else:  # pragma: no cover
             raise UnattendedError(f"unknown command {args.command}")

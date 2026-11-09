@@ -278,12 +278,18 @@ class Coordinator:
         self.transport, self.policy, self.store, self.now, self.live, self.activation = transport, policy, store, now, live, activation
         self.environment = "live" if getattr(transport, "live", False) else "fixture"
         self._moment: str | None = None  # the one clock observation of the locked operation in progress (see ``operation``)
-        with self.operation(lock=False):
-            if self.environment == "live" and store.load_run() is None:
-                self._refresh_activation("run-start")  # the loaded object is a cache: creation is decided on the source as it is now
-                self._refuse_unless_current("run-start", creating=True)  # a live run is created only under a current activation
-            # the only creation path: Store.ensure_run re-reads the source under its lock and validates the document for this run, policy and moment before persisting its binding
-            self.run = store.ensure_run(policy.repo_slug, policy.digest, self.environment, activation=self.activation, policy=policy, now=self._at())
+        if self.environment == "live":
+            # A footprint-free pre-check (no lock file, no directory): the presented document is re-read and, for a
+            # run that does not exist yet, must currently authorize creating it. The authoritative decision is made
+            # again below, under the lock, from the locked observation.
+            with self.operation(lock=False):
+                creating = store.load_run() is None
+                self._refresh_activation("run-start" if creating else "run-open")  # the loaded object is a cache: every decision is made on the source as it is now
+                if creating:
+                    self._refuse_unless_current("run-start", creating=True)  # a live run is created only under a current activation whose window covers the wall-clock budget
+        with self.operation():  # the store lock first, then the one clock observation construction decides from: the creation moment is sampled after the lock is held
+            # the only creation path: Store.ensure_run re-reads the source under the (re-entered) lock and validates the document for this run, policy and moment before persisting its binding
+            self.run = store.ensure_run(policy.repo_slug, policy.digest, self.environment, activation=self.activation, policy=policy, now=self._at(), owner=self)
 
     # -- one observation per operation ---------------------------------------------------------
     @contextmanager
@@ -330,6 +336,8 @@ class Coordinator:
 
     def _refuse_unless_current(self, operation: str, creating: bool = False) -> None:
         problems = self._activation_problems()
+        if creating and self.activation is not None:
+            problems = self.activation.creation_problems(self.policy, self.store.run_id, self._at())
         code = Activation.stop_code(problems)
         if code:
             what = "creating a live run" if creating else "advancing"
@@ -353,19 +361,7 @@ class Coordinator:
         terminal evidence stay allowed; approvals, obligations and budgets are untouched."""
         if self.run.activation_stop is not None or self.run.activation is None:
             return
-        problems: list[str] = []
-        at = self._at()
-        now, expires = _parse_time(at, "now", problems), _parse_time(self.run.activation["expires_at"], "expires_at", problems)
-        # the high-water mark is the latest observation, else the validated creation moment (both strict at load); a parse problem refuses, it is never replaced by now
-        source = ("last_observed_at", self.run.last_observed_at) if self.run.last_observed_at is not None else ("activation.validated_at", self.run.activation["validated_at"])
-        high_water = _parse_time(source[1], source[0], problems)
-        if problems or high_water is None:
-            raise Refused(f"{operation}: cannot evaluate the activation window: " + "; ".join(problems), code="activation-invalid", problems=problems)
-        stop = None
-        if now > expires:
-            stop = {"code": "activation-expired", "observed_at": at, "message": f"now {at} is after the recorded expires_at {self.run.activation['expires_at']}"}
-        elif now < high_water - timedelta(minutes=CLOCK_REGRESSION_TOLERANCE_MINUTES):
-            stop = {"code": "clock-regression", "observed_at": at, "message": f"now {at} is before the latest recorded observation {_utc_text(high_water)}; the approval window cannot be trusted"}
+        stop, now, high_water = self._stop_candidate(operation)
         if stop:
             self.run.activation_stop = {**stop, "operation": operation}
             self.store.save_run(self.run)
@@ -373,6 +369,26 @@ class Coordinator:
         elif now > high_water:
             self.run.last_observed_at = _utc_text(now)
             self.store.save_run(self.run)
+
+    def _stop_candidate(self, operation: str) -> tuple[dict | None, datetime, datetime]:
+        """What this operation's clock observation says about the recorded window, without writing:
+        the stop it would record (``activation-expired`` / ``clock-regression``) or ``None``, with the
+        observation and the high-water mark it was judged against. ``_observe_stop`` persists it;
+        ``status --read-only`` only reports it."""
+        problems: list[str] = []
+        at = self._at()
+        now, expires = _parse_time(at, "now", problems), _parse_time(self.run.activation["expires_at"], "expires_at", problems)
+        # the high-water mark is the latest observation, else the validated creation moment (both strict at load); a parse problem refuses, it is never replaced by now
+        source = ("last_observed_at", self.run.last_observed_at) if self.run.last_observed_at is not None else ("activation.validated_at", self.run.activation["validated_at"])
+        high_water = _parse_time(source[1], source[0], problems)
+        if problems or now is None or expires is None or high_water is None:
+            raise Refused(f"{operation}: cannot evaluate the activation window: " + "; ".join(problems), code="activation-invalid", problems=problems)
+        stop = None
+        if now > expires:
+            stop = {"code": "activation-expired", "observed_at": at, "message": f"now {at} is after the recorded expires_at {self.run.activation['expires_at']}"}
+        elif now < high_water - timedelta(minutes=CLOCK_REGRESSION_TOLERANCE_MINUTES):
+            stop = {"code": "clock-regression", "observed_at": at, "message": f"now {at} is before the latest recorded observation {_utc_text(high_water)}; the approval window cannot be trusted"}
+        return stop, now, high_water
 
     def require_activation(self, operation: str, advancing: bool = True) -> None:
         """The live gate, one validation for every consumer, run under the operation lock. It
@@ -423,9 +439,26 @@ class Coordinator:
         activation stop, else the activation's current problems, else None."""
         if self.run.cancelled:
             return "run-cancelled"
+        if self.environment == "live" and self.run.activation_stop is not None:
+            return self.run.activation_stop["code"]  # the recorded, journaled stop outranks a wall clock that may have run out at the same moment
         if self._elapsed() > timedelta(minutes=self.policy.max_wall_clock_minutes):
             return "wall-clock-exceeded"
         return self._activation_stop()
+
+    def _durable_run_stop(self) -> str | None:
+        """The stops that are permanent for this run and therefore allowed to drive cleanup-only
+        consequences (a late receipt bound for cleanup, advancing intents abandoned, a stopped-run
+        reconciliation): ``run-cancelled``, ``wall-clock-exceeded`` and the recorded
+        ``activation_stop``. A current problem of the *presented* document, above all a file that is
+        simply not presented (``activation-required``), is temporary: it refuses advancement now and
+        never spends a slot, abandons an intent or opens stopped-run cleanup on a healthy run."""
+        if self.run.cancelled:
+            return "run-cancelled"
+        if self.environment == "live" and self.run.activation_stop is not None:
+            return self.run.activation_stop["code"]
+        if self._elapsed() > timedelta(minutes=self.policy.max_wall_clock_minutes):
+            return "wall-clock-exceeded"
+        return None
 
     def _stop_message(self, code: str) -> str:
         if code == "run-cancelled":
@@ -442,7 +475,7 @@ class Coordinator:
         (cancel/block/record-task-terminal) and recovery stay allowed."""
         code = self._run_stop()
         if code:
-            raise BudgetExhausted(f"{operation}: {self._stop_message(code)}; only cancel, block, record-task-terminal, resume and status are allowed", code=code, stop_reason=self.run.stop_reason)
+            raise BudgetExhausted(f"{operation}: {self._stop_message(code)}; only cancel, block, record-task-terminal, record-no-launch, cancel-run, resume (cleanup) and status are allowed", code=code, stop_reason=self.run.stop_reason)
 
     def _story(self, story: str) -> StoryState:
         state = self.store.load_story(story)
@@ -819,7 +852,7 @@ class Coordinator:
             self.require_activation("bind-receipt", advancing=False)
             self._reload_run()
             state = self._story(story)
-            stop = self._run_stop()
+            stop = self._durable_run_stop()  # only a permanent stop binds for cleanup; a file that is not presented is not a stop
             auth = state.unresolved_authorization()
             if auth is None:
                 if stop:
@@ -830,6 +863,13 @@ class Coordinator:
                               code="authorization-mismatch", expected=auth["id"], given=str(authorization))
             issued_phase, next_phase, role = AUTHORIZATION_FLOW[auth["purpose"]]
             revoked = auth["status"] == "revoked"
+            if stop is None and not revoked and self.environment == "live":
+                # Binding into work on a run that is not stopped needs the presented, current activation; a missing
+                # file is refused here, before any state change, so one omitted flag can never spend the slot for cleanup.
+                problems = self._activation_problems()
+                if problems:
+                    raise Refused(f"bind-receipt: present --activation to bind {role} task {receipt.get('taskId')!r} to {story} for work: " + "; ".join(m for _, m in problems) + "; nothing was bound (only a cancelled run, an exceeded wall clock or a recorded stop binds a late receipt for cleanup)",
+                                  code=Activation.stop_code(problems), problems=[m for _, m in problems])
             if revoked:
                 self._require_phase(state, *ACTIVE_PHASES)  # the phase may have moved on (evidence invalidated); the story is still owned
             else:
@@ -922,9 +962,9 @@ class Coordinator:
         with self.operation():
             self.require_activation("reconcile-retained-execution", advancing=False)
             self._reload_run()  # binding validated and the latest cancellation/budgets read under the lock; never saved from a stale object
-            stop = self._run_stop()
+            stop = self._durable_run_stop()
             if not stop:
-                raise Refused("reconcile-retained-execution is cleanup for a stopped run only (cancelled or past its wall clock); an active run binds a receipt through bind-receipt", code="run-not-stopped")
+                raise Refused("reconcile-retained-execution is cleanup for a stopped run only (cancelled, past its wall clock or under a recorded activation stop); an active run binds a receipt through bind-receipt, and a missing --activation does not make it a stopped run", code="run-not-stopped")
             state = self._story(story)
             if not reason or not provenance:
                 raise Refused("reconcile-retained-execution needs --reason and --provenance (who observed the terminal evidence, and how)", code="provenance-missing")
@@ -1337,15 +1377,21 @@ class Coordinator:
             for intent in state.pending_intents():
                 if intent.kind in CLEANUP_KINDS:
                     self._post_intent(state, intent)
-            stop = self._run_stop()
+            stop = self._durable_run_stop()
+            # A temporary condition of the presented document (above all: no --activation on a healthy run)
+            # withholds advancement for this call only: nothing is reconciled, replayed, saved or abandoned,
+            # and the next resume with the file picks up where this one left off.
+            deferred = None if stop or self.environment != "live" else Activation.stop_code(self._activation_problems())
             # Completed advancing intents whose transition did not persist (legacy or partial state):
             # the effect is history and stays recorded; the transition applies only where a fresh
-            # attempt would be allowed. A stopped run (cancelled or past its wall clock) advances
-            # nothing (cancel-run finishes the story).
+            # attempt would be allowed. A stopped run (cancelled, past its wall clock or under a
+            # recorded activation stop) advances nothing (cancel-run finishes the story).
             claim = state.intent("claim")
             if claim is not None and claim.status == "done" and state.phase == "claim-incomplete":
                 if stop:
                     self._withhold_reconciliation(state, claim, STOP_REASONS[stop])
+                elif deferred:
+                    self._withhold_reconciliation(state, claim, f"deferred, not withheld: {STOP_REASONS[deferred]}; resume again with --activation")
                 else:
                     fresh, current = self._current_revisions(story)
                     changed = revision_diff(claim.preconditions.get("revisions", state.revisions), current)
@@ -1359,6 +1405,9 @@ class Coordinator:
                 unresolved = state.unresolved_authorization()
                 if stop:
                     self._withhold_reconciliation(state, intent, STOP_REASONS[stop])
+                    continue
+                if deferred:
+                    self._withhold_reconciliation(state, intent, f"deferred, not withheld: {STOP_REASONS[deferred]}; resume again with --activation")
                     continue
                 if pr is None or sha is None:
                     self._withhold_reconciliation(state, intent, f"no current approval for {sha}: the completed proposal names no sha/pr ({sha}, {pr})")
@@ -1382,6 +1431,10 @@ class Coordinator:
                 abandoned = state.abandon_advancing_intents(f"not replayed on resume: {why}")
                 self.store.save_story(state)
                 self.store.journal(story, "resume-advancing-abandoned", {"reason": why, "ops": abandoned})
+                pending_advancing = []
+            elif pending_advancing and deferred:
+                # the run is healthy and the intents stay pending: nothing is saved, nothing is abandoned
+                self.store.journal(story, "resume-advancing-deferred", {"reason": STOP_REASONS[deferred], "ops": [i.op for i in pending_advancing]})
                 pending_advancing = []
             for intent in pending_advancing:
                 if intent.kind == "claim":
@@ -1414,6 +1467,7 @@ class Coordinator:
         """Explicit, journaled acceptance of changed revisions after a human verified them."""
         with self.operation():
             self.require_activation("rebase-revisions")
+            self._require_run_active("rebase-revisions")  # a cancelled or over-time run rewrites no revisions or intent preconditions
             state = self._story(story)
             self._require_phase(state, *ACTIVE_PHASES)
             fresh, current = self._current_revisions(story)
@@ -1428,15 +1482,63 @@ class Coordinator:
             self.store.journal(story, "revisions-rebased", {"reason": reason, "changed": changed})
             return state
 
-    def status(self) -> dict:
+    def clear_clock_regression(self, reason: str) -> dict:
+        """Owner-only, journaled recovery from a recorded ``clock-regression`` stop (a host clock that
+        stepped back more than the tolerance after a forward-skewed sample was persisted, as WSL2 does
+        after sleep). It needs the presented activation to be the run's own **and current at this
+        observation**, clears only that stop, re-anchors the high-water mark to this observation and
+        journals the cleared record with the reason. An ``activation-expired`` stop is never cleared:
+        expiry is the owner's window, not a clock artefact. Budgets, approvals and obligations are untouched."""
+        if not reason or not str(reason).strip():
+            raise Refused("clear-clock-regression needs --reason", code="reason-missing")
+        with self.operation():
+            self.require_activation("clear-clock-regression", advancing=False)
+            stop = self.run.activation_stop
+            if stop is None:
+                raise Refused(f"run {self.store.run_id} has no recorded activation stop; nothing to clear", code="no-stop-recorded")
+            if stop["code"] != "clock-regression":
+                raise Refused(f"run {self.store.run_id} is stopped by {stop['code']} (observed {stop['observed_at']}); only a clock-regression stop can be cleared, an expired approval window never", code=stop["code"], stop=stop)
+            if self.activation is None:
+                raise Refused("clear-clock-regression needs the run's activation presented (--activation) and current; clearing a stop is an owner decision taken under the approval, never on the recorded binding alone", code="activation-required")
+            self._refuse_unless_current("clear-clock-regression")  # the presented document at this observation, including its window
+            if self.run.cancelled:
+                raise Refused(f"run {self.store.run_id} is cancelled ({self.run.stop_reason}); its clock-regression stop is history, not an obstacle", code="run-cancelled")
+            elapsed = self._elapsed()
+            if elapsed < timedelta(0):
+                raise Refused(f"clear-clock-regression: this observation ({self._at()}) is before the run started ({self.run.started_at}); the clock is still wrong, nothing is cleared", code="clock-regression")
+            if elapsed > timedelta(minutes=self.policy.max_wall_clock_minutes):
+                raise Refused(f"clear-clock-regression: {self._stop_message('wall-clock-exceeded')}; the run is over whatever the stop says, nothing is cleared", code="wall-clock-exceeded")
+            cleared = dict(stop)
+            self.run.activation_stop = None
+            self.run.last_observed_at = self._at()  # the high-water mark restarts here; an earlier forward-skewed sample is discarded with the stop
+            self.store.save_run(self.run)
+            seq = self.store.journal(None, "activation-stop-cleared", {"cleared": cleared, "reason": str(reason), "observed_at": self._at(), "activation": self.activation.id})
+            return {"cleared": cleared, "reason": str(reason), "observed_at": self._at(), "journal_seq": seq, "run": self.run.__dict__}
+
+    def status(self, read_only: bool = False) -> dict:
         """A coherent snapshot taken under the same locked gate as every other consumer: the run
         is reloaded and validated (identity, record shape, binding), the activation source is
         re-read, and an observed expiry or clock regression is recorded durably before it is
         reported, so a stop that status reports survives rollback and restart like one observed by
         record-head. The whole report is computed inside the lock from the operation's single
         clock observation: it cannot report an expiry its own durable check did not record. A valid recorded binding without the file is reported, never refused; a
-        changed or malformed source, a foreign or malformed record refuse structurally."""
-        with self.operation():
-            self.require_activation("status", advancing=False)
+        changed or malformed source, a foreign or malformed record refuse structurally.
+
+        ``read_only`` is the monitoring form: no store lock, no write. It reports the stop this
+        observation *would* record as ``activation.would_stop`` (``None`` when the window holds) and
+        leaves recording it to the next locked operation; a polling loop therefore never contends
+        with worker operations for the lock and a single skewed sample never stops the run. Each
+        file it reads is atomically written, but the set is read without the lock, so a report taken
+        while another operation writes may be torn across files (counters from before a transition,
+        a story from after it); the locked form is the coherent one."""
+        with self.operation(lock=not read_only):
+            self.require_activation("status", advancing=False)  # observes (and records) a stop only under the lock
             counts = self._counts()
-            return {"run": self.run.__dict__, "budgets": counts, "environment": self.environment, "stories": [s.to_dict() for s in self.store.list_stories()], "journal_events": self.store.journal_count(), "live": self.live, "activation": {"recorded": self.run.activation, "recorded_stop": self.run.activation_stop, "presented": self.activation.binding() if self.activation else None, "stop": self._activation_stop(), "problems": [m for _, m in self._activation_problems()] if self.environment == "live" else []}, "agreement": OPERATING_AGREEMENT, "gaps": list(LIVE_EXECUTION_GAPS)}
+            would_stop = None
+            if read_only and self.environment == "live" and self.run.activation is not None and self.run.activation_stop is None:
+                would_stop = self._stop_candidate("status")[0]
+            report = {"run": self.run.__dict__, "budgets": counts, "environment": self.environment, "stories": [s.to_dict() for s in self.store.list_stories()], "journal_events": self.store.journal_count(), "live": self.live, "read_only": read_only,
+                      "activation": {"recorded": self.run.activation, "recorded_stop": self.run.activation_stop, "presented": self.activation.binding() if self.activation else None, "stop": self._activation_stop(), "problems": [m for _, m in self._activation_problems()] if self.environment == "live" else []}, "agreement": OPERATING_AGREEMENT, "gaps": list(LIVE_EXECUTION_GAPS)}
+            if read_only:
+                report["activation"]["would_stop"] = would_stop
+            return report

@@ -36,7 +36,7 @@ def activation_text(policy, run_id="run-live", approved=True, issued=T0, expires
         "approved": "true" if approved else "false", "id": '"eng01-test-activation"', "approver": '"owner (fixture)"', "issued_at": f'"{issued}"', "expires_at": f'"{expires}"',
         "agreement": '"spec-eng-01-trusted-operation.md"', "repository": f'"{policy.repo_slug}"', "policy_digest": f'"{policy.digest}"', "environment": '"live"', "run_id": f'"{run_id}"',
         "stories": json.dumps(list(policy.allow)), "impl_model": '"claude-fable-5-1"', "rev_model": '"gpt-6-astra"', "max_delegated_tasks": "6", "max_wall_clock_minutes": "240",
-        "extra": "",
+        "extra": "", "smoke": f'"https://github.com/{policy.repo_slug}/pull/107#issuecomment-6706853226"', "review": f'"https://github.com/{policy.repo_slug}/pull/107#issuecomment-6706853227"',
     }
     fields.update(over)
     return f"""
@@ -64,8 +64,8 @@ max_repair_rounds = 2
 max_delegated_tasks = {fields['max_delegated_tasks']}
 max_wall_clock_minutes = {fields['max_wall_clock_minutes']}
 [evidence]
-lifecycle_smoke = "fixture smoke reference"
-fresh_review = "fixture review reference"
+lifecycle_smoke = {fields['smoke']}
+fresh_review = {fields['review']}
 """
 
 
@@ -143,7 +143,9 @@ class CandidateAndLoaderTests(unittest.TestCase):
                 "secret-like-key": activation_text(h.policy, extra='token = "x"'),
                 "credential-value": activation_text(h.policy, approver='"ghp_' + "a" * 36 + '"'),
                 "bad-story": activation_text(h.policy, stories='["E17"]'),
-                "missing-evidence": activation_text(h.policy).replace('fresh_review = "fixture review reference"', ""),
+                "missing-evidence": "\n".join(l for l in activation_text(h.policy).splitlines() if not l.startswith("fresh_review")),
+                "stories-not-strings": activation_text(h.policy, stories='["OM-01.02", 1]'),
+                "stories-duplicate": activation_text(h.policy, stories='["OM-01.02", "OM-01.02"]'),
                 "approved-not-bool": activation_text(h.policy).replace("approved = true", 'approved = "yes"'),
                 "not-toml": "approved = \n",
             }

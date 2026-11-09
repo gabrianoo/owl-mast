@@ -2,12 +2,18 @@
 # Loaded by `python3 -m automation.unattended --activation <file> ...`.
 #
 # THIS FILE IS NOT APPROVED AND CANNOT DISPATCH. `approved = false`, the run id is a placeholder,
-# the window is in the past and the policy digest must be recomputed. Copying it as-is refuses
-# with activation-unapproved / activation-mismatch / activation-expired. Activation is the owner's
+# the evidence references are placeholders, the window is in the past and the policy digest must be
+# recomputed. Copying it as-is refuses with activation-unapproved / activation-mismatch /
+# activation-invalid / activation-expired (a window that does not cover the 240-minute budget at run
+# start refuses activation-window-short; a document that already created a run, activation-used). Activation is the owner's
 # separate decision: the owner writes a private, run-specific copy OUTSIDE the repository (never
 # commit an approved activation), sets approved = true, the exact run id, the sha256 of the exact
-# policy file in use and a window of at most 24 hours, then verifies it with
+# policy file in use and a window of at most 24 hours that still covers the 240-minute wall-clock
+# budget at run start, replaces both evidence placeholders with the published GitHub comment or review
+# URLs, then verifies it with (--run-id is required; "current": true is the go signal)
 #   python3 -m automation.unattended --policy automation/examples/first-run-om-01-02.toml --activation <copy> --run-id <run> check-activation
+# One activation creates exactly one live run: creation writes `<copy>.used.json` beside the file and a
+# second creation from the same document refuses (activation-used), whatever the state directory.
 # Trust model: this is an engineering approval by the trusted coordinator/owner on the trusted
 # machine under the 2026-11-06 operating agreement. It is not a credential and is not signed.
 
@@ -39,5 +45,8 @@ max_delegated_tasks = 6
 max_wall_clock_minutes = 240
 
 [evidence]
-lifecycle_smoke = "REPLACE: published engineering-only lifecycle smoke reference (PR #107 disposition comment)"
-fresh_review = "REPLACE: published fresh independent review reference (fresh-review-f71167b)"
+# Both must be GitHub comment or review URLs on this repository
+# (https://github.com/gabrianoo/owl-mast/(issues|pull)/<n>#issuecomment-<id> or #pullrequestreview-<id>);
+# placeholders and any other value are reported as activation-invalid by check-activation and refuse creation.
+lifecycle_smoke = "REPLACE: published engineering-only lifecycle smoke reference (PR #107 disposition comment URL)"
+fresh_review = "REPLACE: published fresh independent review reference (fresh-review-f71167b comment URL)"
