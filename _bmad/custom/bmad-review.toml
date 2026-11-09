@@ -9,3 +9,14 @@ review_guidance = [
   """All Ubuntu CI jobs must pin an explicitly qualified fixed runner version (for Owl Mast, ubuntu-26.04); never use ubuntu-latest or another floating Ubuntu runner alias, including in matrices or reusable workflows. Verify runner availability and checks before claiming qualification.""",
   """Owl Mast Kubernetes/Helm packaging must support stable Gateway API routing as a first-class option, alongside optional Ingress compatibility. Validate parent Gateway/listener references, routes/backend services, prerequisites and fail-closed configuration; include render/negative tests and distinguish manifest support from controller/runtime qualification. Kubernetes Ingress API is frozen, not removed/deprecated; ingress-nginx controller retirement is a separate fact.""",
 ]
+
+# Owner request 2026-11-09: PR reviews land as GitHub review comments, not a JSON file.
+output_format = "markdown"
+output_preferences = "When the content is a GitHub pull request, keep the chat report to the posted review's URL, the finding count per lens and the few findings worth acting on first. Do not write the findings JSON to a file or print the JSON block."
+on_complete = """When the reviewed content is a GitHub pull request, post the findings to it as one pull request review:
+1. Use `gh api -X POST repos/{owner}/{repo}/pulls/{number}/reviews` with `event: "COMMENT"` (never APPROVE or REQUEST_CHANGES) and `commit_id` set to the exact head SHA that was reviewed. If the PR head has moved since, say so and anchor to the reviewed SHA anyway.
+2. Add one inline comment per finding, on the RIGHT side at the most specific changed line (use `start_line` for a range). Check each anchor against the file at the reviewed SHA so it lands on the line the finding names, and only use lines that appear in the PR diff. When two or more lenses found the same problem at the same place, post one comment that names every lens.
+3. Format each comment as: `**[<lens>] <short title>**`, then the problem and its consequence, then `**Suggested fix:** <fix>`. Keep the code-relevant details, such as identifiers, line references and acceptance-criteria IDs.
+4. Put findings that cannot be anchored to a diff line (document-level, cross-file or missing-file findings) in the review body. The body should also give the reviewed SHA, the lenses run, that these are unverified AI review findings with no severity ranking, the suggested first fixes, and the PR-description attribution line.
+5. After posting, check that the number of inline comments on the review matches what was sent, and give the user the review URL. If posting fails, say so and show the error, then fall back to presenting the markdown report in chat.
+Otherwise, when the content is not a pull request, present the markdown report in chat as usual."""
