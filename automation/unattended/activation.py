@@ -11,7 +11,7 @@ reviewable, journaled decision that names what was approved, so that the shipped
 the committed candidate and copied examples can never dispatch by accident.
 
 An activation is current only when all of these hold at the moment of the operation:
-``approved = true``; it names this repository, the exact digest of the policy file in use,
+``approved = true``; it names this repository, the canonical digest of the policy in use (``Policy.digest``: the parsed content, so comments and whitespace do not change it; there is no raw-bytes alias here, an activation is written fresh for one run),
 the ``live`` environment and the exact run id; its story scope, targets and budgets equal
 the policy's; ``issued_at <= now <= expires_at`` with a window of at most
 :data:`MAX_WINDOW_MINUTES`; and it cites the published lifecycle smoke and fresh review.

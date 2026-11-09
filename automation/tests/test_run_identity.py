@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 
 from automation.tests.fake_transport import small_backlog
-from automation.tests.support import IMPLEMENTER, REVIEWER, Harness, evidence, ok_worktree, receipt, run_of
+from automation.tests.support import Harness, IMPLEMENTER, REVIEWER, REVIEW_BRANCH, REVIEW_WORKTREE, evidence, ok_worktree, receipt, run_of
 from automation.unattended.coordinator import Coordinator, normalize_task_evidence
 from automation.unattended.errors import ReceiptInvalid, Refused
 from automation.unattended.state import Store
@@ -113,9 +113,9 @@ class ExecutionPairTests(unittest.TestCase):
         self.h.checks()
         self.c.authorize_review(S, self.h.sha)
         with self.assertRaises(ReceiptInvalid) as ctx:
-            self.c.bind_receipt(S, receipt(REVIEWER, "task-review-1", ordinal=2), worktree_check=ok_worktree)
+            self.c.bind_receipt(S, receipt(REVIEWER, "task-review-1", ordinal=2), REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
         self.assertIn("fresh", str(ctx.exception))
-        self.assertEqual(self.c.bind_receipt(S, receipt(REVIEWER, "task-review-2"), worktree_check=ok_worktree).phase, "review-requested")
+        self.assertEqual(self.c.bind_receipt(S, receipt(REVIEWER, "task-review-2"), REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree).phase, "review-requested")
 
     def test_other_story_cannot_bind_the_retained_owner(self):
         h = Harness(small_backlog(), allow='["OM-01.02", "OM-01.04"]', max_stories_per_run="2")
@@ -346,7 +346,8 @@ class HistoricalReconciliationTests(unittest.TestCase):
 @unittest.skipUnless(HISTORICAL.exists() and SUPPLIED.exists(), "immutable historical pre-recovery backup not present on this machine (optional replay; the generated legacy tests above are authoritative)")
 class HistoricalCopyTests(unittest.TestCase):
     """Optional, machine-specific replay against a temporary COPY of the immutable pre-recovery
-    backup. Never reads the mutable live historical run."""
+    backup. Never reads the mutable live historical run. The CI replay of the same state runs from
+    the committed scrubbed copy (``test_pr115_review_findings.HistoricalFixtureReplayTests``)."""
 
     def test_supplied_evidence_reconciles_the_historical_copy(self):
         import io

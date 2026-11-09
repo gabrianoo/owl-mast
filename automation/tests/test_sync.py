@@ -153,7 +153,7 @@ class IdempotencyAndRetryTests(unittest.TestCase):
 
     def test_duplicate_marker_is_a_conflict_on_claim_and_stays_one_on_resume(self):
         """Reviewer probe B5/E4: recovery enforces the same exactly-one-marker rule."""
-        marker = render_marker(kind="claim", op="claim", run="run-1", story="OM-01.02")
+        marker = render_marker(kind="claim", op="claim", run="run-1", inst=self.h.store.load_run().instance, story="OM-01.02")
         self.h.fake.comments[21].append(Comment(1, marker + "\nfirst", "machine", "t"))  # the trusted author's own duplicates
         self.h.fake.comments[21].append(Comment(2, marker + "\nsecond", "machine", "t"))
         with self.assertRaises(Conflict):

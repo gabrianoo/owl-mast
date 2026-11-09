@@ -30,20 +30,33 @@ class Decision:
         return {"story": self.story, "outcome": self.outcome, "reasons": list(self.reasons), "issue": self.entry_number, "dispatchable": self.dispatchable}
 
 
-def dependency_state(dep: Entry | None, dep_id: str) -> tuple[bool, str]:
-    """A dependency is satisfied only when its Project Status is Done and the issue is
-    closed as completed. Anything else, including a Done-but-open (reopened) issue, is not."""
+MET, UNMET, UNKNOWN = "met", "unmet", "unknown"
+
+
+def dependency_state(dep: Entry | None, dep_id: str) -> tuple[str, str]:
+    """``(MET | UNMET | UNKNOWN, reason)``. A dependency is met only when its Project Status is
+    Done and the issue is closed as completed. It is **unmet** when GitHub says so consistently
+    (open and not Done, or closed as not planned). Every other fact is **unknown** and fails
+    closed before any exception can admit the story over it: not in the snapshot, no Project
+    item or empty Status (an item the repository filter dropped reads the same), an unknown close
+    reason, Done but reopened, or an unreadable dependency declaration."""
     if dep is None:
-        return False, f"{dep_id}: unknown (not in snapshot)"
+        return UNKNOWN, f"{dep_id}: unknown (not in snapshot)"
+    if dep.item_id is None or dep.status is None:
+        return UNKNOWN, f"{dep_id}: no Project item or empty Status; fail closed"
+    if not dep.depends_on_known or not dep.epic_prerequisites_known:
+        return UNKNOWN, f"{dep_id}: its own declarations are not understood; fail closed"
     if dep.status == "Done" and dep.state == "CLOSED" and dep.state_reason == "COMPLETED":
-        return True, f"{dep_id}: Done and closed as completed"
-    if dep.status == "Done" and dep.state == "CLOSED" and dep.state_reason is None:
-        return False, f"{dep_id}: Done and closed but the close reason is unknown; fail closed"
+        return MET, f"{dep_id}: Done and closed as completed"
+    if dep.status == "Done" and dep.state == "CLOSED":
+        return UNKNOWN, f"{dep_id}: Done and closed but the close reason is {dep.state_reason!r}, not COMPLETED; fail closed"
     if dep.status == "Done" and dep.state == "OPEN":
-        return False, f"{dep_id}: Done but reopened (OPEN) — inconsistent, fail closed"
+        return UNKNOWN, f"{dep_id}: Done but reopened (OPEN) — inconsistent, fail closed"
     if dep.state == "CLOSED" and dep.status != "Done":
-        return False, f"{dep_id}: closed but Status {dep.status!r} (closed as not planned is not Done)"
-    return False, f"{dep_id}: Status {dep.status!r}, state {dep.state}"
+        return UNMET, f"{dep_id}: closed but Status {dep.status!r} (closed as not planned is not Done)"
+    if dep.state == "OPEN":
+        return UNMET, f"{dep_id}: Status {dep.status!r}, state {dep.state}"
+    return UNKNOWN, f"{dep_id}: Status {dep.status!r}, state {dep.state!r} is not a state this tool understands; fail closed"
 
 
 def decide(story_id: str, snapshot: Snapshot, policy: Policy) -> Decision:
@@ -82,20 +95,28 @@ def decide(story_id: str, snapshot: Snapshot, policy: Policy) -> Decision:
 
     unmet: list[str] = []
     met: list[str] = []
+    unknown: list[str] = []
 
-    def epic_complete(epic_id: str) -> tuple[bool, str]:
+    def epic_complete(epic_id: str) -> tuple[str, str]:
         if epic_id not in by_id:
-            return False, f"{epic_id}: unknown epic prerequisite"
+            return UNKNOWN, f"{epic_id}: unknown epic prerequisite"
         epic = by_id[epic_id]
         if not epic.epic_prerequisites_known:
-            return False, f"{epic_id}: its own prerequisites declaration is not understood; fail closed"
+            return UNKNOWN, f"{epic_id}: its own prerequisites declaration is not understood; fail closed"
         children = [e for e in snapshot.entries if e.kind == "story" and e.epic_id == epic_id]
         if any(not c.depends_on_known for c in children):
-            return False, f"{epic_id}: a story of this epic has an unreadable dependency declaration; fail closed"
-        incomplete = [c.stable_id for c in children if not dependency_state(c, c.stable_id)[0]]
+            return UNKNOWN, f"{epic_id}: a story of this epic has an unreadable dependency declaration; fail closed"
+        states = {c.stable_id: dependency_state(c, c.stable_id)[0] for c in children}
+        unsure = [sid for sid, st in states.items() if st == UNKNOWN]
+        if unsure:
+            return UNKNOWN, f"{epic_id}: the state of {', '.join(unsure[:4])} is unknown; fail closed"
+        incomplete = [sid for sid, st in states.items() if st != MET]
         if not children or incomplete:
-            return False, f"{epic_id}: epic prerequisite incomplete ({', '.join(incomplete[:4]) or 'no stories'})"
-        return True, f"{epic_id}: all stories Done and closed"
+            return UNMET, f"{epic_id}: epic prerequisite incomplete ({', '.join(incomplete[:4]) or 'no stories'})"
+        return MET, f"{epic_id}: all stories Done and closed"
+
+    def sort(outcome: str, text: str) -> None:
+        (met if outcome == MET else unmet if outcome == UNMET else unknown).append(text)
 
     parent = snapshot.by_number().get(entry.parent_number) if entry.parent_number else None
     if parent is None:
@@ -112,11 +133,12 @@ def decide(story_id: str, snapshot: Snapshot, policy: Policy) -> Decision:
         return Decision(story_id, "unknown-eligibility", tuple(missing), entry.number)
     for dep_id in entry.depends_on:
         dep = by_id[dep_id]
-        ok, text = epic_complete(dep_id) if dep.kind == "epic" else dependency_state(dep, dep_id)
-        (met if ok else unmet).append(text)
+        sort(*(epic_complete(dep_id) if dep.kind == "epic" else dependency_state(dep, dep_id)))
     for prereq in parent.epic_prerequisites:
-        ok, text = epic_complete(prereq)
-        (met if ok else unmet).append(text)
+        sort(*epic_complete(prereq))
+    if unknown:
+        # an unknown fact is never "unmet": it fails closed before the contract-design exception can admit the story over it
+        return Decision(story_id, "unknown-eligibility", tuple(unknown), entry.number)
     if unmet:
         if story_id in policy.contract_design_exceptions:
             return Decision(story_id, DISPATCHABLE_CONTRACT_DESIGN, tuple(["designated contract-design portion only; synthetic fixtures; production implementation and completion keep prerequisites"] + unmet), entry.number)

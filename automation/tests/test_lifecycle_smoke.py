@@ -11,7 +11,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from automation.tests import lifecycle_smoke as smoke
-from automation.tests.support import IMPLEMENTER, REVIEWER
+from automation.tests.support import IMPLEMENTER, REVIEWER, make_git_repo
 
 
 def run(*argv) -> tuple[int, dict]:
@@ -58,7 +58,13 @@ class LifecycleSmokeHelperTests(unittest.TestCase):
         self.assertEqual(len(out["checks"]["commands"]), len(smoke.DEFAULT_CHECKS))
         code, out = run("--dir", self.dir, "authorize-review", "--sha", sha)
         self.assertEqual((code, out["phase"]), (0, "review-authorized"))
+        auth_review = out["authorization"]
         code, out = run("--dir", self.dir, "bind", "--receipt", self.write("rev.json", REVIEWER), "--authorization", out["authorization"], "--source", "fixture")
+        self.assertEqual((code, out["error"]["code"]), (3, "reviewer-worktree-required"))  # a reviewer names its own checkout; the receipt's isolation string proves nothing
+        code, out = run("--dir", self.dir, "bind", "--receipt", self.write("rev.json", REVIEWER), "--worktree", str(self.dir / "worktree"), "--branch", "smoke/om-99-01", "--authorization", auth_review, "--source", "fixture")
+        self.assertEqual((code, out["error"]["code"]), (3, "reviewer-worktree-shared"))  # the implementer's worktree is not an independent review
+        make_git_repo(self.dir / "review-worktree", "smoke/om-99-01")
+        code, out = run("--dir", self.dir, "bind", "--receipt", self.write("rev.json", REVIEWER), "--worktree", str(self.dir / "review-worktree"), "--branch", "smoke/om-99-01", "--authorization", auth_review, "--source", "fixture")
         self.assertEqual((code, out["phase"]), (0, "review-requested"))
         code, out = run("--dir", self.dir, "restart")
         self.assertEqual((code, out["phase"], out["active_task"]["taskId"]), (0, "review-requested", "task-review-1"))
@@ -66,9 +72,10 @@ class LifecycleSmokeHelperTests(unittest.TestCase):
         self.assertEqual((code, out["phase"], out["approved_sha"]), (0, "review-approved", sha))
         code, status = run("--dir", self.dir, "status")
         self.assertEqual(status["evidence_class"], "fixture")  # fixture inputs never become a real smoke
-        self.assertEqual([i["source"] for i in status["inputs"]], ["fixture"] * 4)
-        self.assertEqual([i["payload"]["taskId"] for i in status["inputs"]], ["task-impl-1", "task-impl-1", "task-review-1", "task-review-1"])
-        self.assertEqual(status["comments"], ["<!-- unattended kind=claim op=claim run=smoke-run story=OM-99.01 -->"])
+        self.assertEqual([i["source"] for i in status["inputs"]], ["fixture"] * 6)  # the two refused reviewer binds were recorded too: every supplied input is kept
+        self.assertEqual([i["payload"]["taskId"] for i in status["inputs"]], ["task-impl-1", "task-impl-1", "task-review-1", "task-review-1", "task-review-1", "task-review-1"])
+        self.assertEqual(len(status["comments"]), 1)
+        self.assertRegex(status["comments"][0], r"^<!-- unattended inst=[0-9a-f]{16} kind=claim op=claim run=smoke-run story=OM-99\.01 -->$")
         self.assertEqual([e["operation"] for e in status["log"]][:3], ["prepare", "restart", "bind"])
 
     def test_cancel_needs_terminal_evidence_and_restart_replays_release(self):

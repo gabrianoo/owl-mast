@@ -420,7 +420,16 @@ class Coordinator:
         self.run = run  # a policy digest that differs from the run's binding is policy drift: a run stop (``_run_stop``), not a rebind
 
     def _policy_drift(self) -> bool:
-        return self.run.policy_digest != self.policy.digest
+        return not self.store.digest_bound(self.run.policy_digest, self.policy)
+
+    def _bound_target(self, role: str) -> Target:
+        """The target a receipt is validated against: under policy drift the targets recorded
+        when the run was created (a late receipt for a task launched under the bound policy must
+        still bind, for cleanup), otherwise the policy's."""
+        recorded = self.run.targets.get(role) if self._policy_drift() and isinstance(self.run.targets, dict) and isinstance(self.run.targets.get(role), dict) else None
+        if recorded is not None:
+            return Target(str(recorded.get("provider")), str(recorded.get("model")), {str(k): str(v) for k, v in (recorded.get("options") or {}).items()}, str(recorded.get("isolation") or ""))
+        return self.policy.implementer if role == "implementer" else self.policy.reviewer
 
     def _elapsed(self) -> timedelta:
         return datetime.fromisoformat(self._at().replace("Z", "+00:00")) - datetime.fromisoformat(self.run.started_at.replace("Z", "+00:00"))
@@ -530,10 +539,20 @@ class Coordinator:
         auth = state.unresolved_authorization()
         if auth is None or auth["purpose"] != "implementation":
             return None
-        never_returned = state.phase == "claim-incomplete" or (state.phase == "conflict" and (state.blocked or {}).get("from_phase") == "claim-incomplete")
+        # ``reserved`` is reported only once the claim race is settled (``reserve`` and ``resume`` both settle before returning),
+        # so a reservation whose race is still unsettled was never reported either: structurally nothing was launched for it
+        never_returned = state.phase == "claim-incomplete" or (state.phase == "conflict" and (state.blocked or {}).get("from_phase") == "claim-incomplete") \
+            or (state.phase in ("reserved", "conflict") and self._claim_unsettled(state))
         if not never_returned:
             return None
-        return self._resolve_not_launched(state, auth, "reservation never returned to the coordinator (claim-incomplete); the protocol launches only after reserve reports reserved", "structural")
+        return self._resolve_not_launched(state, auth, "reservation never returned to the coordinator (claim-incomplete or claim race unsettled); the protocol launches only after reserve reports reserved", "structural")
+
+    @staticmethod
+    def _claim_unsettled(state: StoryState) -> bool:
+        """True while the post-claim race check has not completed for this reservation (the flag
+        is written ``False`` with the claim and ``True`` by ``_settle_claim_race``; states written
+        before the flag existed carry no key and are read as settled)."""
+        return bool(state.claim) and state.claim.get("race_settled") is False
 
     def _apply_no_launch(self, state: StoryState, no_launch: dict, operation: str) -> dict:
         """The coordinator's explicit attestation that no task was launched for exactly the
@@ -712,17 +731,21 @@ class Coordinator:
             raise Refused(f"{gate}: worktree HEAD {head} / clean={clean} differs from the evidence at {sha}; check and review evidence invalidated", code="evidence-invalidated", head=head, clean=clean)
 
     def _trusted_author(self) -> str:
-        """The only comment author whose unattended markers count: the identity the transport
-        acts as. Anyone who can comment can copy a marker; a forged release or a copied claim from
-        another author is ignored (and journaled), never adopted."""
+        """The comment author whose unattended markers are **ours**: the identity the transport
+        acts as. Anyone who can comment can copy a marker, so only this author's markers are ever
+        adopted as our own effects or counted as duplicates of them."""
         if self._author is None:
             self._author = self.transport.viewer_login()
         return self._author
 
-    def _marked_comments(self, issue: int, story: str | None, context: str) -> list:
-        """Comments on ``issue`` carrying an unattended marker from the trusted author (for
-        ``story`` when given). A marker from another author is journaled once per comment id
-        (``foreign-marker-ignored``), never adopted and never re-reported on later reads."""
+    def _marked_comments(self, issue: int, story: str | None, context: str, trusted_only: bool = True) -> list:
+        """Comments on ``issue`` carrying an unattended marker (for ``story`` when given). Trust is
+        asymmetric and fails closed: a ``claim`` from **any** author blocks admission and takes
+        part in the claim race (``trusted_only=False`` returns them too), while a release, block,
+        proposal or probe marker from another author is ignored (it could only unblock), and no
+        other author's marker is ever adopted as ours. Markers from other authors are journaled
+        once per comment id (``foreign-claim-counted`` for a claim, ``foreign-marker-ignored`` for
+        the ignored kinds) and never re-reported on later reads."""
         author = self._trusted_author()
         trusted, foreign = [], []
         for c in self.transport.list_comments(issue):
@@ -732,33 +755,68 @@ class Coordinator:
             (trusted if c.author == author else foreign).append(c)
         if foreign:
             if self._foreign_reported is None:
-                self._foreign_reported = {int(c["id"]) for e in self.store.read_journal() if e.get("event") == "foreign-marker-ignored" for c in (e.get("detail") or {}).get("comments", []) if isinstance(c, dict) and "id" in c}
-            new = [c for c in foreign if c.comment_id not in self._foreign_reported]
-            if new:
-                self.store.journal(story, "foreign-marker-ignored", {"context": context, "issue": issue, "trusted_author": author, "comments": [{"id": c.comment_id, "author": c.author, "marker": c.marker} for c in new]})
-                self._foreign_reported.update(c.comment_id for c in new)
-        return trusted
+                self._foreign_reported = {int(c["id"]) for e in self.store.read_journal() if e.get("event") in ("foreign-marker-ignored", "foreign-claim-counted") for c in (e.get("detail") or {}).get("comments", []) if isinstance(c, dict) and "id" in c}
+            for event, is_claim in (("foreign-claim-counted", True), ("foreign-marker-ignored", False)):
+                new = [c for c in foreign if c.comment_id not in self._foreign_reported and (c.marker.get("kind") == "claim") is is_claim]
+                if new:
+                    effect = "counts as a foreign claim (fail closed)" if is_claim else "never adopted as ours; clears only a claim posted by the same author and run"
+                    self.store.journal(story, event, {"context": context, "issue": issue, "trusted_author": author, "effect": effect, "comments": [{"id": c.comment_id, "author": c.author, "marker": c.marker} for c in new]})
+                    self._foreign_reported.update(c.comment_id for c in new)
+        if trusted_only:
+            return trusted
+        return trusted + foreign  # every author's markers, for the claim pairing in ``_active_foreign_claims``
+
+    def _own_marker(self, m: dict) -> bool:
+        """A marker this run directory wrote: same run id and our instance nonce. Only a run that
+        itself predates the nonce (``run.json`` without ``instance``) reads a marker without
+        ``inst`` as its own; a run with a nonce treats every marker without one, or with another
+        one, as another coordinator's, so sharing a run id with a pre-nonce coordinator is not
+        a way to adopt its claim."""
+        return m.get("run") == self.store.run_id and m.get("inst") == self.run.instance
+
+    def _same_effect(self, comment, intent: Intent) -> bool:
+        """The comment carries exactly this intent's marker, nonce included (a legacy run has no
+        nonce on either side)."""
+        return dict(comment.marker or {}) == dict(intent.marker)
 
     def _active_foreign_claims(self, issue: int, story: str, context: str = "admission") -> list[dict]:
-        """Claims by other runs (trusted author only) that no later release, block or proposal
-        of that run cleared. Each entry carries the marker, the comment id and its creation time."""
-        claims: dict[str, dict] = {}
-        released: set[str] = set()
-        for c in self._marked_comments(issue, story, context):
+        """Claims by other coordinators that no later release, block or proposal **by the same
+        author, run and instance** cleared. A claim counts whoever posted it (fail closed), and
+        another author's release can clear only that author's own claim, never one of ours or of
+        a third identity; a run id equal to ours with another instance nonce is another
+        coordinator. Each entry carries the marker, the comment id, its author and creation time."""
+        claims: dict[tuple, dict] = {}
+        released: set[tuple] = set()
+        author = self._trusted_author()
+        for c in self._marked_comments(issue, story, context, trusted_only=False):
             m = c.marker
-            run = m.get("run", "")
+            key = (m.get("run", ""), m.get("inst"), c.author)
             if m.get("kind") == "claim":
-                claims[run] = {**m, "comment_id": c.comment_id, "created_at": c.created_at}
+                claims[key] = {**m, "comment_id": c.comment_id, "created_at": c.created_at, "author": c.author}
             elif m.get("kind") in ("release", "block", "proposal"):
-                released.add(run)
-        return [m for run, m in claims.items() if run != self.store.run_id and run not in released]
+                released.add(key)
+        return [m for key, m in claims.items() if not (key[2] == author and self._own_marker(m)) and key not in released]
+
+    def _claims_elsewhere(self, snapshot: Snapshot, story: str) -> dict[str, list[dict]]:
+        """Active claims by any other coordinator on any other allowlisted story: the GitHub-side
+        single-active-story check across state directories and machines (budgets are local)."""
+        found: dict[str, list[dict]] = {}
+        by_id = snapshot.by_id()
+        for sid in self.policy.allow:
+            entry = by_id.get(sid)
+            if sid == story or entry is None:
+                continue
+            claims = self._active_foreign_claims(entry.number, sid, "admission scan")
+            if claims:
+                found[sid] = claims
+        return found
 
     def _new_intent(self, state: StoryState, op: str, kind: str, body: str, preconditions: dict | None = None, **extra: str) -> Intent:
         """Record the complete effect (identity, marker and exact body) before attempting it."""
         existing = state.intent(op)
         if existing is not None:
             return existing
-        marker = {"kind": kind, "run": self.store.run_id, "story": state.story, "op": op, **extra}
+        marker = {"kind": kind, "run": self.store.run_id, "story": state.story, "op": op, **({"inst": self.run.instance} if self.run.instance else {}), **extra}
         intent = Intent(op, kind, marker, body=f"{render_marker(**marker)}\n{body}", preconditions=preconditions or {})
         state.intents.append(intent)
         return intent
@@ -777,10 +835,10 @@ class Coordinator:
             return intent
         if intent.status == "abandoned":
             raise Refused(f"{intent.op} for {state.story} was abandoned: {intent.reason}")
-        found = [c for c in self._marked_comments(state.issue, state.story, f"post {intent.op}") if c.marker == intent.marker]
+        found = [c for c in self._marked_comments(state.issue, state.story, f"post {intent.op}") if self._same_effect(c, intent)]
         if not found:
             posted = self.transport.post_comment(state.issue, intent.body)
-            found = [c for c in self._marked_comments(state.issue, state.story, f"post {intent.op}") if c.marker == intent.marker]
+            found = [c for c in self._marked_comments(state.issue, state.story, f"post {intent.op}") if self._same_effect(c, intent)]
             self.store.journal(state.story, "comment-posted", {"op": intent.op, "comment_id": posted.comment_id})
             if not found:
                 raise Conflict(f"comment {intent.op} was posted (id {posted.comment_id}) but is not readable back", comment_id=posted.comment_id)
@@ -832,8 +890,11 @@ class Coordinator:
             foreign = self._active_foreign_claims(entry.number, story)
             if foreign:
                 raise Refused(f"{story} is claimed by another run: {foreign}", foreign=foreign)
+            elsewhere = self._claims_elsewhere(fresh, story)
+            if elsewhere:
+                raise Refused(f"another coordinator still holds an active claim on a story of this policy's allowlist: {elsewhere}; one active story at a time across every state directory and machine, so nothing is admitted until those claims are released, blocked or proposed by their own run", code="claim-active-elsewhere", claims=elsewhere)
             state = StoryState(story=story, issue=entry.number, item_id=entry.item_id, phase="claim-incomplete", run_id=self.store.run_id,
-                               claim={"baseline_sha": baseline_sha, "reserved_at": self.now(), "scope": decision.outcome, "worktree_path": None, "branch": None},
+                               claim={"baseline_sha": baseline_sha, "reserved_at": self.now(), "scope": decision.outcome, "worktree_path": None, "branch": None, "race_settled": False},
                                revisions=current)
             auth = self._authorize(state, "implementation")  # refuses before any save or post when the task budget is spent
             intent = self._new_intent(state, "claim", "claim", f"Unattended reservation by run `{self.store.run_id}` from `{baseline_sha}` (scope: {decision.outcome}). An implementer task is delegated only after this reservation; its receipt is bound to the reservation. Project Status is owner-maintained; completion still requires checks, independent review and owner acceptance.", {"revisions": current})
@@ -850,13 +911,27 @@ class Coordinator:
         the claims are read again and the earliest one wins (creation time, then comment id).
         A later claimant cancels itself in the same operation: its unlaunched authorization is
         resolved structurally (``reserve`` never reported ``reserved``, so no task exists), the
-        release it owes is posted and the call refuses ``claim-race-lost``."""
+        release it owes is posted and the call refuses ``claim-race-lost``.
+
+        The outcome is durable: ``claim.race_settled`` stays ``False`` until the re-read
+        succeeded, so a transport failure or a crash here leaves a reservation that ``resume``
+        settles before anything may bind to it (``bind-receipt`` refuses ``claim-race-unsettled``
+        until then). A claim comment that cannot be read back is ``conflict``, never ``reserved``."""
+        if not self._claim_unsettled(state):
+            return  # settled by an earlier operation; states written before the flag are read as settled
         mine = next((c for c in self._marked_comments(issue, state.story, "claim race") if c.comment_id == claim.comment_id), None)
         if mine is None:
-            raise Conflict(f"claim comment {claim.comment_id} of {state.story} is no longer readable after posting", comment_id=claim.comment_id)
+            state.blocked = {"reason": f"claim comment {claim.comment_id} is not readable back after posting; the claim race cannot be settled", "at": self.now(), "from_phase": state.phase, "conflict": True, "race_unsettled": True}
+            state.phase = "conflict"
+            self.store.save_story(state)
+            self.store.journal(state.story, "claim-unverifiable", {"comment_id": claim.comment_id})
+            raise Conflict(f"claim comment {claim.comment_id} of {state.story} is no longer readable after posting; the story is in conflict, nothing may be launched for it", code="claim-unverifiable", comment_id=claim.comment_id)
         foreign = self._active_foreign_claims(issue, state.story, "claim race")
         earlier = sorted((m for m in foreign if (m["created_at"], m["comment_id"]) < (mine.created_at, mine.comment_id)), key=lambda m: (m["created_at"], m["comment_id"]))
         if not earlier:
+            state.claim["race_settled"] = True
+            self.store.save_story(state)
+            self.store.journal(state.story, "claim-race-settled", {"ours": {"comment_id": mine.comment_id, "created_at": mine.created_at}, "later_claims": len(foreign)})
             return
         winner = earlier[0]
         reason = f"lost the claim race for {state.story} to run {winner.get('run')} (comment {winner['comment_id']} at {winner['created_at']} precedes ours, {mine.comment_id} at {mine.created_at})"
@@ -866,6 +941,7 @@ class Coordinator:
             resolved.append(self._resolve_not_launched(state, auth, "reservation lost the claim race before reserve returned; the protocol launches only after reserve reports reserved", "structural")["id"])
         abandoned = state.abandon_advancing_intents(reason)
         state.phase = "cancelled"
+        state.claim["race_settled"] = True
         state.blocked = {"reason": reason, "at": self.now(), "from_phase": "reserved", "cancelled": True, "conflict": True, "winner": winner, "abandoned_intents": abandoned, "authorizations_resolved": resolved}
         release = self._new_intent(state, "release", "release", f"Claim released by run `{self.store.run_id}`: {reason}. No completion is implied. Project Status is owner-maintained.")
         self.store.save_story(state)  # cancellation, the owed release and the resolution persist together
@@ -917,7 +993,9 @@ class Coordinator:
             else:
                 self._require_phase(state, issued_phase)
             self._require_no_active_task(state, "bind-receipt")
-            target: Target = self.policy.implementer if role == "implementer" else self.policy.reviewer
+            if auth["purpose"] == "implementation" and self._claim_unsettled(state):
+                raise Refused(f"bind-receipt: the claim race of {story} is not settled (the reservation's re-read failed or the process died before it); run resume first, which settles it or cancels the reservation; nothing should have been launched for it", code="claim-race-unsettled")
+            target: Target = self._bound_target(role)  # under policy drift: the targets the run was created with, so a late receipt still binds for cleanup
             retained = state.owner_task() if auth["purpose"] == "repair" else None  # only the story's own implementer may be re-run, only for a repair
             if retained and str(receipt.get("taskId", "")) == retained:
                 if state.legacy_task_only_history(retained):
@@ -928,6 +1006,16 @@ class Coordinator:
             if auth["purpose"] == "implementation":
                 if not worktree_path or not branch:
                     raise Refused("bind-receipt for the implementation task needs --worktree and --branch")
+            elif auth["purpose"] == "review":
+                # review evidence must come from a checkout independent of the tree under review: the reviewer's own
+                # worktree is named, verified, and refused when it is the implementer's (a self-reported "worktree" proves nothing)
+                if not worktree_path or not branch:
+                    raise Refused("bind-receipt for the review task needs --worktree and --branch naming the reviewer's own checkout (isolation is verified, not taken from the receipt)", code="reviewer-worktree-required")
+                claimed = (state.claim or {}).get("worktree_path")
+                if claimed:
+                    theirs, ours = Path(worktree_path).resolve(), Path(claimed).resolve()
+                    if theirs == ours or theirs.is_relative_to(ours) or ours.is_relative_to(theirs):
+                        raise Refused(f"bind-receipt: the reviewer worktree {worktree_path} is, or is nested with, the implementer's claimed worktree {claimed}; a review in the tree under review is not independent", code="reviewer-worktree-shared", worktree=worktree_path, claimed=claimed)
             else:
                 worktree_path, branch = state.claim["worktree_path"], state.claim["branch"]
             ok, why = worktree_check(worktree_path, branch)
@@ -940,7 +1028,7 @@ class Coordinator:
             if role == "implementer":
                 state.implementer_receipts.append(record)
             else:
-                state.reviewer_receipts.append({**record, "sha": auth["sha"]})  # the exact commit this reviewer was authorized for
+                state.reviewer_receipts.append({**record, "sha": auth["sha"], "worktree": worktree_path, "branch": branch, "head_at_bind": git_head(worktree_path)})  # the exact commit this reviewer was authorized for, the independent checkout it reviewed in, and what that checkout read at binding (observed, not asserted: the reviewer checks the SHA out itself)
             state.active_task = {"taskId": receipt["taskId"], "runId": receipt["runId"], "role": role, "authorization": auth["id"], "bound_at": self.now(), "retained": receipt["retained"]}
             cleanup = stop or ("authorization-revoked" if revoked else None)
             if cleanup:
@@ -1363,7 +1451,10 @@ class Coordinator:
             self.store.save_run(self.run)
             self.store.journal(None, "run-cancelled", {"reason": reason})
             released, awaiting = [], []
-            for s in self.store.list_stories():
+            stories, unreadable = self.store.list_stories_tolerant()  # one corrupt file never aborts the release of the others
+            for u in unreadable:
+                awaiting.append({"story": u["story"], "task_id": None, "role": None, "authorization": None, "code": u["code"], "error": u["error"]})
+            for s in stories:
                 if not (s.active or s.phase == "conflict"):
                     continue
                 try:
@@ -1374,15 +1465,16 @@ class Coordinator:
             return {"cancelled": released, "awaiting_worker_termination": awaiting}
 
     # -- recovery -------------------------------------------------------------------------
-    def _cancel_stale_claim(self, state: StoryState, claim: Intent, changed: dict) -> StoryState:
+    def _cancel_stale_claim(self, state: StoryState, claim: Intent, changed: dict, why: str | None = None) -> StoryState:
         """The reservation can no longer complete: its revisions changed before it was
-        checkpointed. The story is cancelled and, when the claim comment reached GitHub (one
-        or more markers), the release it owes is recorded as a cleanup intent in the same
-        write as the cancellation, then posted idempotently; a failed post leaves it pending
-        and the next resume replays it. Zero markers ⇒ the claim never landed, no release is
-        owed. A done claim keeps its ``done`` record (history); a pending one is abandoned."""
-        reason = f"revisions changed before the reservation completed: {sorted(changed)}"
-        found = [c for c in self._marked_comments(state.issue, state.story, "stale claim") if c.marker == claim.marker]
+        checkpointed (or, ``why``, another admission precondition no longer holds). The story is
+        cancelled and, when the claim comment reached GitHub (one or more markers), the release
+        it owes is recorded as a cleanup intent in the same write as the cancellation, then
+        posted idempotently; a failed post leaves it pending and the next resume replays it.
+        Zero markers ⇒ the claim never landed, no release is owed. A done claim keeps its
+        ``done`` record (history); a pending one is abandoned."""
+        reason = f"{why or 'revisions changed'} before the reservation completed: {sorted(changed)}"
+        found = [c for c in self._marked_comments(state.issue, state.story, "stale claim") if self._same_effect(c, claim)]
         resolved = self._settle_authorizations(state, "cancelled", reason, None)  # the reservation never returned: structurally no launch
         abandoned = state.abandon_advancing_intents(reason)
         state.phase = "cancelled"
@@ -1447,6 +1539,13 @@ class Coordinator:
                     if changed:
                         return self._cancel_stale_claim(state, claim, changed)
                     self._post_intent(state, claim, phase_after="reserved")
+                    self._settle_claim_race(state, claim, state.issue)
+            if claim is not None and claim.status == "done" and state.phase == "reserved" and self._claim_unsettled(state):
+                # the reservation posted its claim but the race re-read failed or the process died: settle it now (a lost race cancels and releases)
+                if stop:
+                    self._withhold_reconciliation(state, claim, STOP_REASONS[stop] + " (claim race unsettled; cancel-run finishes the story)")
+                else:
+                    self._settle_claim_race(state, claim, state.issue)
             for intent in state.intents:
                 if intent.kind != "proposal" or intent.status != "done" or state.phase == "proposed":
                     continue
@@ -1484,8 +1583,12 @@ class Coordinator:
                     changed = revision_diff(intent.preconditions.get("revisions", state.revisions), current)
                     if changed:
                         return self._cancel_stale_claim(state, intent, changed)
+                    elsewhere = self._claims_elsewhere(fresh, story)  # the same admission check as a fresh reserve, before the claim is posted
+                    if elsewhere:
+                        return self._cancel_stale_claim(state, intent, {f"claim elsewhere on {sid}": c for sid, c in elsewhere.items()}, why="another coordinator claimed another allowlisted story before this reservation completed")
                     self._post_intent(state, intent, phase_after="reserved" if state.phase == "claim-incomplete" else None)
                     self.store.journal(story, "reservation-completed-on-resume", {})
+                    self._settle_claim_race(state, intent, state.issue)
                 elif intent.kind == "proposal":
                     sha = intent.preconditions["sha"]
                     unresolved = state.unresolved_authorization()
@@ -1533,7 +1636,9 @@ class Coordinator:
         changed or malformed source, a foreign or malformed record refuse structurally."""
         with self.operation():
             self.require_activation("status", advancing=False)
-            counts = self._counts()
-            return {"run": self.run.__dict__, "budgets": counts, "environment": self.environment, "stories": [s.to_dict() for s in self.store.list_stories()], "journal_events": self.store.journal_count(), "live": self.live,
+            stories, unreadable = self.store.list_stories_tolerant()  # the recovery overview survives one corrupt file and names it; advancing operations stay strict
+            counts = self.store.story_counts(stories)
+            self.run.stories_claimed, self.run.delegated_tasks, self.run.repair_rounds = counts["stories_claimed"], counts["delegated_tasks"], counts["repair_rounds"]
+            return {"run": self.run.__dict__, "budgets": {**counts, "unreadable_stories": len(unreadable), "partial": bool(unreadable)}, "environment": self.environment, "stories": [s.to_dict() for s in stories] + [{"story": u["story"], "error": u["code"], "detail": u["error"]} for u in unreadable], "unreadable_stories": unreadable, "journal_events": self.store.journal_count(), "live": self.live,
                     "stop": self._run_stop(), "policy_drift": {"bound_digest": self.run.policy_digest, "policy_digest": self.policy.digest} if self._policy_drift() else None,
                     "other_runs_with_active_stories": self.store.other_runs_with_active_stories(), "activation": {"recorded": self.run.activation, "recorded_stop": self.run.activation_stop, "presented": self.activation.binding() if self.activation else None, "stop": self._activation_stop(), "problems": [m for _, m in self._activation_problems()] if self.environment == "live" else []}, "agreement": OPERATING_AGREEMENT, "gaps": list(LIVE_EXECUTION_GAPS)}

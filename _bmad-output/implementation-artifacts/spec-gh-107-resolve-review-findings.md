@@ -35,7 +35,7 @@ context: []
   - 12 / 4513633021 eligibility: an unknown dependency or epic prerequisite is `unknown-eligibility` before the contract-design exception.
   - 13–16 / 4513633025, 4513633035, 4513633042, 4513633054 policy typing: strict `_bool`/`_int`/`_strings` helpers (`type(v) is int`, no coercion), sections must be tables, timeouts ≥ 1, `commands`/`allow` must be arrays of strings; every failure is a `PolicyError` problem.
   - 17 / 4513633060 reviewer isolation: `targets.reviewer.isolation` must be `worktree`; policy files, the activation candidate, test receipts and the committed legacy fixtures (regenerated from `bb4c3ee` with the new policy text) follow.
-  - 18 / 4513633069 CLI contract: `_load_json_arg` raises `input-invalid`; `main` ends with `except Exception` → `{"error": {"code": "internal", ...}}`, exit 3.
+  - 18 / 4513633069 CLI contract: `_load_json_arg` raises `input-invalid`; `main` ends with `except Exception` → `{"error": {"code": "internal", ...}}`, exit 4 (3 stays the refusal code; corrected 2026-11-09 after the PR #115 review, see the triage log).
   - 19 / 4513633074 snapshot: `_snapshot` also catches `TypeError`.
   - 20 / 4513633080 org Projects: queries go through `repositoryOwner(login:) { ... on ProjectV2Owner { projectV2 } }`; a null owner or project is `NotFound`; `check-permissions` uses the same query.
   - 21 / 4513633090 torn journal: append terminates a torn last line first; `read_journal` reports an unparsable line as `journal-torn-line` instead of raising.

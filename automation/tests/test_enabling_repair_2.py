@@ -21,7 +21,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from automation.tests.support import IMPLEMENTER, REVIEWER, controlled_cli_clock, ok_worktree, passing_runner
+from automation.tests.support import IMPLEMENTER, REVIEWER, REVIEW_BRANCH, REVIEW_WORKTREE, controlled_cli_clock, ok_worktree, passing_runner
 from automation.tests.test_activation import S, T0, LiveHarness, activation_text
 from automation.tests.test_enabling_repair_1 import claimed, refuses
 from automation.unattended import cli
@@ -78,7 +78,7 @@ class F1ForeignRunRecordTests(unittest.TestCase):
     def test_same_instance_consumers_refuse_on_the_fresh_locked_reload(self):
         c = self.c
         for op in (lambda: c.cancel(S, "recovery", self.h.terminal()), lambda: c.cancel_run("recovery"), lambda: c.block(S, "x", self.h.terminal()),
-                   lambda: c.record_task_terminal(S, self.h.terminal()), lambda: c.bind_receipt(S, REVIEWER, worktree_check=ok_worktree),
+                   lambda: c.record_task_terminal(S, self.h.terminal()), lambda: c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree),
                    lambda: c.resume(S, ok_worktree), lambda: c.record_head(S, self.h.h.sha, self.h.terminal()), lambda: c.status(),
                    lambda: c.reserve("OM-01.03", self.h.h.snapshot, "base")):
             refuses(self, op, "run-identity-mismatch")
@@ -102,7 +102,7 @@ class F1ForeignRunRecordTests(unittest.TestCase):
         self.story_before = story_bytes(self.h)
         refuses(self, lambda: self.h.coordinator(activation=None), "run-identity-mismatch")
         refuses(self, lambda: self.c.resume(S, ok_worktree), "run-identity-mismatch")
-        refuses(self, lambda: self.c.bind_receipt(S, REVIEWER, worktree_check=ok_worktree), "run-identity-mismatch")
+        refuses(self, lambda: self.c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree), "run-identity-mismatch")
         self.unchanged()
 
     def test_cli_reports_the_structured_refusal_without_calls(self):
@@ -148,7 +148,7 @@ class F2PersistedTemporalFactsTests(unittest.TestCase):
         refuses(self, lambda: self.h.coordinator(), code)
         refuses(self, self.store.bound_run, code)
         ops = [lambda: self.c.cancel(S, "recovery", self.h.terminal()), lambda: self.c.cancel_run("recovery"), lambda: self.c.record_head(S, self.h.h.sha, self.h.terminal()),
-               lambda: self.c.status(), lambda: self.c.resume(S, ok_worktree), lambda: self.c.bind_receipt(S, REVIEWER, worktree_check=ok_worktree), lambda: self.c.record_task_terminal(S, self.h.terminal())]
+               lambda: self.c.status(), lambda: self.c.resume(S, ok_worktree), lambda: self.c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree), lambda: self.c.record_task_terminal(S, self.h.terminal())]
         for op in ops:
             refuses(self, op, code)
         self.assertEqual(self.store.run_path.read_bytes(), run_before, "malformed metadata was rewritten or replaced")

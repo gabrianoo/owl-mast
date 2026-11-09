@@ -60,7 +60,7 @@ class EligibilityTests(unittest.TestCase):
         closed = self.fake.issues[20]
         self.fake.issues[20] = IssueRecord(**{**closed.__dict__, "state": "OPEN", "closed_at": None, "state_reason": None})
         d = decide("OM-01.02", self.snap(), self.policy(allow='["OM-01.02"]'))
-        self.assertEqual(d.outcome, "blocked-by-dependency")
+        self.assertEqual(d.outcome, "unknown-eligibility")  # an inconsistent dependency is an unknown fact, not an unmet one (no exception may admit over it)
         self.assertIn("reopened", d.reasons[0])
 
     def test_closed_as_not_planned_is_not_done(self):
@@ -76,10 +76,10 @@ class EligibilityTests(unittest.TestCase):
         closed = self.fake.issues[20]
         self.fake.issues[20] = IssueRecord(**{**closed.__dict__, "state_reason": None})
         d = decide("OM-01.02", self.snap(), self.policy(allow='["OM-01.02"]'))
-        self.assertEqual(d.outcome, "blocked-by-dependency")
-        self.assertIn("unknown", d.reasons[0])
+        self.assertEqual(d.outcome, "unknown-eligibility")  # a Done-and-closed dependency without the COMPLETED reason is unknown, never merely unmet
+        self.assertIn("not COMPLETED", d.reasons[0])
         self.fake.issues[20] = IssueRecord(**{**closed.__dict__, "state_reason": "DUPLICATE"})
-        self.assertEqual(decide("OM-01.02", self.snap(), self.policy(allow='["OM-01.02"]')).outcome, "blocked-by-dependency")
+        self.assertEqual(decide("OM-01.02", self.snap(), self.policy(allow='["OM-01.02"]')).outcome, "unknown-eligibility")
 
     def test_reopened_story_itself_is_inconsistent(self):
         self.fake.set_status_externally(21, "Done")

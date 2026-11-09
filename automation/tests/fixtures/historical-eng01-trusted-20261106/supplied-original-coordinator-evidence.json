@@ -1,0 +1,24 @@
+{
+  "provenance": "User supplied original-coordinator read-only investigation; no fresh task was created. These fields describe its ordinal5 snapshot, not a current task_status query.",
+  "taskId": "node:delegated-task:command%3Amcp%3Af7c3c131-c18d-4868-98ee-f6b69abfd21c%3Adelegate-task%3Aowl-unattended-foundation-implementation-20261106",
+  "threadId": "thread:delegated-task:command%3Amcp%3Af7c3c131-c18d-4868-98ee-f6b69abfd21c%3Adelegate-task%3Aowl-unattended-foundation-implementation-20261106",
+  "runId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Af7c3c131-c18d-4868-98ee-f6b69abfd21c%253Adelegate-task%253Aowl-unattended-foundation-implementation-20261106:ordinal:5",
+  "run_status": "completed",
+  "startedAt": "2026-11-06T22:58:39.527Z",
+  "completedAt": "2026-11-06T23:00:54.928Z",
+  "providerInstanceId": "claudeAgent",
+  "model": "claude-fable-5-1",
+  "options": {
+    "effort": "high"
+  },
+  "result_sha": "313087f056bdbaeb59296eeab3b1a68a114c0013",
+  "task_status_snapshot": {
+    "taskId": "node:delegated-task:command%3Amcp%3Af7c3c131-c18d-4868-98ee-f6b69abfd21c%3Adelegate-task%3Aowl-unattended-foundation-implementation-20261106",
+    "workState": "result_available",
+    "hasPendingChildRuns": false,
+    "latestTerminalStatus": "completed",
+    "latestTerminalRunId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Af7c3c131-c18d-4868-98ee-f6b69abfd21c%253Adelegate-task%253Aowl-unattended-foundation-implementation-20261106:ordinal:5",
+    "childRunId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Af7c3c131-c18d-4868-98ee-f6b69abfd21c%253Adelegate-task%253Aowl-unattended-foundation-implementation-20261106:ordinal:1"
+  },
+  "historical_authorization": "eng01-trusted-20261106:OM-99.01:3"
+}

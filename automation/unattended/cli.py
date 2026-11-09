@@ -61,8 +61,18 @@ def _snapshot(args, transport, policy) -> Snapshot:
     return take_snapshot(transport, policy.repo_slug, utcnow())
 
 
+class _Parser(argparse.ArgumentParser):
+    """Argument errors stay inside the JSON error contract (``input-invalid``, exit 3) instead of
+    argparse's usage text and exit 2, which is the exit code of a *negative result* (``probe-write``
+    not idempotent, ``plan``/``check-activation`` with problems) and must not be shared with a
+    malformed call. ``--help`` still prints the usage and exits 0."""
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        raise UnattendedError(f"invalid arguments: {message}", code="input-invalid", usage=self.format_usage().strip())
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="python3 -m automation.unattended", description=__doc__)
+    p = _Parser(prog="python3 -m automation.unattended", description=__doc__)
     p.add_argument("--policy", default="automation/policy.toml")
     p.add_argument("--state-dir", default=".unattended-runs")
     p.add_argument("--run-id", default=None, help="run identifier (required for state commands)")
@@ -70,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--snapshot", default=None, help="use a saved snapshot JSON instead of reading GitHub")
     p.add_argument("--live", action="store_true", help="allow GitHub writes (reserve, authorize-repair, block, cancel, cancel-run, resume, rebase-revisions, probe-write)")
     p.add_argument("--activation", default=None, help="run-bound activation authorization TOML (see automation/examples/activation-om-01-02.candidate.toml); required on the real transport to create a live run and for every admitting/advancing command; cleanup and status of a run activated earlier work on its recorded binding without it; the shipped candidate is unapproved and refuses")
-    sub = p.add_subparsers(dest="command", required=True)
+    sub = p.add_subparsers(dest="command", required=True, parser_class=_Parser)
 
     sub.add_parser("snapshot", help="read-only normalized backlog snapshot").add_argument("--out", default=None)
     vm = sub.add_parser("verify-mapping", help="read-only mapping verification (19/85/340, relationships)")
@@ -87,7 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_help = "JSON for the ACTIVE execution: normalized {taskId, runId, status} or task_status-shaped {taskId, workState: result_available, hasPendingChildRuns: false, latestTerminalRunId, latestTerminalStatus} (childRunId/status/summary are stale and ignored); interrupted/failed/cancelled are terminal for release/cleanup only, never a success: only a completed/result_available record of the bound (task, run), in the relevant role and linked to the selected authorization, lets record-head/run-checks/authorize-review/authorize-repair/record-review/propose-evidence/resume advance, on the direct path, after record-task-terminal, after an upgrade and on restart"
     rv0 = sub.add_parser("reserve", help="admit a dispatchable story and authorize its implementer task BEFORE delegating it")
     rv0.add_argument("story"); rv0.add_argument("--baseline", required=True)
-    bd = sub.add_parser("bind-receipt", help="bind the delegated task receipt to the exact authorization its task was launched for (implementation needs --worktree/--branch)")
+    bd = sub.add_parser("bind-receipt", help="bind the delegated task receipt to the exact authorization its task was launched for (implementation and review receipts need --worktree/--branch: the task's own checkout; a reviewer in the implementer's worktree is refused)")
     bd.add_argument("story"); bd.add_argument("--receipt", required=True); bd.add_argument("--worktree", default=None); bd.add_argument("--branch", default=None)
     bd.add_argument("--authorization", default=None, help="id of the authorization the task was launched for (from reserve / authorize-review / authorize-repair); must match the story's unresolved authorization")
     rt = sub.add_parser("record-task-terminal", help="release the active task with its terminal evidence; changes nothing else"); rt.add_argument("story"); rt.add_argument("--task-evidence", required=True, help=evidence_help)
@@ -111,8 +121,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
     try:
+        args = build_parser().parse_args(argv)  # inside the contract: a malformed call is one JSON document with exit 3, never usage text with exit 2
         policy = load_policy(Path(args.policy))
         activation = load_activation(Path(args.activation)) if args.activation else None
         if args.command == "check-activation":

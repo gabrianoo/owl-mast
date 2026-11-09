@@ -16,7 +16,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from automation.tests.fake_transport import small_backlog
-from automation.tests.support import IMPLEMENTER, REVIEWER, ROOT, Harness, ok_worktree, passing_runner, write_policy
+from automation.tests.support import Harness, IMPLEMENTER, REVIEWER, REVIEW_BRANCH, REVIEW_WORKTREE, ROOT, ok_worktree, passing_runner, write_policy
 from automation.unattended import cli
 from automation.unattended.activation import Activation, load_activation
 from automation.unattended.coordinator import Coordinator
@@ -175,7 +175,7 @@ class AdmissionTests(unittest.TestCase):
         c.record_head(S, self.lh.h.sha, self.lh.terminal())
         c.run_checks(S, self.lh.h.sha, str(self.lh.h.worktree), passing_runner)
         c.authorize_review(S, self.lh.h.sha)
-        c.bind_receipt(S, REVIEWER, worktree_check=ok_worktree)
+        c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
         state = c.record_review(S, self.lh.h.sha, "approved", "report.md", self.lh.terminal())
         self.assertEqual(state.phase, "review-approved")
         status = c.status()
@@ -291,7 +291,7 @@ class ExpiryAndCleanupTests(unittest.TestCase):
         c.authorize_review(S, self.lh.h.sha)  # the reviewer may already have been launched
         self.expire()
         with self.assertRaises(BudgetExhausted) as ctx:
-            c.bind_receipt(S, REVIEWER, worktree_check=ok_worktree)
+            c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
         self.assertEqual(ctx.exception.code, "activation-expired")
         self.assertTrue(ctx.exception.detail["bound_for_cleanup"])
         state = self.store.load_story(S)

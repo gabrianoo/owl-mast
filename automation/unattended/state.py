@@ -28,6 +28,7 @@ import json
 import os
 import re
 import tempfile
+import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
@@ -37,13 +38,15 @@ from .activation import Activation, refresh_activation, validate_binding, valida
 from .errors import Refused
 
 # A run id names a directory under the state dir and a marker value: one path segment, no
-# separators, no leading dot, at most 64 characters.
-RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+# separators, no leading dot, at most 64 characters, lowercase only (state dirs may live on a
+# case-insensitive filesystem, where ``Run-1`` and ``run-1`` would share one directory but write
+# different marker values) and never ``--`` (a marker value cannot carry it).
+RUN_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
 def validate_run_id(run_id) -> str:
-    if not isinstance(run_id, str) or not RUN_ID_RE.match(run_id) or run_id in (".", "..") or ".." in run_id.split("."):
-        raise Refused(f"run id {run_id!r} is invalid: one path segment of [A-Za-z0-9._-] (1..64 characters, starting with a letter or digit)", code="run-id-invalid", run_id=str(run_id))
+    if not isinstance(run_id, str) or not RUN_ID_RE.match(run_id) or run_id in (".", "..") or "--" in run_id:
+        raise Refused(f"run id {run_id!r} is invalid: one path segment of lowercase [a-z0-9._-] (1..64 characters, starting with a letter or digit, no '--')", code="run-id-invalid", run_id=str(run_id))
     return run_id
 
 PHASES = ("claim-incomplete", "reserved", "claimed", "implemented", "checks-passed", "checks-failed", "review-authorized", "review-requested", "review-approved", "changes-requested", "repair-authorized", "proposed", "blocked", "cancelled", "conflict")
@@ -80,8 +83,27 @@ def fsync_directory(path: Path) -> None:
         os.close(fd)
 
 
+def ensure_directory(path: Path) -> None:
+    """``mkdir -p`` whose new directory entries are durable: every directory created here is
+    fsynced in its parent (top-down), so a power loss cannot drop a new run or stories directory
+    whose first checkpoint, or whose claim comment, already exists."""
+    path = Path(path)
+    missing: list[Path] = []
+    probe = path
+    while not probe.exists():
+        missing.append(probe)
+        if probe.parent == probe:
+            break
+        probe = probe.parent
+    if not missing:
+        return
+    path.mkdir(parents=True, exist_ok=True)
+    for created in reversed(missing):  # top-down: a parent's entry before its child's
+        fsync_directory(created.parent)
+
+
 def atomic_write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
     fd, tmp = tempfile.mkstemp(prefix=path.name, suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -117,6 +139,8 @@ class RunState:
     activation: dict | None = None  # live runs only: the activation binding record (activation.BINDING_RECORD_KEYS) the run was created under
     last_observed_at: str | None = None  # live runs only: the latest injected/current time an operation observed under the lock (clock-regression high-water)
     activation_stop: dict | None = None  # live runs only: a durable observed stop {code, observed_at, message}; once recorded the run never advances again, whatever the clock says
+    instance: str | None = None  # this run directory's nonce, carried as ``inst`` in its markers: two coordinators that share a run id (two machines, two state dirs) are still told apart; absent on runs created before it existed
+    targets: dict | None = None  # the policy targets (implementer, reviewer) the run was created under; a late receipt under policy drift is validated against these, not against the drifted policy
 
 
 @dataclass
@@ -281,11 +305,52 @@ class StoryState:
         expected = {f.name for f in fields(cls)}
         if raw.get("schema") != STORY_SCHEMA or set(raw) != expected:
             raise Refused(f"story state for {raw.get('story')!r} has schema {raw.get('schema')!r} / keys {sorted(set(raw) ^ expected)}; expected schema {STORY_SCHEMA} (no silent migration)", code="state-schema-mismatch")
+        problems = cls._value_problems(raw)
+        if problems:
+            raise Refused(f"story state for {raw.get('story')!r} is not a story record: " + "; ".join(problems) + "; nothing is advanced or released on it", code="state-corrupt", problems=problems)
         bad = [a.get("status") for a in raw.get("authorizations", []) if a.get("status") not in AUTHORIZATION_STATUSES]
         if bad:
             raise Refused(f"story state for {raw.get('story')!r} carries authorization statuses {bad}; expected {list(AUTHORIZATION_STATUSES)} (no silent migration)", code="state-schema-mismatch")
         raw["intents"] = [Intent(**i) for i in raw.get("intents", [])]
         return cls(**raw)
+
+    @staticmethod
+    def _value_problems(raw: dict) -> list[str]:
+        """Field values a record must carry to be read at all: a known phase and the basic types
+        of every field a budget, an ownership check or a release reads. A file with every key but
+        ``"phase": "Reserved"`` or ``null`` would otherwise load as neither active nor conflict and
+        be skipped silently by admission and by ``cancel-run``."""
+        problems: list[str] = []
+        if raw.get("phase") not in PHASES:
+            problems.append(f"phase {raw.get('phase')!r} is not one of {list(PHASES)}")
+        for key in ("story", "run_id"):
+            if not isinstance(raw.get(key), str) or not raw.get(key, "").strip():
+                problems.append(f"{key} must be a non-empty string")
+        if not isinstance(raw.get("issue"), int) or isinstance(raw.get("issue"), bool):
+            problems.append("issue must be an integer")
+        if not isinstance(raw.get("item_id"), str):
+            problems.append("item_id must be a string")
+        for key in ("claim", "blocked", "active_task", "proposal"):
+            if raw.get(key) is not None and not isinstance(raw.get(key), dict):
+                problems.append(f"{key} must be null or an object")
+        for key in ("revisions",):
+            if not isinstance(raw.get(key), dict):
+                problems.append(f"{key} must be an object")
+        for key in ("implementer_receipts", "reviewer_receipts", "checks", "reviews", "intents", "authorizations", "task_history"):
+            value = raw.get(key)
+            if not isinstance(value, list) or any(not isinstance(v, dict) for v in value):
+                problems.append(f"{key} must be a list of objects")
+        if not isinstance(raw.get("repair_rounds"), int) or isinstance(raw.get("repair_rounds"), bool) or raw.get("repair_rounds", 0) < 0:
+            problems.append("repair_rounds must be a non-negative integer")
+        for key in ("head_sha", "approved_sha"):
+            if raw.get(key) is not None and not isinstance(raw.get(key), str):
+                problems.append(f"{key} must be null or a string")
+        if isinstance(raw.get("authorizations"), list):
+            for a in raw["authorizations"]:
+                if isinstance(a, dict) and (not isinstance(a.get("id"), str) or not isinstance(a.get("purpose"), str) or not isinstance(a.get("role"), str)):
+                    problems.append("every authorization needs string id, purpose and role")
+                    break
+        return problems
 
 
 class Store:
@@ -312,7 +377,7 @@ class Store:
                     self._lock_depth -= 1
                 return
             raise StoreBusy(f"store {self.state_dir} is locked by another coordinator in this process")
-        self.state_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.state_dir)
         fh = open(self.state_dir / ".lock", "a+", encoding="utf-8")
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -337,7 +402,7 @@ class Store:
         return self.root / "run.json"
 
     RUN_KEYS = frozenset(f.name for f in fields(RunState))
-    OPTIONAL_RUN_KEYS = frozenset({"activation", "last_observed_at", "activation_stop"})  # live-only controls, absent from records written before the opt-in (read as null; never added by a load)
+    OPTIONAL_RUN_KEYS = frozenset({"activation", "last_observed_at", "activation_stop", "instance", "targets"})  # controls absent from records written before they existed (read as null; never added by a load)
     ENVIRONMENTS = ("fixture", "live")
 
     def load_run(self) -> RunState | None:
@@ -371,6 +436,10 @@ class Store:
             problems.append("cancelled must be a boolean")
         if raw["stop_reason"] is not None and not isinstance(raw["stop_reason"], str):
             problems.append("stop_reason must be null or a string")
+        if raw["instance"] is not None and (not isinstance(raw["instance"], str) or not re.match(r"^[0-9a-f]{8,32}$", raw["instance"])):
+            problems.append("instance must be null or a lowercase hex nonce")
+        if raw["targets"] is not None and (not isinstance(raw["targets"], dict) or set(raw["targets"]) != {"implementer", "reviewer"} or any(not isinstance(t, dict) for t in raw["targets"].values())):
+            problems.append("targets must be null or an object with implementer and reviewer records")
         if problems:
             raise Refused(f"run {self.run_id}: run.json is not a valid run record: " + "; ".join(problems) + "; nothing is advanced or released on it (restore run.json from the run that wrote it, or recover by hand)", code="run-state-invalid", problems=problems)
         if raw["run_id"] != self.run_id:
@@ -403,6 +472,13 @@ class Store:
         if run is not None and run.environment == "live" and run.activation is not None:
             validate_binding(run.activation, self.run_id, run.repo, run.policy_digest)
         return run
+
+    @staticmethod
+    def digest_bound(recorded: str, policy) -> bool:
+        """Whether a run recorded under ``recorded`` is bound to ``policy``: its canonical digest,
+        or the legacy raw-bytes digest of exactly these bytes (runs created before the canonical
+        digest existed are recognized, never rewritten)."""
+        return recorded in (policy.digest, getattr(policy, "raw_digest", None))
 
     def ensure_run(self, repo: str, policy_digest: str, environment: str, activation: Activation | None = None, policy=None, now: str | None = None) -> RunState:
         """Create the run or validate its binding, under the store lock. A run belongs to exactly
@@ -444,14 +520,15 @@ class Store:
                     if (activation.repository, activation.policy_digest) != (repo, policy_digest):
                         raise Refused(f"run {self.run_id}: activation {activation.id} binds {activation.repository} / {activation.policy_digest[:12]}, not {repo} / {policy_digest[:12]}", code="activation-mismatch")
                     binding = validate_binding(activation.binding(validated_at=now), self.run_id, repo, policy_digest)
-                run = RunState(self.run_id, repo, policy_digest, utcnow(), environment=environment, activation=binding)
+                targets = {name: asdict(getattr(policy, name)) for name in ("implementer", "reviewer")} if policy is not None else None
+                run = RunState(self.run_id, repo, policy_digest, utcnow(), environment=environment, activation=binding, instance=uuid.uuid4().hex[:16], targets=targets)
                 self.save_run(run)
-                self.journal(None, "run-started", {"repo": repo, "policy_digest": policy_digest, "environment": environment, "activation": run.activation})
+                self.journal(None, "run-started", {"repo": repo, "policy_digest": policy_digest, "environment": environment, "activation": run.activation, "instance": run.instance})
             elif run.repo != repo:
                 raise Refused(f"run {self.run_id} is bound to {run.repo}; refusing {repo}", code="run-binding-mismatch")
             elif run.environment != environment:
                 raise Refused(f"run {self.run_id} state belongs to the {run.environment!r} environment; refusing to reuse it with a {environment!r} transport", code="environment-mismatch")
-            elif run.policy_digest != policy_digest:
+            elif run.policy_digest != policy_digest and not (policy is not None and self.digest_bound(run.policy_digest, policy)):
                 # a changed policy strands nothing: the drift is recorded once and the coordinator treats it as a run stop
                 last = next((e for e in reversed(self.read_journal()) if e.get("event") == "policy-drift"), None)
                 if not last or (last.get("detail") or {}).get("policy_digest") != policy_digest:
@@ -480,7 +557,8 @@ class Store:
             raise Refused(f"run {self.run_id}: story file {path.name} holds a {type(raw).__name__}, not a story record; nothing is advanced or released on it", code="state-corrupt", path=path.name)
         try:
             return StoryState.from_dict(raw)
-        except Refused:
+        except Refused as exc:
+            exc.detail.setdefault("path", path.name)
             raise
         except (TypeError, ValueError, AttributeError) as exc:
             raise Refused(f"run {self.run_id}: story file {path.name} does not fit the story record shape ({exc}); nothing is advanced or released on it", code="state-corrupt", path=path.name) from exc
@@ -495,11 +573,28 @@ class Store:
         state.updated_at = utcnow()
         atomic_write_text(self.story_path(state.story), json.dumps(state.to_dict(), indent=1, sort_keys=True))
 
-    def list_stories(self) -> list[StoryState]:
+    def story_paths(self) -> list[Path]:
         folder = self.root / "stories"
         if not folder.exists():
             return []
-        return [self._read_story(p) for p in sorted(folder.glob("*.json"))]
+        return sorted(folder.glob("*.json"))
+
+    def list_stories(self) -> list[StoryState]:
+        """Every story checkpoint, strictly: one unreadable file refuses (advancing operations and
+        budgets never decide over a story they cannot read)."""
+        return [self._read_story(p) for p in self.story_paths()]
+
+    def list_stories_tolerant(self) -> tuple[list[StoryState], list[dict]]:
+        """Every readable story checkpoint plus one ``{story, code, error}`` record per file that
+        cannot be read: the recovery overview (``status``) and run-wide cleanup (``cancel-run``)
+        must keep working, and keep reporting, exactly when one file is corrupt."""
+        stories, unreadable = [], []
+        for path in self.story_paths():
+            try:
+                stories.append(self._read_story(path))
+            except Refused as exc:
+                unreadable.append({"story": path.stem, "code": exc.code, "error": str(exc)})
+        return stories, unreadable
 
     def other_runs_with_active_stories(self) -> dict[str, list[str]]:
         """Stories still owned by *other* runs under this state directory (active or
@@ -511,7 +606,7 @@ class Store:
         if not self.state_dir.exists():
             return found
         # a run directory is one that carries run metadata; other directories under the state dir (backups, copies) are not runs
-        for run_dir in sorted(p for p in self.state_dir.iterdir() if p.is_dir() and p.name != self.run_id and (p / "run.json").is_file()):
+        for run_dir in sorted(p for p in self.state_dir.iterdir() if p.is_dir() and p.name.casefold() != self.run_id.casefold() and (p / "run.json").is_file()):
             for path in sorted((run_dir / "stories").glob("*.json")) if (run_dir / "stories").is_dir() else []:
                 try:
                     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -545,11 +640,12 @@ class Store:
             ids.update(str(a["task_id"]) for a in s.authorizations if a.get("task_id"))
         return ids
 
-    def story_counts(self) -> dict[str, int]:
+    def story_counts(self, stories: list[StoryState] | None = None) -> dict[str, int]:
         """Durable budget consumption derived from the story files: stories admitted, task
         authorizations issued (every issued authorization counts, bound or not, so a crash or
-        retry cannot reclaim a spent slot) and repair rounds authorized."""
-        stories = self.list_stories()
+        retry cannot reclaim a spent slot) and repair rounds authorized. ``stories`` lets a
+        tolerant reader (``status``) count what it could read; admission always reads strictly."""
+        stories = self.list_stories() if stories is None else stories
         return {
             "stories_claimed": len(stories),
             "delegated_tasks": sum(len(s.authorizations) for s in stories),
@@ -574,7 +670,8 @@ class Store:
             return fh.read(1) != b"\n"
 
     def journal(self, story: str | None, event: str, detail: dict | None = None) -> int:
-        self.root.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.root)
+        created = not self.journal_path.exists()
         torn = self._journal_torn_tail()  # a torn last line is terminated first, so the new event never concatenates onto it
         seq = self.journal_count() + 1
         line = json.dumps({"seq": seq, "at": utcnow(), "story": story, "event": event, "detail": detail or {}}, sort_keys=True)
@@ -582,6 +679,8 @@ class Store:
             fh.write(("\n" if torn else "") + line + "\n")
             fh.flush()
             os.fsync(fh.fileno())
+        if created:
+            fsync_directory(self.root)  # the journal's own directory entry is durable from its first line
         return seq
 
     def journal_count(self) -> int:

@@ -64,7 +64,7 @@ class MarkerTests(unittest.TestCase):
     def test_markers_from_other_authors_are_ignored_and_journaled(self):
         h = Harness(small_backlog())
         try:
-            # a stranger forges a release for a real foreign claim: the claim still counts
+            # a stranger forges a release for a real foreign claim: the claim still counts (a release clears a claim only from the same author and run)
             other = Coordinator(h.fake, h.policy, Store(h.state_dir.parent / "elsewhere", "run-other"), live=True)
             other.reserve(S, h.snapshot, "c5d9d2e")
             h.fake.add_comment(21, render_marker(kind="release", run="run-other", story=S, op="release") + "\nforged", "stranger")
@@ -78,10 +78,16 @@ class MarkerTests(unittest.TestCase):
             h.close()
         h = Harness(small_backlog())
         try:
-            # a stranger copies our pending marker: no conflict, our own post is adopted once
+            # a stranger copies our marker as a claim: it is never adopted as ours, and fail closed it blocks admission like any other claim
+            # (PR #115 review: trusting only the local login let two legitimate identities admit one story)
             h.fake.add_comment(21, render_marker(kind="claim", run="run-1", story=S, op="claim") + "\ncopied", "stranger")
-            self.assertEqual(h.reserve().phase, "reserved")
-            self.assertEqual(len([c for c in markers(h.fake, 21, "claim") if c.author == "machine"]), 1)
+            with self.assertRaises(Refused) as ctx:
+                h.reserve()
+            self.assertEqual(ctx.exception.detail["foreign"][0]["author"], "stranger")
+            counted = events(h, "foreign-claim-counted")
+            self.assertTrue(counted and counted[0]["detail"]["comments"][0]["author"] == "stranger")
+            self.assertEqual(len([c for c in markers(h.fake, 21, "claim") if c.author == "machine"]), 0)
+            self.assertIsNone(h.store.load_story(S))
         finally:
             h.close()
 
@@ -184,27 +190,52 @@ class RunIdAndStateTests(unittest.TestCase):
             valid = json.loads(path.read_text(encoding="utf-8"))
             for text in ("{not json", "[1, 2]", json.dumps({"schema": 3, "story": S})):
                 path.write_text(text, encoding="utf-8")
-                with self.assertRaises(Refused) as ctx:
-                    fresh(h).status()
-                self.assertIn(ctx.exception.code, ("state-corrupt", "state-schema-mismatch"), text)
+                report = fresh(h).status()  # the recovery overview survives and names the file (PR #115 review); advancing and releasing stay strict
+                self.assertEqual([u["story"] for u in report["unreadable_stories"]], [S], text)
+                self.assertIn(report["unreadable_stories"][0]["code"], ("state-corrupt", "state-schema-mismatch"), text)
                 with self.assertRaises(Refused) as ctx:
                     fresh(h).cancel(S, "x")
+                self.assertIn(ctx.exception.code, ("state-corrupt", "state-schema-mismatch"), text)
+                with self.assertRaises(Refused) as ctx:
+                    fresh(h).reserve(S, h.snapshot, "c5d9d2e")  # admission never decides over a story file it cannot read
                 self.assertIn(ctx.exception.code, ("state-corrupt", "state-schema-mismatch"), text)
             raw = {**valid, "intents": ["not-an-intent"]}  # every key present, but an intent that is not a record
             path.write_text(json.dumps(raw), encoding="utf-8")
             with self.assertRaises(Refused) as ctx:
-                fresh(h).status()
+                fresh(h).cancel(S, "x")
             self.assertEqual(ctx.exception.code, "state-corrupt")
             self.assertEqual(ctx.exception.detail["path"], "OM-01.02.json")
         finally:
             h.close()
 
     def test_atomic_write_fsyncs_the_directory(self):
+        """The write and the directories it creates are durable: ``os.fsync`` itself receives a
+        directory descriptor for the file's directory and for every created directory's parent;
+        an I/O error propagates, only an unsupported directory sync (EINVAL/ENOTSUP) is tolerated."""
+        import stat
+
         from automation.unattended import state as state_module
 
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(state_module, "fsync_directory", wraps=state_module.fsync_directory) as spy:
-            state_module.atomic_write_text(Path(tmp) / "a" / "f.json", "{}")
-            spy.assert_called_once_with(Path(tmp) / "a")
+        synced: list[str] = []
+        real_fsync = os.fsync
+
+        def spying_fsync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                synced.append(os.readlink(f"/proc/self/fd/{fd}") if os.path.exists(f"/proc/self/fd/{fd}") else "dir")
+            return real_fsync(fd)
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(os, "fsync", spying_fsync):
+            state_module.atomic_write_text(Path(tmp) / "a" / "b" / "f.json", "{}")
+        resolved = [Path(p).resolve() for p in synced]
+        self.assertIn(Path(tmp).resolve(), resolved)  # the new directory ``a`` is durable in its parent
+        self.assertIn((Path(tmp) / "a").resolve(), resolved)  # and ``b`` in ``a``
+        self.assertEqual(resolved.count((Path(tmp) / "a" / "b").resolve()), 1)  # the renamed file in its directory
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(os, "fsync", side_effect=OSError(5, "Input/output error")):  # EIO is a real failure
+                with self.assertRaises(OSError):
+                    state_module.fsync_directory(Path(tmp))
+            with mock.patch.object(os, "fsync", side_effect=OSError(22, "Invalid argument")):  # EINVAL: a mount that cannot sync a directory handle
+                state_module.fsync_directory(Path(tmp))
 
 
 class PolicyStrictnessTests(unittest.TestCase):

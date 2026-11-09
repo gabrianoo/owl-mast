@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from automation.tests.support import IMPLEMENTER, REVIEWER, make_git_repo, ok_worktree, passing_runner, write_policy
+from automation.tests.support import IMPLEMENTER, REVIEWER, REVIEW_BRANCH, REVIEW_WORKTREE, make_git_repo, ok_worktree, passing_runner, write_policy
 from automation.unattended.backlog import take_snapshot
 from automation.unattended.coordinator import Coordinator
 from automation.unattended.errors import NotFound, Outage, PermissionDenied, Refused, TransportError
@@ -187,7 +187,7 @@ class CoordinatorOverTransportTests(unittest.TestCase):
         self.c.record_head("OM-01.02", self.sha, {"taskId": IMPLEMENTER["taskId"], "runId": IMPLEMENTER["taskId"] + ":run:1", "status": "result_available"})
         self.c.run_checks("OM-01.02", self.sha, str(self.worktree), passing_runner)
         self.c.authorize_review("OM-01.02", self.sha)
-        self.c.bind_receipt("OM-01.02", REVIEWER, worktree_check=ok_worktree)
+        self.c.bind_receipt("OM-01.02", REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
         self.c.record_review("OM-01.02", self.sha, "approved", "r", {"taskId": REVIEWER["taskId"], "runId": REVIEWER["taskId"] + ":run:1", "status": "result_available"})
 
     def test_changes_requested_in_raw_response_refuses_proposal(self):

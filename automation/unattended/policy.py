@@ -9,9 +9,10 @@ whether they are *enforced* depends on the credential the operator provisions (s
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .errors import PolicyError
@@ -23,6 +24,12 @@ KNOWN_SECTIONS = {"repository", "dispatch", "budgets", "targets", "checks", "pro
 MACHINE_STATUSES = ("In progress", "In review", "Blocked")
 OWNER_STATUSES = ("Ready", "Done")
 MAX_REPAIR_ROUNDS_CEILING = 2
+# Documented ceilings: a value past them is a mistake, not a budget (and an unbounded wall clock would overflow ``timedelta``).
+MAX_WALL_CLOCK_MINUTES = 7 * 24 * 60
+MAX_CHECK_TIMEOUT_MINUTES = 24 * 60
+MAX_PROBE_TIMEOUT_SECONDS = 24 * 60 * 60
+MAX_STORIES_CEILING = 1000
+MAX_TASKS_CEILING = 10000
 
 
 @dataclass(frozen=True)
@@ -54,11 +61,21 @@ class Policy:
     check_timeout_minutes: int
     probe_commands: tuple[str, ...]
     probe_timeout_seconds: int
-    digest: str = field(default="", compare=False)
+    digest: str = field(default="", compare=False)  # sha256 of the canonical parsed policy (``canonical_digest``): comments and whitespace do not change it
+    raw_digest: str = field(default="", compare=False)  # sha256 of the file bytes: what runs created before the canonical digest recorded; recognized, never written again
 
     @property
     def repo_slug(self) -> str:
         return f"{self.owner}/{self.repo}"
+
+
+def canonical_digest(policy: "Policy") -> str:
+    """The digest a run and an activation bind: the parsed, safety-relevant content serialized
+    canonically (every field but the digests, sorted keys), so a comment-only or whitespace edit
+    of ``policy.toml`` is the same policy and strands no run, while any change to what is
+    dispatched, with which targets, budgets, checks or probes, is a different policy."""
+    content = {k: v for k, v in asdict(policy).items() if k not in ("digest", "raw_digest")}
+    return hashlib.sha256(json.dumps(content, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _walk(obj, path: str, problems: list[str]) -> None:
@@ -203,9 +220,9 @@ def load_policy(path: Path) -> Policy:
 
     max_repair = _int(budgets, "budgets", "max_repair_rounds", MAX_REPAIR_ROUNDS_CEILING, problems, lo=0, hi=MAX_REPAIR_ROUNDS_CEILING)
     concurrent = _int(budgets, "budgets", "max_concurrent_implementers", 1, problems, lo=1, hi=1)
-    max_stories = _int(budgets, "budgets", "max_stories_per_run", 1, problems, lo=1)
-    max_tasks = _int(budgets, "budgets", "max_delegated_tasks", 6, problems, lo=1)
-    max_wall = _int(budgets, "budgets", "max_wall_clock_minutes", 240, problems, lo=1)
+    max_stories = _int(budgets, "budgets", "max_stories_per_run", 1, problems, lo=1, hi=MAX_STORIES_CEILING)
+    max_tasks = _int(budgets, "budgets", "max_delegated_tasks", 6, problems, lo=1, hi=MAX_TASKS_CEILING)
+    max_wall = _int(budgets, "budgets", "max_wall_clock_minutes", 240, problems, lo=1, hi=MAX_WALL_CLOCK_MINUTES)  # a huge value would overflow timedelta and crash every operation
 
     implementer = _target(targets.get("implementer"), "implementer", problems)
     reviewer = _target(targets.get("reviewer"), "reviewer", problems)
@@ -224,13 +241,13 @@ def load_policy(path: Path) -> Policy:
         problems.append("checks.commands must not be empty (deterministic checks run before review)")
     if not probe_commands:
         problems.append("probes.commands must not be empty (environment probes run before dispatch)")
-    check_timeout = _int(checks, "checks", "timeout_minutes", 45, problems, lo=1)
-    probe_timeout = _int(probes, "probes", "timeout_seconds", 60, problems, lo=1)
+    check_timeout = _int(checks, "checks", "timeout_minutes", 45, problems, lo=1, hi=MAX_CHECK_TIMEOUT_MINUTES)
+    probe_timeout = _int(probes, "probes", "timeout_seconds", 60, problems, lo=1, hi=MAX_PROBE_TIMEOUT_SECONDS)
 
     if problems:
         raise PolicyError("policy rejected: " + "; ".join(problems), problems=problems)
     assert implementer and reviewer
-    return Policy(
+    policy = Policy(
         owner=repository["owner"],
         repo=repository["name"],
         project_owner=repository["project_owner"],
@@ -250,5 +267,6 @@ def load_policy(path: Path) -> Policy:
         check_timeout_minutes=check_timeout,
         probe_commands=probe_commands,
         probe_timeout_seconds=probe_timeout,
-        digest=hashlib.sha256(text).hexdigest(),
+        raw_digest=hashlib.sha256(text).hexdigest(),
     )
+    return Policy(**{**asdict(policy), "implementer": implementer, "reviewer": reviewer, "digest": canonical_digest(policy)})

@@ -128,11 +128,15 @@ def classify(returncode: int, stderr: str, exc: BaseException | None = None) -> 
         return Outage(f"gh timed out: {text[:300]}")
     if exc is not None and isinstance(exc, FileNotFoundError):
         return TransportError("gh CLI not found on PATH")
+    # GitHub answers a primary or secondary rate limit with HTTP 403 (or 429) and a message naming the
+    # limit: that is throttling (retry later), never a permission verdict, so it is classified first
+    if any(t in low for t in ("rate limit", "secondary rate limit", "abuse detection", "http 429", "retry-after")):
+        return Outage(f"GitHub throttled the request: {text[:300]}")
     if "http 401" in low or "http 403" in low or "bad credentials" in low or "resource not accessible" in low or "not logged in" in low or "insufficient" in low and "scope" in low:
         return PermissionDenied(f"GitHub denied the request: {text[:300]}")
     if "http 404" in low or "could not resolve to" in low:
         return NotFound(f"GitHub object not found: {text[:300]}")
-    if any(t in low for t in ("http 5", "http 429", "rate limit", "timeout", "timed out", "connection refused", "no such host", "network is unreachable", "tls handshake", "eof", "temporary failure")):
+    if any(t in low for t in ("http 5", "timeout", "timed out", "connection refused", "no such host", "network is unreachable", "tls handshake", "eof", "temporary failure")):
         return Outage(f"GitHub unreachable or throttled: {text[:300]}")
     return TransportError(f"gh failed (exit {returncode}): {text[:300]}")
 
@@ -225,34 +229,62 @@ class GhCliTransport:
             return NotFound(f"GraphQL not found: {messages[:300]}")
         return TransportError(f"GraphQL error: {messages[:300]}")
 
-    @staticmethod
-    def _complete(connection, what: str) -> list:
-        """The nodes of a connection that was requested whole: a page that claims more refuses
-        instead of returning a truncated field, label or option set."""
+    MAX_NESTED_PAGES = 50  # a nested connection that never ends is a transport failure, not an infinite loop
+
+    @classmethod
+    def _complete(cls, connection, what: str, more=None) -> list:
+        """The nodes of a nested connection, whole. A page that claims more is followed through
+        ``more(cursor)`` (the next page of the same connection) until the connection ends; without
+        a ``more`` reader, or when a page claims more without a cursor or the pages never end, it
+        refuses instead of returning a truncated field, label or option set. One over-large
+        connection therefore never refuses the whole snapshot."""
         if not isinstance(connection, dict) or not isinstance(connection.get("nodes"), list):
             raise TransportError(f"{what}: malformed connection")
-        if (connection.get("pageInfo") or {}).get("hasNextPage"):
-            raise TransportError(f"{what}: more entries than requested; refusing a truncated read")
-        return connection["nodes"]
+        nodes = list(connection["nodes"])
+        page, pages = connection, 1
+        while (page.get("pageInfo") or {}).get("hasNextPage"):
+            cursor = (page.get("pageInfo") or {}).get("endCursor")
+            if more is None or not cursor:
+                raise TransportError(f"{what}: more entries than requested; refusing a truncated read")
+            if pages >= cls.MAX_NESTED_PAGES:
+                raise TransportError(f"{what}: more than {cls.MAX_NESTED_PAGES} pages; refusing a runaway read")
+            page = more(cursor)
+            if not isinstance(page, dict) or not isinstance(page.get("nodes"), list):
+                raise TransportError(f"{what}: malformed connection page")
+            nodes.extend(page["nodes"])
+            pages += 1
+        return nodes
 
     def viewer_login(self) -> str:
-        """The GitHub login the transport acts as: the only author whose markers are trusted."""
-        raw = self._run(["api", "user", "--jq", ".login"]).strip()
+        """The GitHub login the transport acts as: the only author whose markers are adopted as
+        our own. ``GET /user`` answers 403 for a GitHub App installation token; the GraphQL
+        ``viewer`` is then asked instead, so an integration identity can still act."""
+        try:
+            raw = self._run(["api", "user", "--jq", ".login"]).strip()
+        except PermissionDenied:
+            data = self._graphql("query{ viewer{ login } }")
+            raw = str(self._shaped(lambda: data["viewer"]["login"], "viewer login") or "").strip()
         if not raw:
-            raise TransportError("gh api user returned no login")
+            raise TransportError("GitHub returned no login for the transport identity")
         return raw
 
     # -- issues ------------------------------------------------------------------------
-    _ISSUE_FIELDS = "number id title state stateReason updatedAt closedAt body labels(first:50){pageInfo{hasNextPage} nodes{name}} parent{number}"
+    _ISSUE_FIELDS = "number id title state stateReason updatedAt closedAt body labels(first:50){pageInfo{hasNextPage endCursor} nodes{name}} parent{number}"
 
-    @classmethod
-    def _issue(cls, node: dict) -> IssueRecord:
-        return cls._shaped(lambda: IssueRecord(
+    def _more_labels(self, number: int):
+        def more(cursor: str):
+            data = self._graphql("query{ repository(owner:\"%s\", name:\"%s\"){ issue(number:%d){ labels(first:50, after:%s){ pageInfo{hasNextPage endCursor} nodes{name} } } } }" % (self.owner, self.repo, number, json.dumps(cursor)))
+            return self._shaped(lambda: data["repository"]["issue"]["labels"], f"issue #{number} labels page")
+        return more
+
+    def _issue(self, node: dict) -> IssueRecord:
+        number = node.get("number") if isinstance(node, dict) else None
+        return self._shaped(lambda: IssueRecord(
             number=node["number"], node_id=node["id"], title=node["title"], state=node["state"],
             state_reason=node.get("stateReason"), updated_at=node["updatedAt"], closed_at=node.get("closedAt"),
-            body=node.get("body") or "", labels=tuple(l["name"] for l in cls._complete(node.get("labels"), f"issue #{node.get('number')} labels")),
+            body=node.get("body") or "", labels=tuple(l["name"] for l in self._complete(node.get("labels"), f"issue #{number} labels", self._more_labels(int(node["number"])))),
             parent_number=(node.get("parent") or {}).get("number"),
-        ), f"issue #{node.get('number') if isinstance(node, dict) else node!r}")
+        ), f"issue #{number if isinstance(node, dict) else node!r}")
 
     def list_issues(self) -> list[IssueRecord]:
         out: list[IssueRecord] = []
@@ -322,27 +354,45 @@ class GhCliTransport:
             raise NotFound(f"project #{self.project_number} of {self.project_owner!r} not found or not readable")
         return project
 
+    _FIELD_NODES = "nodes{ ... on ProjectV2SingleSelectField{ id name options{ id name } } }"
+
     def project_info(self) -> ProjectInfo:
         if self._project:
             return self._project
-        data = self._project_node("id fields(first:50){ pageInfo{hasNextPage} nodes{ ... on ProjectV2SingleSelectField{ id name options{ id name } } } }")
-        fields = self._complete(data.get("fields"), "project fields")
-        status = next((f for f in fields if f and f.get("name") == "Status"), None)
-        if not status:
-            raise TransportError("project has no Status single-select field")
-        self._project = ProjectInfo(data["id"], status["id"], {o["name"]: o["id"] for o in status["options"]})
+        data = self._project_node("id fields(first:50){ pageInfo{hasNextPage endCursor} %s }" % self._FIELD_NODES)
+
+        def more(cursor: str):
+            return self._project_node("fields(first:50, after:%s){ pageInfo{hasNextPage endCursor} %s }" % (json.dumps(cursor), self._FIELD_NODES)).get("fields")
+
+        fields = self._complete(data.get("fields"), "project fields", more)
+
+        def build():
+            status = next((f for f in fields if isinstance(f, dict) and f.get("name") == "Status"), None)
+            if not status:
+                raise TransportError("project has no Status single-select field")
+            options = status["options"]
+            if not isinstance(options, list):
+                raise TypeError("Status options is not a list")
+            return ProjectInfo(data["id"], status["id"], {o["name"]: o["id"] for o in options})
+        self._project = self._shaped(build, "project info")
         return self._project
 
-    _ITEM_FIELDS = ("id updatedAt fieldValues(first:30){ pageInfo{hasNextPage} nodes{ ... on ProjectV2ItemFieldSingleSelectValue{ name field{ ... on ProjectV2FieldCommon{ name } } } "
-                    "... on ProjectV2ItemFieldTextValue{ text field{ ... on ProjectV2FieldCommon{ name } } } } } content{ ... on Issue{ number repository{ nameWithOwner } } }")
+    _VALUE_NODES = ("nodes{ ... on ProjectV2ItemFieldSingleSelectValue{ name field{ ... on ProjectV2FieldCommon{ name } } } "
+                    "... on ProjectV2ItemFieldTextValue{ text field{ ... on ProjectV2FieldCommon{ name } } } } }")
+    _ITEM_FIELDS = "id updatedAt fieldValues(first:30){ pageInfo{hasNextPage endCursor} %s content{ ... on Issue{ number repository{ nameWithOwner } } }" % _VALUE_NODES
 
-    @classmethod
-    def _item(cls, node: dict) -> ProjectItem:
+    def _more_field_values(self, item_id: str):
+        def more(cursor: str):
+            data = self._graphql("query{ node(id:%s){ ... on ProjectV2Item{ fieldValues(first:30, after:%s){ pageInfo{hasNextPage endCursor} %s } } }" % (json.dumps(item_id), json.dumps(cursor), self._VALUE_NODES))
+            return self._shaped(lambda: data["node"]["fieldValues"], f"project item {item_id} field values page")
+        return more
+
+    def _item(self, node: dict) -> ProjectItem:
         def build():
-            values = {n["field"]["name"]: (n.get("name") if "name" in n else n.get("text")) for n in cls._complete(node.get("fieldValues"), f"project item {node.get('id')} field values") if n}
+            values = {n["field"]["name"]: (n.get("name") if "name" in n else n.get("text")) for n in self._complete(node.get("fieldValues"), f"project item {node.get('id')} field values", self._more_field_values(str(node["id"]))) if n}
             content = node.get("content") or {}
             return ProjectItem(node["id"], content.get("number"), values.get("Status"), values.get("Stable ID"), node["updatedAt"], (content.get("repository") or {}).get("nameWithOwner"))
-        return cls._shaped(build, f"project item {node.get('id') if isinstance(node, dict) else node!r}")
+        return self._shaped(build, f"project item {node.get('id') if isinstance(node, dict) else node!r}")
 
     def list_project_items(self) -> list[ProjectItem]:
         out: list[ProjectItem] = []
@@ -356,7 +406,7 @@ class GhCliTransport:
             after = json.dumps(self._shaped(lambda: page["pageInfo"]["endCursor"], "project items page"))
 
     def get_project_item(self, item_id: str) -> ProjectItem:
-        q = "query{ node(id:\"%s\"){ ... on ProjectV2Item{ %s } } }" % (item_id, self._ITEM_FIELDS)
+        q = "query{ node(id:%s){ ... on ProjectV2Item{ %s } } }" % (json.dumps(item_id), self._ITEM_FIELDS)
         node = self._graphql(q)["node"]
         if not node:
             raise NotFound(f"project item {item_id} not found")
