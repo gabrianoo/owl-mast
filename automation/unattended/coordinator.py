@@ -787,6 +787,7 @@ class Coordinator:
         coordinator. Each entry carries the marker, the comment id, its author and creation time."""
         claims: dict[tuple, dict] = {}
         released: set[tuple] = set()
+        dismissed: set[str] = set()
         author = self._trusted_author()
         for c in self._marked_comments(issue, story, context, trusted_only=False):
             m = c.marker
@@ -795,7 +796,39 @@ class Coordinator:
                 claims[key] = {**m, "comment_id": c.comment_id, "created_at": c.created_at, "author": c.author}
             elif m.get("kind") in ("release", "block", "proposal"):
                 released.add(key)
-        return [m for key, m in claims.items() if not (key[2] == author and self._own_marker(m)) and key not in released]
+            elif m.get("kind") == "dismiss" and c.author == author and m.get("target"):
+                dismissed.add(str(m["target"]))  # an owner-run ``dismiss-claim`` by our identity: the named stray or forged claim no longer counts
+        return [m for key, m in claims.items() if not (key[2] == author and self._own_marker(m)) and key not in released and str(m["comment_id"]) not in dismissed]
+
+    def dismiss_claim(self, issue: int, comment_id: int, reason: str) -> dict:
+        """The owner's way out of a stray or forged claim marker (fail-closed trust counts any
+        author's claim, and only its author's release clears it): post, as our identity, a
+        ``dismiss`` marker naming that comment, so every coordinator stops counting it. It never
+        dismisses one of our own claims, needs ``--live``, a reason and an existing run (on the
+        live transport: one activated earlier; the dismissal is journaled in that run, write-ahead
+        before the post), and is idempotent (one dismissal per target). Deleting the comment on
+        GitHub is the other way."""
+        with self.operation():
+            self.require_activation("dismiss-claim", advancing=False)
+            if not reason or not str(reason).strip():
+                raise Refused("dismiss-claim needs --reason (who decided and why)", code="reason-missing")
+            if not self.live:
+                raise Refused("dismiss-claim posts a dismissal marker and needs --live", code="live-required")
+            target = next((c for c in self.transport.list_comments(issue) if c.comment_id == int(comment_id)), None)
+            if target is None or not target.marker or target.marker.get("kind") != "claim":
+                raise Refused(f"comment {comment_id} on issue #{issue} is not a claim marker", code="dismiss-target-invalid", comment_id=int(comment_id))
+            if target.author == self._trusted_author() and self._own_marker(target.marker):
+                raise Refused(f"comment {comment_id} is this run's own claim; release it with cancel, not dismiss-claim", code="dismiss-target-invalid", comment_id=int(comment_id))
+            story = target.marker.get("story", "")
+            marker = {"kind": "dismiss", "run": self.store.run_id, "story": story, "op": f"dismiss-{int(comment_id)}", "target": str(int(comment_id)), **({"inst": self.run.instance} if self.run.instance else {})}
+            existing = [c for c in self._marked_comments(issue, story, "dismiss-claim") if (c.marker or {}).get("kind") == "dismiss" and (c.marker or {}).get("target") == str(int(comment_id))]
+            if not existing:
+                body = f"{render_marker(**marker)}\nClaim marker {int(comment_id)} by `{target.author}` (run `{target.marker.get('run')}`) dismissed by the owner through run `{self.store.run_id}`: {reason}. It no longer blocks admission. Nothing else is implied."
+                self.store.journal(None, "foreign-claim-dismiss-intent", {"issue": issue, "target": int(comment_id), "marker": marker, "body": body, "reason": reason})  # write-ahead: the complete effect is journaled before it is attempted; a repeat adopts the marker
+                posted = self.transport.post_comment(issue, body)
+                existing = [c for c in self._marked_comments(issue, story, "dismiss-claim") if (c.marker or {}).get("kind") == "dismiss" and (c.marker or {}).get("target") == str(int(comment_id))] or [posted]
+            self.store.journal(None, "foreign-claim-dismissed", {"issue": issue, "target": int(comment_id), "target_author": target.author, "target_marker": target.marker, "reason": reason, "dismissal_comment_id": existing[0].comment_id, "posted": len(existing) == 1})
+            return {"issue": issue, "target": int(comment_id), "target_author": target.author, "target_marker": target.marker, "dismissal_comment_id": existing[0].comment_id, "reason": reason}
 
     def _claims_elsewhere(self, snapshot: Snapshot, story: str) -> dict[str, list[dict]]:
         """Active claims by any other coordinator on any other allowlisted story: the GitHub-side
@@ -892,7 +925,7 @@ class Coordinator:
                 raise Refused(f"{story} is claimed by another run: {foreign}", foreign=foreign)
             elsewhere = self._claims_elsewhere(fresh, story)
             if elsewhere:
-                raise Refused(f"another coordinator still holds an active claim on a story of this policy's allowlist: {elsewhere}; one active story at a time across every state directory and machine, so nothing is admitted until those claims are released, blocked or proposed by their own run", code="claim-active-elsewhere", claims=elsewhere)
+                raise Refused(f"another coordinator still holds an active claim on a story of this policy's allowlist: {elsewhere}; one active story at a time across every state directory and machine, so nothing is admitted until those claims are released, blocked or proposed by their own run (a stray or forged claim is cleared by the owner with dismiss-claim --issue <n> --comment-id <id>, or by deleting the comment)", code="claim-active-elsewhere", claims=elsewhere)
             state = StoryState(story=story, issue=entry.number, item_id=entry.item_id, phase="claim-incomplete", run_id=self.store.run_id,
                                claim={"baseline_sha": baseline_sha, "reserved_at": self.now(), "scope": decision.outcome, "worktree_path": None, "branch": None, "race_settled": False},
                                revisions=current)
@@ -903,15 +936,17 @@ class Coordinator:
             self._counts()
             self.store.save_run(self.run)
             self._post_intent(state, intent, phase_after="reserved")
-            self._settle_claim_race(state, intent, entry.number)
+            self._settle_claim_race(state, intent, entry.number, fresh)
             return state
 
-    def _settle_claim_race(self, state: StoryState, claim: Intent, issue: int) -> None:
+    def _settle_claim_race(self, state: StoryState, claim: Intent, issue: int, snapshot: Snapshot | None = None) -> None:
         """Two coordinators can both see no foreign claim and both post. After our claim landed
-        the claims are read again and the earliest one wins (creation time, then comment id).
-        A later claimant cancels itself in the same operation: its unlaunched authorization is
-        resolved structurally (``reserve`` never reported ``reserved``, so no task exists), the
-        release it owes is posted and the call refuses ``claim-race-lost``.
+        the claims are read again, on this story **and on every other allowlisted story** (the
+        single-active-story rule across machines is check-then-post without this), and the
+        earliest claim wins (creation time, then comment id). A later claimant cancels itself in
+        the same operation: its unlaunched authorization is resolved structurally (``reserve``
+        never reported ``reserved``, so no task exists), the release it owes is posted and the
+        call refuses ``claim-race-lost`` (same story) or ``claim-active-elsewhere`` (another story).
 
         The outcome is durable: ``claim.race_settled`` stays ``False`` until the re-read
         succeeded, so a transport failure or a crash here leaves a reservation that ``resume``
@@ -926,7 +961,9 @@ class Coordinator:
             self.store.save_story(state)
             self.store.journal(state.story, "claim-unverifiable", {"comment_id": claim.comment_id})
             raise Conflict(f"claim comment {claim.comment_id} of {state.story} is no longer readable after posting; the story is in conflict, nothing may be launched for it", code="claim-unverifiable", comment_id=claim.comment_id)
-        foreign = self._active_foreign_claims(issue, state.story, "claim race")
+        foreign = [{**m, "on_story": state.story} for m in self._active_foreign_claims(issue, state.story, "claim race")]
+        for sid, claims in self._claims_elsewhere(snapshot or self._fresh_snapshot(), state.story).items():
+            foreign += [{**m, "on_story": sid} for m in claims]
         earlier = sorted((m for m in foreign if (m["created_at"], m["comment_id"]) < (mine.created_at, mine.comment_id)), key=lambda m: (m["created_at"], m["comment_id"]))
         if not earlier:
             state.claim["race_settled"] = True
@@ -934,7 +971,10 @@ class Coordinator:
             self.store.journal(state.story, "claim-race-settled", {"ours": {"comment_id": mine.comment_id, "created_at": mine.created_at}, "later_claims": len(foreign)})
             return
         winner = earlier[0]
-        reason = f"lost the claim race for {state.story} to run {winner.get('run')} (comment {winner['comment_id']} at {winner['created_at']} precedes ours, {mine.comment_id} at {mine.created_at})"
+        same_story = winner["on_story"] == state.story
+        code = "claim-race-lost" if same_story else "claim-active-elsewhere"
+        reason = (f"lost the claim race for {state.story} to run {winner.get('run')} (comment {winner['comment_id']} at {winner['created_at']} precedes ours, {mine.comment_id} at {mine.created_at})" if same_story
+                  else f"another coordinator's claim on {winner['on_story']} (run {winner.get('run')}, comment {winner['comment_id']} at {winner['created_at']}) precedes our claim on {state.story} ({mine.comment_id} at {mine.created_at}); one active story at a time")
         resolved = []
         auth = state.unresolved_authorization()
         if auth is not None and auth["purpose"] == "implementation":
@@ -945,14 +985,14 @@ class Coordinator:
         state.blocked = {"reason": reason, "at": self.now(), "from_phase": "reserved", "cancelled": True, "conflict": True, "winner": winner, "abandoned_intents": abandoned, "authorizations_resolved": resolved}
         release = self._new_intent(state, "release", "release", f"Claim released by run `{self.store.run_id}`: {reason}. No completion is implied. Project Status is owner-maintained.")
         self.store.save_story(state)  # cancellation, the owed release and the resolution persist together
-        self.store.journal(state.story, "claim-race-lost", {"winner": winner, "ours": {"comment_id": mine.comment_id, "created_at": mine.created_at}, "authorizations_resolved": resolved})
+        self.store.journal(state.story, code, {"winner": winner, "ours": {"comment_id": mine.comment_id, "created_at": mine.created_at}, "authorizations_resolved": resolved})  # ``claim-race-lost`` (same story) or ``claim-active-elsewhere`` (another story)
         try:
             self._post_intent(state, release)
         except UnattendedError as exc:
             state.blocked["github_error"] = exc.as_dict()
             self.store.save_story(state)
             self.store.journal(state.story, "cancelled-github-write-failed", exc.as_dict())
-        raise Conflict(f"{state.story}: {reason}; this reservation is cancelled and released, nothing may be launched for it; its story slot and task authorization stay spent in this run (an issued slot is spent), so with max_stories_per_run = 1 the run admits nothing more and a new run id is needed", code="claim-race-lost", winner=winner)
+        raise Conflict(f"{state.story}: {reason}; this reservation is cancelled and released, nothing may be launched for it; its story slot and task authorization stay spent in this run (an issued slot is spent), so with max_stories_per_run = 1 the run admits nothing more and a new run id is needed", code=code, winner=winner)
 
     def bind_receipt(self, story: str, receipt: dict, worktree_path: str | None = None, branch: str | None = None, worktree_check: WorktreeCheck = git_worktree_check, authorization: str | None = None) -> StoryState:
         """Bind the delegated task's receipt to the story's unresolved authorization, consuming
@@ -1003,24 +1043,28 @@ class Coordinator:
                 if not state.predecessor_terminal(retained, identified=True):
                     raise Refused(f"bind-receipt: retained task {retained} has no identified terminal predecessor execution recorded for {story}; a new run of it cannot be bound", code="predecessor-not-terminal", task_id=retained)
             receipt = validate_receipt(receipt, target, role, self.store.bound_task_ids(), self.store.bound_executions(), retained)  # run-wide freshness of task ids (reviewers always fresh) and of (task, run) pairs
+            cleanup = stop or ("authorization-revoked" if revoked else None)
             if auth["purpose"] == "implementation":
                 if not worktree_path or not branch:
                     raise Refused("bind-receipt for the implementation task needs --worktree and --branch")
             elif auth["purpose"] == "review":
                 # review evidence must come from a checkout independent of the tree under review: the reviewer's own
-                # worktree is named, verified, and refused when it is the implementer's (a self-reported "worktree" proves nothing)
-                if not worktree_path or not branch:
-                    raise Refused("bind-receipt for the review task needs --worktree and --branch naming the reviewer's own checkout (isolation is verified, not taken from the receipt)", code="reviewer-worktree-required")
+                # worktree is named, verified, and refused when it is the implementer's (a self-reported "worktree" proves nothing).
+                # A receipt that binds for cleanup only authorizes no review, and the reviewer's worktree is usually gone
+                # after a revocation or a run stop: it binds on task identity alone, recording any path given.
+                if (not worktree_path or not branch) and (not cleanup or worktree_path or branch):
+                    raise Refused("bind-receipt for the review task needs --worktree and --branch naming the reviewer's own checkout (isolation is verified, not taken from the receipt); a cleanup-only receipt may omit both", code="reviewer-worktree-required")
                 claimed = (state.claim or {}).get("worktree_path")
-                if claimed:
+                if claimed and worktree_path:
                     theirs, ours = Path(worktree_path).resolve(), Path(claimed).resolve()
                     if theirs == ours or theirs.is_relative_to(ours) or ours.is_relative_to(theirs):
                         raise Refused(f"bind-receipt: the reviewer worktree {worktree_path} is, or is nested with, the implementer's claimed worktree {claimed}; a review in the tree under review is not independent", code="reviewer-worktree-shared", worktree=worktree_path, claimed=claimed)
             else:
                 worktree_path, branch = state.claim["worktree_path"], state.claim["branch"]
-            ok, why = worktree_check(worktree_path, branch)
-            if not ok:
-                raise Refused(f"worktree identity check failed: {why}", code="worktree-mismatch")
+            if not (cleanup and auth["purpose"] == "review"):
+                ok, why = worktree_check(worktree_path, branch)
+                if not ok:
+                    raise Refused(f"worktree identity check failed: {why}", code="worktree-mismatch")
             if auth["purpose"] == "implementation":
                 state.claim.update({"worktree_path": worktree_path, "branch": branch, "claimed_at": self.now()})
             auth["status"], auth["task_id"], auth["run_id"], auth["bound_at"] = "consumed", receipt["taskId"], receipt["runId"], self.now()
@@ -1028,9 +1072,9 @@ class Coordinator:
             if role == "implementer":
                 state.implementer_receipts.append(record)
             else:
-                state.reviewer_receipts.append({**record, "sha": auth["sha"], "worktree": worktree_path, "branch": branch, "head_at_bind": git_head(worktree_path)})  # the exact commit this reviewer was authorized for, the independent checkout it reviewed in, and what that checkout read at binding (observed, not asserted: the reviewer checks the SHA out itself)
+                verified = not cleanup  # a cleanup-only receipt records any path given, unverified (the checkout is usually gone)
+                state.reviewer_receipts.append({**record, "sha": auth["sha"], "worktree": worktree_path, "branch": branch, "worktree_verified": verified, "head_at_bind": git_head(worktree_path) if worktree_path and verified else None})  # the exact commit this reviewer was authorized for, the independent checkout it reviewed in, and what that checkout read at binding (observed, not asserted: the reviewer checks the SHA out itself)
             state.active_task = {"taskId": receipt["taskId"], "runId": receipt["runId"], "role": role, "authorization": auth["id"], "bound_at": self.now(), "retained": receipt["retained"]}
-            cleanup = stop or ("authorization-revoked" if revoked else None)
             if cleanup:
                 # Authorized before the stop or the revocation, possibly launched: keep the slot spent, the id bound
                 # and the task owned; authorize no work and leave the phase where it is.
@@ -1539,7 +1583,18 @@ class Coordinator:
                     if changed:
                         return self._cancel_stale_claim(state, claim, changed)
                     self._post_intent(state, claim, phase_after="reserved")
-                    self._settle_claim_race(state, claim, state.issue)
+                    self._settle_claim_race(state, claim, state.issue, fresh)
+            if claim is not None and claim.status == "done" and state.phase == "conflict" and (state.blocked or {}).get("race_unsettled") and self._claim_unsettled(state):
+                # our claim was not readable back when the race was first checked (read-after-write lag): if it is visible now, the
+                # conflict was never a conflict; restore the phase it came from and settle the race (a loss still cancels and releases)
+                if stop:
+                    self._withhold_reconciliation(state, claim, STOP_REASONS[stop] + " (claim unverifiable; cancel-run finishes the story)")
+                elif any(c.comment_id == claim.comment_id for c in self._marked_comments(state.issue, state.story, "claim re-verify")):
+                    state.phase, state.blocked = (state.blocked or {}).get("from_phase") or "reserved", None
+                    self.store.save_story(state)
+                    self.store.journal(story, "claim-reverified", {"comment_id": claim.comment_id, "phase": state.phase})
+                else:
+                    self.store.journal(story, "claim-still-unverifiable", {"comment_id": claim.comment_id})
             if claim is not None and claim.status == "done" and state.phase == "reserved" and self._claim_unsettled(state):
                 # the reservation posted its claim but the race re-read failed or the process died: settle it now (a lost race cancels and releases)
                 if stop:
@@ -1583,12 +1638,14 @@ class Coordinator:
                     changed = revision_diff(intent.preconditions.get("revisions", state.revisions), current)
                     if changed:
                         return self._cancel_stale_claim(state, intent, changed)
-                    elsewhere = self._claims_elsewhere(fresh, story)  # the same admission check as a fresh reserve, before the claim is posted
-                    if elsewhere:
-                        return self._cancel_stale_claim(state, intent, {f"claim elsewhere on {sid}": c for sid, c in elsewhere.items()}, why="another coordinator claimed another allowlisted story before this reservation completed")
+                    landed = any(self._same_effect(c, intent) for c in self._marked_comments(state.issue, story, "resume claim"))
+                    if not landed:  # nothing posted yet: the same admission check as a fresh reserve; a landed claim is settled earliest-wins below instead
+                        elsewhere = self._claims_elsewhere(fresh, story)
+                        if elsewhere:
+                            return self._cancel_stale_claim(state, intent, {f"claim elsewhere on {sid}": c for sid, c in elsewhere.items()}, why="another coordinator claimed another allowlisted story before this reservation completed")
                     self._post_intent(state, intent, phase_after="reserved" if state.phase == "claim-incomplete" else None)
                     self.store.journal(story, "reservation-completed-on-resume", {})
-                    self._settle_claim_race(state, intent, state.issue)
+                    self._settle_claim_race(state, intent, state.issue, fresh)
                 elif intent.kind == "proposal":
                     sha = intent.preconditions["sha"]
                     unresolved = state.unresolved_authorization()

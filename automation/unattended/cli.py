@@ -27,7 +27,7 @@ from .probes import check_permissions, run_commands, write_probe
 from .state import Store, utcnow, validate_run_id
 
 # Every command that can reach a GitHub write, directly or through a fallback (authorize-repair may block).
-WRITE_COMMANDS = {"reserve", "authorize-repair", "propose-evidence", "block", "cancel", "cancel-run", "resume", "rebase-revisions", "probe-write"}
+WRITE_COMMANDS = {"reserve", "authorize-repair", "propose-evidence", "block", "cancel", "cancel-run", "resume", "rebase-revisions", "probe-write", "dismiss-claim"}
 
 
 def _json(obj) -> None:
@@ -117,6 +117,8 @@ def build_parser() -> argparse.ArgumentParser:
     rs = sub.add_parser("resume"); rs.add_argument("story")
     rb = sub.add_parser("rebase-revisions", help="explicitly accept changed GitHub revisions after human verification"); rb.add_argument("story"); rb.add_argument("--reason", required=True)
     sub.add_parser("status")
+    dc = sub.add_parser("dismiss-claim", help="owner action: post a journaled dismissal of a stray or forged claim marker (by comment id) so it no longer blocks admission anywhere; never dismisses this run's own claim; needs --live and the --run-id of an existing run (activated earlier on the real transport), which journals it")
+    dc.add_argument("--issue", type=int, required=True); dc.add_argument("--comment-id", type=int, required=True); dc.add_argument("--reason", required=True)
     return p
 
 
@@ -208,6 +210,9 @@ def main(argv: list[str] | None = None) -> int:
             state = coordinator.rebase_revisions(args.story, args.reason)
         elif args.command == "status":
             _json(coordinator.status())
+            return 0
+        elif args.command == "dismiss-claim":
+            _json(coordinator.dismiss_claim(args.issue, args.comment_id, args.reason))
             return 0
         else:  # pragma: no cover
             raise UnattendedError(f"unknown command {args.command}")

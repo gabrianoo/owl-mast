@@ -11,7 +11,7 @@ reviewable, journaled decision that names what was approved, so that the shipped
 the committed candidate and copied examples can never dispatch by accident.
 
 An activation is current only when all of these hold at the moment of the operation:
-``approved = true``; it names this repository, the canonical digest of the policy in use (``Policy.digest``: the parsed content, so comments and whitespace do not change it; there is no raw-bytes alias here, an activation is written fresh for one run),
+``approved = true``; it names this repository, the canonical digest of the policy in use (``Policy.digest``: the parsed content, so comments and whitespace do not change it; an activation approved before the canonical digest existed may still name the raw-bytes digest of exactly these bytes),
 the ``live`` environment and the exact run id; its story scope, targets and budgets equal
 the policy's; ``issued_at <= now <= expires_at`` with a window of at most
 :data:`MAX_WINDOW_MINUTES`; and it cites the published lifecycle smoke and fresh review.
@@ -121,8 +121,9 @@ class Activation:
             out.append(("activation-invalid", f"binding.environment must be 'live', not {self.environment!r}"))
         if self.repository != policy.repo_slug:
             out.append(("activation-mismatch", f"binding.repository {self.repository!r} is not the policy repository {policy.repo_slug!r}"))
-        if self.policy_digest != policy.digest:
-            out.append(("activation-mismatch", f"binding.policy_digest {self.policy_digest[:12]} is not the digest of the policy in use ({policy.digest[:12]}); the policy changed since approval or another policy file is in use"))
+        if self.policy_digest not in (policy.digest, getattr(policy, "raw_digest", None)):
+            # the canonical digest, or the legacy raw-bytes digest of exactly these bytes (an activation approved before the canonical digest existed)
+            out.append(("activation-mismatch", f"binding.policy_digest {self.policy_digest[:12]} is neither the canonical digest of the policy in use ({policy.digest[:12]}, see check-activation) nor the legacy raw-bytes digest of exactly these bytes ({str(getattr(policy, 'raw_digest', ''))[:12]}); the policy changed since approval or another policy file is in use"))
         if run_id is not None and self.run_id != run_id:
             out.append(("activation-mismatch", f"binding.run_id {self.run_id!r} is not this run ({run_id!r}); an activation authorizes exactly one run"))
         if set(self.stories) != set(policy.allow):

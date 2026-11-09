@@ -56,32 +56,36 @@ def run_cli(*argv) -> tuple[int, dict]:
     return code, json.loads(buf.getvalue())
 
 
+def arm_failure_after_claim(h: Harness, reads_after_post: int, failure=None, hide_ours: bool = False):
+    """Fail (or hide our own claim in) the N-th comment read after our claim comment lands."""
+    original_list, original_post = h.fake.list_comments, h.fake.post_comment
+    state = {"posted": False, "reads": 0}
+
+    def post(number, body):
+        comment = original_post(number, body)
+        if "kind=claim" in body:
+            state["posted"] = True
+        return comment
+
+    def listing(number):
+        comments = original_list(number)
+        if state["posted"]:
+            state["reads"] += 1
+            if state["reads"] == reads_after_post:
+                if failure is not None:
+                    raise failure
+            if state["reads"] >= reads_after_post and hide_ours:
+                return [c for c in comments if not (c.author == "machine" and (c.marker or {}).get("kind") == "claim" and (c.marker or {}).get("run") == "run-1")]
+        return comments
+
+    h.fake.list_comments, h.fake.post_comment = listing, post
+
+
 class ClaimRaceDurabilityTests(unittest.TestCase):
     """Finding 1: the race is settled on every path, or the reservation is not reported."""
 
     def arm_failure_after_claim(self, h: Harness, reads_after_post: int, failure=None, hide_ours: bool = False):
-        """Fail (or hide our own claim in) the N-th comment read after our claim comment lands."""
-        original_list, original_post = h.fake.list_comments, h.fake.post_comment
-        state = {"posted": False, "reads": 0}
-
-        def post(number, body):
-            comment = original_post(number, body)
-            if "kind=claim" in body:
-                state["posted"] = True
-            return comment
-
-        def listing(number):
-            comments = original_list(number)
-            if state["posted"]:
-                state["reads"] += 1
-                if state["reads"] == reads_after_post:
-                    if failure is not None:
-                        raise failure
-                if state["reads"] >= reads_after_post and hide_ours:
-                    return [c for c in comments if not (c.author == "machine" and (c.marker or {}).get("kind") == "claim" and (c.marker or {}).get("run") == "run-1")]
-            return comments
-
-        h.fake.list_comments, h.fake.post_comment = listing, post
+        arm_failure_after_claim(h, reads_after_post, failure, hide_ours)
 
     def test_failed_re_read_leaves_the_race_unsettled_until_resume_settles_it(self):
         h = Harness(small_backlog())
