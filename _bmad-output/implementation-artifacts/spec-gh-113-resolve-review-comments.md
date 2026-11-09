@@ -62,6 +62,7 @@ context: []
   - part G retries body-only on any second 422 and splits a body over 60,000 characters into continuation reviews;
   - bmad-review presents the full report for content with no reviewed SHA, and the PR lookup strips a remote prefix from the base;
   - bmad-code-review posts for a spec `baseline_commit` diff on a PR branch, filters the compare diff for file groups instead of rebuilding from HEAD, and refuses to apply patches when the checkout is not at the reviewed SHA.
+- Sixth pass (verification review 5828777132 at a2f4e99: 2 findings, one per file): part H reads comments from `pulls/<number>/comments?per_page=100` filtered by `pull_request_review_id`, because `reviews/<id>/comments` returns `null` for `line` and `original_line` (checked against review 5828354337: 24 of 24 pairs come back from the PR-level endpoint, 0 from the review-level one).
 
 ## Review Triage Log
 
