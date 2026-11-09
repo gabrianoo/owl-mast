@@ -50,6 +50,12 @@ context: []
   - bmad-review excludes uncommitted content, handles lookup errors and several PRs explicitly; bmad-code-review takes a PR source from `gh pr view`, defines a run as one pass through step-04 so the terminal pass does not post twice, and records that a session abandoned at section 4 or 5 posts nothing;
   - the commands paragraph is split from the credential rule and says that bare numbers and branches resolve against the checkout, so the report prints the PR URL.
 - Fourth pass, spec OM-01.01: blank lines removed so the Implementation Notes render as one list; the archived-files note stays where it is.
+- Fifth pass (round-4 review 5828354337 at 1e8de4a: 3 reopened threads and 4 new findings); each outcome is in its GitHub thread reply:
+  - a diff base is defined for PR sources: the base branch for an OPEN PR, the merge commit's first parent for a MERGED PR (verified on #112: `main...head` gives 0 files, `<mergeCommit>^1...head` gives 100); staging, part A, and part D all use it, and a merged PR is never told to push;
+  - a staging fetch that fails or is truncated stops the run; truncation is defined as 300 or more files in the JSON compare, and a file with changes but no `patch` is unpatched, so its findings go in the body;
+  - in a range review, removed-line findings go in the body because LEFT numbers refer to the range start;
+  - part H fetches `path:line` pairs, counts them with `printf '%s' | grep -c .` (0 for an empty list), and finds missing comments by multiset difference;
+  - part G's timeout path looks for the exact heading this POST sent, accepts only a review not in the part B list, retries the lookup once after a wait, and never POSTs again blindly.
 
 ## Review Triage Log
 
