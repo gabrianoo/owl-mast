@@ -250,7 +250,7 @@ class LiveGateWordingTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, "HTTP/2.0 200\r\nx-oauth-scopes: repo, project\r\n\r\n" + json.dumps({"permissions": {"push": True, "admin": True}}), "")
             if argv[:3] == ["gh", "auth", "status"]:
                 return subprocess.CompletedProcess(argv, 0, "ok", "")
-            return subprocess.CompletedProcess(argv, 0, json.dumps({"data": {"user": {"projectV2": {"id": "P", "title": "t", "viewerCanUpdate": True}}}}), "")
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"data": {"repositoryOwner": {"projectV2": {"id": "P", "title": "t", "viewerCanUpdate": True}}}}), "")
 
         report = check_permissions("o", "r", "o", 2, runner)
         self.assertTrue(report["basic_access"])

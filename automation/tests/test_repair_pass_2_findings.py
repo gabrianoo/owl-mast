@@ -396,7 +396,7 @@ class RP2F1UnresolvedAuthorizationsAreOwnershipObligations(unittest.TestCase):
         h = Harness(small_backlog())
         try:
             marker = render_marker(kind="claim", op="claim", run="run-1", story=S)
-            h.fake.comments[21] += [Comment(1, marker + "\nfirst", "x", "t"), Comment(2, marker + "\nsecond", "y", "t")]
+            h.fake.comments[21] += [Comment(1, marker + "\nfirst", "machine", "t"), Comment(2, marker + "\nsecond", "machine", "t")]
             with self.assertRaises(Exception):
                 h.reserve()
             self.assertEqual(h.store.load_story(S).phase, "conflict")

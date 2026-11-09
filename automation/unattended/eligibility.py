@@ -97,10 +97,6 @@ def decide(story_id: str, snapshot: Snapshot, policy: Policy) -> Decision:
             return False, f"{epic_id}: epic prerequisite incomplete ({', '.join(incomplete[:4]) or 'no stories'})"
         return True, f"{epic_id}: all stories Done and closed"
 
-    for dep_id in entry.depends_on:
-        dep = by_id.get(dep_id)
-        ok, text = epic_complete(dep_id) if dep is not None and dep.kind == "epic" else dependency_state(dep, dep_id)
-        (met if ok else unmet).append(text)
     parent = snapshot.by_number().get(entry.parent_number) if entry.parent_number else None
     if parent is None:
         return Decision(story_id, "unknown-eligibility", ("story has no native parent epic",), entry.number)
@@ -108,6 +104,16 @@ def decide(story_id: str, snapshot: Snapshot, policy: Policy) -> Decision:
         return Decision(story_id, "unknown-eligibility", (f"parent #{parent.number} is {parent.stable_id}, not {entry.epic_id}",), entry.number)
     if not parent.epic_prerequisites_known:
         return Decision(story_id, "unknown-eligibility", (f"{parent.stable_id} 'Epic prerequisites' declaration missing or not understood; fail closed",), entry.number)
+    # A dependency or prerequisite that is not in the snapshot is an unknown fact, not an unmet
+    # one: it fails closed before the contract-design exception can admit the story over it.
+    missing = [f"{dep_id}: dependency not in the snapshot" for dep_id in entry.depends_on if dep_id not in by_id]
+    missing += [f"{prereq}: epic prerequisite not in the snapshot" for prereq in parent.epic_prerequisites if prereq not in by_id]
+    if missing:
+        return Decision(story_id, "unknown-eligibility", tuple(missing), entry.number)
+    for dep_id in entry.depends_on:
+        dep = by_id[dep_id]
+        ok, text = epic_complete(dep_id) if dep.kind == "epic" else dependency_state(dep, dep_id)
+        (met if ok else unmet).append(text)
     for prereq in parent.epic_prerequisites:
         ok, text = epic_complete(prereq)
         (met if ok else unmet).append(text)

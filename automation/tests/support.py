@@ -81,7 +81,7 @@ def run_of(task_id: str, ordinal: int = 1) -> str:
 
 
 IMPLEMENTER = {"taskId": "task-impl-1", "runId": run_of("task-impl-1"), "providerInstanceId": "claudeAgent", "model": "claude-fable-5-1", "options": [{"id": "effort", "value": "high"}], "isolation": "worktree"}
-REVIEWER = {"taskId": "task-review-1", "runId": run_of("task-review-1"), "providerInstanceId": "codex", "model": "gpt-6-astra", "options": {"reasoningEffort": "high"}}
+REVIEWER = {"taskId": "task-review-1", "runId": run_of("task-review-1"), "providerInstanceId": "codex", "model": "gpt-6-astra", "options": {"reasoningEffort": "high"}, "isolation": "worktree"}
 
 
 def receipt(base: dict, task_id: str, ordinal: int = 1) -> dict:

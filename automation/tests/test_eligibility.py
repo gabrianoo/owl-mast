@@ -23,7 +23,7 @@ class EligibilityTests(unittest.TestCase):
         return load_policy(write_policy(self.dir, **overrides))
 
     def snap(self):
-        return take_snapshot(self.fake, "x/y", "now")
+        return take_snapshot(self.fake, "gabrianoo/owl-mast", "now")
 
     def test_ready_story_with_done_closed_dependency_is_dispatchable(self):
         d = decide("OM-01.02", self.snap(), self.policy(allow='["OM-01.02"]'))

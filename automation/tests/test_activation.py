@@ -56,7 +56,7 @@ run_id = {fields['run_id']}
 stories = {fields['stories']}
 [targets]
 implementer = {{ provider = "claudeAgent", model = {fields['impl_model']}, isolation = "worktree", options = {{ effort = "high" }} }}
-reviewer = {{ provider = "codex", model = {fields['rev_model']}, options = {{ reasoningEffort = "high" }} }}
+reviewer = {{ provider = "codex", model = {fields['rev_model']}, isolation = "worktree", options = {{ reasoningEffort = "high" }} }}
 [budgets]
 max_stories_per_run = 1
 max_concurrent_implementers = 1
@@ -225,9 +225,21 @@ class AdmissionTests(unittest.TestCase):
         with self.assertRaises(Refused) as ctx:  # the activation names the old digest, so a new run is refused…
             Coordinator(self.lh.h.fake, drifted, Store(self.lh.h.state_dir, "run-new"), now=lambda: T0, live=True, activation=self.lh.activation)
         self.assertEqual(ctx.exception.code, "activation-mismatch")
-        with self.assertRaises(Refused) as ctx:  # …and the existing run is bound to the old policy digest
-            Coordinator(self.lh.h.fake, drifted, Store(self.lh.h.state_dir, "run-live"), now=lambda: T0, live=True, activation=self.lh.activation)
-        self.assertEqual(ctx.exception.code, "run-binding-mismatch")
+        # …and the existing run opens under the changed policy as a stopped run (policy drift, journaled once):
+        # the activation binds the old digest so advancement refuses, while cleanup proceeds (PR #107 review finding 23)
+        drifted_c = Coordinator(self.lh.h.fake, drifted, Store(self.lh.h.state_dir, "run-live"), now=lambda: T0, live=True, activation=self.lh.activation)
+        status = drifted_c.status()
+        self.assertEqual((status["stop"], status["policy_drift"]["policy_digest"]), ("policy-drift", drifted.digest))
+        with self.assertRaises(Refused) as ctx:
+            drifted_c.bind_receipt(S, IMPLEMENTER, str(self.lh.h.worktree), "t3/om-01-02", ok_worktree)
+        self.assertEqual((ctx.exception.code, ctx.exception.detail.get("bound_for_cleanup")), ("policy-drift", True))  # a late receipt binds for cleanup only
+        with self.assertRaises(Refused) as ctx:
+            drifted_c.record_head(S, self.lh.h.sha, self.lh.terminal())
+        self.assertEqual(ctx.exception.code, "activation-mismatch")  # the activation names the old digest: nothing advances
+        result = drifted_c.cancel_run("policy changed under the run", task_evidence={S: self.lh.terminal(status="cancelled")})
+        self.assertEqual([s["phase"] for s in result["cancelled"]], ["cancelled"])
+        events = [e["event"] for e in Store(self.lh.h.state_dir, "run-live").read_journal()]
+        self.assertEqual(events.count("policy-drift"), 1)
 
     def test_changed_activation_refuses_every_operation_including_cleanup(self):
         c = self.lh.coordinator()

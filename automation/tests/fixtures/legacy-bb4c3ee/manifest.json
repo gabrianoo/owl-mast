@@ -24,7 +24,7 @@
      "taskId": "task-impl-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmp0otb3loz/wt"
+   "worktree_path_at_generation": "/tmp/tmpsjray6uk/wt"
   },
   "implementer-cancelled-checks-passed": {
    "approved_sha": null,
@@ -49,7 +49,7 @@
      "taskId": "task-impl-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpnvpsx_ho/wt"
+   "worktree_path_at_generation": "/tmp/tmp5o_m48t5/wt"
   },
   "implementer-cancelled-done-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -87,7 +87,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmp0pehy1bv/wt"
+   "worktree_path_at_generation": "/tmp/tmp5j9qvn3x/wt"
   },
   "implementer-cancelled-head-recorded": {
    "approved_sha": null,
@@ -112,7 +112,7 @@
      "taskId": "task-impl-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpdnc6al_k/wt"
+   "worktree_path_at_generation": "/tmp/tmp6khx9h3n/wt"
   },
   "implementer-cancelled-landed-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -150,7 +150,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpt2_0si48/wt"
+   "worktree_path_at_generation": "/tmp/tmppvnr838d/wt"
   },
   "implementer-cancelled-pending-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -188,7 +188,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpouqnqanm/wt"
+   "worktree_path_at_generation": "/tmp/tmpxm321pcl/wt"
   },
   "implementer-cancelled-review-approved": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -221,7 +221,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpcjl5zwn2/wt"
+   "worktree_path_at_generation": "/tmp/tmphbhwslfr/wt"
   },
   "implementer-completed-checks-failed": {
    "approved_sha": null,
@@ -246,7 +246,7 @@
      "taskId": "task-impl-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpwlq7or65/wt"
+   "worktree_path_at_generation": "/tmp/tmp83iovcfx/wt"
   },
   "implementer-completed-checks-passed": {
    "approved_sha": null,
@@ -271,7 +271,7 @@
      "taskId": "task-impl-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmppe78xna4/wt"
+   "worktree_path_at_generation": "/tmp/tmpdnksnp6t/wt"
   },
   "implementer-completed-done-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -309,7 +309,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpxgy19g55/wt"
+   "worktree_path_at_generation": "/tmp/tmpw1gmht0r/wt"
   },
   "implementer-completed-head-recorded": {
    "approved_sha": null,
@@ -334,7 +334,7 @@
      "taskId": "task-impl-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpfhda06rj/wt"
+   "worktree_path_at_generation": "/tmp/tmpikosf8mt/wt"
   },
   "implementer-completed-landed-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -372,7 +372,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpz3oeim4r/wt"
+   "worktree_path_at_generation": "/tmp/tmpqszuseqr/wt"
   },
   "implementer-completed-pending-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -410,7 +410,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmply499ol9/wt"
+   "worktree_path_at_generation": "/tmp/tmpw7em_qln/wt"
   },
   "implementer-completed-review-approved": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -443,7 +443,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpxbpt2kph/wt"
+   "worktree_path_at_generation": "/tmp/tmp4wnp546h/wt"
   },
   "implementer-failed-checks-failed": {
    "approved_sha": null,
@@ -468,7 +468,7 @@
      "taskId": "task-impl-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmp1t_lvug9/wt"
+   "worktree_path_at_generation": "/tmp/tmpksl7i5o3/wt"
   },
   "implementer-failed-checks-passed": {
    "approved_sha": null,
@@ -493,7 +493,7 @@
      "taskId": "task-impl-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpj8wmqn5h/wt"
+   "worktree_path_at_generation": "/tmp/tmpog1e32wt/wt"
   },
   "implementer-failed-done-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -531,7 +531,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpbj9ay6ra/wt"
+   "worktree_path_at_generation": "/tmp/tmpxdpd5w24/wt"
   },
   "implementer-failed-head-recorded": {
    "approved_sha": null,
@@ -556,7 +556,7 @@
      "taskId": "task-impl-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmp2tr3zrco/wt"
+   "worktree_path_at_generation": "/tmp/tmpjrtvbnta/wt"
   },
   "implementer-failed-landed-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -594,7 +594,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmprq9z88no/wt"
+   "worktree_path_at_generation": "/tmp/tmpkpkbf2ka/wt"
   },
   "implementer-failed-pending-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -632,7 +632,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpvill6v9j/wt"
+   "worktree_path_at_generation": "/tmp/tmptb5ys0mu/wt"
   },
   "implementer-failed-review-approved": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -665,7 +665,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmphh35b4s9/wt"
+   "worktree_path_at_generation": "/tmp/tmpcodtvahk/wt"
   },
   "implementer-interrupted-checks-failed": {
    "approved_sha": null,
@@ -690,7 +690,7 @@
      "taskId": "task-impl-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmp24r1djs9/wt"
+   "worktree_path_at_generation": "/tmp/tmprgspzo1h/wt"
   },
   "implementer-interrupted-checks-passed": {
    "approved_sha": null,
@@ -715,7 +715,7 @@
      "taskId": "task-impl-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpummu_vtj/wt"
+   "worktree_path_at_generation": "/tmp/tmpggiykx0p/wt"
   },
   "implementer-interrupted-done-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -753,7 +753,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpzwyl04kx/wt"
+   "worktree_path_at_generation": "/tmp/tmp0uwnb6hc/wt"
   },
   "implementer-interrupted-head-recorded": {
    "approved_sha": null,
@@ -778,7 +778,7 @@
      "taskId": "task-impl-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpd7z2aymy/wt"
+   "worktree_path_at_generation": "/tmp/tmpx9fxlpwu/wt"
   },
   "implementer-interrupted-landed-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -816,7 +816,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmp1mecv02o/wt"
+   "worktree_path_at_generation": "/tmp/tmp8r5rdips/wt"
   },
   "implementer-interrupted-pending-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -854,7 +854,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmp1pph4a8z/wt"
+   "worktree_path_at_generation": "/tmp/tmpt2do6yvq/wt"
   },
   "implementer-interrupted-review-approved": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -887,7 +887,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpw3e1qzdv/wt"
+   "worktree_path_at_generation": "/tmp/tmpnl83jdfo/wt"
   },
   "reviewer-cancelled-done-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -925,7 +925,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpfuu19eoz/wt"
+   "worktree_path_at_generation": "/tmp/tmpyte_n73f/wt"
   },
   "reviewer-cancelled-landed-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -963,7 +963,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpbov8ycj0/wt"
+   "worktree_path_at_generation": "/tmp/tmpkzgkt0ax/wt"
   },
   "reviewer-cancelled-pending-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -1001,7 +1001,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpod3c2tpo/wt"
+   "worktree_path_at_generation": "/tmp/tmpfb064pns/wt"
   },
   "reviewer-cancelled-review-approved": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -1034,7 +1034,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpgxg9qk43/wt"
+   "worktree_path_at_generation": "/tmp/tmp49se3fu6/wt"
   },
   "reviewer-completed-done-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -1072,7 +1072,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpp_bntuf3/wt"
+   "worktree_path_at_generation": "/tmp/tmpw4jrxe8o/wt"
   },
   "reviewer-completed-landed-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -1110,7 +1110,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmp8czalixp/wt"
+   "worktree_path_at_generation": "/tmp/tmphw6lr6tu/wt"
   },
   "reviewer-completed-pending-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -1148,7 +1148,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmp9lc9em11/wt"
+   "worktree_path_at_generation": "/tmp/tmpa3jxjw8u/wt"
   },
   "reviewer-completed-review-approved": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -1181,7 +1181,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpifms539v/wt"
+   "worktree_path_at_generation": "/tmp/tmpo4_o1447/wt"
   },
   "reviewer-failed-done-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -1219,7 +1219,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmp7gce61vm/wt"
+   "worktree_path_at_generation": "/tmp/tmp64vjn20n/wt"
   },
   "reviewer-failed-landed-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -1257,7 +1257,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpco3n9ybo/wt"
+   "worktree_path_at_generation": "/tmp/tmpcj_r8ovg/wt"
   },
   "reviewer-failed-pending-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -1295,7 +1295,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmp98ooz689/wt"
+   "worktree_path_at_generation": "/tmp/tmpo_ncy6yu/wt"
   },
   "reviewer-failed-review-approved": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -1328,7 +1328,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmp8c2onqz0/wt"
+   "worktree_path_at_generation": "/tmp/tmpjlh9tl0_/wt"
   },
   "reviewer-interrupted-done-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -1366,7 +1366,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpqiwnyx2o/wt"
+   "worktree_path_at_generation": "/tmp/tmpn35q2g89/wt"
   },
   "reviewer-interrupted-landed-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -1404,7 +1404,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpjv3sa8v0/wt"
+   "worktree_path_at_generation": "/tmp/tmpgb_e4267/wt"
   },
   "reviewer-interrupted-pending-proposal": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -1442,7 +1442,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmpw7ebspwt/wt"
+   "worktree_path_at_generation": "/tmp/tmpn51__g9k/wt"
   },
   "reviewer-interrupted-review-approved": {
    "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -1475,7 +1475,7 @@
      "taskId": "task-review-1"
     }
    ],
-   "worktree_path_at_generation": "/tmp/tmp467mqz7e/wt"
+   "worktree_path_at_generation": "/tmp/tmpw13jqvgc/wt"
   }
  },
  "sha": "0399856038fd9fd1eac8bd25460edb159ae6e011"

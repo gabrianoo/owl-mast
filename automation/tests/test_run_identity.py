@@ -357,6 +357,8 @@ class HistoricalCopyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             copy = Path(tmp) / "copy"
             shutil.copytree(HISTORICAL, copy)
+            policy_copy = copy / "policy.toml"  # LABELLED EDIT of the temporary copy only: the backup predates targets.reviewer.isolation; the digest change is policy drift (a stop), and reconcile/cancel are cleanup
+            policy_copy.write_text(policy_copy.read_text(encoding="utf-8").replace('model = "gpt-6-astra"\n', 'model = "gpt-6-astra"\nisolation = "worktree"\n', 1), encoding="utf-8")
             supplied = json.loads(SUPPLIED.read_text())
             dispatch = json.loads((HISTORICAL / "repair-dispatch.json").read_text())
             rec = {"taskId": supplied["taskId"], "runId": supplied["runId"], "providerInstanceId": supplied["providerInstanceId"], "model": supplied["model"], "options": supplied["options"], "isolation": "worktree",

@@ -14,6 +14,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from .errors import Refused
 from .github import IssueRecord, ProjectItem, Transport
 
 ID_MARKER_RE = re.compile(r"<!--\s*owl-mast-id:\s*(?P<id>E\d{2}|OM-\d{2}\.\d{2}|[A-Z]+-[0-9A-Z.]+)\s*-->")
@@ -155,11 +156,26 @@ def normalize(issue: IssueRecord, item: ProjectItem | None, body_sha256: str) ->
     )
 
 
+def project_items_for(items: list[ProjectItem], repo: str) -> dict[int, ProjectItem]:
+    """The Project items that belong to ``repo``, keyed by issue number. Items of other
+    repositories (a user Project can hold several) and items whose repository is unknown are
+    dropped: another repository's Status must never attach to this backlog's story. Two items
+    for one issue of this repository are ambiguous and refuse."""
+    out: dict[int, ProjectItem] = {}
+    for item in items:
+        if item.issue_number is None or item.repository != repo:
+            continue
+        if item.issue_number in out:
+            raise Refused(f"Project holds more than one item for {repo}#{item.issue_number} ({out[item.issue_number].item_id}, {item.item_id}); the Status is ambiguous, nothing is admitted", code="ambiguous-project-item", issue=item.issue_number)
+        out[item.issue_number] = item
+    return out
+
+
 def take_snapshot(transport: Transport, repo: str, now: str) -> Snapshot:
     import hashlib
 
     issues = transport.list_issues()
-    items = {i.issue_number: i for i in transport.list_project_items() if i.issue_number is not None}
+    items = project_items_for(transport.list_project_items(), repo)
     entries = [normalize(i, items.get(i.number), hashlib.sha256(i.body.encode("utf-8")).hexdigest()) for i in issues]
     return Snapshot(now, repo, entries)
 

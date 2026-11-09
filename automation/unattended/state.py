@@ -22,9 +22,11 @@ story files under the lock; the counters in ``run.json`` are a refreshed cache f
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
+import re
 import tempfile
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
@@ -33,6 +35,16 @@ from pathlib import Path
 
 from .activation import Activation, refresh_activation, validate_binding, validate_high_water, validate_stop_record
 from .errors import Refused
+
+# A run id names a directory under the state dir and a marker value: one path segment, no
+# separators, no leading dot, at most 64 characters.
+RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def validate_run_id(run_id) -> str:
+    if not isinstance(run_id, str) or not RUN_ID_RE.match(run_id) or run_id in (".", "..") or ".." in run_id.split("."):
+        raise Refused(f"run id {run_id!r} is invalid: one path segment of [A-Za-z0-9._-] (1..64 characters, starting with a letter or digit)", code="run-id-invalid", run_id=str(run_id))
+    return run_id
 
 PHASES = ("claim-incomplete", "reserved", "claimed", "implemented", "checks-passed", "checks-failed", "review-authorized", "review-requested", "review-approved", "changes-requested", "repair-authorized", "proposed", "blocked", "cancelled", "conflict")
 ACTIVE_PHASES = ("claim-incomplete", "reserved", "claimed", "implemented", "checks-passed", "checks-failed", "review-authorized", "review-requested", "review-approved", "changes-requested", "repair-authorized")
@@ -53,6 +65,21 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def fsync_directory(path: Path) -> None:
+    """Make a rename in ``path`` durable: without this a power loss can bring the old file back.
+    A filesystem that cannot sync a directory handle (``EINVAL``/``ENOTSUP`` on some network or
+    translated mounts) leaves the write as durable as the file sync made it; any other error
+    propagates, the write having already landed."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        if exc.errno not in (errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP):
+            raise
+    finally:
+        os.close(fd)
+
+
 def atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=path.name, suffix=".tmp", dir=path.parent)
@@ -68,6 +95,7 @@ def atomic_write_text(path: Path, text: str) -> None:
         except OSError:
             pass
         raise
+    fsync_directory(path.parent)
 
 
 class StoreBusy(Refused):
@@ -263,8 +291,8 @@ class StoryState:
 class Store:
     def __init__(self, state_dir: Path, run_id: str):
         self.state_dir = Path(state_dir)
-        self.root = self.state_dir / run_id
-        self.run_id = run_id
+        self.run_id = validate_run_id(run_id)  # one directory segment: no escape from the state dir, no shared root
+        self.root = self.state_dir / self.run_id
         self._lock_depth = 0
         self._lock_fh = None
         self._lock_owner = None
@@ -378,9 +406,11 @@ class Store:
 
     def ensure_run(self, repo: str, policy_digest: str, environment: str, activation: Activation | None = None, policy=None, now: str | None = None) -> RunState:
         """Create the run or validate its binding, under the store lock. A run belongs to exactly
-        one repository, policy digest and transport environment (fixture or live); any other
-        pairing is refused before recovery or effects, so synthetic state can never drive
-        production.
+        one repository and transport environment (fixture or live); any other pairing is refused
+        before recovery or effects, so synthetic state can never drive production. A run is also
+        bound to the policy digest it was created under: reopening it under a policy whose bytes
+        changed is **policy drift**, journaled once here and reported by the coordinator as a run
+        stop (nothing is admitted or advanced; cleanup proceeds), never a silent rebind.
 
         This is the only place a live run is created. It needs the loaded :class:`Activation`
         itself (never a dictionary), the :class:`Policy` in use and the current time, and it
@@ -393,6 +423,7 @@ class Store:
         call; a presented activation must be the one the run was created under."""
         with self.locked():
             run = self.bound_run()
+            created = run is None
             if run is None:
                 retained = self.retained_artifacts()
                 if retained:
@@ -416,11 +447,16 @@ class Store:
                 run = RunState(self.run_id, repo, policy_digest, utcnow(), environment=environment, activation=binding)
                 self.save_run(run)
                 self.journal(None, "run-started", {"repo": repo, "policy_digest": policy_digest, "environment": environment, "activation": run.activation})
-            elif (run.repo, run.policy_digest) != (repo, policy_digest):
-                raise Refused(f"run {self.run_id} is bound to {run.repo} / policy {run.policy_digest[:12]}; refusing {repo} / {policy_digest[:12]}", code="run-binding-mismatch")
+            elif run.repo != repo:
+                raise Refused(f"run {self.run_id} is bound to {run.repo}; refusing {repo}", code="run-binding-mismatch")
             elif run.environment != environment:
                 raise Refused(f"run {self.run_id} state belongs to the {run.environment!r} environment; refusing to reuse it with a {environment!r} transport", code="environment-mismatch")
-            elif environment == "live" and activation is not None:
+            elif run.policy_digest != policy_digest:
+                # a changed policy strands nothing: the drift is recorded once and the coordinator treats it as a run stop
+                last = next((e for e in reversed(self.read_journal()) if e.get("event") == "policy-drift"), None)
+                if not last or (last.get("detail") or {}).get("policy_digest") != policy_digest:
+                    self.journal(None, "policy-drift", {"bound_digest": run.policy_digest, "policy_digest": policy_digest, "consequence": "advancing refuses policy-drift; cleanup proceeds under the recorded binding"})
+            if not created and environment == "live" and activation is not None:
                 if not isinstance(activation, Activation):
                     raise Refused(f"run {self.run_id}: an activation is presented as the loaded document, not as a dictionary", code="activation-invalid")
                 if not run.activation:
@@ -433,11 +469,27 @@ class Store:
     def story_path(self, story: str) -> Path:
         return self.root / "stories" / f"{story}.json"
 
+    def _read_story(self, path: Path) -> StoryState:
+        """One story checkpoint, fail-closed: unreadable JSON, a non-object or a shape the
+        dataclass cannot take refuse ``state-corrupt`` (a schema mismatch keeps its own code)."""
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            raise Refused(f"run {self.run_id}: story file {path.name} is not readable JSON ({exc}); nothing is advanced or released on it (restore it from the run that wrote it, or recover by hand)", code="state-corrupt", path=path.name) from exc
+        if not isinstance(raw, dict):
+            raise Refused(f"run {self.run_id}: story file {path.name} holds a {type(raw).__name__}, not a story record; nothing is advanced or released on it", code="state-corrupt", path=path.name)
+        try:
+            return StoryState.from_dict(raw)
+        except Refused:
+            raise
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise Refused(f"run {self.run_id}: story file {path.name} does not fit the story record shape ({exc}); nothing is advanced or released on it", code="state-corrupt", path=path.name) from exc
+
     def load_story(self, story: str) -> StoryState | None:
         path = self.story_path(story)
         if not path.exists():
             return None
-        return StoryState.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        return self._read_story(path)
 
     def save_story(self, state: StoryState) -> None:
         state.updated_at = utcnow()
@@ -447,7 +499,30 @@ class Store:
         folder = self.root / "stories"
         if not folder.exists():
             return []
-        return [StoryState.from_dict(json.loads(p.read_text(encoding="utf-8"))) for p in sorted(folder.glob("*.json"))]
+        return [self._read_story(p) for p in sorted(folder.glob("*.json"))]
+
+    def other_runs_with_active_stories(self) -> dict[str, list[str]]:
+        """Stories still owned by *other* runs under this state directory (active or
+        ``conflict`` phase), by run id. Budgets and the single-active-story rule are scoped to
+        one run id, so admission consults this before a second run can take a story while an
+        earlier run of the same operator still owns one. A story file another run left
+        unreadable is reported as owned (fail closed)."""
+        found: dict[str, list[str]] = {}
+        if not self.state_dir.exists():
+            return found
+        # a run directory is one that carries run metadata; other directories under the state dir (backups, copies) are not runs
+        for run_dir in sorted(p for p in self.state_dir.iterdir() if p.is_dir() and p.name != self.run_id and (p / "run.json").is_file()):
+            for path in sorted((run_dir / "stories").glob("*.json")) if (run_dir / "stories").is_dir() else []:
+                try:
+                    raw = json.loads(path.read_text(encoding="utf-8"))
+                    phase = raw.get("phase") if isinstance(raw, dict) else None
+                    if not isinstance(phase, str):
+                        raise ValueError("no phase")
+                except (OSError, UnicodeDecodeError, ValueError):
+                    phase = f"unreadable story file {path.name}"
+                if phase in ACTIVE_PHASES or phase == "conflict" or phase.startswith("unreadable"):
+                    found.setdefault(run_dir.name, []).append(f"{path.stem} ({phase})")
+        return found
 
     def bound_executions(self) -> set[tuple[str, str]]:
         """Every (taskId, runId) pair bound anywhere in the run."""
@@ -486,12 +561,25 @@ class Store:
     def journal_path(self) -> Path:
         return self.root / "journal.jsonl"
 
+    def _journal_torn_tail(self) -> bool:
+        """True when the journal ends in a partial line (a crash during an append)."""
+        try:
+            size = self.journal_path.stat().st_size
+        except OSError:
+            return False
+        if size == 0:
+            return False
+        with self.journal_path.open("rb") as fh:
+            fh.seek(-1, os.SEEK_END)
+            return fh.read(1) != b"\n"
+
     def journal(self, story: str | None, event: str, detail: dict | None = None) -> int:
         self.root.mkdir(parents=True, exist_ok=True)
+        torn = self._journal_torn_tail()  # a torn last line is terminated first, so the new event never concatenates onto it
         seq = self.journal_count() + 1
         line = json.dumps({"seq": seq, "at": utcnow(), "story": story, "event": event, "detail": detail or {}}, sort_keys=True)
         with self.journal_path.open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+            fh.write(("\n" if torn else "") + line + "\n")
             fh.flush()
             os.fsync(fh.fileno())
         return seq
@@ -503,6 +591,20 @@ class Store:
             return sum(1 for _ in fh)
 
     def read_journal(self) -> list[dict]:
+        """Every journal line in order. A line that does not parse (torn by a crash) is reported
+        as a ``journal-torn-line`` entry carrying the raw text instead of making the whole
+        journal unreadable; it occupies its line number so later ``seq`` values stay aligned."""
         if not self.journal_path.exists():
             return []
-        return [json.loads(l) for l in self.journal_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+        out = []
+        for number, line in enumerate(self.journal_path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+                if not isinstance(entry, dict):
+                    raise ValueError("not an object")
+            except ValueError as exc:
+                entry = {"seq": number, "at": None, "story": None, "event": "journal-torn-line", "detail": {"raw": line[:500], "error": str(exc)}}
+            out.append(entry)
+        return out

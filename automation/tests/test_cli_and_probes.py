@@ -136,7 +136,7 @@ class ProbeTests(unittest.TestCase):
                 if argv[:3] == ["gh", "api", "-i"]:
                     header = f"x-oauth-scopes: {scopes}\r\n" if scopes is not None else ""
                     return subprocess.CompletedProcess(argv, 0, "HTTP/2.0 200\r\n" + header + "\r\n" + json.dumps({"permissions": {"push": True, "admin": admin}}), "")
-                return subprocess.CompletedProcess(argv, 0, json.dumps({"data": {"user": {"projectV2": {"id": "P", "title": "t", "viewerCanUpdate": can_update}}}}), "")
+                return subprocess.CompletedProcess(argv, 0, json.dumps({"data": {"repositoryOwner": {"projectV2": {"id": "P", "title": "t", "viewerCanUpdate": can_update}}}}), "")
             return run
 
         for scopes, admin, can_update in (("repo, project", False, True), ("repo, read:project", False, False), ("repo, project, workflow", True, True), (None, False, False)):

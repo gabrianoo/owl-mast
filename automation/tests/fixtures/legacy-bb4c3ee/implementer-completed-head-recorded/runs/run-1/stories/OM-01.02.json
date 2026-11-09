@@ -3,9 +3,9 @@
  "approved_sha": null,
  "authorizations": [
   {
-   "bound_at": "2026-11-07T12:06:37Z",
+   "bound_at": "2026-11-09T15:04:37Z",
    "id": "run-1:OM-01.02:1",
-   "issued_at": "2026-11-07T12:06:37Z",
+   "issued_at": "2026-11-09T15:04:37Z",
    "purpose": "implementation",
    "reason": null,
    "role": "implementer",
@@ -21,10 +21,10 @@
  "claim": {
   "baseline_sha": "c5d9d2e",
   "branch": "t3/om-01-02",
-  "claimed_at": "2026-11-07T12:06:37Z",
-  "reserved_at": "2026-11-07T12:06:37Z",
+  "claimed_at": "2026-11-09T15:04:37Z",
+  "reserved_at": "2026-11-09T15:04:37Z",
   "scope": "dispatchable",
-  "worktree_path": "/tmp/tmpfhda06rj/wt"
+  "worktree_path": "/tmp/tmpikosf8mt/wt"
  },
  "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
  "implementer_receipts": [
@@ -47,8 +47,8 @@
   {
    "body": "<!-- unattended kind=claim op=claim run=run-1 story=OM-01.02 -->\nUnattended reservation by run `run-1` from `c5d9d2e` (scope: dispatchable). An implementer task is delegated only after this reservation; its receipt is bound to the reservation. Project Status is owner-maintained; completion still requires checks, independent review and owner acceptance.",
    "comment_id": 1000,
-   "completed_at": "2026-11-07T12:06:37Z",
-   "created_at": "2026-11-07T12:06:37Z",
+   "completed_at": "2026-11-09T15:04:37Z",
+   "created_at": "2026-11-09T15:04:37Z",
    "kind": "claim",
    "marker": {
     "kind": "claim",
@@ -133,7 +133,7 @@
  "story": "OM-01.02",
  "task_history": [
   {
-   "at": "2026-11-07T12:06:37Z",
+   "at": "2026-11-09T15:04:37Z",
    "authorization": "run-1:OM-01.02:1",
    "evidence_shape": "normalized",
    "operation": "record-task-terminal",
@@ -144,5 +144,5 @@
    "taskId": "task-impl-1"
   }
  ],
- "updated_at": "2026-11-07T12:06:37Z"
+ "updated_at": "2026-11-09T15:04:37Z"
 }

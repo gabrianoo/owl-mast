@@ -80,7 +80,7 @@ from pathlib import Path
 from .activation import Activation, _parse_time, _utc_text, refresh_activation
 from .backlog import Entry, Snapshot, take_snapshot
 from .eligibility import Decision, decide
-from .errors import BudgetExhausted, Conflict, Refused, StaleRevision, UnattendedError
+from .errors import BudgetExhausted, Conflict, ReceiptInvalid, Refused, StaleRevision, UnattendedError
 from .github import PullRequestRecord, Transport, render_marker
 from .policy import Policy, Target
 from .probes import run_commands
@@ -126,6 +126,7 @@ AUTHORIZATION_FLOW = {
     "repair": ("repair-authorized", "claimed", "implementer"),
 }
 STOP_REASONS = {"run-cancelled": "run is cancelled", "wall-clock-exceeded": "run wall clock budget exceeded",
+                "policy-drift": "the policy file changed since this run was created (digest drift); nothing is admitted or advanced under a policy the run was not bound to, cleanup proceeds",
                 "activation-required": "no activation authorization presented for this live run", "activation-expired": "activation authorization expired",
                 "activation-not-yet-valid": "activation authorization not yet valid", "activation-unapproved": "activation authorization is not approved",
                 "activation-mismatch": "activation authorization no longer matches the policy or run", "activation-invalid": "activation authorization is invalid",
@@ -163,13 +164,15 @@ def git_head(path: str) -> str | None:
     return out.stdout.strip() if out.returncode == 0 else None
 
 
-def git_clean(path: str) -> tuple[bool, str]:
+def git_clean(path: str) -> tuple[bool | None, str]:
+    """``(True, "")`` for a clean tree, ``(False, dirt)`` for a dirty one and ``(None, why)``
+    when git could not answer: an unreadable status is not an observed change."""
     try:
         out = subprocess.run(["git", "-C", path, "status", "--porcelain", "--untracked-files=normal"], capture_output=True, text=True, timeout=60, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, f"git status failed: {exc}"
+        return None, f"git status failed: {exc}"
     if out.returncode != 0:
-        return False, f"git status failed: {out.stderr.strip()[:200]}"
+        return None, f"git status failed: {out.stderr.strip()[:200]}"
     return (out.stdout.strip() == ""), out.stdout.strip()[:500]
 
 
@@ -278,6 +281,8 @@ class Coordinator:
         self.transport, self.policy, self.store, self.now, self.live, self.activation = transport, policy, store, now, live, activation
         self.environment = "live" if getattr(transport, "live", False) else "fixture"
         self._moment: str | None = None  # the one clock observation of the locked operation in progress (see ``operation``)
+        self._author: str | None = None  # the transport's own login, read once per coordinator (``_trusted_author``)
+        self._foreign_reported: set[int] | None = None  # comment ids already journaled as foreign markers (loaded from the journal on first use)
         with self.operation(lock=False):
             if self.environment == "live" and store.load_run() is None:
                 self._refresh_activation("run-start")  # the loaded object is a cache: creation is decided on the source as it is now
@@ -410,9 +415,12 @@ class Coordinator:
         policy digest and environment binding and (live) the strict activation record are
         validated on every reload."""
         run = self.store.bound_run()
-        if run is None or (run.repo, run.policy_digest, run.environment) != (self.policy.repo_slug, self.policy.digest, self.environment):
+        if run is None or (run.repo, run.environment) != (self.policy.repo_slug, self.environment):
             raise Refused("run binding changed on disk", code="run-binding-mismatch")
-        self.run = run
+        self.run = run  # a policy digest that differs from the run's binding is policy drift: a run stop (``_run_stop``), not a rebind
+
+    def _policy_drift(self) -> bool:
+        return self.run.policy_digest != self.policy.digest
 
     def _elapsed(self) -> timedelta:
         return datetime.fromisoformat(self._at().replace("Z", "+00:00")) - datetime.fromisoformat(self.run.started_at.replace("Z", "+00:00"))
@@ -423,6 +431,8 @@ class Coordinator:
         activation stop, else the activation's current problems, else None."""
         if self.run.cancelled:
             return "run-cancelled"
+        if self._policy_drift():
+            return "policy-drift"
         if self._elapsed() > timedelta(minutes=self.policy.max_wall_clock_minutes):
             return "wall-clock-exceeded"
         return self._activation_stop()
@@ -430,6 +440,8 @@ class Coordinator:
     def _stop_message(self, code: str) -> str:
         if code == "run-cancelled":
             return f"run is cancelled ({self.run.stop_reason})"
+        if code == "policy-drift":
+            return STOP_REASONS[code] + f" (run bound to policy digest {self.run.policy_digest[:12]}, policy in use {self.policy.digest[:12]})"
         if code in ACTIVATION_STOPS:
             if self.run.activation_stop is not None and self.run.activation_stop["code"] == code:
                 return STOP_REASONS[code] + f" (durable stop observed {self.run.activation_stop['observed_at']}: {self.run.activation_stop['message']})"
@@ -690,22 +702,53 @@ class Coordinator:
             raise Refused(f"{gate}: worktree identity check failed: {why}", code="worktree-mismatch")
         head = git_head(state.claim["worktree_path"])
         clean, dirt = git_clean(state.claim["worktree_path"])
+        if head is None or clean is None:
+            # git could not answer: nothing was observed, so nothing is invalidated; refuse and retry later
+            raise Refused(f"{gate}: worktree {state.claim['worktree_path']} is unreadable (HEAD {head}, status: {dirt or 'unavailable'}); evidence untouched, retry when git answers", code="worktree-unreadable", head=head, status=dirt)
         if head != sha or not clean:
             abandoned = self._invalidate_evidence(state, head, f"unreported worktree change at {gate}: HEAD {head}, clean={clean}")
             self.store.save_story(state)
             self.store.journal(state.story, "unreported-worktree-change", {"gate": gate, "expected": sha, "head": head, "clean": clean, "dirt": dirt, "abandoned_intents": abandoned})
             raise Refused(f"{gate}: worktree HEAD {head} / clean={clean} differs from the evidence at {sha}; check and review evidence invalidated", code="evidence-invalidated", head=head, clean=clean)
 
-    def _active_foreign_claims(self, issue: int, story: str) -> list[dict]:
-        claims: dict[str, dict] = {}
-        released: set[str] = set()
+    def _trusted_author(self) -> str:
+        """The only comment author whose unattended markers count: the identity the transport
+        acts as. Anyone who can comment can copy a marker; a forged release or a copied claim from
+        another author is ignored (and journaled), never adopted."""
+        if self._author is None:
+            self._author = self.transport.viewer_login()
+        return self._author
+
+    def _marked_comments(self, issue: int, story: str | None, context: str) -> list:
+        """Comments on ``issue`` carrying an unattended marker from the trusted author (for
+        ``story`` when given). A marker from another author is journaled once per comment id
+        (``foreign-marker-ignored``), never adopted and never re-reported on later reads."""
+        author = self._trusted_author()
+        trusted, foreign = [], []
         for c in self.transport.list_comments(issue):
             m = c.marker
-            if not m or m.get("story") != story:
+            if not m or (story is not None and m.get("story") != story):
                 continue
+            (trusted if c.author == author else foreign).append(c)
+        if foreign:
+            if self._foreign_reported is None:
+                self._foreign_reported = {int(c["id"]) for e in self.store.read_journal() if e.get("event") == "foreign-marker-ignored" for c in (e.get("detail") or {}).get("comments", []) if isinstance(c, dict) and "id" in c}
+            new = [c for c in foreign if c.comment_id not in self._foreign_reported]
+            if new:
+                self.store.journal(story, "foreign-marker-ignored", {"context": context, "issue": issue, "trusted_author": author, "comments": [{"id": c.comment_id, "author": c.author, "marker": c.marker} for c in new]})
+                self._foreign_reported.update(c.comment_id for c in new)
+        return trusted
+
+    def _active_foreign_claims(self, issue: int, story: str, context: str = "admission") -> list[dict]:
+        """Claims by other runs (trusted author only) that no later release, block or proposal
+        of that run cleared. Each entry carries the marker, the comment id and its creation time."""
+        claims: dict[str, dict] = {}
+        released: set[str] = set()
+        for c in self._marked_comments(issue, story, context):
+            m = c.marker
             run = m.get("run", "")
             if m.get("kind") == "claim":
-                claims[run] = m
+                claims[run] = {**m, "comment_id": c.comment_id, "created_at": c.created_at}
             elif m.get("kind") in ("release", "block", "proposal"):
                 released.add(run)
         return [m for run, m in claims.items() if run != self.store.run_id and run not in released]
@@ -734,10 +777,10 @@ class Coordinator:
             return intent
         if intent.status == "abandoned":
             raise Refused(f"{intent.op} for {state.story} was abandoned: {intent.reason}")
-        found = [c for c in self.transport.list_comments(state.issue) if c.marker == intent.marker]
+        found = [c for c in self._marked_comments(state.issue, state.story, f"post {intent.op}") if c.marker == intent.marker]
         if not found:
             posted = self.transport.post_comment(state.issue, intent.body)
-            found = [c for c in self.transport.list_comments(state.issue) if c.marker == intent.marker]
+            found = [c for c in self._marked_comments(state.issue, state.story, f"post {intent.op}") if c.marker == intent.marker]
             self.store.journal(state.story, "comment-posted", {"op": intent.op, "comment_id": posted.comment_id})
             if not found:
                 raise Conflict(f"comment {intent.op} was posted (id {posted.comment_id}) but is not readable back", comment_id=posted.comment_id)
@@ -769,6 +812,9 @@ class Coordinator:
             self._require_run_active("reserve")
             if self.store.load_story(story) is not None:
                 raise Refused(f"{story} already has state in run {self.store.run_id}; a story is admitted at most once per run (no reclaim)", code="no-reclaim")
+            others = self.store.other_runs_with_active_stories()
+            if others:
+                raise Refused(f"another run under {self.store.state_dir} still owns a story: {others}; budgets and the single-active-story rule are per run id, so this run admits nothing until those stories are terminal: finish them, or cancel/block them in their own run with their tasks' terminal evidence (cancel-run alone leaves owned stories active)", code="run-concurrent", runs=others)
             require_unique_ids(snapshot, "plan snapshot")
             decision: Decision = decide(story, snapshot, self.policy)
             if not decision.dispatchable:
@@ -796,7 +842,41 @@ class Coordinator:
             self._counts()
             self.store.save_run(self.run)
             self._post_intent(state, intent, phase_after="reserved")
+            self._settle_claim_race(state, intent, entry.number)
             return state
+
+    def _settle_claim_race(self, state: StoryState, claim: Intent, issue: int) -> None:
+        """Two coordinators can both see no foreign claim and both post. After our claim landed
+        the claims are read again and the earliest one wins (creation time, then comment id).
+        A later claimant cancels itself in the same operation: its unlaunched authorization is
+        resolved structurally (``reserve`` never reported ``reserved``, so no task exists), the
+        release it owes is posted and the call refuses ``claim-race-lost``."""
+        mine = next((c for c in self._marked_comments(issue, state.story, "claim race") if c.comment_id == claim.comment_id), None)
+        if mine is None:
+            raise Conflict(f"claim comment {claim.comment_id} of {state.story} is no longer readable after posting", comment_id=claim.comment_id)
+        foreign = self._active_foreign_claims(issue, state.story, "claim race")
+        earlier = sorted((m for m in foreign if (m["created_at"], m["comment_id"]) < (mine.created_at, mine.comment_id)), key=lambda m: (m["created_at"], m["comment_id"]))
+        if not earlier:
+            return
+        winner = earlier[0]
+        reason = f"lost the claim race for {state.story} to run {winner.get('run')} (comment {winner['comment_id']} at {winner['created_at']} precedes ours, {mine.comment_id} at {mine.created_at})"
+        resolved = []
+        auth = state.unresolved_authorization()
+        if auth is not None and auth["purpose"] == "implementation":
+            resolved.append(self._resolve_not_launched(state, auth, "reservation lost the claim race before reserve returned; the protocol launches only after reserve reports reserved", "structural")["id"])
+        abandoned = state.abandon_advancing_intents(reason)
+        state.phase = "cancelled"
+        state.blocked = {"reason": reason, "at": self.now(), "from_phase": "reserved", "cancelled": True, "conflict": True, "winner": winner, "abandoned_intents": abandoned, "authorizations_resolved": resolved}
+        release = self._new_intent(state, "release", "release", f"Claim released by run `{self.store.run_id}`: {reason}. No completion is implied. Project Status is owner-maintained.")
+        self.store.save_story(state)  # cancellation, the owed release and the resolution persist together
+        self.store.journal(state.story, "claim-race-lost", {"winner": winner, "ours": {"comment_id": mine.comment_id, "created_at": mine.created_at}, "authorizations_resolved": resolved})
+        try:
+            self._post_intent(state, release)
+        except UnattendedError as exc:
+            state.blocked["github_error"] = exc.as_dict()
+            self.store.save_story(state)
+            self.store.journal(state.story, "cancelled-github-write-failed", exc.as_dict())
+        raise Conflict(f"{state.story}: {reason}; this reservation is cancelled and released, nothing may be launched for it; its story slot and task authorization stay spent in this run (an issued slot is spent), so with max_stories_per_run = 1 the run admits nothing more and a new run id is needed", code="claim-race-lost", winner=winner)
 
     def bind_receipt(self, story: str, receipt: dict, worktree_path: str | None = None, branch: str | None = None, worktree_check: WorktreeCheck = git_worktree_check, authorization: str | None = None) -> StoryState:
         """Bind the delegated task's receipt to the story's unresolved authorization, consuming
@@ -818,6 +898,8 @@ class Coordinator:
         with self.operation():
             self.require_activation("bind-receipt", advancing=False)
             self._reload_run()
+            if not isinstance(receipt, dict):
+                raise ReceiptInvalid(f"bind-receipt: the receipt must be a JSON object, not {type(receipt).__name__}")
             state = self._story(story)
             stop = self._run_stop()
             auth = state.unresolved_authorization()
@@ -1013,7 +1095,10 @@ class Coordinator:
                     raise Refused(f"authorization {auth['id']} was reconciled with different evidence; identical evidence is idempotent, this is conflicting: {presented} vs {recorded}", code="conflicting-evidence", authorization=auth["id"], recorded=recorded, presented=presented)
                 self.store.journal(story, "retained-execution-already-reconciled", {"authorization": auth["id"], "task": owner, "run": run_id})
                 return state
-            backup = self.store.story_path(story).with_name(f"{story}.json.bak-{self.now().replace(':', '')}")
+            safe_auth = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in auth["id"])
+            backup = self.store.story_path(story).with_name(f"{story}.json.bak-{self.now().replace(':', '')}-{safe_auth}")
+            if backup.exists():
+                raise Refused(f"backup {backup.name} already exists; refusing to overwrite an earlier audit copy (retry a moment later)", code="backup-exists", backup=backup.name)
             backup.write_text(self.store.story_path(story).read_text(encoding="utf-8"), encoding="utf-8")
             auth.update({"status": "consumed", "task_id": owner, "run_id": run_id, "bound_at": self.now(), "cleanup_only": "retained-execution-reconciled",
                          "reconciliation": {"reason": reason, "provenance": provenance, "evidence_shape": evidence["shape"], "status": evidence["status"], "at": self.now(), "previous_status": "revoked" if auth.get("revoked_at") else "pending",
@@ -1072,6 +1157,8 @@ class Coordinator:
             if head_before != sha:
                 raise Refused(f"worktree HEAD {head_before} is not the recorded sha {sha}")
             clean_before, dirt = git_clean(cwd)
+            if clean_before is None:
+                raise Refused(f"worktree status is unreadable before checks: {dirt}", code="worktree-unreadable")
             if not clean_before:
                 raise Refused(f"worktree is not clean before checks: {dirt}")
             commands = list(self.policy.check_commands)
@@ -1079,8 +1166,11 @@ class Coordinator:
             results = run_commands(commands, cwd, self.policy.check_timeout_minutes * 60, fail_fast=False, **kwargs)
             head_after = git_head(cwd)
             clean_after, dirt_after = git_clean(cwd)
+            if head_after is None or clean_after is None:
+                # git could not answer after the commands: no observation, so no check record (a failed record would spend a repair round)
+                raise Refused(f"run-checks: worktree is unreadable after the commands (HEAD {head_after}, status: {dirt_after or 'unavailable'}); nothing recorded, retry when git answers", code="worktree-unreadable", head=head_after, status=dirt_after, commands=results)
             executed_all = len(results) == len(commands) and all("returncode" in r for r in results)
-            passed = executed_all and all(r.get("returncode") == 0 for r in results) and head_after == sha and clean_after
+            passed = executed_all and all(r.get("returncode") == 0 for r in results) and head_after == sha and clean_after is True
             detail = {"commands": results, "executed": executed_all, "head_before": head_before, "head_after": head_after, "clean_before": clean_before, "clean_after": clean_after, "dirt_after": dirt_after}
             state.checks.append({"sha": sha, "passed": passed, "at": self.now(), **detail})
             state.phase = "checks-passed" if passed else "checks-failed"
@@ -1185,8 +1275,9 @@ class Coordinator:
             self.store.save_story(state)
             self.store.journal(state.story, "review-regression-on-github", {"pr": pr_number, "sha": sha, "reviewers": objections, "abandoned_intents": abandoned})
             raise Refused(f"PR #{pr_number} has outstanding CHANGES_REQUESTED from {objections}; approval invalid")
-        if pr.checks == "FAILURE":
-            raise Refused(f"PR #{pr_number} status checks failed at {sha}")
+        if pr.checks != "SUCCESS":
+            # CI-backed evidence means a successful rollup: FAILURE, ERROR, EXPECTED, PENDING and no checks at all refuse alike
+            raise Refused(f"PR #{pr_number} status check rollup at {sha} is {pr.checks or 'absent'}, not SUCCESS; a proposal needs CI-backed evidence", code="pr-checks-not-successful", checks=pr.checks)
         return pr
 
     def _require_current_approval(self, state: StoryState, sha: str, operation: str) -> None:
@@ -1265,6 +1356,9 @@ class Coordinator:
         with self.operation():
             self.require_activation("cancel-run", advancing=False)
             self._reload_run()
+            for name, value in (("task-evidence", task_evidence), ("no-launch", no_launch)):
+                if value is not None and not isinstance(value, dict):
+                    raise Refused(f"cancel-run: --{name} must be a JSON object keyed by story, not {type(value).__name__}", code="input-invalid")
             self.run.cancelled, self.run.stop_reason = True, reason
             self.store.save_run(self.run)
             self.store.journal(None, "run-cancelled", {"reason": reason})
@@ -1275,8 +1369,7 @@ class Coordinator:
                 try:
                     released.append(self.cancel(s.story, reason, (task_evidence or {}).get(s.story), (no_launch or {}).get(s.story)).to_dict())
                 except Refused as exc:
-                    if exc.code not in ("worker-not-terminal", "authorization-unresolved"):
-                        raise
+                    # every refusal of one story is reported, none aborts the release of the others
                     awaiting.append({"story": s.story, "task_id": exc.detail.get("task_id"), "role": exc.detail.get("role"), "authorization": exc.detail.get("authorization"), "code": exc.code})
             return {"cancelled": released, "awaiting_worker_termination": awaiting}
 
@@ -1289,7 +1382,7 @@ class Coordinator:
         and the next resume replays it. Zero markers ⇒ the claim never landed, no release is
         owed. A done claim keeps its ``done`` record (history); a pending one is abandoned."""
         reason = f"revisions changed before the reservation completed: {sorted(changed)}"
-        found = [c for c in self.transport.list_comments(state.issue) if c.marker == claim.marker]
+        found = [c for c in self._marked_comments(state.issue, state.story, "stale claim") if c.marker == claim.marker]
         resolved = self._settle_authorizations(state, "cancelled", reason, None)  # the reservation never returned: structurally no launch
         abandoned = state.abandon_advancing_intents(reason)
         state.phase = "cancelled"
@@ -1330,13 +1423,15 @@ class Coordinator:
             self.require_activation("resume", advancing=False)
             self._reload_run()
             state = self._story(story)
-            if state.claim and state.claim.get("worktree_path"):
-                ok, why = worktree_check(state.claim["worktree_path"], state.claim["branch"])
-                if not ok:
-                    raise Refused(f"cannot resume {story}: {why}", code="worktree-mismatch")
+            # owed cleanups (release, block) replay first and unconditionally: a cancelled or blocked
+            # story whose worktree is gone still owes its comment, or its claim stays visible to other runs
             for intent in state.pending_intents():
                 if intent.kind in CLEANUP_KINDS:
                     self._post_intent(state, intent)
+            if state.active and state.claim and state.claim.get("worktree_path"):
+                ok, why = worktree_check(state.claim["worktree_path"], state.claim["branch"])
+                if not ok:
+                    raise Refused(f"cannot resume {story}: {why}", code="worktree-mismatch")
             stop = self._run_stop()
             # Completed advancing intents whose transition did not persist (legacy or partial state):
             # the effect is history and stays recorded; the transition applies only where a fresh
@@ -1439,4 +1534,6 @@ class Coordinator:
         with self.operation():
             self.require_activation("status", advancing=False)
             counts = self._counts()
-            return {"run": self.run.__dict__, "budgets": counts, "environment": self.environment, "stories": [s.to_dict() for s in self.store.list_stories()], "journal_events": self.store.journal_count(), "live": self.live, "activation": {"recorded": self.run.activation, "recorded_stop": self.run.activation_stop, "presented": self.activation.binding() if self.activation else None, "stop": self._activation_stop(), "problems": [m for _, m in self._activation_problems()] if self.environment == "live" else []}, "agreement": OPERATING_AGREEMENT, "gaps": list(LIVE_EXECUTION_GAPS)}
+            return {"run": self.run.__dict__, "budgets": counts, "environment": self.environment, "stories": [s.to_dict() for s in self.store.list_stories()], "journal_events": self.store.journal_count(), "live": self.live,
+                    "stop": self._run_stop(), "policy_drift": {"bound_digest": self.run.policy_digest, "policy_digest": self.policy.digest} if self._policy_drift() else None,
+                    "other_runs_with_active_stories": self.store.other_runs_with_active_stories(), "activation": {"recorded": self.run.activation, "recorded_stop": self.run.activation_stop, "presented": self.activation.binding() if self.activation else None, "stop": self._activation_stop(), "problems": [m for _, m in self._activation_problems()] if self.environment == "live" else []}, "agreement": OPERATING_AGREEMENT, "gaps": list(LIVE_EXECUTION_GAPS)}

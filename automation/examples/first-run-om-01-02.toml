@@ -30,6 +30,7 @@ options = { effort = "high" }
 [targets.reviewer]
 provider = "codex"
 model = "gpt-6-astra"
+isolation = "worktree"
 options = { reasoningEffort = "high" }
 
 [checks]

@@ -58,9 +58,9 @@ class ScriptedGh:
                     ISSUE_FIELDS(21, "OM-01.02", parent=1, body_extra="**Depends on:** OM-01.01\n")]}}}})
             if "items(first:100" in query:
                 def item(n, sid, status):
-                    return {"id": f"PVTI_{n}", "updatedAt": "2026-11-06T10:00:00Z", "content": {"number": n},
+                    return {"id": f"PVTI_{n}", "updatedAt": "2026-11-06T10:00:00Z", "content": {"number": n, "repository": {"nameWithOwner": "gabrianoo/owl-mast"}},
                             "fieldValues": {"nodes": [{"name": status, "field": {"name": "Status"}}, {"text": sid, "field": {"name": "Stable ID"}}, {}]}}
-                return json.dumps({"data": {"user": {"projectV2": {"items": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [item(1, "E01", "Backlog"), item(20, "OM-01.01", "Done"), item(21, "OM-01.02", "Ready")]}}}}})
+                return json.dumps({"data": {"repositoryOwner": {"projectV2": {"items": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [item(1, "E01", "Backlog"), item(20, "OM-01.01", "Done"), item(21, "OM-01.02", "Ready")]}}}}})
             if "pullRequest(number:7)" in query and "reviews(first:100, after:" in query:
                 cursor = query.split("after:", 1)[1].split(")", 1)[0].strip('"')
                 return json.dumps({"data": {"repository": {"pullRequest": {"reviews": self._reviews_payload(cursor)}}}})
@@ -69,8 +69,10 @@ class ScriptedGh:
                                                                            "reviews": self._reviews_payload(None),
                                                                            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}}}}})
             if "projectV2(number:2){ id fields" in query:
-                return json.dumps({"data": {"user": {"projectV2": {"id": "PVT", "fields": {"nodes": [{"id": "F", "name": "Status", "options": [{"id": "o1", "name": "Ready"}]}]}}}}})
+                return json.dumps({"data": {"repositoryOwner": {"projectV2": {"id": "PVT", "fields": {"nodes": [{"id": "F", "name": "Status", "options": [{"id": "o1", "name": "Ready"}]}]}}}}})
             raise AssertionError(f"unexpected graphql {query[:80]}")
+        if args[:3] == ["api", "user", "--jq"]:
+            return "machine\n"
         if args[:2] == ["api", "--paginate"]:
             return "\n".join(json.dumps({"id": i, "body": c["body"], "created_at": "t", "login": "machine"}) for i, c in enumerate(self.comments, start=100))
         if args[:3] == ["api", "-X", "POST"]:

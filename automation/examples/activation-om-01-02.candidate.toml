@@ -29,7 +29,7 @@ stories = ["OM-01.02"]              # must equal dispatch.allow of the policy; E
 
 [targets]
 implementer = { provider = "claudeAgent", model = "claude-fable-5-1", isolation = "worktree", options = { effort = "high" } }
-reviewer = { provider = "codex", model = "gpt-6-astra", options = { reasoningEffort = "high" } }
+reviewer = { provider = "codex", model = "gpt-6-astra", isolation = "worktree", options = { reasoningEffort = "high" } }
 
 [budgets]
 max_stories_per_run = 1

@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import traceback
 from pathlib import Path
 
 from .activation import load_activation
@@ -23,7 +24,7 @@ from .errors import UnattendedError
 from .github import GhCliTransport
 from .policy import load_policy
 from .probes import check_permissions, run_commands, write_probe
-from .state import Store, utcnow
+from .state import Store, utcnow, validate_run_id
 
 # Every command that can reach a GitHub write, directly or through a fallback (authorize-repair may block).
 WRITE_COMMANDS = {"reserve", "authorize-repair", "propose-evidence", "block", "cancel", "cancel-run", "resume", "rebase-revisions", "probe-write"}
@@ -33,18 +34,30 @@ def _json(obj) -> None:
     print(json.dumps(obj, indent=1, sort_keys=True, default=str))
 
 
-def _load_json_arg(value: str) -> dict:
-    path = Path(value)
-    text = path.read_text(encoding="utf-8") if path.exists() else value
-    return json.loads(text)
+def _load_json_arg(value: str):
+    """A JSON document given inline or as a file path. Unreadable input (bad JSON, an unreadable
+    file, a path too long to test) is ``input-invalid`` inside the JSON error contract."""
+    text = value
+    try:
+        looks_inline = value.lstrip()[:1] in ("{", "[", '"') or value.strip() in ("null", "true", "false")
+        if not looks_inline:
+            path = Path(value)
+            if path.exists():
+                text = path.read_text(encoding="utf-8")
+    except (OSError, ValueError) as exc:  # ENAMETOOLONG, permission errors, embedded NUL
+        raise UnattendedError(f"argument {value[:60]!r} is neither readable JSON nor a readable file: {exc}", code="input-invalid") from exc
+    try:
+        return json.loads(text)
+    except ValueError as exc:
+        raise UnattendedError(f"argument {value[:60]!r} is not valid JSON: {exc}", code="input-invalid") from exc
 
 
 def _snapshot(args, transport, policy) -> Snapshot:
     if args.snapshot:
         try:
             return Snapshot.from_json(Path(args.snapshot).read_text(encoding="utf-8"))
-        except (OSError, ValueError, KeyError) as exc:
-            raise UnattendedError(f"snapshot {args.snapshot} unreadable: {exc}") from exc
+        except (OSError, ValueError, KeyError, TypeError) as exc:  # TypeError: an older or foreign entry shape
+            raise UnattendedError(f"snapshot {args.snapshot} unreadable: {exc}", code="input-invalid") from exc
     return take_snapshot(transport, policy.repo_slug, utcnow())
 
 
@@ -140,10 +153,13 @@ def main(argv: list[str] | None = None) -> int:
             _json({"ok": ok, "results": results})
             return 0 if ok else 2
         if args.command == "probe-write":
-            _json(write_probe(transport, args.issue, args.run_id or f"probe-{utcnow()}", utcnow()))
-            return 0
+            if not args.run_id:
+                raise UnattendedError("probe-write needs --run-id: the probe is idempotent only for a fixed identity (a second call with the same --run-id must find the first marker)", code="run-id-required")
+            report = write_probe(transport, args.issue, validate_run_id(args.run_id), utcnow())
+            _json(report)
+            return 0 if report["idempotent"] else 2
         if not args.run_id:
-            raise UnattendedError("--run-id is required for state commands")
+            raise UnattendedError("--run-id is required for state commands", code="run-id-required")
         coordinator = Coordinator(transport, policy, Store(Path(args.state_dir), args.run_id), live=bool(args.live), activation=activation)
         if args.command == "reserve":
             with coordinator.operation():
@@ -190,6 +206,10 @@ def main(argv: list[str] | None = None) -> int:
     except UnattendedError as exc:
         _json({"error": exc.as_dict()})
         return 3
+    except Exception as exc:  # noqa: BLE001 - the contract is one JSON document, never a bare traceback
+        # exit 4 tells a scripted caller apart from a refusal (3): the tool crashed, nothing was decided
+        _json({"error": {"code": "internal", "message": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc().splitlines()[-6:]}})
+        return 4
 
 
 if __name__ == "__main__":  # pragma: no cover

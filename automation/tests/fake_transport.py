@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from automation.unattended.github import Comment, IssueRecord, ProjectInfo, ProjectItem, PullRequestRecord
 
 STATUS_OPTIONS = {"Backlog": "f75ad846", "Ready": "0ed1e913", "In progress": "47fc9ee4", "In review": "6807a163", "Blocked": "8f1d7041", "Done": "98236657"}
+REPO = "gabrianoo/owl-mast"
+MACHINE = "machine"  # the login the fake transport acts as (``viewer_login``) and posts with
 
 
 class CrashAfterEffect(RuntimeError):
@@ -45,19 +47,29 @@ class FakeTransport:
             raise self.fail_once.pop(op)
 
     # -- builder helpers ----------------------------------------------------------------
-    def add_issue(self, issue: IssueRecord, status: str | None, stable_id: str | None = None) -> None:
+    def add_issue(self, issue: IssueRecord, status: str | None, stable_id: str | None = None, repository: str = REPO) -> None:
         self.issues[issue.number] = issue
         self.comments.setdefault(issue.number, [])
         if status is not None:
             item_id = f"PVTI_{issue.number}"
-            self.items[item_id] = ProjectItem(item_id, issue.number, status, stable_id, self._tick())
+            self.items[item_id] = ProjectItem(item_id, issue.number, status, stable_id, self._tick(), repository)
+
+    def add_foreign_item(self, item_id: str, issue_number: int, status: str, stable_id: str | None, repository: str) -> None:
+        """A Project item that links an issue of another repository (a user Project can hold several)."""
+        self.items[item_id] = ProjectItem(item_id, issue_number, status, stable_id, self._tick(), repository)
 
     def item_for(self, number: int) -> ProjectItem:
-        return next(i for i in self.items.values() if i.issue_number == number)
+        return next(i for i in self.items.values() if i.issue_number == number and i.repository == REPO)
 
     def set_status_externally(self, number: int, status: str) -> None:
         item = self.item_for(number)
-        self.items[item.item_id] = ProjectItem(item.item_id, number, status, item.stable_id, self._tick())
+        self.items[item.item_id] = ProjectItem(item.item_id, number, status, item.stable_id, self._tick(), item.repository)
+
+    def add_comment(self, number: int, body: str, author: str) -> Comment:
+        """A comment by any author (owner, stranger): what a coordinator reads back from GitHub."""
+        comment = Comment(next(self._ids), body, author, self._tick())
+        self.comments.setdefault(number, []).append(comment)
+        return comment
 
     # -- Transport ------------------------------------------------------------------------
     def list_issues(self) -> list[IssueRecord]:
@@ -72,9 +84,13 @@ class FakeTransport:
         self._fault("list_comments")
         return list(self.comments.get(number, []))
 
+    def viewer_login(self) -> str:
+        self._fault("viewer_login")
+        return MACHINE
+
     def post_comment(self, number: int, body: str) -> Comment:
         self._fault("post_comment")
-        comment = Comment(next(self._ids), body, "machine", self._tick())
+        comment = Comment(next(self._ids), body, MACHINE, self._tick())
         self.comments.setdefault(number, []).append(comment)
         if self.crash_after_post:
             self.crash_after_post = False
