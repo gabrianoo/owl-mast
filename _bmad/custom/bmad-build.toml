@@ -1,7 +1,14 @@
 # Team override for bmad-build (owner-requested engineering rules, 2026-11-07). Lists append to the skill defaults.
 
 [workflow]
+# GitHub delivery workflow (owner-requested 2026-11-09): GitHub owns ticket status, specs and review state.
+activation_steps_prepend = [
+  """GitHub delivery mode applies to every run unless the user explicitly says the change is not ticket-backed. Before step 01, follow `docs/github-delivery-workflow.md` section "1. bmad-build": for a fix-round prompt (it names a PR) follow its "Fix round" paragraph; otherwise pick and claim the ticket, hydrate any existing spec from GitHub into `.bmad-work/` (pass that path to step 01 as the explicit argument) and switch to the issue branch. If `gh` is unavailable or the helper refuses, report its message and HALT.""",
+]
+on_complete = """Finish the GitHub delivery run per `docs/github-delivery-workflow.md` section "1. bmad-build" step 5 (or the end of its "Fix round" paragraph): push the branch, open the PR with `Closes #N` if none exists, publish the final spec with `spec-push`, turn new `deferred-work.md` entries into `deferred-work` issues and empty the file, reply on every open bmad finding thread for a fix round, then launch a new T3 thread for the next bmad-review round and end this thread. The completion summary names the issue, PR, review round and the launched thread's link."""
 persistent_facts = [
+  "file:{project-root}/docs/github-delivery-workflow.md",
+  """GitHub delivery: the local spec under `.bmad-work/` is a working copy. Every time you write the spec (creation, approval, status, route, baseline_commit, review_loop_iteration, triage or change log), publish it immediately with `python3 -m automation.github_delivery spec-push <issue or PR> --file <spec>`. The step rules "No push. No remote ops." and "NEVER auto-push" govern implementation and the local commit; the helper's GitHub state writes and the on-complete push and PR are authorized by the owner's delivery workflow.""",
   """All Ubuntu CI jobs must pin an explicitly qualified fixed runner version (for Owl Mast, ubuntu-26.04); never use ubuntu-latest or another floating Ubuntu runner alias, including in matrices or reusable workflows. Verify runner availability and checks before claiming qualification.""",
   """Owl Mast Kubernetes/Helm packaging must support stable Gateway API routing as a first-class option, alongside optional Ingress compatibility. Validate parent Gateway/listener references, routes/backend services, prerequisites and fail-closed configuration; include render/negative tests and distinguish manifest support from controller/runtime qualification. Kubernetes Ingress API is frozen, not removed/deprecated; ingress-nginx controller retirement is a separate fact.""",
 ]

@@ -1,7 +1,13 @@
 # Team override for bmad-review (owner-requested engineering rules, 2026-11-07). Lists append to the skill defaults.
 
 [workflow]
+# GitHub delivery workflow (owner-requested 2026-11-09): a review round lives on the PR as one review plus one thread per finding.
+activation_steps_prepend = [
+  """When the request names a GitHub delivery issue and PR, follow `docs/github-delivery-workflow.md` section "2. bmad-review" steps 1-2 before selecting lenses: check the round limit, move the ticket to In review, stage `gh pr diff <PR>` as the content and the PR body plus the spec(s) hydrated with `spec-pull` into `.bmad-work/` as claims. If `gh` is unavailable or the helper refuses, report its message and HALT.""",
+]
+on_complete = """For a GitHub delivery review, finish per `docs/github-delivery-workflow.md` section "2. bmad-review" steps 3-6: settle the earlier bmad finding threads (resolve or reply), triage the new findings with Build's verdict rules, post exactly one round with `post-review`, file pre-existing problems as `deferred-work` issues, then route: clean with no open finding launches a new bmad-walkthrough thread; otherwise below round 6 launches a new bmad-build fix-round thread; otherwise set the ticket Blocked. End with the round, verdict, PR review link and the launched thread's link."""
 persistent_facts = [
+  "file:{project-root}/docs/github-delivery-workflow.md",
   """All Ubuntu CI jobs must pin an explicitly qualified fixed runner version (for Owl Mast, ubuntu-26.04); never use ubuntu-latest or another floating Ubuntu runner alias, including in matrices or reusable workflows. Verify runner availability and checks before claiming qualification.""",
   """Owl Mast Kubernetes/Helm packaging must support stable Gateway API routing as a first-class option, alongside optional Ingress compatibility. Validate parent Gateway/listener references, routes/backend services, prerequisites and fail-closed configuration; include render/negative tests and distinguish manifest support from controller/runtime qualification. Kubernetes Ingress API is frozen, not removed/deprecated; ingress-nginx controller retirement is a separate fact.""",
 ]

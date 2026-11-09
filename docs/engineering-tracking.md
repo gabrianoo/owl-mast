@@ -41,6 +41,8 @@ Before unattended execution, qualify a bridge with these properties:
 
 Manual supervised development can use GitHub directly while the loop stays off. Do not claim the installed BMAD workflows provide automatic GitHub writeback.
 
+Supervised delivery uses the [GitHub delivery workflow](github-delivery-workflow.md): team overrides make `bmad-build`, `bmad-review` and `bmad-walkthrough` keep ticket status, specs, review rounds and findings on GitHub through one tested helper, and chain the three skills through fresh T3 threads. That supervised path writes Project Status; this unattended bridge and `bmad-loop` stay off.
+
 The [unattended execution foundation](unattended-execution.md) (ENG-01, [#106](https://github.com/gabrianoo/owl-mast/issues/106)) implements a T3-driven tool under `automation/unattended` with passing fixture coverage for properties 1–5; every real-transport state command refuses unless an owner-approved, run-bound activation authorization is presented (explicit opt-in, disabled by default). On 2026-11-06 the owner accepted a trusted-machine operating agreement that supersedes the strict prerequisites of hard child bounds, denial-tested credential confinement and automated Project Status synchronization: those are now accepted residual risks or manual owner steps, recorded in the operator guide, not guarantees. Activation stays disabled until an engineering-only lifecycle smoke with real T3 receipts and a fresh independent review is published and the owner separately authorizes it. Earlier independent review results remain historical. `bmad-loop` stays unused.
 
 ## Starting E01

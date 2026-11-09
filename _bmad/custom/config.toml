@@ -5,3 +5,10 @@
 #
 # [agents.bmad-agent-pm]
 # description = "Prefers short, bulleted PRDs over narrative drafts."
+
+# GitHub delivery workflow (docs/github-delivery-workflow.md): build specs, deferred work,
+# epic-context caches and sprint state are disposable working copies of GitHub state.
+# Keep them out of Git so they never need merging or tracking. Historical artifacts already
+# committed under _bmad-output/implementation-artifacts stay where they are.
+[modules.bmm]
+implementation_artifacts = "{project-root}/.bmad-work"

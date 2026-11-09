@@ -1,0 +1,11 @@
+# Team override for bmad-walkthrough. Lists append to the skill defaults.
+
+[workflow]
+# GitHub delivery workflow (owner-requested 2026-11-09): Approve merges the PR and moves the ticket to Done.
+activation_steps_prepend = [
+  """When the request names a GitHub delivery issue and PR, treat the PR as the explicit change and hydrate the story spec from the issue with `python3 -m automation.github_delivery spec-pull <issue> --out .bmad-work/<key>.md` so orientation finds its intent and review order (`docs/github-delivery-workflow.md` section "3. bmad-walkthrough"). If `gh` is unavailable or the helper refuses, report its message and HALT.""",
+]
+persistent_facts = [
+  "file:{project-root}/docs/github-delivery-workflow.md",
+]
+on_complete = """For a GitHub delivery walkthrough, act on the human's decision per `docs/github-delivery-workflow.md` section "3. bmad-walkthrough" steps 3-4. Approve: verify the last bmad-review round is clean, no review thread is open, every check is green and the PR is mergeable; then `gh pr merge <PR> --merge --delete-branch`, move the ticket from In review to Done with the helper, and make sure the issue is closed. Any failed precondition: report it and leave the ticket In review. Rework: record the feedback as the next review round, move the ticket back to In progress and offer to launch a bmad-build fix-round thread. Discuss: no GitHub change."""
