@@ -24,11 +24,13 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
  * AC6 with genuinely separate application processes: a first JVM running the real application seeds
- * work and covered mutations, claims an item under a lease it never releases, and is killed with
- * SIGKILL while holding it. A second JVM against the same database finishes every item and
- * publishes every intent through in-process scheduling alone. The database is observed over JDBC
- * from the test JVM, which runs no application context of its own. This proves process restart with
- * Testcontainers; live Kubernetes pod replacement belongs to OM-18.02.
+ * work and covered mutations, claims an item and halts itself ({@code Runtime.halt}, no shutdown
+ * hooks, as a SIGKILL would end it) while holding the lease, so nothing ever releases it. A second
+ * JVM against the same database finishes every item and publishes every intent through in-process
+ * scheduling alone. The database is observed over JDBC from the test JVM, which runs no application
+ * context of its own. The death happens from inside the handler, after the claim committed, so the
+ * proof does not depend on an external kill landing before the handler deadline. This proves
+ * process restart with Testcontainers; live Kubernetes pod replacement belongs to OM-18.02.
  */
 class ProcessRestartRecoveryIT {
 
@@ -61,44 +63,29 @@ class ProcessRestartRecoveryIT {
 
   @Test
   void aSeparateProcessFinishesTheWorkAndIntentsAKilledProcessLeftBehind() throws Exception {
-    Process first = launch("first", RestartFixtureProcess.MODE_HANG, RestartFixtureProcess.SEED);
-    Lease held;
-    try {
-      await()
-          .atMost(Duration.ofMinutes(2))
-          .pollInterval(Duration.ofMillis(250))
-          .ignoreExceptions()
-          .untilAsserted(() -> {
-            assertThat(first.isAlive()).as("first process alive; log: %s", tail("first")).isTrue();
-            assertThat(count("select count(*) from jobs.work_item")).isEqualTo(SEEDED_WORK_ITEMS);
-            assertThat(
-                    count(
-                        "select count(*) from jobs.work_item where status = 'RUNNING'"
-                            + " and lease_expires_at > clock_timestamp()"))
-                .isEqualTo(1);
-          });
-      held = runningLease();
-      assertThat(held.owner()).startsWith(DEAD_OWNER_PREFIX);
-      assertThat(held.attempts()).isEqualTo(1);
-      assertThat(count("select count(*) from jobs.work_item where status = 'SUCCEEDED'"))
-          .as("the hanging handler blocks every other item behind it")
-          .isZero();
-      assertThat(count("select count(*) from audit.publication_intent where published_at is null"))
-          .isEqualTo(RestartFixtureProcess.SEEDED_MUTATIONS);
-    } finally {
-      first.destroyForcibly();
-      assertThat(first.waitFor(30, TimeUnit.SECONDS)).isTrue();
-    }
+    Process first =
+        launch("first", RestartFixtureProcess.MODE_HALT_WHILE_LEASED, RestartFixtureProcess.SEED);
+    assertThat(first.waitFor(2, TimeUnit.MINUTES))
+        .as("the first process halted itself while holding a lease; log: %s", tail("first"))
+        .isTrue();
+    assertThat(first.exitValue()).isEqualTo(RestartFixtureProcess.HALT_EXIT_CODE);
 
-    assertThat(first.isAlive()).isFalse();
-    assertThat(runningLease())
-        .as("the killed process left its lease live; nothing cleaned it up")
-        .isEqualTo(held);
+    assertThat(count("select count(*) from jobs.work_item")).isEqualTo(SEEDED_WORK_ITEMS);
     assertThat(
             count(
                 "select count(*) from jobs.work_item where status = 'RUNNING'"
                     + " and lease_expires_at > clock_timestamp()"))
+        .as("the dead process left its lease live; nothing cleaned it up")
         .isEqualTo(1);
+    Lease held = runningLease();
+    assertThat(held.owner()).startsWith(DEAD_OWNER_PREFIX);
+    assertThat(held.token()).isNotNull();
+    assertThat(held.attempts()).isEqualTo(1);
+    assertThat(count("select count(*) from jobs.work_item where status = 'SUCCEEDED'"))
+        .as("the process died inside its first dispatch, so nothing else ran")
+        .isZero();
+    assertThat(count("select count(*) from audit.publication_intent where published_at is null"))
+        .isEqualTo(RestartFixtureProcess.SEEDED_MUTATIONS);
 
     Process second = launch("second", "--fixture.mode=normal", "--fixture.seed=false");
     try {
@@ -123,7 +110,7 @@ class ProcessRestartRecoveryIT {
           .isEqualTo(RestartFixtureProcess.SEEDED_MUTATIONS);
       Lease reclaimed = lease(held.id());
       assertThat(reclaimed.owner()).startsWith(DEAD_OWNER_PREFIX).isNotEqualTo(held.owner());
-      assertThat(reclaimed.token()).isNotEqualTo(held.token());
+      assertThat(reclaimed.token()).as("a token exists only while RUNNING").isNull();
       assertThat(reclaimed.attempts()).as("reclaimed once the lease expired").isEqualTo(2);
       assertThat(
               count(

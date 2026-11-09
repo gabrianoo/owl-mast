@@ -64,6 +64,8 @@ public record AuditRecord(
 
   /**
    * Failed, denied or unresolved attempt: object id as requested (possibly Unknown), no version.
+   * The reason is normalised to what the envelope accepts on read ({@link #storableReason}), so a
+   * row this module writes can always be read back.
    */
   public static AuditRecord unsuccessful(
       UUID eventId,
@@ -85,8 +87,30 @@ public record AuditRecord(
         Optional.empty(),
         mutation.action(),
         outcome,
-        Optional.of(safeReason),
+        Optional.of(storableReason(safeReason)),
         occurredAt,
         mutation.correlationId());
+  }
+
+  /** Stands in for a reason the diagnostics could not name (an anonymous exception class). */
+  static final String REASON_UNKNOWN = "unknown-failure";
+
+  /**
+   * A reason the envelope accepts: non-blank, single-line and at most {@link
+   * AuditEnvelopeContract#MAX_FIELD_LENGTH} characters. {@code SafeFailure} output is normally all
+   * three; an anonymous class yields a blank name and a deep chain of long names can exceed the
+   * bound, and such a row would commit but fail every later read of the object's history.
+   */
+  static String storableReason(String safeReason) {
+    if (safeReason == null || safeReason.isBlank()) {
+      return REASON_UNKNOWN;
+    }
+    String singleLine = safeReason.replace('\r', ' ').replace('\n', ' ').strip();
+    if (singleLine.isEmpty()) {
+      return REASON_UNKNOWN;
+    }
+    return singleLine.length() > AuditEnvelopeContract.MAX_FIELD_LENGTH
+        ? singleLine.substring(0, AuditEnvelopeContract.MAX_FIELD_LENGTH)
+        : singleLine;
   }
 }

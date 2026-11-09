@@ -19,6 +19,12 @@ public final class AuditEnvelopeContract {
   public static final String PAYLOAD_EVENT_ID = "eventId";
 
   /**
+   * Upper bound of every textual envelope field (identifiers, codes, the safe reason): single-line
+   * text of at most this many characters.
+   */
+  public static final int MAX_FIELD_LENGTH = 256;
+
+  /**
    * Attempt limit of every publish work item: effectively unbounded, so a committed mutation's
    * intent is retried (at most every {@code owlmast.jobs.backoff-cap}) until it reaches the history
    * instead of being abandoned after {@code owlmast.jobs.max-attempts} (AC4).

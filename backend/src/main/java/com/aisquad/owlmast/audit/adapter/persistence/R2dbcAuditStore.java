@@ -6,6 +6,7 @@ import com.aisquad.owlmast.audit.api.AuditEnvelope;
 import com.aisquad.owlmast.audit.api.AuditOutcome;
 import com.aisquad.owlmast.audit.domain.AuditRecord;
 import com.aisquad.owlmast.audit.port.AuditStore;
+import com.aisquad.owlmast.jobs.api.NonRetryableWorkException;
 import com.aisquad.owlmast.platform.persistence.ScopedTransactions;
 import com.aisquad.owlmast.platform.scope.TenantId;
 import io.r2dbc.spi.Readable;
@@ -189,8 +190,12 @@ class R2dbcAuditStore implements AuditStore {
     return value.map(v -> spec.bind(name, v)).orElseGet(() -> spec.bindNull(name, String.class));
   }
 
-  /** The publish item names an intent the bound tenant does not have; only the class is logged. */
-  static final class MissingIntentException extends IllegalStateException {
+  /**
+   * The publish item names an intent the bound tenant does not have. Intent and item commit
+   * together, so no retry can make the intent appear: the attempt is non-retryable and the item
+   * fails terminally. Only the class is persisted.
+   */
+  static final class MissingIntentException extends NonRetryableWorkException {
     private static final long serialVersionUID = 1L;
 
     MissingIntentException(UUID eventId) {

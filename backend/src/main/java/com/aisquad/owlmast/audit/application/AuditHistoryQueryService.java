@@ -1,6 +1,7 @@
 package com.aisquad.owlmast.audit.application;
 
 import com.aisquad.owlmast.audit.api.AuditEnvelope;
+import com.aisquad.owlmast.audit.api.AuditEnvelopeContract;
 import com.aisquad.owlmast.audit.api.AuditHistoryQuery;
 import com.aisquad.owlmast.audit.port.AuditStore;
 import com.aisquad.owlmast.platform.persistence.ScopedTransactions;
@@ -33,6 +34,13 @@ public final class AuditHistoryQueryService implements AuditHistoryQuery {
     if (limit < 1 || limit > MAX_LIMIT) {
       return Flux.error(new IllegalArgumentException("limit must be between 1 and " + MAX_LIMIT));
     }
+    if (!isIdentifier(objectType) || !isIdentifier(objectId)) {
+      return Flux.error(
+          new IllegalArgumentException(
+              "object type and object id must be non-blank identifiers of at most "
+                  + AuditEnvelopeContract.MAX_FIELD_LENGTH
+                  + " characters"));
+    }
     return transactions
         .inTransaction(scope -> store.listByObject(objectType, objectId, limit).collectList())
         .flatMapMany(Flux::fromIterable);
@@ -41,5 +49,12 @@ public final class AuditHistoryQueryService implements AuditHistoryQuery {
   @Override
   public Mono<Long> countUnpublishedIntents() {
     return transactions.inTransaction(scope -> store.countUnpublishedIntents());
+  }
+
+  /** Checked before any transaction opens, so a bad argument fails clearly and cheaply. */
+  private static boolean isIdentifier(String value) {
+    return value != null
+        && !value.isBlank()
+        && value.length() <= AuditEnvelopeContract.MAX_FIELD_LENGTH;
   }
 }

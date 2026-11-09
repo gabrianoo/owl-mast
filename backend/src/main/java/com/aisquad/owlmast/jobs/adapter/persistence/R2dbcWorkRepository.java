@@ -4,10 +4,12 @@ import com.aisquad.owlmast.jobs.api.EffectOutcome;
 import com.aisquad.owlmast.jobs.api.EnqueueRequest;
 import com.aisquad.owlmast.jobs.api.FailedWorkItem;
 import com.aisquad.owlmast.jobs.api.WorkItem;
+import com.aisquad.owlmast.jobs.api.WorkItemContract;
 import com.aisquad.owlmast.jobs.api.WorkStatus;
 import com.aisquad.owlmast.jobs.api.WorkType;
 import com.aisquad.owlmast.jobs.port.ClaimedWork;
 import com.aisquad.owlmast.jobs.port.WorkRepository;
+import com.aisquad.owlmast.platform.diagnostics.SafeFailure;
 import com.aisquad.owlmast.platform.persistence.ScopedTransactions;
 import com.aisquad.owlmast.platform.scope.PrincipalId;
 import com.aisquad.owlmast.platform.scope.TenantId;
@@ -16,8 +18,10 @@ import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.r2dbc.core.DatabaseClient.GenericExecuteSpec;
 import org.springframework.stereotype.Repository;
@@ -29,11 +33,17 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * Jobs-owned table {@code jobs.work_item} (V002). Tenant filtering uses the setting {@link
  * ScopedTransactions#TENANT_SETTING} bound to the transaction, so a statement can only ever see the
- * bound tenant's rows; lease-fenced writes match the current token and an unexpired lease.
+ * bound tenant's rows; lease-fenced writes match the current token and an unexpired lease, and
+ * every write that leaves {@code RUNNING} clears the token (the database checks that invariant).
+ * {@code lease_owner} and {@code lease_expires_at} stay as a record of the last lease.
  */
+@Slf4j
 @Repository
 @RequiredArgsConstructor
 class R2dbcWorkRepository implements WorkRepository {
+
+  /** Reason persisted for a claimed row that cannot be decoded into a {@link WorkItem}. */
+  static final String REASON_UNDECODABLE = "undecodable-work-item";
 
   private static final String BOUND_TENANT =
       "current_setting('" + ScopedTransactions.TENANT_SETTING + "', true)";
@@ -56,10 +66,28 @@ class R2dbcWorkRepository implements WorkRepository {
           + ") or (status = 'RUNNING' and lease_expires_at <= "
           + WALL_CLOCK
           + "))";
+
+  /** Work this instance can run: a registered type, written with a version this build reads. */
+  private static final String CLAIMABLE =
+      " and work_type = any(:types) and contract_version <= :version";
+
   private static final JsonMapper JSON = JsonMapper.builder().build();
   private static final TypeReference<Map<String, String>> PAYLOAD = new TypeReference<>() {};
 
   private final DatabaseClient databaseClient;
+
+  /** The claimed columns before decoding, so a decoding failure can still name the row. */
+  private record RawClaim(
+      UUID id,
+      String tenant,
+      String type,
+      int contractVersion,
+      String payload,
+      int attempt,
+      int maxAttempts,
+      String correlationId,
+      UUID leaseToken,
+      OffsetDateTime leaseExpiresAt) {}
 
   @Override
   public Mono<UUID> insert(
@@ -90,13 +118,15 @@ class R2dbcWorkRepository implements WorkRepository {
   }
 
   @Override
-  public Flux<ClaimedWork> claim(int limit, Duration lease, String leaseOwner) {
+  public Flux<ClaimedWork> claim(
+      int limit, Duration lease, String leaseOwner, Set<WorkType> types) {
     return databaseClient
         .sql(
             "with due as (select id from jobs.work_item where tenant_id = "
                 + BOUND_TENANT
                 + " and "
                 + DUE
+                + CLAIMABLE
                 + " and attempt_count < max_attempts order by next_attempt_at, created_at"
                 + " limit :limit for update skip locked)"
                 + " update jobs.work_item w set status = 'RUNNING',"
@@ -114,8 +144,11 @@ class R2dbcWorkRepository implements WorkRepository {
         .bind("limit", (long) limit)
         .bind("owner", leaseOwner)
         .bind("leaseSeconds", seconds(lease))
-        .map(R2dbcWorkRepository::toClaimedWork)
-        .all();
+        .bind("types", typeValues(types))
+        .bind("version", WorkItemContract.VERSION)
+        .map(R2dbcWorkRepository::toRawClaim)
+        .all()
+        .concatMap(this::decodeOrFail);
   }
 
   @Override
@@ -123,7 +156,7 @@ class R2dbcWorkRepository implements WorkRepository {
     return databaseClient
         .sql(
             "update jobs.work_item set status = 'FAILED', failure_reason = :reason,"
-                + " finished_at = "
+                + " lease_token = null, finished_at = "
                 + WALL_CLOCK
                 + ", updated_at = "
                 + WALL_CLOCK
@@ -147,7 +180,8 @@ class R2dbcWorkRepository implements WorkRepository {
     return databaseClient
         .sql(
             "update jobs.work_item set status = :status, effect_outcome = :effect,"
-                + " effect_reference = :reference, finished_at = "
+                + " effect_reference = :reference, failure_reason = null, lease_token = null,"
+                + " finished_at = "
                 + WALL_CLOCK
                 + ", updated_at = "
                 + WALL_CLOCK
@@ -168,7 +202,7 @@ class R2dbcWorkRepository implements WorkRepository {
     return databaseClient
         .sql(
             "update jobs.work_item set status = :status, failure_reason = :reason,"
-                + " next_attempt_at = "
+                + " lease_token = null, next_attempt_at = "
                 + WALL_CLOCK
                 + " + make_interval(secs => :backoffSeconds),"
                 + " finished_at = case when :terminal then "
@@ -188,11 +222,30 @@ class R2dbcWorkRepository implements WorkRepository {
   }
 
   @Override
+  public Mono<Boolean> release(UUID id, UUID leaseToken, String safeReason, Duration backoff) {
+    return databaseClient
+        .sql(
+            "update jobs.work_item set status = 'PENDING', failure_reason = :reason,"
+                + " attempt_count = attempt_count - 1, lease_token = null, next_attempt_at = "
+                + WALL_CLOCK
+                + " + make_interval(secs => :backoffSeconds), updated_at = "
+                + WALL_CLOCK
+                + LEASE_IS_CURRENT)
+        .bind("reason", safeReason)
+        .bind("backoffSeconds", seconds(backoff))
+        .bind("id", id)
+        .bind("token", leaseToken)
+        .fetch()
+        .rowsUpdated()
+        .map(rows -> rows == 1);
+  }
+
+  @Override
   public Mono<Boolean> deny(UUID id, UUID leaseToken, String safeReason) {
     return databaseClient
         .sql(
             "update jobs.work_item set status = 'DENIED', failure_reason = :reason,"
-                + " finished_at = "
+                + " lease_token = null, finished_at = "
                 + WALL_CLOCK
                 + ", updated_at = "
                 + WALL_CLOCK
@@ -216,14 +269,17 @@ class R2dbcWorkRepository implements WorkRepository {
   }
 
   @Override
-  public Flux<TenantId> tenantsWithDueWork(int limit) {
+  public Flux<TenantId> tenantsWithDueWork(int limit, Set<WorkType> types) {
     return databaseClient
         .sql(
             "select tenant_id from jobs.work_item where "
                 + DUE
+                + CLAIMABLE
                 + " group by tenant_id order by min(case when status = 'PENDING' then"
                 + " next_attempt_at else lease_expires_at end), tenant_id limit :limit")
         .bind("limit", (long) limit)
+        .bind("types", typeValues(types))
+        .bind("version", WorkItemContract.VERSION)
         .map(row -> new TenantId(row.get("tenant_id", String.class)))
         .all();
   }
@@ -250,21 +306,70 @@ class R2dbcWorkRepository implements WorkRepository {
         .all();
   }
 
-  private static ClaimedWork toClaimedWork(Readable row) {
+  /**
+   * Decodes a claimed row; a row that cannot become a {@link WorkItem} (a payload that is not a map
+   * of strings, a bound that was tightened, a hand-edited row) is marked terminal {@code FAILED}
+   * under the lease this claim took and is not emitted, so the queue moves past it.
+   */
+  private Mono<ClaimedWork> decodeOrFail(RawClaim raw) {
+    return Mono.fromCallable(() -> decode(raw))
+        .onErrorResume(undecodable -> {
+          log.warn(
+              "Work item {} ({}) cannot be decoded and is failed terminally: {}",
+              raw.id(),
+              raw.type(),
+              SafeFailure.describe(undecodable));
+          return failUndecodable(raw).then(Mono.empty());
+        });
+  }
+
+  private static ClaimedWork decode(RawClaim raw) {
     WorkItem item =
         new WorkItem(
-            row.get("id", UUID.class),
-            new TenantId(row.get("tenant_id", String.class)),
-            new WorkType(row.get("work_type", String.class)),
-            row.get("contract_version", Integer.class),
-            JSON.readValue(row.get("payload", String.class), PAYLOAD),
-            row.get("attempt_count", Integer.class),
-            row.get("max_attempts", Integer.class),
-            Optional.ofNullable(row.get("correlation_id", String.class)));
-    return new ClaimedWork(
-        item,
+            raw.id(),
+            new TenantId(raw.tenant()),
+            new WorkType(raw.type()),
+            raw.contractVersion(),
+            JSON.readValue(raw.payload(), PAYLOAD),
+            raw.attempt(),
+            raw.maxAttempts(),
+            Optional.ofNullable(raw.correlationId()));
+    return new ClaimedWork(item, raw.leaseToken(), raw.leaseExpiresAt());
+  }
+
+  private Mono<Void> failUndecodable(RawClaim raw) {
+    return databaseClient
+        .sql(
+            "update jobs.work_item set status = 'FAILED', failure_reason = :reason,"
+                + " lease_token = null, finished_at = "
+                + WALL_CLOCK
+                + ", updated_at = "
+                + WALL_CLOCK
+                + LEASE_IS_CURRENT)
+        .bind("reason", REASON_UNDECODABLE)
+        .bind("id", raw.id())
+        .bind("token", raw.leaseToken())
+        .fetch()
+        .rowsUpdated()
+        .then();
+  }
+
+  private static RawClaim toRawClaim(Readable row) {
+    return new RawClaim(
+        row.get("id", UUID.class),
+        row.get("tenant_id", String.class),
+        row.get("work_type", String.class),
+        row.get("contract_version", Integer.class),
+        row.get("payload", String.class),
+        row.get("attempt_count", Integer.class),
+        row.get("max_attempts", Integer.class),
+        row.get("correlation_id", String.class),
         row.get("lease_token", UUID.class),
         row.get("lease_expires_at", OffsetDateTime.class));
+  }
+
+  private static String[] typeValues(Set<WorkType> types) {
+    return types.stream().map(WorkType::value).sorted().toArray(String[]::new);
   }
 
   private static GenericExecuteSpec bindOptional(

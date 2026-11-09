@@ -21,6 +21,7 @@ import com.aisquad.owlmast.fixtures.notes.DbProbe.WorkRow;
 import com.aisquad.owlmast.fixtures.notes.NotesFixture;
 import com.aisquad.owlmast.fixtures.notes.NotesFixture.AuditedMode;
 import com.aisquad.owlmast.fixtures.notes.NotesFixtureConfiguration;
+import com.aisquad.owlmast.jobs.api.EnqueueRequest;
 import com.aisquad.owlmast.jobs.api.WorkEnqueue;
 import com.aisquad.owlmast.jobs.api.WorkItemContract;
 import com.aisquad.owlmast.jobs.application.HandlerRegistry;
@@ -40,6 +41,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -635,7 +637,126 @@ class AuditedMutationIT {
     assertThat(historyRows(eventId)).isEqualTo(1);
   }
 
+  @Test
+  void aRefusedCommitOfTheCallsOwnTransactionIsRecordedAsCommitRolledBack(CapturedOutput output) {
+    StepVerifier.create(
+            auditedOver(auditStore, UnknownCommitOutcome.REFUSED)
+                .execute(notes.mutation("refused", ACTOR, "corr-refused", AuditedMode.SUCCEED))
+                .contextWrite(Scopes.bind(TENANT_A)))
+        .expectErrorSatisfies(error ->
+            assertThat(error)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("commit refused"))
+        .verify();
+
+    assertThat(notes.noteIds().block()).as("the refused commit rolled back").isEmpty();
+    assertThat(db.intents()).isEmpty();
+    assertThat(db.workItems()).isEmpty();
+    assertThat(db.auditEvents())
+        .singleElement()
+        .satisfies(event -> {
+          assertThat(event.outcome()).isEqualTo("FAILED");
+          assertThat(event.reason())
+              .as("no enclosing transaction exists; the call's own commit was refused")
+              .isEqualTo("commit-rolled-back");
+          assertThat(event.correlationId()).isEqualTo("corr-refused");
+        });
+    assertThat(output.getAll())
+        .as("the refusing exception is still named in the log, next to the committed record")
+        .contains("also ended as FAILED (IllegalStateException)")
+        .doesNotContain("commit refused");
+  }
+
+  @Test
+  void historyQueriesRejectBlankIdentifiersBeforeOpeningATransaction() {
+    for (String[] arguments :
+        new String[][] {
+          {" ", "object-1"},
+          {NotesFixture.OBJECT_TYPE, ""},
+          {null, "object-1"},
+          {NotesFixture.OBJECT_TYPE, "x".repeat(AuditEnvelopeContract.MAX_FIELD_LENGTH + 1)}
+        }) {
+      StepVerifier.create(
+              history
+                  .listByObject(arguments[0], arguments[1], 10)
+                  .contextWrite(Scopes.bind(TENANT_A)))
+          .expectErrorSatisfies(error ->
+              assertThat(error)
+                  .isInstanceOf(IllegalArgumentException.class)
+                  .hasMessageContaining("object type and object id"))
+          .verify();
+    }
+  }
+
   // --- AC4 ---------------------------------------------------------------------------------
+
+  @Test
+  void aPublishItemNamingAnotherTenantsIntentFailsTerminallyAndLeavesThatIntentAlone() {
+    UUID eventA = auditedCreate(TENANT_A, "a", "corr-x1", AuditedMode.SUCCEED).eventId();
+    UUID foreignItem =
+        transactions
+            .inTransaction(scope ->
+                enqueue.enqueue(
+                    EnqueueRequest.of(
+                        AuditEnvelopeContract.PUBLISH_WORK_TYPE,
+                        Map.of(AuditEnvelopeContract.PAYLOAD_EVENT_ID, eventA.toString()))))
+            .contextWrite(Scopes.bind(TENANT_B))
+            .block();
+
+    assertThat(processor.processTenant(TENANT_B.tenant()).block()).isEqualTo(1L);
+
+    WorkRow item = db.work(foreignItem);
+    assertThat(item.status())
+        .as("no retry can make another tenant's intent appear")
+        .isEqualTo("FAILED");
+    assertThat(item.attempts()).isEqualTo(1);
+    assertThat(item.reason()).isEqualTo("MissingIntentException");
+    assertThat(db.auditEvents()).as("tenant B copied nothing").isEmpty();
+    assertThat(unpublished(TENANT_A)).isEqualTo(1);
+    assertThat(db.intents())
+        .singleElement()
+        .satisfies(intent -> assertThat(intent.publishedAt()).isNull());
+
+    processor.runOnce().block();
+    assertThat(db.auditEvents())
+        .singleElement()
+        .satisfies(event -> {
+          assertThat(event.eventId()).isEqualTo(eventA);
+          assertThat(event.tenant()).isEqualTo("tenant-a");
+        });
+    assertThat(unpublished(TENANT_A)).isZero();
+  }
+
+  @Test
+  void aPublishItemWithAMalformedOrMissingEventIdFailsTerminally() {
+    UUID malformed =
+        transactions
+            .inTransaction(scope ->
+                enqueue.enqueue(
+                    EnqueueRequest.of(
+                        AuditEnvelopeContract.PUBLISH_WORK_TYPE,
+                        Map.of(AuditEnvelopeContract.PAYLOAD_EVENT_ID, "not-a-uuid"))))
+            .contextWrite(Scopes.bind(TENANT_A))
+            .block();
+    UUID missing =
+        transactions
+            .inTransaction(scope ->
+                enqueue.enqueue(
+                    EnqueueRequest.of(AuditEnvelopeContract.PUBLISH_WORK_TYPE, Map.of())))
+            .contextWrite(Scopes.bind(TENANT_A))
+            .block();
+
+    processor.runOnce().block();
+
+    for (UUID itemId : List.of(malformed, missing)) {
+      WorkRow item = db.work(itemId);
+      assertThat(item.status()).isEqualTo("FAILED");
+      assertThat(item.attempts()).isEqualTo(1);
+      assertThat(item.reason()).startsWith("NonRetryableWorkException");
+      assertThat(item.finishedAt()).isNotNull();
+    }
+    assertThat(db.auditEvents()).isEmpty();
+  }
 
   @Test
   void aPublishItemKeepsRetryingPastTheConfiguredMaximumUntilTheIntentIsPublished(
@@ -790,16 +911,22 @@ class AuditedMutationIT {
     return new AuditedMutationService(business, separateTransactions(), store, enqueue, clock);
   }
 
-  /** What really happened to a commit that is then reported as failed with an unknown outcome. */
+  /**
+   * What really happened to a commit that is then reported as failed: landed or rolled back with an
+   * unknown outcome ({@code TransactionException}), or refused outright ({@code REFUSED}, a plain
+   * runtime failure such as a deferred constraint, after which Spring rolls the transaction back).
+   */
   private enum UnknownCommitOutcome {
     COMMITTED,
-    ROLLED_BACK
+    ROLLED_BACK,
+    REFUSED
   }
 
   /**
    * Commits or rolls back for real, then fails the commit with a {@code TransactionException}, so
    * Spring completes the transaction with {@code STATUS_UNKNOWN}, as when a connection drops while
-   * the commit is in flight.
+   * the commit is in flight; or refuses the commit with a runtime failure, so Spring rolls back and
+   * completes with {@code STATUS_ROLLED_BACK}.
    */
   private static final class UnknownCommitOutcomeTransactionManager
       extends R2dbcTransactionManager {
@@ -816,12 +943,17 @@ class AuditedMutationIT {
     protected Mono<Void> doCommit(
         TransactionSynchronizationManager synchronizationManager,
         GenericReactiveTransaction status) {
-      Mono<Void> real =
-          outcome == UnknownCommitOutcome.COMMITTED
-              ? super.doCommit(synchronizationManager, status)
-              : doRollback(synchronizationManager, status);
-      return real.then(
-          Mono.error(new TransactionSystemException("fixture: commit outcome unknown")));
+      return switch (outcome) {
+        case COMMITTED ->
+            super.doCommit(synchronizationManager, status)
+                .then(
+                    Mono.error(new TransactionSystemException("fixture: commit outcome unknown")));
+        case ROLLED_BACK ->
+            doRollback(synchronizationManager, status)
+                .then(
+                    Mono.error(new TransactionSystemException("fixture: commit outcome unknown")));
+        case REFUSED -> Mono.error(new IllegalStateException("fixture: commit refused"));
+      };
     }
   }
 

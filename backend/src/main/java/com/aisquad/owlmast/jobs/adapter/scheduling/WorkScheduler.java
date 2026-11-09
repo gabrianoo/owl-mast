@@ -11,7 +11,9 @@ import reactor.core.publisher.Mono;
  * The only wake-up source for durable work (AD-6, AC9): in-process Spring scheduling with a fixed
  * delay, starting immediately after the context is ready so a new instance recovers work left by
  * the previous one without manual action (AC6). The reactive return type lets Spring subscribe and
- * wait for the run, with no blocking and no detached subscription.
+ * wait for the run, with no blocking and no detached subscription. The two delays are read from the
+ * same {@code owlmast.jobs.*} keys that {@code JobsProperties} binds and validates at start-up, so
+ * an invalid value fails the context before this annotation is ever evaluated.
  */
 @Slf4j
 public final class WorkScheduler {

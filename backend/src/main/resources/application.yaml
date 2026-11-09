@@ -52,6 +52,8 @@ owlmast:
     lease-duration: PT30S
     claim-batch-size: 10
     poll-interval: PT1S
+    initial-delay: PT0S
+    # handler-deadline: absent means nine tenths of lease-duration; must stay shorter than the lease.
     scheduler:
       # In-process Spring scheduling is the only wake-up source; tests may drive the processor.
       enabled: true

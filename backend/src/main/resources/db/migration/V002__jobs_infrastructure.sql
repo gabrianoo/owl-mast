@@ -35,6 +35,10 @@ CREATE TABLE jobs.work_item (
         CHECK (status <> 'OUTCOME_UNCERTAIN' OR coalesce(effect_outcome, '') = 'UNCERTAIN'),
     CONSTRAINT work_item_running_requires_lease
         CHECK (status <> 'RUNNING' OR (lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)),
+    -- AC2: the fencing token exists only while the item is RUNNING; lease_owner and
+    -- lease_expires_at remain as a record of the last lease.
+    CONSTRAINT work_item_lease_token_only_while_running
+        CHECK (status = 'RUNNING' OR lease_token IS NULL),
     CONSTRAINT work_item_terminal_is_finished
         CHECK (status IN ('PENDING', 'RUNNING') OR finished_at IS NOT NULL)
 );

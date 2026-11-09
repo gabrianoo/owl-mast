@@ -12,6 +12,7 @@ import com.aisquad.owlmast.platform.scope.ScopeContext;
 import com.aisquad.owlmast.platform.scope.Scopes;
 import com.aisquad.owlmast.testing.StubIdentityConfiguration;
 import java.util.Arrays;
+import java.util.concurrent.CompletableFuture;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
 import reactor.core.publisher.Mono;
@@ -22,19 +23,24 @@ import reactor.core.publisher.Mono;
  * named on the command line. Two fixture arguments control the scenario:
  *
  * <ul>
- *   <li>{@code --fixture.mode=hang}: the follow-up handler never completes, so the first claimed
- *       item holds its lease until the process is killed.
+ *   <li>{@code --fixture.mode=halt-while-leased}: the follow-up handler, once seeding has finished,
+ *       halts the JVM ({@link Runtime#halt}, exit code {@value #HALT_EXIT_CODE}) from inside its
+ *       first invocation. The claim committed before the handler ran, so the process dies holding a
+ *       live lease it never releases, with no shutdown hook or cleanup, as a SIGKILL would leave
+ *       it. Doing this from inside the process removes any timing between an external kill and the
+ *       handler deadline.
  *   <li>{@code --fixture.seed=true}: after start-up, enqueue work and covered mutations for two
  *       tenants through the published owner APIs.
  * </ul>
  *
- * <p>Everything else is forwarded to Spring as command-line arguments. The process stays alive
- * until it is terminated from outside.
+ * <p>Everything else is forwarded to Spring as command-line arguments. In every other mode the
+ * process stays alive until it is terminated from outside.
  */
 public final class RestartFixtureProcess {
 
-  public static final String MODE_HANG = "--fixture.mode=hang";
+  public static final String MODE_HALT_WHILE_LEASED = "--fixture.mode=halt-while-leased";
   public static final String SEED = "--fixture.seed=true";
+  public static final int HALT_EXIT_CODE = 137;
   public static final int SEEDED_FOLLOW_UPS = 4;
   public static final int SEEDED_MUTATIONS = 3;
 
@@ -44,7 +50,7 @@ public final class RestartFixtureProcess {
   private RestartFixtureProcess() {}
 
   public static void main(String[] args) throws InterruptedException {
-    boolean hang = Arrays.asList(args).contains(MODE_HANG);
+    boolean halt = Arrays.asList(args).contains(MODE_HALT_WHILE_LEASED);
     boolean seed = Arrays.asList(args).contains(SEED);
     String[] springArgs =
         Arrays.stream(args).filter(arg -> !arg.startsWith("--fixture.")).toArray(String[]::new);
@@ -55,12 +61,19 @@ public final class RestartFixtureProcess {
                 StubIdentityConfiguration.class,
                 NotesFixtureConfiguration.class)
             .run(springArgs);
-    if (hang) {
-      context.getBean(FollowUpHandler.class).behave(item -> Mono.never());
+    CompletableFuture<Void> seeded = new CompletableFuture<>();
+    if (halt) {
+      // Waits (without blocking a thread) until every seeded row exists, then dies mid-attempt.
+      context
+          .getBean(FollowUpHandler.class)
+          .behave(item ->
+              Mono.fromFuture(seeded)
+                  .then(Mono.fromRunnable(() -> Runtime.getRuntime().halt(HALT_EXIT_CODE))));
     }
     if (seed) {
       seed(context.getBean(NotesFixture.class));
     }
+    seeded.complete(null);
     System.out.println("OWLMAST-FIXTURE-READY");
     Thread.currentThread().join();
   }

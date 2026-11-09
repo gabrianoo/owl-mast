@@ -5,6 +5,8 @@
 # are appended as new lines in the same change.
 # Added within v1 by OM-01.03 R4: EnqueueRequest component 3 maxAttempts, its 3-argument compatibility
 # constructor, EnqueueRequest.withMaxAttempts and AuditEnvelopeContract.PUBLISH_MAX_ATTEMPTS.
+# Added within v1 by OM-01.03 R5: NonRetryableWorkException (a handler's terminal-failure signal),
+# WorkItemContract.DEFAULT_INITIAL_DELAY and AuditEnvelopeContract.MAX_FIELD_LENGTH.
 class com.aisquad.owlmast.audit.api.AuditEnvelopeContract
 class com.aisquad.owlmast.jobs.api.WorkItemContract
 constant com.aisquad.owlmast.audit.api.AuditEnvelopeContract.PAYLOAD_EVENT_ID = eventId
@@ -146,3 +148,8 @@ record com.aisquad.owlmast.jobs.api.WorkRegistration component 1 tenantInternalS
 record com.aisquad.owlmast.jobs.api.WorkType component 0 value: java.lang.String
 sealed com.aisquad.owlmast.jobs.api.EffectOutcome permits com.aisquad.owlmast.jobs.api.EffectOutcome$Applied
 sealed com.aisquad.owlmast.jobs.api.EffectOutcome permits com.aisquad.owlmast.jobs.api.EffectOutcome$Uncertain
+class com.aisquad.owlmast.jobs.api.NonRetryableWorkException
+constructor com.aisquad.owlmast.jobs.api.NonRetryableWorkException(java.lang.String)
+constructor com.aisquad.owlmast.jobs.api.NonRetryableWorkException(java.lang.String, java.lang.Throwable)
+constant com.aisquad.owlmast.jobs.api.WorkItemContract.DEFAULT_INITIAL_DELAY = PT0S
+constant com.aisquad.owlmast.audit.api.AuditEnvelopeContract.MAX_FIELD_LENGTH = 256

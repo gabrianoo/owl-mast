@@ -5,7 +5,7 @@ import com.aisquad.owlmast.jobs.api.WorkItemContract;
 /** Envelope fields are bounded identifiers or codes, never content. */
 final class AuditIdentifiers {
 
-  static final int MAX_LENGTH = 256;
+  static final int MAX_LENGTH = AuditEnvelopeContract.MAX_FIELD_LENGTH;
 
   private AuditIdentifiers() {}
 

@@ -38,6 +38,11 @@ public final class WorkItemContract {
   /** Delay between processor wake-ups by in-process Spring scheduling. */
   public static final Duration DEFAULT_POLL_INTERVAL = Duration.ofSeconds(1);
 
+  /**
+   * Delay before the first wake-up after start-up: none, so left-over work is recovered at once.
+   */
+  public static final Duration DEFAULT_INITIAL_DELAY = Duration.ZERO;
+
   /** Payloads carry identifiers, never content or secrets; these bounds keep them small. */
   public static final int MAX_PAYLOAD_ENTRIES = 32;
 
