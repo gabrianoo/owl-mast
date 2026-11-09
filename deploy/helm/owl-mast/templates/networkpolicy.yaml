@@ -1,0 +1,75 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- /*
+Ingress-only isolation of the bundled dependencies (D3). Only the listed peers of this release reach the
+data ports; node-originated traffic (kubelet probes, the API-server proxy on a single-node target) is not
+governed by NetworkPolicy peers and stays allowed. Egress is not restricted. Enforcement depends on the cluster's
+network plugin (exercised on a disposable kindnet Kind cluster; docs/installation.md).
+*/ -}}
+{{- if .Values.database.bundled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "owl-mast.postgresql.fullname" . }}
+  labels:
+    {{- include "owl-mast.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "owl-mast.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgresql
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "owl-mast.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: backend
+        # Admitted even while the identity bundle is disabled: the upgrade that enables it runs the
+        # pre-upgrade provisioning hook under the policy rendered before that upgrade. The selectors are
+        # scoped to this release, so they match nothing until those pods exist.
+        - podSelector:
+            matchLabels:
+              {{- include "owl-mast.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: keycloak
+        - podSelector:
+            matchLabels:
+              {{- include "owl-mast.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: postgresql-provisioning
+        {{- with .Values.networkPolicy.postgresql.extraFrom }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 5432
+{{- end }}
+{{- if .Values.identity.bundled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "owl-mast.keycloak.fullname" . }}
+  labels:
+    {{- include "owl-mast.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keycloak
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "owl-mast.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: keycloak
+  policyTypes: ["Ingress"]
+  ingress:
+    # The issuer port for the backend; the management port (9000) serves only the kubelet probes.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "owl-mast.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: backend
+        {{- with .Values.networkPolicy.keycloak.extraFrom }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 8080
+{{- end }}
+{{- end }}

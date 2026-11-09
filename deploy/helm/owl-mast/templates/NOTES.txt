@@ -3,10 +3,21 @@ Owl Mast {{ .Chart.Version }} ({{ .Release.Name }} in {{ .Release.Namespace }})
 Database:  {{ ternary "bundled PostgreSQL/VectorChord" (printf "external %s:%v" .Values.database.external.host .Values.database.external.port) .Values.database.bundled }} (database {{ .Values.database.name }}, Secret {{ .Values.database.existingSecret }})
 Identity:  {{ ternary "bundled Keycloak" "external issuer" .Values.identity.bundled }} -> {{ include "owl-mast.identity.issuerUri" . }}
 Frontend:  {{ ternary "enabled" "not deployed (OM-01.04 delivers the shell artifact)" .Values.frontend.enabled }}
+{{- if not .Values.backend.image.digest }}
+
+WARNING: the backend image {{ include "owl-mast.image" .Values.backend.image }} is referenced by a mutable tag;
+a re-pushed tag changes what runs without any chart change. Set backend.image.digest to the registry
+manifest digest once the image is published.
+{{- end }}
+{{- if and .Values.frontend.enabled (not .Values.frontend.image.digest) }}
+
+WARNING: the frontend image {{ include "owl-mast.image" .Values.frontend.image }} is referenced by a mutable tag;
+set frontend.image.digest for an immutable install.
+{{- end }}
 {{- if and .Values.database.bundled (not .Values.postgresql.persistence.existingClaim) }}
 
-The PersistentVolumeClaim {{ include "owl-mast.postgresql.fullname" . }}-data is retained when this
-release is uninstalled. Reinstall with --set postgresql.persistence.existingClaim={{ include "owl-mast.postgresql.fullname" . }}-data
+The PersistentVolumeClaim {{ include "owl-mast.postgresql.dataClaim" . }} is retained when this
+release is uninstalled. Reinstall with --set postgresql.persistence.existingClaim={{ include "owl-mast.postgresql.dataClaim" . }}
 to reuse it. Snapshot cadence and provider remain an explicit operator decision.
 {{- end }}
 

@@ -29,7 +29,8 @@ GATEWAY_ON = ["routing.gateway.enabled=true", "routing.gateway.parentRefs[0].nam
 
 
 def helm_template(*sets):
-    args = [HELM, "template", "t", str(CHART)]
+    # The capability the chart requires before it renders an HTTPRoute (absent in a bare helm template).
+    args = [HELM, "template", "t", str(CHART), "--api-versions", "gateway.networking.k8s.io/v1/HTTPRoute"]
     for s in sets:
         args += ["--set", s]
     return subprocess.run(args, capture_output=True, text=True, check=False)
@@ -68,7 +69,7 @@ class GatewaySchemaTests(unittest.TestCase):
                           "frontend.enabled=true", "frontend.image.tag=0.0.1-shell"],
             GATEWAY_ON + ["routing.gateway.parentRefs[0].sectionName=http", "routing.gateway.parentRefs[1].name=shared-gw", "routing.gateway.parentRefs[1].sectionName=https"],
             GATEWAY_ON + ["routing.gateway.parentRefs[1].name=other-gw", "routing.gateway.parentRefs[1].namespace=other-ns"],
-            GATEWAY_ON + ["routing.apiPathPrefix=/api/v1", "routing.actuatorPathPrefix=/ops/health.x", "routing.gateway.hostnames[0]=a-b.c123"],
+            GATEWAY_ON + ["routing.apiPathPrefix=/api/v1", "routing.actuatorPathPrefix=/actuator/health.x", "routing.gateway.hostnames[0]=a-b.c123"],
         )
         for sets in cases:
             for route in routes(*sets):
@@ -119,6 +120,12 @@ class GatewaySchemaTests(unittest.TestCase):
             (GATEWAY_ON + ["routing.apiPathPrefix=/api/.."], "not a valid HTTPRoute PathPrefix"),
             (GATEWAY_ON + ["routing.apiPathPrefix=/api x"], "not a valid HTTPRoute PathPrefix"),
             (["routing.apiPathPrefix=/api//x"], "not a valid HTTPRoute PathPrefix"),  # the path contract is checked for every routing mechanism
+            # every exposed prefix is validated, not only the api one (review 4513680409)
+            (GATEWAY_ON + ["routing.actuatorPathPrefix=/actuator//x"], "not a valid HTTPRoute PathPrefix"),
+            (GATEWAY_ON + ["routing.actuatorPathPrefix=/actuator/../x"], "not a valid HTTPRoute PathPrefix"),
+            (GATEWAY_ON + ["routing.actuatorPathPrefix=/actuator%2Fx"], "not a valid HTTPRoute PathPrefix"),
+            (GATEWAY_ON + ["frontend.enabled=true", "frontend.image.tag=0.0.1-shell", "routing.frontendPathPrefix=/ui/../x"], "not a valid HTTPRoute PathPrefix"),
+            (GATEWAY_ON + ["frontend.enabled=true", "frontend.image.tag=0.0.1-shell", "routing.frontendPathPrefix=//"], "not a valid HTTPRoute PathPrefix"),
         ):
             result = helm_template(*sets)
             self.assertNotEqual(result.returncode, 0, sets); self.assertIn(expected, result.stderr, sets)

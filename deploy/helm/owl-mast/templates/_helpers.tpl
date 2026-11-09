@@ -43,10 +43,27 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
-{{- define "owl-mast.postgresql.fullname" -}}{{ include "owl-mast.fullname" . }}-postgresql{{- end -}}
-{{- define "owl-mast.keycloak.fullname" -}}{{ include "owl-mast.fullname" . }}-keycloak{{- end -}}
-{{- define "owl-mast.backend.fullname" -}}{{ include "owl-mast.fullname" . }}-backend{{- end -}}
-{{- define "owl-mast.frontend.fullname" -}}{{ include "owl-mast.fullname" . }}-frontend{{- end -}}
+{{/*
+Suffixed resource name, at most 63 characters: the fullname is shortened BEFORE the suffix is appended, so a
+long release name or fullnameOverride never renders a name the API server rejects. Usage:
+include "owl-mast.suffixedName" (list . "postgresql-data")
+*/}}
+{{- define "owl-mast.suffixedName" -}}
+{{- $root := index . 0 -}}
+{{- $suffix := index . 1 -}}
+{{- $base := include "owl-mast.fullname" $root | trunc (int (sub 62 (len $suffix))) | trimSuffix "-" -}}
+{{- printf "%s-%s" $base $suffix -}}
+{{- end -}}
+
+{{- define "owl-mast.postgresql.fullname" -}}{{ include "owl-mast.suffixedName" (list . "postgresql") }}{{- end -}}
+{{- define "owl-mast.keycloak.fullname" -}}{{ include "owl-mast.suffixedName" (list . "keycloak") }}{{- end -}}
+{{- define "owl-mast.backend.fullname" -}}{{ include "owl-mast.suffixedName" (list . "backend") }}{{- end -}}
+{{- define "owl-mast.frontend.fullname" -}}{{ include "owl-mast.suffixedName" (list . "frontend") }}{{- end -}}
+{{- define "owl-mast.postgresql.dataClaim" -}}{{ include "owl-mast.suffixedName" (list . "postgresql-data") }}{{- end -}}
+{{- define "owl-mast.postgresql.initConfigMap" -}}{{ include "owl-mast.suffixedName" (list . "postgresql-init") }}{{- end -}}
+{{- define "owl-mast.postgresql.provisionScripts" -}}{{ include "owl-mast.suffixedName" (list . "postgresql-provision-scripts") }}{{- end -}}
+{{- define "owl-mast.postgresql.provisionJob" -}}{{ include "owl-mast.suffixedName" (list . "postgresql-provision-keycloak") }}{{- end -}}
+{{- define "owl-mast.keycloak.realmConfigMap" -}}{{ include "owl-mast.suffixedName" (list . "keycloak-realm") }}{{- end -}}
 
 {{/* Application database endpoint (bundled service or external host). */}}
 {{- define "owl-mast.database.host" -}}
@@ -84,65 +101,157 @@ Fail-closed validation of optional-dependency values and existing-secret referen
 Rendering stops with the offending value named; nothing is installed partially.
 */}}
 {{- define "owl-mast.validate" -}}
-{{- if not .Values.database.existingSecret -}}
+{{- $v := .Values -}}
+{{- if not $v.database.existingSecret -}}
 {{- fail "database.existingSecret is required: an existing Secret with keys username and password for the application principal" -}}
 {{- end -}}
-{{- if .Values.database.bundled -}}
-{{- if not .Values.postgresql.adminExistingSecret -}}
+{{- if $v.database.bundled -}}
+{{- if not $v.postgresql.adminExistingSecret -}}
 {{- fail "postgresql.adminExistingSecret is required when database.bundled=true" -}}
 {{- end -}}
 {{- else -}}
-{{- if not .Values.database.external.host -}}
+{{- if not $v.database.external.host -}}
 {{- fail "database.bundled=false requires database.external.host (compatible PostgreSQL 18 with VectorChord installed)" -}}
 {{- end -}}
-{{- if not (has .Values.database.external.sslMode (list "disable" "allow" "prefer" "require" "verify-ca" "verify-full")) -}}
-{{- fail "database.external.sslMode must be one of disable, allow, prefer, require, verify-ca, verify-full" -}}
+{{- include "owl-mast.validateSslMode" (list "database.external" $v.database.external) -}}
 {{- end -}}
-{{- end -}}
-{{- if .Values.identity.bundled -}}
-{{- if not .Values.identity.keycloak.bootstrapExistingSecret -}}
+{{- if $v.identity.bundled -}}
+{{- if not $v.identity.keycloak.bootstrapExistingSecret -}}
 {{- fail "identity.keycloak.bootstrapExistingSecret is required when identity.bundled=true" -}}
 {{- end -}}
-{{- if not .Values.identity.keycloak.database.existingSecret -}}
+{{- if not $v.identity.keycloak.database.existingSecret -}}
 {{- fail "identity.keycloak.database.existingSecret is required when identity.bundled=true" -}}
 {{- end -}}
-{{- if and (not .Values.database.bundled) (not .Values.identity.keycloak.database.external.host) -}}
+{{- if not $v.database.bundled -}}
+{{- if not $v.identity.keycloak.database.external.host -}}
 {{- fail "identity.bundled=true with database.bundled=false requires identity.keycloak.database.external.host" -}}
 {{- end -}}
-{{- if not .Values.identity.realm -}}
+{{- include "owl-mast.validateSslMode" (list "identity.keycloak.database.external" $v.identity.keycloak.database.external) -}}
+{{- end -}}
+{{- if not $v.identity.realm -}}
 {{- fail "identity.realm is required" -}}
 {{- end -}}
+{{- /* AC3: Keycloak keeps its own database on a shared server (the bundled instance, or the same external host and port) */ -}}
+{{- /* textual comparison (case and a trailing dot ignored); aliases such as an IP address and a DNS name are not detected */ -}}
+{{- $shared := or $v.database.bundled (and (eq (lower $v.database.external.host | trimSuffix ".") (lower $v.identity.keycloak.database.external.host | trimSuffix ".")) (eq (int $v.database.external.port) (int $v.identity.keycloak.database.external.port))) -}}
+{{- if and $shared (eq $v.database.name $v.identity.keycloak.database.name) -}}
+{{- fail (printf "identity.keycloak.database.name and database.name are both %q on the same PostgreSQL server: Keycloak and the application need separate databases (AC3)" $v.database.name) -}}
+{{- end -}}
+{{- /* D5: without the synthetic import the issuer realm exists only if an operator creates it */ -}}
+{{- if and (not $v.identity.keycloak.importRealm) (not $v.identity.keycloak.realmManagedByOperator) -}}
+{{- fail (printf "identity.keycloak.importRealm=false leaves the bundled Keycloak without the realm %q, so the backend never becomes ready; create the realm yourself and acknowledge it with identity.keycloak.realmManagedByOperator=true" $v.identity.realm) -}}
+{{- end -}}
 {{- else -}}
-{{- if not .Values.identity.external.issuerUri -}}
+{{- $issuer := $v.identity.external.issuerUri -}}
+{{- if not $issuer -}}
 {{- fail "identity.bundled=false requires identity.external.issuerUri: disabling the bundled Keycloak never disables authentication" -}}
 {{- end -}}
-{{- if not (or (hasPrefix "https://" .Values.identity.external.issuerUri) (hasPrefix "http://" .Values.identity.external.issuerUri)) -}}
-{{- fail "identity.external.issuerUri must be an absolute http(s) URL" -}}
+{{- /* authority: a DNS name of RFC 1123 labels (an IPv4 address included) with an optional numeric port */ -}}
+{{- $authority := "[A-Za-z0-9]([-A-Za-z0-9]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([-A-Za-z0-9]*[A-Za-z0-9])?)*(:[0-9]{1,5})?" -}}
+{{- if regexMatch (printf "^https://%s(/[^?#@\\s]*)?$" $authority) $issuer -}}
+{{- else if regexMatch (printf "^http://%s(/[^?#@\\s]*)?$" $authority) $issuer -}}
+{{- if not $v.identity.external.allowInsecureIssuer -}}
+{{- fail (printf "identity.external.issuerUri %q uses plaintext http: discovery and signing keys could be substituted in transit. Use https://, or set identity.external.allowInsecureIssuer=true to accept plaintext explicitly (disposable local fixtures only)" $issuer) -}}
+{{- end -}}
+{{- else -}}
+{{- fail (printf "identity.external.issuerUri %q must be an absolute https:// URL with a host and no query, fragment or user info" $issuer) -}}
 {{- end -}}
 {{- end -}}
-{{- if .Values.postgresql.provisionKeycloakDatabase -}}
-{{- if not (and .Values.database.bundled .Values.identity.bundled) -}}
+{{- /* AC3: every principal has its own Secret */ -}}
+{{- $secrets := list (list "database.existingSecret" $v.database.existingSecret) -}}
+{{- if $v.database.bundled -}}{{- $secrets = append $secrets (list "postgresql.adminExistingSecret" $v.postgresql.adminExistingSecret) -}}{{- end -}}
+{{- if $v.identity.bundled -}}
+{{- $secrets = append $secrets (list "identity.keycloak.database.existingSecret" $v.identity.keycloak.database.existingSecret) -}}
+{{- $secrets = append $secrets (list "identity.keycloak.bootstrapExistingSecret" $v.identity.keycloak.bootstrapExistingSecret) -}}
+{{- end -}}
+{{- range $i, $a := $secrets -}}
+{{- range $j, $b := $secrets -}}
+{{- if and (lt $i $j) (eq (index $a 1) (index $b 1)) -}}
+{{- fail (printf "%s and %s both reference Secret %q: each principal needs its own Secret (AC3 separate principals)" (index $a 0) (index $b 0) (index $a 1)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if $v.postgresql.provisionKeycloakDatabase -}}
+{{- if not (and $v.database.bundled $v.identity.bundled) -}}
 {{- fail "postgresql.provisionKeycloakDatabase=true applies only to a bundled PostgreSQL with a bundled Keycloak (database.bundled=true and identity.bundled=true)" -}}
 {{- end -}}
+{{- if .Release.IsInstall -}}
+{{- fail "postgresql.provisionKeycloakDatabase=true is refused on install: a fresh install provisions Keycloak's database at first initialisation, and the pre-upgrade hook needs the release's existing PostgreSQL (use it on helm upgrade; helm template needs --is-upgrade)" -}}
 {{- end -}}
-{{- if .Values.frontend.enabled -}}
-{{- if and (not .Values.frontend.image.tag) (not .Values.frontend.image.digest) -}}
+{{- end -}}
+{{- if $v.frontend.enabled -}}
+{{- if and (not $v.frontend.image.tag) (not $v.frontend.image.digest) -}}
 {{- fail "frontend.enabled=true requires frontend.image.tag or frontend.image.digest (artifact delivered by OM-01.04)" -}}
 {{- end -}}
 {{- end -}}
-{{- if .Values.routing.ingress.enabled -}}
-{{- if not .Values.routing.ingress.host -}}
-{{- fail "routing.ingress.enabled=true requires routing.ingress.host" -}}
+{{- if $v.routing.ingress.enabled -}}
+{{- include "owl-mast.validateIngress" . -}}
 {{- end -}}
-{{- end -}}
-{{- if and .Values.routing.ingress.enabled .Values.routing.gateway.enabled -}}
+{{- if and $v.routing.ingress.enabled $v.routing.gateway.enabled -}}
 {{- fail "routing.ingress.enabled and routing.gateway.enabled are both true: choose one routing mechanism (ambiguous exposure is refused)" -}}
 {{- end -}}
-{{- if .Values.routing.gateway.enabled -}}
+{{- if $v.routing.gateway.enabled -}}
 {{- include "owl-mast.validateGateway" . -}}
+{{- if not (.Capabilities.APIVersions.Has "gateway.networking.k8s.io/v1/HTTPRoute") -}}
+{{- fail "routing.gateway.enabled=true requires the Gateway API CRDs: the target does not serve the capability gateway.networking.k8s.io/v1/HTTPRoute (install the standard-channel CRDs first; for helm template pass --api-versions gateway.networking.k8s.io/v1/HTTPRoute)" -}}
 {{- end -}}
-{{- range (list .Values.routing.apiPathPrefix .Values.routing.actuatorPathPrefix .Values.routing.frontendPathPrefix) -}}
+{{- end -}}
+{{- range (list $v.routing.apiPathPrefix $v.routing.actuatorPathPrefix $v.routing.frontendPathPrefix) -}}
 {{- include "owl-mast.validatePathPrefix" . -}}
+{{- end -}}
+{{- /* D2: the prefixes are pinned to what the artifacts serve (no rewrite is rendered), which also makes them disjoint */ -}}
+{{- if not (regexMatch "^/api(/.*)?$" $v.routing.apiPathPrefix) -}}
+{{- fail (printf "routing.apiPathPrefix %q is not served by the backend: it must be /api or a path below /api/ (the chart renders no rewrite)" $v.routing.apiPathPrefix) -}}
+{{- end -}}
+{{- if not (regexMatch "^/actuator(/.*)?$" $v.routing.actuatorPathPrefix) -}}
+{{- fail (printf "routing.actuatorPathPrefix %q is not served by the backend: it must be /actuator or a path below /actuator/ (the chart renders no rewrite)" $v.routing.actuatorPathPrefix) -}}
+{{- end -}}
+{{- if ne $v.routing.frontendPathPrefix "/" -}}
+{{- fail (printf "routing.frontendPathPrefix %q is not served by the frontend shell: it must be / (the chart renders no rewrite)" $v.routing.frontendPathPrefix) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* D1: external PostgreSQL transport. validateSslMode (list "<values path>" <external values>) */}}
+{{- define "owl-mast.validateSslMode" -}}
+{{- $path := index . 0 -}}
+{{- $ext := index . 1 -}}
+{{- if not (has $ext.sslMode (list "disable" "allow" "prefer" "require" "verify-ca" "verify-full")) -}}
+{{- fail (printf "%s.sslMode must be one of disable, allow, prefer, require, verify-ca, verify-full" $path) -}}
+{{- end -}}
+{{- if and (has $ext.sslMode (list "disable" "allow" "prefer")) (not $ext.allowInsecureTransport) -}}
+{{- fail (printf "%s.sslMode=%s can send database credentials in plaintext: use require (or verify-ca/verify-full), or set %s.allowInsecureTransport=true to accept plaintext explicitly" $path $ext.sslMode $path) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Ingress host and TLS: the host is a lowercase DNS name (optional leading '*.'), and a TLS block must cover it. */}}
+{{- define "owl-mast.validateIngress" -}}
+{{- $in := .Values.routing.ingress -}}
+{{- $hostPattern := "^(\\*\\.)?[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" -}}
+{{- if not $in.host -}}
+{{- fail "routing.ingress.enabled=true requires routing.ingress.host" -}}
+{{- end -}}
+{{- if or (gt (len $in.host) 253) (not (regexMatch $hostPattern $in.host)) -}}
+{{- fail (printf "routing.ingress.host %q is not a valid Ingress host: lowercase DNS name, optional leading wildcard label '*.', no scheme, port or path" $in.host) -}}
+{{- end -}}
+{{- if $in.tls -}}
+{{- $covered := false -}}
+{{- range $i, $t := $in.tls -}}
+{{- if not $t.hosts -}}
+{{- fail (printf "routing.ingress.tls[%d].hosts must list the host it secures" $i) -}}
+{{- end -}}
+{{- range $t.hosts -}}
+{{- if or (gt (len .) 253) (not (regexMatch $hostPattern .)) -}}
+{{- fail (printf "routing.ingress.tls[%d].hosts entry %q is not a valid DNS name" $i .) -}}
+{{- end -}}
+{{- if eq . $in.host -}}{{- $covered = true -}}{{- end -}}
+{{- if and (hasPrefix "*." .) (not (hasPrefix "*." $in.host)) (contains "." $in.host) -}}
+{{- if eq (trimPrefix "*" .) (printf ".%s" (regexReplaceAll "^[^.]+\\." $in.host "")) -}}{{- $covered = true -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if not $covered -}}
+{{- fail (printf "routing.ingress.tls does not cover routing.ingress.host %q: the controller would serve its default certificate" $in.host) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 

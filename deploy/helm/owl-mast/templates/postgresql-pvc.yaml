@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ include "owl-mast.postgresql.fullname" . }}-data
+  name: {{ include "owl-mast.postgresql.dataClaim" . }}
   labels:
     {{- include "owl-mast.labels" . | nindent 4 }}
     app.kubernetes.io/component: postgresql

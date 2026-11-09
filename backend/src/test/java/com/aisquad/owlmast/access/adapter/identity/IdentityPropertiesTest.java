@@ -38,6 +38,54 @@ class IdentityPropertiesTest {
   }
 
   @Test
+  void issuerWithQueryOrFragmentIsRejectedNamingTheProperty() {
+    for (String issuer :
+        new String[] {
+          "https://idp.example/realms/x?a=b",
+          "https://idp.example/realms/x?",
+          "https://idp.example/realms/x#frag",
+          "https://idp.example/realms/x/?a=b#frag"
+        }) {
+      assertThatThrownBy(() -> new IdentityProperties(issuer))
+          .as(issuer)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("owlmast.identity.issuer-uri must not contain a query or fragment");
+    }
+  }
+
+  @Test
+  void issuerWithUserInfoIsRejectedNamingTheProperty() {
+    for (String issuer :
+        new String[] {
+          "https://user@idp.example/realms/x", "https://user:pw@idp.example/realms/x"
+        }) {
+      assertThatThrownBy(() -> new IdentityProperties(issuer))
+          .as(issuer)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("owlmast.identity.issuer-uri must not contain user info");
+    }
+  }
+
+  @Test
+  void plaintextClusterLocalIssuerStaysAccepted() {
+    assertThat(new IdentityProperties("http://owl-mast-keycloak:8080/realms/owl-mast").issuerUri())
+        .isEqualTo("http://owl-mast-keycloak:8080/realms/owl-mast");
+  }
+
+  @Test
+  void issuerWithQueryFailsStartup() {
+    runner
+        .withPropertyValues("owlmast.identity.issuer-uri=https://idp.example/realms/x?a=b")
+        .run(context -> {
+          assertThat(context).hasFailed();
+          assertThat(context.getStartupFailure())
+              .rootCause()
+              .hasMessageContaining(
+                  "owlmast.identity.issuer-uri must not contain a query or fragment");
+        });
+  }
+
+  @Test
   void validIssuerIsNormalisedAndExposesDiscoveryLocation() {
     runner
         .withPropertyValues("owlmast.identity.issuer-uri=https://idp.example/realms/owl-mast/")

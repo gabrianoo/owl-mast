@@ -4,7 +4,7 @@ database:
   external:
     host: postgresql.data.example.internal
     port: 5432
-    sslMode: verify-full
+    sslMode: require
 identity:
   bundled: false
   external:

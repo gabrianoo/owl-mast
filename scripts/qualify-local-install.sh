@@ -12,6 +12,8 @@
 # Steps: prepare fixtures bundled-bundled persistence bundled-external external-bundled external-external failure-paths inventory all
 #        first-enable (needs OWLMAST_FOLLOWUP_RUN_ID; a fresh run-owned volume: app-only init, enable identity via the pre-upgrade hook, retry)
 # Optional: BACKEND_IMAGE_TAG (default 0.1.0), BACKEND_IMAGE_ID (expected local image id the node must run).
+# The synthetic fixtures speak plaintext (http issuer, sslMode=disable): every such install passes the chart's
+# explicit opt-ins (identity.external.allowInsecureIssuer, *.allowInsecureTransport); production values never do.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -230,7 +232,8 @@ release_state() { # release_state <release>: absent | present | error:<message> 
 RELEASE_KINDS_AND_SUFFIXES=( "deployment:-backend" "deployment:-postgresql" "deployment:-keycloak" "deployment:-frontend"
   "service:-backend" "service:-postgresql" "service:-keycloak" "service:-frontend"
   "configmap:-postgresql-init" "configmap:-keycloak-realm" "configmap:-postgresql-provision-scripts"
-  "job:-postgresql-provision-keycloak" "ingress:" "httproute:" "pvc:-postgresql-data" )
+  "job:-postgresql-provision-keycloak" "ingress:" "httproute:" "pvc:-postgresql-data"
+  "networkpolicy:-postgresql" "networkpolicy:-keycloak" )
 verified_pods() { # verified_pods <release> <component> <owner>: prints the names of the selected pods whose controller chain is proven
   # Each selected pod must carry the owner label and exactly one controller reference to a ReplicaSet that
   # exists, is readable, has that UID, carries the owner label and is itself controlled (one controller
@@ -444,17 +447,27 @@ wait_ready() { # wait_ready <namespace> <deployment> <seconds>
   k -n "$1" rollout status "deploy/$2" --timeout="$3s"
 }
 verify_backend_image() { # verify_backend_image <name>: the running backend is exactly the local build loaded for this run
-  local name="$1" pod image_id node_id
-  pod="$(k -n "$NS" get pods -l "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=backend" -o jsonpath='{.items[0].metadata.name}')"
-  record "$name-image" k -n "$NS" get pod "$pod" -o jsonpath='{.status.containerStatuses[0].image} {.status.containerStatuses[0].imageID}{"\n"}'
+  local name="$1" rows pods pod image_id node_id node_digests
+  # Exactly one Running pod that is not terminating: after a rollout the old pod may still be listed first.
+  rows="$(k -n "$NS" get pods -l "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=backend" --field-selector=status.phase=Running \
+    -o custom-columns=NAME:.metadata.name,DELETING:.metadata.deletionTimestamp --no-headers)" \
+    || { log "FAIL $name-image-identity: backend pod selection unreadable"; return 1; }
+  pods="$(awk '$2 == "<none>" {print $1}' <<<"$rows")"
+  if [ "$(grep -c . <<<"$pods")" -ne 1 ]; then
+    log "FAIL $name-image-identity: expected exactly one Running, non-terminating backend pod, found '$(tr '\n' ' ' <<<"$pods")'"; return 1
+  fi
+  pod="$pods"
+  record "$name-image" k -n "$NS" get pod "$pod" -o jsonpath='{.status.containerStatuses[0].image} {.status.containerStatuses[0].imageID}{"\n"}' || return 1
+  image_id="$(k -n "$NS" get pod "$pod" -o jsonpath='{.status.containerStatuses[0].imageID}')" || { log "FAIL $name-image-identity: imageID unreadable"; return 1; }
+  # An empty imageID would match any digest list; it is never evidence.
+  [ -n "$image_id" ] || { log "FAIL $name-image-identity: pod $pod reports no imageID (container not started)"; return 1; }
   [ -n "$BACKEND_IMAGE_ID" ] || { log "note $name-image: BACKEND_IMAGE_ID not supplied; running image recorded, not compared"; return; }
   # The node's record for the tag: its image id (the config digest, identical to the local docker image id)
   # and the import digests containerd assigned when `kind load` imported this exact build.
   node_id="$(docker exec "$KIND_NODE" crictl inspecti -o go-template --template '{{.status.id}}' "docker.io/owl-mast/backend:$BACKEND_IMAGE_TAG" 2>/dev/null || true)"
-  local node_digests; node_digests="$(docker exec "$KIND_NODE" crictl inspecti -o go-template --template '{{range .status.repoDigests}}{{.}} {{end}}' "docker.io/owl-mast/backend:$BACKEND_IMAGE_TAG" 2>/dev/null || true)"
-  image_id="$(k -n "$NS" get pod "$pod" -o jsonpath='{.status.containerStatuses[0].imageID}')"
+  node_digests="$(docker exec "$KIND_NODE" crictl inspecti -o go-template --template '{{range .status.repoDigests}}{{.}} {{end}}' "docker.io/owl-mast/backend:$BACKEND_IMAGE_TAG" 2>/dev/null || true)"
   printf 'expected local image id: %s\nnode image id for tag %s: %s\nnode import digests: %s\npod imageID: %s\n' "$BACKEND_IMAGE_ID" "$BACKEND_IMAGE_TAG" "$node_id" "$node_digests" "$image_id" >>"$OUT/$name-image.txt"
-  if [ "$node_id" = "$BACKEND_IMAGE_ID" ] && { [ "$image_id" = "$BACKEND_IMAGE_ID" ] || grep -qF -- "$image_id" <<<"$node_digests"; }; then
+  if [ "$node_id" = "$BACKEND_IMAGE_ID" ] && { [ "$image_id" = "$BACKEND_IMAGE_ID" ] || tr ' ' '\n' <<<"$node_digests" | grep -qxF -- "$image_id"; }; then
     log "ok   $name-image-identity (node tag resolves to the expected local build and the pod runs it)"
   else
     log "FAIL $name-image-identity: the pod does not run the expected local build (see $OUT/$name-image.txt)"; return 1
@@ -512,21 +525,23 @@ install_combo() { # install_combo <name> <helm args...>
 }
 
 check_shared_postgres() { # check_shared_postgres <namespace> <deployment>  (AC3 on whichever instance is the shared one)
+  # Every check returns explicitly: callers may invoke this under `||` (first-enable), which disables
+  # `set -e` for the whole body, so a failed check must never fall through to the next one.
   local ns="$1" deploy="$2"
-  record "ac3-$ns-app-not-superuser" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "select current_user, rolsuper, rolcreatedb, rolcreaterole from pg_roles where rolname = current_user"
+  record "ac3-$ns-app-not-superuser" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "select current_user, rolsuper, rolcreatedb, rolcreaterole from pg_roles where rolname = current_user" || return 1
   grep -q 'owlmast_app|f|f|f' "$OUT/ac3-$ns-app-not-superuser.txt" || { log "FAIL app principal privileges"; return 1; }
-  record "ac3-$ns-keycloak-not-superuser" pg_exec "$ns" "$deploy" OWLMAST_KEYCLOAK keycloak "select current_user, rolsuper, rolcreatedb, rolcreaterole from pg_roles where rolname = current_user"
+  record "ac3-$ns-keycloak-not-superuser" pg_exec "$ns" "$deploy" OWLMAST_KEYCLOAK keycloak "select current_user, rolsuper, rolcreatedb, rolcreaterole from pg_roles where rolname = current_user" || return 1
   grep -q 'keycloak_app|f|f|f' "$OUT/ac3-$ns-keycloak-not-superuser.txt" || { log "FAIL keycloak principal privileges"; return 1; }
-  expect_connect_denied "ac3-$ns-app-cannot-connect-keycloak-db" "$ns" "$deploy" OWLMAST_APP keycloak owlmast
-  expect_connect_denied "ac3-$ns-keycloak-cannot-connect-owlmast-db" "$ns" "$deploy" OWLMAST_KEYCLOAK owlmast keycloak
-  record "ac3-$ns-extensions" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "select extname||'='||extversion from pg_extension where extname in ('vchord','vector') order by 1"
+  expect_connect_denied "ac3-$ns-app-cannot-connect-keycloak-db" "$ns" "$deploy" OWLMAST_APP keycloak owlmast || return 1
+  expect_connect_denied "ac3-$ns-keycloak-cannot-connect-owlmast-db" "$ns" "$deploy" OWLMAST_KEYCLOAK owlmast keycloak || return 1
+  record "ac3-$ns-extensions" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "select extname||'='||extversion from pg_extension where extname in ('vchord','vector') order by 1" || return 1
   grep -q 'vchord=1.1.1' "$OUT/ac3-$ns-extensions.txt" && grep -q 'vector=0.8.2' "$OUT/ac3-$ns-extensions.txt" || { log "FAIL extensions"; return 1; }
-  record "ac3-$ns-keycloak-schema-present" pg_exec "$ns" "$deploy" OWLMAST_KEYCLOAK keycloak "select count(*) > 10 from information_schema.tables where table_schema='public'"
+  record "ac3-$ns-keycloak-schema-present" pg_exec "$ns" "$deploy" OWLMAST_KEYCLOAK keycloak "select count(*) > 10 from information_schema.tables where table_schema='public'" || return 1
   grep -qx 't' "$OUT/ac3-$ns-keycloak-schema-present.txt" || { log "FAIL keycloak schema"; return 1; }
-  record "ac3-$ns-flyway-history" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "select version||'|'||success from flyway_schema_history order by installed_rank"
+  record "ac3-$ns-flyway-history" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "select version||'|'||success from flyway_schema_history order by installed_rank" || return 1
   grep -q '^001|true$' "$OUT/ac3-$ns-flyway-history.txt" || { log "FAIL flyway history"; return 1; }
   # VectorChord index usage on synthetic data with the application principal (AC3); re-entry appends, never drops.
-  record "ac3-$ns-vchord-index" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "create schema if not exists qualification; create table if not exists qualification.vectors(id int primary key, embedding vector(3)); insert into qualification.vectors select g, array[g, g*2, g*3]::vector from generate_series(1,200) g on conflict do nothing; create index if not exists vectors_vchordrq on qualification.vectors using vchordrq (embedding vector_l2_ops) with (options = E'residual_quantization = true\\n[build.internal]\\nlists = []'); analyze qualification.vectors; set enable_seqscan = off; explain (costs off) select id from qualification.vectors order by embedding <-> '[3,6,9]' limit 3; select id from qualification.vectors order by embedding <-> '[3,6,9]' limit 3; select indexdef from pg_indexes where schemaname='qualification' and indexname='vectors_vchordrq'"
+  record "ac3-$ns-vchord-index" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "create schema if not exists qualification; create table if not exists qualification.vectors(id int primary key, embedding vector(3)); insert into qualification.vectors select g, array[g, g*2, g*3]::vector from generate_series(1,200) g on conflict do nothing; create index if not exists vectors_vchordrq on qualification.vectors using vchordrq (embedding vector_l2_ops) with (options = E'residual_quantization = true\\n[build.internal]\\nlists = []'); analyze qualification.vectors; set enable_seqscan = off; explain (costs off) select id from qualification.vectors order by embedding <-> '[3,6,9]' limit 3; select id from qualification.vectors order by embedding <-> '[3,6,9]' limit 3; select indexdef from pg_indexes where schemaname='qualification' and indexname='vectors_vchordrq'" || return 1
   grep -q 'Index Scan using vectors_vchordrq' "$OUT/ac3-$ns-vchord-index.txt" && grep -q 'USING vchordrq' "$OUT/ac3-$ns-vchord-index.txt" || { log "FAIL vchord index usage"; return 1; }
   grep -qiE 'hnsw|ivfflat' "$OUT/ac3-$ns-vchord-index.txt" && { log "FAIL pgvector index type appeared"; return 1; }
   log "ok   ac3-$ns-vchord-index (vchordrq index scan on synthetic vectors)"
@@ -596,7 +611,7 @@ step_bundled_external() {
   # Keycloak Secret names are pointed at names that do not exist; any remaining reference would
   # leave a pod in CreateContainerConfigError instead of reaching readiness.
   install_combo bundled-external --set identity.bundled=false \
-    --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast" \
+    --set identity.external.allowInsecureIssuer=true --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast" \
     --set identity.keycloak.database.existingSecret=absent-keycloak-db-secret \
     --set identity.keycloak.bootstrapExistingSecret=absent-keycloak-bootstrap-secret
   record bundled-external-no-keycloak k get deploy -n "$NS" -o name
@@ -610,9 +625,9 @@ step_bundled_external() {
 
 step_external_bundled() {
   install_combo external-bundled --set database.bundled=false --set database.existingSecret=owl-mast-external-db \
-    --set database.external.host="external-postgresql.$EXT_NS.svc" --set database.external.sslMode=disable \
+    --set database.external.host="external-postgresql.$EXT_NS.svc" --set database.external.sslMode=disable --set database.external.allowInsecureTransport=true \
     --set identity.keycloak.database.existingSecret=owl-mast-external-keycloak-db \
-    --set identity.keycloak.database.external.host="external-postgresql.$EXT_NS.svc" --set identity.keycloak.database.external.sslMode=disable
+    --set identity.keycloak.database.external.host="external-postgresql.$EXT_NS.svc" --set identity.keycloak.database.external.sslMode=disable --set identity.keycloak.database.external.allowInsecureTransport=true
   # Only deployments are checked: the retained claim from the bundled run is expected to persist (T3).
   record external-bundled-no-postgres k get deploy -n "$NS" -o name
   grep -q postgresql "$OUT/external-bundled-no-postgres.txt" && { log "FAIL bundled postgresql rendered"; return 1; } || log "ok   external-bundled-no-bundled-postgresql"
@@ -624,8 +639,8 @@ step_external_bundled() {
 
 step_external_external() {
   install_combo external-external --set database.bundled=false --set database.existingSecret=owl-mast-external-db \
-    --set database.external.host="external-postgresql.$EXT_NS.svc" --set database.external.sslMode=disable \
-    --set identity.bundled=false --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast"
+    --set database.external.host="external-postgresql.$EXT_NS.svc" --set database.external.sslMode=disable --set database.external.allowInsecureTransport=true \
+    --set identity.bundled=false --set identity.external.allowInsecureIssuer=true --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast"
   record external-external-only-backend k get deploy,pvc,svc -n "$NS" -o name
   record external-external-uninstall h uninstall "$RELEASE" -n "$NS" --wait
 }
@@ -646,7 +661,7 @@ step_first_enable() {
     --set postgresql.adminExistingSecret="$FE_RELEASE-postgres-admin" --set database.existingSecret="$FE_RELEASE-db"
     --set identity.keycloak.database.existingSecret="$FE_RELEASE-keycloak-db" --set identity.keycloak.bootstrapExistingSecret="$FE_RELEASE-keycloak-bootstrap")
   record fe1-install-external-identity h upgrade --install "$FE_RELEASE" "$CHART" -n "$NS" --wait --timeout 10m "${common[@]}" \
-    --set identity.bundled=false --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast"
+    --set identity.bundled=false --set identity.external.allowInsecureIssuer=true --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast"
   record fe1-postgresql-pod k -n "$NS" get pods -l "app.kubernetes.io/instance=$FE_RELEASE,app.kubernetes.io/component=postgresql" -o custom-columns=NAME:.metadata.name,READY:.status.containerStatuses[0].ready,RESTARTS:.status.containerStatuses[0].restartCount
   grep -qE '^\S+ +true +0$' "$OUT/fe1-postgresql-pod.txt" || { log "FAIL fresh PostgreSQL did not initialise on its first start without restarts"; return 1; }
   record fe1-postgresql-init-log k -n "$NS" logs "deploy/$FE_RELEASE-postgresql"
@@ -701,9 +716,9 @@ step_failure_paths() {
   ensure_broken_secret
   if h upgrade --install "$RELEASE-broken" "$CHART" -n "$NS" --wait --timeout 90s \
       --set backend.image.tag="$BACKEND_IMAGE_TAG" --set backend.image.pullPolicy=Never --set commonLabels."owlmast\.aisquad\.com/run"="$RUN_ID" \
-      --set database.bundled=false --set database.external.host="external-postgresql.$EXT_NS.svc" --set database.external.sslMode=disable \
+      --set database.bundled=false --set database.external.host="external-postgresql.$EXT_NS.svc" --set database.external.sslMode=disable --set database.external.allowInsecureTransport=true \
       --set database.existingSecret=owl-mast-db-broken \
-      --set identity.bundled=false --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast" \
+      --set identity.bundled=false --set identity.external.allowInsecureIssuer=true --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast" \
       >"$OUT/fail-missing-secret-key-install.txt" 2>&1; then
     log "FAIL install succeeded with a Secret missing the password key"; return 1
   fi
@@ -712,8 +727,8 @@ step_failure_paths() {
   record fail-missing-secret-key-uninstall h uninstall "$RELEASE-broken" -n "$NS" --wait
   if h upgrade --install "$RELEASE-wrongidp" "$CHART" -n "$NS" --wait --timeout 150s \
       --set backend.image.tag="$BACKEND_IMAGE_TAG" --set backend.image.pullPolicy=Never --set commonLabels."owlmast\.aisquad\.com/run"="$RUN_ID" \
-      --set database.bundled=false --set database.existingSecret=owl-mast-external-db --set database.external.host="external-postgresql.$EXT_NS.svc" --set database.external.sslMode=disable \
-      --set identity.bundled=false --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/does-not-exist" \
+      --set database.bundled=false --set database.existingSecret=owl-mast-external-db --set database.external.host="external-postgresql.$EXT_NS.svc" --set database.external.sslMode=disable --set database.external.allowInsecureTransport=true \
+      --set identity.bundled=false --set identity.external.allowInsecureIssuer=true --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/does-not-exist" \
       >"$OUT/fail-wrong-issuer-install.txt" 2>&1; then
     log "FAIL install became ready with a non-existent realm"; return 1
   fi

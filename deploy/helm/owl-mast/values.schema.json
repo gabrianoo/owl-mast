@@ -49,18 +49,53 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["periodSeconds", "failureThreshold"],
-      "properties": {
-        "periodSeconds": {"type": "integer", "minimum": 1},
-        "failureThreshold": {"type": "integer", "minimum": 1}
-      }
+      "properties": {"periodSeconds": {"type": "integer", "minimum": 1}, "failureThreshold": {"type": "integer", "minimum": 1}}
     },
     "secretName": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"},
-    "sslMode": {"type": "string", "enum": ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]}
+    "sslMode": {"type": "string", "enum": ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]},
+    "dnsHost": {
+      "type": "string",
+      "maxLength": 253,
+      "pattern": "^$|^[A-Za-z0-9]([-A-Za-z0-9]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([-A-Za-z0-9]*[A-Za-z0-9])?)*\\.?$",
+      "description": "Bare DNS name (RFC 1123 labels separated by single dots, optional trailing dot) or IPv4 address: no port, path, query or scheme (it is spliced into JDBC/R2DBC URLs)."
+    },
+    "ingressHost": {
+      "type": "string",
+      "maxLength": 253,
+      "pattern": "^$|^(\\*\\.)?[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+    },
+    "annotations": {"type": "object", "additionalProperties": {"type": "string"}},
+    "labels": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "maxLength": 63, "pattern": "^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$"},
+      "propertyNames": {"not": {"pattern": "^(app\\.kubernetes\\.io/|helm\\.sh/)"}},
+      "description": "Keys under app.kubernetes.io/ and helm.sh/ are chart-managed (selectors) and refused."
+    },
+    "externalPostgres": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "port", "sslMode"],
+      "properties": {
+        "host": {"$ref": "#/$defs/dnsHost"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "sslMode": {"$ref": "#/$defs/sslMode"},
+        "allowInsecureTransport": {"type": "boolean"}
+      }
+    },
+    "networkPolicyPeers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": false,
+        "properties": {"podSelector": {"type": "object"}, "namespaceSelector": {"type": "object"}, "ipBlock": {"type": "object"}}
+      }
+    }
   },
   "properties": {
     "nameOverride": {"type": "string"},
     "fullnameOverride": {"type": "string"},
-    "commonLabels": {"type": "object", "additionalProperties": {"type": "string"}},
+    "commonLabels": {"$ref": "#/$defs/labels"},
     "backend": {
       "type": "object",
       "additionalProperties": false,
@@ -89,7 +124,20 @@
             "additionalProperties": false,
             "required": ["name", "value"],
             "properties": {
-              "name": {"type": "string", "not": {"pattern": "(?i)(password|secret|token|credential)"}},
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                "not": {
+                  "anyOf": [
+                    {"pattern": "(?i)(password|secret|token|credential)"},
+                    {"pattern": "(?i)^(OWLMAST_|SPRING_|MANAGEMENT_|SERVER_|LOADER_)"},
+                    {
+                      "pattern": "(?i)^(JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS|JAVA_OPTS|JAVA_HOME|PATH|CLASSPATH|LD_PRELOAD|LD_LIBRARY_PATH)$"
+                    }
+                  ]
+                },
+                "description": "Plain variables only: no credentials, and nothing that overrides the chart-validated OWLMAST_/SPRING_/MANAGEMENT_/SERVER_ configuration, the Spring Boot launcher (LOADER_*), the JVM options or the dynamic loader."
+              },
               "value": {"type": "string"}
             }
           }
@@ -110,8 +158,8 @@
         "probes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["readiness"],
-          "properties": {"readiness": {"$ref": "#/$defs/httpProbe"}}
+          "required": ["liveness", "readiness"],
+          "properties": {"liveness": {"$ref": "#/$defs/httpProbe"}, "readiness": {"$ref": "#/$defs/httpProbe"}}
         }
       }
     },
@@ -130,9 +178,20 @@
           "properties": {
             "enabled": {"type": "boolean"},
             "className": {"type": "string"},
-            "host": {"type": "string"},
-            "annotations": {"type": "object"},
-            "tls": {"type": "array"}
+            "host": {"$ref": "#/$defs/ingressHost"},
+            "annotations": {"$ref": "#/$defs/annotations"},
+            "tls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["hosts"],
+                "properties": {
+                  "hosts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/ingressHost"}},
+                  "secretName": {"$ref": "#/$defs/secretName"}
+                }
+              }
+            }
           }
         },
         "gateway": {
@@ -151,13 +210,27 @@
                 "properties": {
                   "name": {"type": "string", "minLength": 1, "maxLength": 253},
                   "namespace": {"type": "string", "minLength": 1, "maxLength": 63, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
-                  "sectionName": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"},
+                  "sectionName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 253,
+                    "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+                  },
                   "port": {"type": "integer", "minimum": 1, "maximum": 65535}
                 }
               }
             },
-            "hostnames": {"type": "array", "maxItems": 16, "items": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^(\\*\\.)?[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"}},
-            "annotations": {"type": "object"}
+            "hostnames": {
+              "type": "array",
+              "maxItems": 16,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 253,
+                "pattern": "^(\\*\\.)?[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+              }
+            },
+            "annotations": {"$ref": "#/$defs/annotations"}
           }
         }
       }
@@ -170,16 +243,7 @@
         "bundled": {"type": "boolean"},
         "name": {"type": "string", "pattern": "^[a-z_][a-z0-9_]*$"},
         "existingSecret": {"$ref": "#/$defs/secretName"},
-        "external": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["host", "port", "sslMode"],
-          "properties": {
-            "host": {"type": "string"},
-            "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-            "sslMode": {"$ref": "#/$defs/sslMode"}
-          }
-        }
+        "external": {"$ref": "#/$defs/externalPostgres"}
       }
     },
     "postgresql": {
@@ -235,7 +299,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["issuerUri"],
-          "properties": {"issuerUri": {"type": "string"}}
+          "properties": {"issuerUri": {"type": "string"}, "allowInsecureIssuer": {"type": "boolean"}}
         },
         "keycloak": {
           "type": "object",
@@ -252,16 +316,7 @@
               "properties": {
                 "name": {"type": "string", "pattern": "^[a-z_][a-z0-9_]*$"},
                 "existingSecret": {"$ref": "#/$defs/secretName"},
-                "external": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["host", "port", "sslMode"],
-                  "properties": {
-                    "host": {"type": "string"},
-                    "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-                    "sslMode": {"$ref": "#/$defs/sslMode"}
-                  }
-                }
+                "external": {"$ref": "#/$defs/externalPostgres"}
               }
             },
             "service": {"type": "object", "required": ["port", "managementPort"]},
@@ -275,8 +330,28 @@
                 "liveness": {"$ref": "#/$defs/execProbe"},
                 "readiness": {"$ref": "#/$defs/execProbe"}
               }
-            }
+            },
+            "realmManagedByOperator": {"type": "boolean"},
+            "proxyHeaders": {"type": "string", "enum": ["", "xforwarded", "forwarded"]}
           }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "postgresql": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {"extraFrom": {"$ref": "#/$defs/networkPolicyPeers"}}
+        },
+        "keycloak": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {"extraFrom": {"$ref": "#/$defs/networkPolicyPeers"}}
         }
       }
     }

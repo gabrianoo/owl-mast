@@ -142,8 +142,23 @@ if [[ "$args" == *" get secret"* ]]; then
   fi
   exit 0
 fi
+# Backend image identity: the Running pods as custom-columns rows "NAME DELETING" (STUB_BACKEND_PODS) and the container status (STUB_IMAGE_ID).
+if [[ "$args" == *"--field-selector=status.phase=Running"* ]]; then printf '%b' "${STUB_BACKEND_PODS:-}"; exit 0; fi
+if [[ "$args" == *"].image} {.status.containerStatuses[0].imageID}"* ]]; then printf 'docker.io/owl-mast/backend:stub %s\n' "${STUB_IMAGE_ID:-}"; exit 0; fi
+if [[ "$args" == *"{.status.containerStatuses[0].imageID}"* ]]; then printf '%s' "${STUB_IMAGE_ID:-}"; exit 0; fi
 if [[ "$args" == *" exec "* ]]; then
   db="$(sed -E "s/.* -d '([^']+)'.*/\1/" <<<"$args")"
+  if [ "${STUB_EXEC_MODE:-}" = ac3 ]; then
+    # Every AC3 observation of check_shared_postgres succeeds; only the CONNECT attempts follow STUB_AC3_CONNECT
+    # (denied: the intended denial for the other database; allowed: the principal connects everywhere).
+    if [[ "$args" == *"select current_database()"* ]]; then
+      if [ "${STUB_AC3_CONNECT:-denied}" = denied ] && { { [[ "$args" == *OWLMAST_APP_PASSWORD* ]] && [ "$db" = keycloak ]; } || { [[ "$args" == *OWLMAST_KEYCLOAK_PASSWORD* ]] && [ "$db" = owlmast ]; }; }; then
+        printf 'FATAL:  permission denied for database "%s"\nDETAIL:  User does not have CONNECT privilege.\ncommand terminated with exit code 2\n' "$db"; exit 2
+      fi
+      printf '%s\n' "$db"; exit 0
+    fi
+    printf 'owlmast_app|f|f|f\nkeycloak_app|f|f|f\nvchord=1.1.1\nvector=0.8.2\nt\n001|true\nIndex Scan using vectors_vchordrq on vectors\nCREATE INDEX vectors_vchordrq ON qualification.vectors USING vchordrq (embedding vector_l2_ops)\n'; exit 0
+  fi
   case "${STUB_EXEC_MODE:-denied}" in
     denied) if [ "$db" = "${STUB_DENIED_DB:-keycloak}" ]; then printf 'psql: error: connection to server at "127.0.0.1", port 5432 failed: FATAL:  permission denied for database "%s"\nDETAIL:  User does not have CONNECT privilege.\ncommand terminated with exit code 2\n' "$db"; exit 2; fi; printf '%s\n' "$db"; exit 0 ;;
     refused) echo "Unable to connect to the server: dial tcp 10.0.0.1:6443: connect: connection refused"; exit 1 ;;
@@ -443,7 +458,8 @@ class PreflightTests(unittest.TestCase):
         for rel in ("owl-mast", "owl-mast-broken", "owl-mast-wrongidp"):
             world += f"release - {rel} owned\n"
             for kind, suffix in (("deployment", "-backend"), ("deployment", "-postgresql"), ("deployment", "-keycloak"), ("deployment", "-frontend"), ("service", "-backend"), ("service", "-postgresql"), ("service", "-keycloak"), ("service", "-frontend"),
-                                 ("configmap", "-postgresql-init"), ("configmap", "-keycloak-realm"), ("configmap", "-postgresql-provision-scripts"), ("job", "-postgresql-provision-keycloak"), ("ingress", ""), ("httproute", ""), ("pvc", "-postgresql-data")):
+                                 ("configmap", "-postgresql-init"), ("configmap", "-keycloak-realm"), ("configmap", "-postgresql-provision-scripts"), ("job", "-postgresql-provision-keycloak"), ("ingress", ""), ("httproute", ""), ("pvc", "-postgresql-data"),
+                                 ("networkpolicy", "-postgresql"), ("networkpolicy", "-keycloak")):
                 world += f"{kind} owl-mast-test {rel}{suffix} owned\n"
             for comp in ("backend", "postgresql", "keycloak"):
                 world += f"pods owl-mast-test {rel}-{comp} owned\n"
@@ -544,6 +560,90 @@ class EvidenceEvaluatorTests(unittest.TestCase):
             self.assertEqual(h.source(f"assert_proxied_readiness_down '{ok}'").returncode, 0)
             for bad in (generic, up, plain):
                 self.assertNotEqual(h.source(f"assert_proxied_readiness_down '{bad}'").returncode, 0, bad.name)
+        finally:
+            h.close()
+
+
+class ReviewFindingsTests(unittest.TestCase):
+    """PR #109 post-merge review (5827094734) findings on the qualification script."""
+
+    def test_connect_denial_failure_is_not_swallowed_when_called_under_or(self):
+        """4513680539: first-enable calls check_shared_postgres under `||`, which disables set -e in its body."""
+        for connect, expected in (("allowed", "CAUGHT"), ("denied", "PASSED")):
+            h = Harness(BASE_WORLD)
+            try:
+                r = h.source("check_shared_postgres owl-mast-test owl-mast-postgresql && echo PASSED || echo CAUGHT", STUB_EXEC_MODE="ac3", STUB_AC3_CONNECT=connect)
+                self.assertEqual(r.stdout.strip().splitlines()[-1], expected, r.stdout + r.stderr)
+                if connect == "allowed":
+                    self.assertIn("FAIL ac3-owl-mast-test-app-cannot-connect-keycloak-db: the principal connected to keycloak", r.stdout)
+                    self.assertNotIn("ac3-owl-mast-test-extensions", r.stdout)  # nothing after the failed check ran
+            finally:
+                h.close()
+
+    def image_check(self, pods, image_id, node_id="sha256:local", digests="docker.io/owl-mast/backend@sha256:import "):
+        h = Harness(BASE_WORLD)
+        try:
+            docker = h.bin / "docker"
+            docker.write_text('#!/usr/bin/env bash\nif [[ "$*" == *".status.id"* ]]; then printf %s "$STUB_NODE_ID"; else printf %s "$STUB_NODE_DIGESTS"; fi\n')
+            docker.chmod(0o755)
+            r = h.source("verify_backend_image combo && echo PASSED || echo CAUGHT", STUB_BACKEND_PODS=pods, STUB_IMAGE_ID=image_id, STUB_NODE_ID=node_id,
+                         STUB_NODE_DIGESTS=digests, BACKEND_IMAGE_ID="sha256:local")
+            r.calls = h.calls.read_text()
+            return r
+        finally:
+            h.close()
+
+    def test_image_identity_requires_one_running_pod_with_a_non_empty_image_id(self):
+        """4513680551: an empty imageID matched any digest list, and items[0] could be the terminating pod."""
+        new = "owl-mast-backend-new   <none>\n"
+        old = "owl-mast-backend-old   2026-11-09T10:00:00Z\n"
+        ok = self.image_check(new, "docker.io/owl-mast/backend@sha256:import")
+        self.assertIn("PASSED", ok.stdout, ok.stdout + ok.stderr)
+        self.assertIn("ok   combo-image-identity", ok.stdout)
+        ok = self.image_check(new, "sha256:local")
+        self.assertIn("PASSED", ok.stdout, ok.stdout + ok.stderr)
+        # a terminating pod listed first is excluded; the check reads the live one
+        ok = self.image_check(old + new, "docker.io/owl-mast/backend@sha256:import")
+        self.assertIn("PASSED", ok.stdout, ok.stdout + ok.stderr)
+        self.assertIn(" get pod owl-mast-backend-new ", ok.calls)
+        self.assertNotIn(" get pod owl-mast-backend-old ", ok.calls)
+        for pods, image_id, message in (
+            (new, "", "reports no imageID"),
+            ("", "docker.io/owl-mast/backend@sha256:import", "expected exactly one Running, non-terminating backend pod"),
+            (old, "docker.io/owl-mast/backend@sha256:import", "expected exactly one Running, non-terminating backend pod"),  # only a terminating pod is Running
+            ("owl-mast-backend-a   <none>\n" + new, "docker.io/owl-mast/backend@sha256:import", "expected exactly one Running, non-terminating backend pod"),
+            (new, "sha256:imp", "does not run the expected local build"),  # a prefix of a listed digest is not a match
+        ):
+            r = self.image_check(pods, image_id)
+            self.assertIn("CAUGHT", r.stdout, (pods, image_id, r.stdout))
+            self.assertIn(message, r.stdout, (pods, image_id))
+        r = self.image_check("owl-mast-backend-new   <none>\n", "docker.io/owl-mast/backend@sha256:import", node_id="sha256:other")
+        self.assertIn("CAUGHT", r.stdout)
+
+    def test_backend_pod_selection_excludes_terminating_and_non_running_pods(self):
+        text = SCRIPT.read_text()
+        body = text[text.index("verify_backend_image() {"):text.index("\n}\n", text.index("verify_backend_image() {"))]
+        self.assertIn("--field-selector=status.phase=Running", body)
+        self.assertIn("DELETING:.metadata.deletionTimestamp", body)
+        self.assertNotIn("items[0]", body)
+
+    def test_plaintext_fixture_installs_carry_the_explicit_insecure_opt_ins(self):
+        """D1: the chart refuses http issuers and weak sslMode unless opted in; every fixture install must opt in."""
+        text = SCRIPT.read_text()
+        http_issuers = [l for l in text.splitlines() if 'identity.external.issuerUri="http://' in l]
+        self.assertGreaterEqual(len(http_issuers), 5)
+        self.assertTrue(all("identity.external.allowInsecureIssuer=true" in l for l in http_issuers), http_issuers)
+        for key in ("database.external", "identity.keycloak.database.external"):
+            weak = [l for l in text.splitlines() if f"--set {key}.sslMode=disable" in l]
+            self.assertTrue(weak, key)
+            self.assertTrue(all(f"--set {key}.allowInsecureTransport=true" in l for l in weak), weak)
+
+    def test_network_policies_are_part_of_the_release_enumeration(self):
+        h = Harness(BASE_WORLD + "networkpolicy owl-mast-test owl-mast-postgresql foreign:unlabelled\n")
+        try:
+            r = h.run("bundled-bundled")
+            self.assertEqual(r.returncode, 2, r.stdout); self.assertIn("preflight networkpolicy owl-mast-test/owl-mast-postgresql", r.stdout)
+            self.assertEqual(h.mutating_calls(), [])
         finally:
             h.close()
 

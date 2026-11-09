@@ -119,19 +119,19 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: {{ default (printf "%s-data" (include "owl-mast.postgresql.fullname" .)) .Values.postgresql.persistence.existingClaim }}
+            claimName: {{ default (include "owl-mast.postgresql.dataClaim" .) .Values.postgresql.persistence.existingClaim }}
         # Only the first-initialisation script is auto-executed by the entrypoint; the provisioning
         # helper is mounted separately and called explicitly (a disabled identity bundle must not fail init).
         - name: init
           configMap:
-            name: {{ include "owl-mast.postgresql.fullname" . }}-init
+            name: {{ include "owl-mast.postgresql.initConfigMap" . }}
             defaultMode: 0555
             items:
               - key: 10-owl-mast-databases.sh
                 path: 10-owl-mast-databases.sh
         - name: provisioning
           configMap:
-            name: {{ include "owl-mast.postgresql.fullname" . }}-init
+            name: {{ include "owl-mast.postgresql.initConfigMap" . }}
             defaultMode: 0555
             items:
               - key: provision-keycloak.sh

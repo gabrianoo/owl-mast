@@ -28,6 +28,15 @@ public record IdentityProperties(String issuerUri) {
     if (!scheme.equals("http") && !scheme.equals("https")) {
       throw new IllegalArgumentException(PROPERTY + " must use http or https");
     }
+    if (parsed.getRawUserInfo() != null) {
+      throw new IllegalArgumentException(PROPERTY + " must not contain user info");
+    }
+    if (parsed.getRawQuery() != null || parsed.getRawFragment() != null) {
+      throw new IllegalArgumentException(
+          PROPERTY
+              + " must not contain a query or fragment: the discovery document is resolved below"
+              + " the issuer path");
+    }
     issuerUri = stripTrailingSlash(issuerUri.strip());
   }
 

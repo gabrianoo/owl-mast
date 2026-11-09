@@ -1,17 +1,21 @@
 # Owl Mast installation values (OM-01.02). No credential values live here: every credential is an
 # existing Kubernetes Secret reference with the keys `username` and `password`.
-# Pins are immutable digests qualified on 2026-11-07 (docs/installation.md).
+# The PostgreSQL/VectorChord and Keycloak images are pinned by immutable digest (qualified on
+# 2026-11-07, docs/installation.md). The backend image is referenced by tag until a registry manifest
+# digest exists; set backend.image.digest to pin it (NOTES warns while the reference is a mutable tag).
 
 nameOverride: ""
 fullnameOverride: ""
-# Extra labels applied to every rendered resource, including retained PersistentVolumeClaims.
+# Extra labels applied to every rendered resource, including retained PersistentVolumeClaims. Keys under
+# app.kubernetes.io/ and helm.sh/ are reserved for the chart (selectors) and are refused.
 commonLabels: {}
 
 backend:
   image:
     repository: owl-mast/backend
     tag: "0.1.0"
-    # Set to the produced image digest (sha256:...) for immutable installs; the tag is then informative.
+    # Optional until the image is published: set it to the registry manifest digest (sha256:...) for an
+    # immutable install; the tag is then informative. Empty means the mutable tag above decides what runs.
     digest: ""
     pullPolicy: IfNotPresent
   replicas: 1
@@ -40,7 +44,9 @@ backend:
       path: /actuator/health/readiness
       periodSeconds: 10
       failureThreshold: 3
-  # Additional plain environment variables (name/value). Never put credentials here.
+  # Additional plain environment variables (name/value). Never put credentials here. Names that would
+  # override the validated configuration (OWLMAST_*, SPRING_*, MANAGEMENT_*, SERVER_*, JVM option
+  # variables) are refused by the schema.
   extraEnv: []
 
 # Independent frontend artifact (AD-14). The shell image is delivered by OM-01.04; these values only
@@ -65,13 +71,19 @@ frontend:
       cpu: 250m
       memory: 128Mi
   probes:
+    liveness:
+      path: /
+      periodSeconds: 15
+      failureThreshold: 3
     readiness:
       path: /
       periodSeconds: 10
       failureThreshold: 3
 
 # Routing contract between the independent artifacts. Public origins stay an OM-02.01 gate; the
-# Ingress is disabled by default and never created without an explicit host.
+# Ingress is disabled by default and never created without an explicit host. The prefixes are pinned to
+# what the artifacts serve (no rewrite is rendered): apiPathPrefix is /api or below /api/,
+# actuatorPathPrefix is /actuator or below /actuator/, frontendPathPrefix is /.
 routing:
   apiPathPrefix: /api
   actuatorPathPrefix: /actuator
@@ -79,13 +91,16 @@ routing:
   ingress:
     enabled: false
     className: ""
+    # Lowercase DNS name (optional leading '*.'), no scheme, port or path.
     host: ""
     annotations: {}
+    # [{hosts: [<host>], secretName: <tls secret>}]; when set, one entry must cover `host`.
     tls: []
   # Gateway API (stable gateway.networking.k8s.io/v1 HTTPRoute) as the first-class routing option. The
   # operator supplies the Gateway (GatewayClass, controller, listeners, TLS) and the Gateway API CRDs;
   # the chart renders an HTTPRoute attached to the referenced parent(s). Mutually exclusive with the
-  # Ingress: enabling both is refused as ambiguous.
+  # Ingress: enabling both is refused as ambiguous. Rendering requires the capability
+  # gateway.networking.k8s.io/v1/HTTPRoute (for `helm template`: --api-versions gateway.networking.k8s.io/v1/HTTPRoute).
   gateway:
     enabled: false
     # At least one parent Gateway reference is required when enabled.
@@ -107,8 +122,11 @@ database:
   external:
     host: ""
     port: 5432
-    # disable | allow | prefer | require | verify-ca | verify-full (applied to R2DBC and JDBC URLs)
-    sslMode: prefer
+    # require | verify-ca | verify-full (applied to R2DBC and JDBC URLs). verify-* needs a CA trust the
+    # chart does not mount yet. disable | allow | prefer can fall back to plaintext and are refused
+    # unless allowInsecureTransport is true.
+    sslMode: require
+    allowInsecureTransport: false
 
 # Bundled PostgreSQL 18.3 with VectorChord 1.1.1 (pgvector 0.8.2 as its required dependency).
 postgresql:
@@ -168,7 +186,11 @@ identity:
   # Realm used by the bundled issuer URL and the synthetic import. Browser realm/client policy is OM-02.01.
   realm: owl-mast
   external:
+    # https:// URL with a host, no query or fragment.
     issuerUri: ""
+    # Accept a plaintext http:// issuer (disposable local fixtures only): discovery and signing keys
+    # then travel unauthenticated.
+    allowInsecureIssuer: false
   keycloak:
     image:
       repository: quay.io/keycloak/keycloak
@@ -179,6 +201,12 @@ identity:
     bootstrapExistingSecret: owl-mast-keycloak-bootstrap
     # Import a minimal synthetic realm named `identity.realm` on start (fixture only).
     importRealm: true
+    # Required with importRealm=false: acknowledges that an operator creates the realm `identity.realm`
+    # (without it the issuer never exists and the backend never becomes ready).
+    realmManagedByOperator: false
+    # Trust X-Forwarded-* / Forwarded headers ("xforwarded" | "forwarded"). Leave empty unless a trusted
+    # proxy that overwrites these headers is the only path to Keycloak (the OM-02.01 public-origin gate).
+    proxyHeaders: ""
     database:
       name: keycloak
       # Existing Secret with keys `username` and `password` for Keycloak's own database principal.
@@ -187,7 +215,8 @@ identity:
       external:
         host: ""
         port: 5432
-        sslMode: prefer
+        sslMode: require
+        allowInsecureTransport: false
     service:
       port: 8080
       managementPort: 9000
@@ -208,3 +237,14 @@ identity:
       readiness:
         periodSeconds: 10
         failureThreshold: 3
+
+# Ingress-only NetworkPolicies for the bundled dependencies (default on): PostgreSQL :5432 accepts the
+# backend, Keycloak and the provisioning Job of this release; Keycloak :8080 accepts the backend. Node
+# traffic (kubelet probes, API-server proxy on a single-node target) stays allowed by Kubernetes
+# semantics. extraFrom adds NetworkPolicyPeer entries (for example a Gateway data plane for Keycloak).
+networkPolicy:
+  enabled: true
+  postgresql:
+    extraFrom: []
+  keycloak:
+    extraFrom: []
