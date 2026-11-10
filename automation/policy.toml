@@ -33,6 +33,7 @@ options = { effort = "high" }
 [targets.reviewer]
 provider = "codex"
 model = "gpt-6-astra"
+isolation = "worktree"           # the reviewer reads the implementer's tree from its own checkout; review evidence is independent of the tree under review
 options = { reasoningEffort = "high" }
 
 [checks]

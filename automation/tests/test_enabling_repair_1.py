@@ -10,7 +10,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from automation.tests.support import IMPLEMENTER, REVIEWER, controlled_cli_clock, ok_worktree, passing_runner
+from automation.tests.support import IMPLEMENTER, REVIEWER, REVIEW_BRANCH, REVIEW_WORKTREE, controlled_cli_clock, ok_worktree, passing_runner
 from automation.tests.test_activation import S, T0, LiveHarness, activation_text
 from automation.unattended import cli
 from automation.unattended.activation import Activation, load_activation
@@ -196,7 +196,7 @@ class R3SourceRereadTests(unittest.TestCase):
         self.h.h.fake.calls = []
         refuses(self, lambda: self.c.record_head(S, self.h.h.sha), "activation-required")
         refuses(self, lambda: self.c.authorize_repair(S), "activation-required")
-        exc = refuses(self, lambda: self.c.bind_receipt(S, REVIEWER, worktree_check=ok_worktree), "activation-required")
+        exc = refuses(self, lambda: self.c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree), "activation-required")
         self.assertTrue(exc.detail["bound_for_cleanup"])  # late receipt: owned, no work authorized
         refuses(self, lambda: self.c.record_review(S, self.h.h.sha, "approved", "r.md", self.h.terminal()), "activation-required")
         self.assertEqual(self.h.h.fake.calls, NO_CALLS)
@@ -333,7 +333,7 @@ class R6DurableStopTests(unittest.TestCase):
         self.h.clock[0] = "2026-11-07T14:00:01Z"
         refuses(self, lambda: self.c.record_head(S, self.h.h.sha), "activation-expired")
         self.h.clock[0] = T0
-        exc = refuses(self, lambda: self.h.coordinator().bind_receipt(S, REVIEWER, worktree_check=ok_worktree), "activation-expired")
+        exc = refuses(self, lambda: self.h.coordinator().bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree), "activation-expired")
         self.assertTrue(exc.detail["bound_for_cleanup"])
         refuses(self, lambda: self.h.coordinator().record_review(S, self.h.h.sha, "approved", "r.md", self.h.terminal()), "activation-expired")
         state = self.h.coordinator(activation=None).cancel(S, "x", self.h.terminal())

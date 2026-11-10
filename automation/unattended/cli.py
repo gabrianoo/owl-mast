@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import traceback
 from pathlib import Path
 
 from .activation import load_activation
@@ -23,33 +24,55 @@ from .errors import UnattendedError
 from .github import GhCliTransport
 from .policy import load_policy
 from .probes import check_permissions, run_commands, write_probe
-from .state import Store, utcnow
+from .state import Store, utcnow, validate_run_id
 
 # Every command that can reach a GitHub write, directly or through a fallback (authorize-repair may block).
-WRITE_COMMANDS = {"reserve", "authorize-repair", "propose-evidence", "block", "cancel", "cancel-run", "resume", "rebase-revisions", "probe-write"}
+WRITE_COMMANDS = {"reserve", "authorize-repair", "propose-evidence", "block", "cancel", "cancel-run", "resume", "rebase-revisions", "probe-write", "dismiss-claim"}
 
 
 def _json(obj) -> None:
     print(json.dumps(obj, indent=1, sort_keys=True, default=str))
 
 
-def _load_json_arg(value: str) -> dict:
-    path = Path(value)
-    text = path.read_text(encoding="utf-8") if path.exists() else value
-    return json.loads(text)
+def _load_json_arg(value: str):
+    """A JSON document given inline or as a file path. Unreadable input (bad JSON, an unreadable
+    file, a path too long to test) is ``input-invalid`` inside the JSON error contract."""
+    text = value
+    try:
+        looks_inline = value.lstrip()[:1] in ("{", "[", '"') or value.strip() in ("null", "true", "false")
+        if not looks_inline:
+            path = Path(value)
+            if path.exists():
+                text = path.read_text(encoding="utf-8")
+    except (OSError, ValueError) as exc:  # ENAMETOOLONG, permission errors, embedded NUL
+        raise UnattendedError(f"argument {value[:60]!r} is neither readable JSON nor a readable file: {exc}", code="input-invalid") from exc
+    try:
+        return json.loads(text)
+    except ValueError as exc:
+        raise UnattendedError(f"argument {value[:60]!r} is not valid JSON: {exc}", code="input-invalid") from exc
 
 
 def _snapshot(args, transport, policy) -> Snapshot:
     if args.snapshot:
         try:
             return Snapshot.from_json(Path(args.snapshot).read_text(encoding="utf-8"))
-        except (OSError, ValueError, KeyError) as exc:
-            raise UnattendedError(f"snapshot {args.snapshot} unreadable: {exc}") from exc
+        except (OSError, ValueError, KeyError, TypeError) as exc:  # TypeError: an older or foreign entry shape
+            raise UnattendedError(f"snapshot {args.snapshot} unreadable: {exc}", code="input-invalid") from exc
     return take_snapshot(transport, policy.repo_slug, utcnow())
 
 
+class _Parser(argparse.ArgumentParser):
+    """Argument errors stay inside the JSON error contract (``input-invalid``, exit 3) instead of
+    argparse's usage text and exit 2, which is the exit code of a *negative result* (``probe-write``
+    not idempotent, ``plan``/``check-activation`` with problems) and must not be shared with a
+    malformed call. ``--help`` still prints the usage and exits 0."""
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        raise UnattendedError(f"invalid arguments: {message}", code="input-invalid", usage=self.format_usage().strip())
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="python3 -m automation.unattended", description=__doc__)
+    p = _Parser(prog="python3 -m automation.unattended", description=__doc__)
     p.add_argument("--policy", default="automation/policy.toml")
     p.add_argument("--state-dir", default=".unattended-runs")
     p.add_argument("--run-id", default=None, help="run identifier (required for state commands)")
@@ -57,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--snapshot", default=None, help="use a saved snapshot JSON instead of reading GitHub")
     p.add_argument("--live", action="store_true", help="allow GitHub writes (reserve, authorize-repair, block, cancel, cancel-run, resume, rebase-revisions, probe-write)")
     p.add_argument("--activation", default=None, help="run-bound activation authorization TOML (see automation/examples/activation-om-01-02.candidate.toml); required on the real transport to create a live run and for every admitting/advancing command; cleanup and status of a run activated earlier work on its recorded binding without it; the shipped candidate is unapproved and refuses")
-    sub = p.add_subparsers(dest="command", required=True)
+    sub = p.add_subparsers(dest="command", required=True, parser_class=_Parser)
 
     sub.add_parser("snapshot", help="read-only normalized backlog snapshot").add_argument("--out", default=None)
     vm = sub.add_parser("verify-mapping", help="read-only mapping verification (19/85/340, relationships)")
@@ -74,7 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_help = "JSON for the ACTIVE execution: normalized {taskId, runId, status} or task_status-shaped {taskId, workState: result_available, hasPendingChildRuns: false, latestTerminalRunId, latestTerminalStatus} (childRunId/status/summary are stale and ignored); interrupted/failed/cancelled are terminal for release/cleanup only, never a success: only a completed/result_available record of the bound (task, run), in the relevant role and linked to the selected authorization, lets record-head/run-checks/authorize-review/authorize-repair/record-review/propose-evidence/resume advance, on the direct path, after record-task-terminal, after an upgrade and on restart"
     rv0 = sub.add_parser("reserve", help="admit a dispatchable story and authorize its implementer task BEFORE delegating it")
     rv0.add_argument("story"); rv0.add_argument("--baseline", required=True)
-    bd = sub.add_parser("bind-receipt", help="bind the delegated task receipt to the exact authorization its task was launched for (implementation needs --worktree/--branch)")
+    bd = sub.add_parser("bind-receipt", help="bind the delegated task receipt to the exact authorization its task was launched for (implementation and review receipts need --worktree/--branch: the task's own checkout; a reviewer in the implementer's worktree is refused)")
     bd.add_argument("story"); bd.add_argument("--receipt", required=True); bd.add_argument("--worktree", default=None); bd.add_argument("--branch", default=None)
     bd.add_argument("--authorization", default=None, help="id of the authorization the task was launched for (from reserve / authorize-review / authorize-repair); must match the story's unresolved authorization")
     rt = sub.add_parser("record-task-terminal", help="release the active task with its terminal evidence; changes nothing else"); rt.add_argument("story"); rt.add_argument("--task-evidence", required=True, help=evidence_help)
@@ -94,19 +117,34 @@ def build_parser() -> argparse.ArgumentParser:
     rs = sub.add_parser("resume"); rs.add_argument("story")
     rb = sub.add_parser("rebase-revisions", help="explicitly accept changed GitHub revisions after human verification"); rb.add_argument("story"); rb.add_argument("--reason", required=True)
     sub.add_parser("status")
+    dc = sub.add_parser("dismiss-claim", help="owner action: post a journaled dismissal of a stray or forged claim marker (by comment id) so it no longer blocks admission under this identity; never dismisses this run's own claim nor a claim a run under this state directory still owns; needs --live, the --run-id of an existing run and (live transport) its current activation (--activation), which journals it")
+    dc.add_argument("--issue", type=int, required=True); dc.add_argument("--comment-id", type=int, required=True); dc.add_argument("--reason", required=True)
+    dc.add_argument("--force", action="store_true", help="dismiss a claim that no run under --state-dir proves finished (its coordinator may still be running elsewhere, however old the claim: a run past its wall clock still owns its story until its task finishes); --reason must attest that it is dead")
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+def _bound_digest(state_dir: Path, run_id: str) -> tuple[str | None, list[tuple[str, str]]]:
+    """The policy digest an existing run under ``state_dir`` is bound to, read without touching
+    it, and the refusal its record raises when it is not a valid run of this id (reported, never
+    read as "no run"); None when there is no run (the activation is then checked as a new one)."""
     try:
+        run = Store(state_dir, run_id).load_run()
+    except UnattendedError as exc:
+        return None, [(exc.code, str(exc))]
+    return (run.policy_digest if run is not None else None), []
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        args = build_parser().parse_args(argv)  # inside the contract: a malformed call is one JSON document with exit 3, never usage text with exit 2
         policy = load_policy(Path(args.policy))
         activation = load_activation(Path(args.activation)) if args.activation else None
         if args.command == "check-activation":
             if activation is None:
                 raise UnattendedError("check-activation needs --activation", code="activation-required")
-            problems = activation.problems(policy, args.run_id, utcnow())
-            _json({"activation": activation.binding(), "approved": activation.approved, "run_id": args.run_id, "policy_digest": policy.digest, "current": not problems, "stop": activation.stop_code(problems), "problems": [m for _, m in problems]})
+            bound, problems = _bound_digest(Path(args.state_dir), args.run_id) if args.run_id else (None, [])  # an existing run bound to the legacy raw-bytes digest still accepts an activation naming it; without --run-id (reading the policy digest) no run is looked up
+            problems += activation.problems(policy, args.run_id, utcnow(), bound_digest=bound)
+            _json({"activation": activation.binding(), "approved": activation.approved, "run_id": args.run_id, "policy_digest": policy.digest, "bound_digest": bound, "current": not problems, "stop": activation.stop_code(problems), "problems": [m for _, m in problems]})
             return 0 if not problems else 2
         transport = GhCliTransport(policy.owner, policy.repo, policy.project_owner, policy.project_number)
         if args.command in WRITE_COMMANDS and not args.live:
@@ -140,10 +178,13 @@ def main(argv: list[str] | None = None) -> int:
             _json({"ok": ok, "results": results})
             return 0 if ok else 2
         if args.command == "probe-write":
-            _json(write_probe(transport, args.issue, args.run_id or f"probe-{utcnow()}", utcnow()))
-            return 0
+            if not args.run_id:
+                raise UnattendedError("probe-write needs --run-id: the probe is idempotent only for a fixed identity (a second call with the same --run-id must find the first marker)", code="run-id-required")
+            report = write_probe(transport, args.issue, validate_run_id(args.run_id), utcnow())
+            _json(report)
+            return 0 if report["idempotent"] else 2
         if not args.run_id:
-            raise UnattendedError("--run-id is required for state commands")
+            raise UnattendedError("--run-id is required for state commands", code="run-id-required")
         coordinator = Coordinator(transport, policy, Store(Path(args.state_dir), args.run_id), live=bool(args.live), activation=activation)
         if args.command == "reserve":
             with coordinator.operation():
@@ -183,6 +224,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "status":
             _json(coordinator.status())
             return 0
+        elif args.command == "dismiss-claim":
+            _json(coordinator.dismiss_claim(args.issue, args.comment_id, args.reason, force=args.force))
+            return 0
         else:  # pragma: no cover
             raise UnattendedError(f"unknown command {args.command}")
         _json(state.to_dict())
@@ -190,6 +234,10 @@ def main(argv: list[str] | None = None) -> int:
     except UnattendedError as exc:
         _json({"error": exc.as_dict()})
         return 3
+    except Exception as exc:  # noqa: BLE001 - the contract is one JSON document, never a bare traceback
+        # exit 4 tells a scripted caller apart from a refusal (3): the tool crashed, nothing was decided
+        _json({"error": {"code": "internal", "message": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc().splitlines()[-6:]}})
+        return 4
 
 
 if __name__ == "__main__":  # pragma: no cover

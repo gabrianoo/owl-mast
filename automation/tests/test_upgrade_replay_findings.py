@@ -14,6 +14,7 @@ linkage rules of finding 3 on current state with explicitly labelled synthetic m
 Part 3 checks the positive controls and that cleanup stays possible."""
 
 import json
+import os
 from datetime import datetime, timedelta
 import shutil
 import tempfile
@@ -244,6 +245,8 @@ class RegeneratedLegacyFixturesTests(unittest.TestCase):
 
     def test_full_matrix_on_a_fresh_generation(self):
         if not lb.ref_reachable():
+            if os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("OWLMAST_REQUIRE_BASELINE"):  # PR #107 review finding 1: in CI this matrix must run, so a shallow clone is a failure, not a skip
+                self.fail(f"baseline {lb.BASELINE_REF[:12]} is not reachable in this checkout; CI must check out the full history (fetch-depth: 0) so the regenerated fixture matrix runs")
             self.skipTest(f"baseline {lb.BASELINE_REF[:12]} not reachable in this clone")
         with tempfile.TemporaryDirectory() as tmp:
             manifest = lb.generate(lb.BASELINE_REF, Path(tmp) / "fixtures")

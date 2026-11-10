@@ -10,7 +10,7 @@ import json
 import unittest
 
 from automation.tests.fake_transport import CrashAfterEffect, small_backlog
-from automation.tests.support import IMPLEMENTER, REVIEWER, Harness, failing_runner, ok_worktree, passing_runner, receipt
+from automation.tests.support import Harness, IMPLEMENTER, REVIEWER, REVIEW_BRANCH, REVIEW_WORKTREE, failing_runner, ok_worktree, passing_runner, receipt
 from automation.tests.test_final_findings import fresh, markers, pending_proposal
 from automation.unattended.backlog import take_snapshot
 from automation.unattended.coordinator import Coordinator
@@ -303,10 +303,10 @@ class F3TaskIdsAreFreshRunWide(unittest.TestCase):
             h.coordinator.authorize_review("OM-01.04", h.sha)
             for reused in ("task-impl-1", "task-review-1", "task-impl-2"):  # another story's implementer, its reviewer, this story's own implementer
                 with self.assertRaises(ReceiptInvalid) as ctx:
-                    fresh(h).bind_receipt("OM-01.04", receipt(REVIEWER, reused), worktree_check=ok_worktree)
+                    fresh(h).bind_receipt("OM-01.04", receipt(REVIEWER, reused), REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
                 self.assertEqual(ctx.exception.detail["task_id"], reused)
             self.assertEqual(h.store.load_story("OM-01.04").phase, "review-authorized")
-            self.assertEqual(h.coordinator.bind_receipt("OM-01.04", receipt(REVIEWER, "task-review-2"), worktree_check=ok_worktree).phase, "review-requested")
+            self.assertEqual(h.coordinator.bind_receipt("OM-01.04", receipt(REVIEWER, "task-review-2"), REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree).phase, "review-requested")
         finally:
             h.close()
 
@@ -335,7 +335,7 @@ class F3TaskIdsAreFreshRunWide(unittest.TestCase):
             h.checks()
             h.coordinator.authorize_review(S, h.sha)
             with self.assertRaises(ReceiptInvalid):
-                h.coordinator.bind_receipt(S, {**REVIEWER, "taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1"}, worktree_check=ok_worktree)
+                h.coordinator.bind_receipt(S, {**REVIEWER, "taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1"}, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
         finally:
             h.close()
 
@@ -384,7 +384,7 @@ class F4ExpiredAuthorizationsBindForCleanupOnly(unittest.TestCase):
         self.h.coordinator.authorize_review(S, self.h.sha)
         c = self.expired()
         with self.assertRaises(BudgetExhausted) as ctx:
-            c.bind_receipt(S, REVIEWER, worktree_check=ok_worktree)
+            c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
         self.assertEqual((ctx.exception.code, ctx.exception.detail["bound_for_cleanup"], ctx.exception.detail["task_id"]), ("wall-clock-exceeded", True, "task-review-1"))
         state = self.h.store.load_story(S)
         self.assertEqual((state.phase, state.active_task["taskId"], state.active_task["role"], state.active_task["cleanup_only"]), ("review-authorized", "task-review-1", "reviewer", "wall-clock-exceeded"))
@@ -397,7 +397,7 @@ class F4ExpiredAuthorizationsBindForCleanupOnly(unittest.TestCase):
                 op()
             self.assertEqual(ctx.exception.code, "wall-clock-exceeded")
         with self.assertRaises(BudgetExhausted) as ctx:
-            c.bind_receipt(S, receipt(REVIEWER, "task-review-2"), worktree_check=ok_worktree)  # nothing pending any more
+            c.bind_receipt(S, receipt(REVIEWER, "task-review-2"), REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)  # nothing pending any more
         self.assertEqual(ctx.exception.code, "wall-clock-exceeded")
         self.assertEqual(self.h.store.load_story(S).phase, "review-authorized")
         c2 = self.expired()  # restart: the launched worker is still owned
@@ -417,7 +417,7 @@ class F4ExpiredAuthorizationsBindForCleanupOnly(unittest.TestCase):
         self.h.coordinator.authorize_review(S, self.h.sha)
         c = self.expired()
         with self.assertRaises(BudgetExhausted):
-            c.bind_receipt(S, REVIEWER, worktree_check=ok_worktree)
+            c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
         self.assertEqual(c.record_task_terminal(S, {"taskId": "task-review-1", "runId": "task-review-1" + ":run:1", "status": "result_available"}).active_task, None)
         with self.assertRaises(BudgetExhausted) as ctx:
             c.authorize_review(S, self.h.sha)
