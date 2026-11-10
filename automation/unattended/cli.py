@@ -119,7 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status")
     dc = sub.add_parser("dismiss-claim", help="owner action: post a journaled dismissal of a stray or forged claim marker (by comment id) so it no longer blocks admission under this identity; never dismisses this run's own claim nor a claim a run under this state directory still owns; needs --live, the --run-id of an existing run and (live transport) its current activation (--activation), which journals it")
     dc.add_argument("--issue", type=int, required=True); dc.add_argument("--comment-id", type=int, required=True); dc.add_argument("--reason", required=True)
-    dc.add_argument("--force", action="store_true", help="also dismiss a claim younger than the run wall clock (its coordinator may still be running elsewhere); --reason must attest that it is dead")
+    dc.add_argument("--force", action="store_true", help="dismiss a claim that no run under --state-dir proves finished (its coordinator may still be running elsewhere, however old the claim: a run past its wall clock still owns its story until its task finishes); --reason must attest that it is dead")
     return p
 
 
@@ -142,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "check-activation":
             if activation is None:
                 raise UnattendedError("check-activation needs --activation", code="activation-required")
-            bound, problems = _bound_digest(Path(args.state_dir), args.run_id)  # an existing run bound to the legacy raw-bytes digest still accepts an activation naming it
+            bound, problems = _bound_digest(Path(args.state_dir), args.run_id) if args.run_id else (None, [])  # an existing run bound to the legacy raw-bytes digest still accepts an activation naming it; without --run-id (reading the policy digest) no run is looked up
             problems += activation.problems(policy, args.run_id, utcnow(), bound_digest=bound)
             _json({"activation": activation.binding(), "approved": activation.approved, "run_id": args.run_id, "policy_digest": policy.digest, "bound_digest": bound, "current": not problems, "stop": activation.stop_code(problems), "problems": [m for _, m in problems]})
             return 0 if not problems else 2

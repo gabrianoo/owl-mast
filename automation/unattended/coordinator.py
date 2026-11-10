@@ -87,7 +87,7 @@ from .github import PullRequestRecord, Transport, render_marker
 from .policy import Policy, Target
 from .probes import run_commands
 from .receipts import execution_run_id, validate_receipt
-from .state import ACTIVE_PHASES, RUN_ID_RE, TERMINAL_PHASES, UNRESOLVED_AUTHORIZATION_STATUSES, Intent, Store, StoryState, utcnow
+from .state import ACTIVE_PHASES, RUN_ID_RE, TERMINAL_PHASES, UNRESOLVED_AUTHORIZATION_STATUSES, Intent, Store, StoryState, utcnow, story_ownership
 
 WorktreeCheck = Callable[[str, str], tuple[bool, str]]
 
@@ -844,10 +844,14 @@ class Coordinator:
 
         It never dismisses this run's own claim, and it refuses a claim that may still be a live
         coordinator's (``dismiss-target-live``): one whose run owns the story under this state
-        directory, always (cancel it in its own run); otherwise one younger than the policy's run
-        wall clock (a run older than that can no longer advance), unless ``force`` attests that
-        its coordinator is dead. The evidence (local run lookup, claim age, wall clock, force) is
-        journaled with the dismissal. Deleting the comment on GitHub is the other way."""
+        directory, always (cancel it in its own run); and every other claim unless local state
+        proves its run finished with the story (the same run id and instance under this state
+        directory, the story in ``proposed``, ``blocked`` or ``cancelled``) or ``force`` attests
+        that its coordinator is dead. A claim's age proves nothing: a run past its wall clock
+        still owns its story until its task finishes, and a coordinator on another machine or
+        state directory leaves no local trace. The evidence (local run lookup, claim age, wall
+        clock, force) is journaled with the dismissal. Deleting the comment on GitHub is the
+        other way."""
         with self.operation():
             self.require_activation("dismiss-claim", advancing=True)
             self._reload_run()
@@ -869,9 +873,9 @@ class Coordinator:
                 raise Refused(f"comment {comment_id} claims {story!r} on issue #{issue}, which is not a story of this policy's allowlist on its own issue ({allowed}); nothing to dismiss here", code="dismiss-target-invalid", comment_id=int(comment_id), story=story)
             evidence = self._dismissal_evidence(target, story)
             if evidence["local_run"] is not None and evidence["local_run"]["owns_story"]:
-                raise Refused(f"comment {comment_id} is the claim of run {evidence['local_run']['run_id']!r} under {self.store.state_dir}, which still owns {story} ({evidence['local_run']['phase']}); a live coordinator's claim is cancelled in its own run, never dismissed", code="dismiss-target-live", comment_id=int(comment_id), evidence=evidence)
+                raise Refused(f"comment {comment_id} names run {evidence['local_run']['run_id']!r}, and a run of that id under {self.store.state_dir} still owns {story} ({evidence['local_run']['phase']}); a live coordinator's claim is cancelled in its own run, never dismissed", code="dismiss-target-live", comment_id=int(comment_id), evidence=evidence)
             if evidence["possibly_live"] and not force:
-                raise Refused(f"comment {comment_id} (by {target.author!r}, run {target.marker.get('run')!r}) is {evidence['claim_age_minutes']} minutes old, younger than the run wall clock of {evidence['wall_clock_minutes']} minutes, so its coordinator may still be running (another state directory or machine); pass --force only after attesting in --reason that it is dead (no run, no activity)", code="dismiss-target-live", comment_id=int(comment_id), evidence=evidence)
+                raise Refused(f"comment {comment_id} (by {target.author!r}, run {target.marker.get('run')!r}, {evidence['claim_age_minutes']} minutes old against a run wall clock of {evidence['wall_clock_minutes']}) may still be a live coordinator's: no run under {self.store.state_dir} proves it finished with {story}, and a run past its wall clock still owns its story until its task finishes; pass --force only after attesting in --reason that it is dead (no run, no activity)", code="dismiss-target-live", comment_id=int(comment_id), evidence=evidence)
             evidence["forced"] = bool(force)
             marker = {"kind": "dismiss", "run": self.store.run_id, "story": story, "op": f"dismiss-{int(comment_id)}", "target": str(int(comment_id)), **({"inst": self.run.instance} if self.run.instance else {})}
             find = lambda: [c for c in self._marked_comments(issue, story, "dismiss-claim") if (c.marker or {}).get("kind") == "dismiss" and (c.marker or {}).get("target") == str(int(comment_id))]  # noqa: E731
@@ -889,25 +893,33 @@ class Coordinator:
     def _dismissal_evidence(self, target, story: str) -> dict:
         """What is known about the coordinator behind a claim marker before it is dismissed: a run
         of that id under this state directory (its ``run.json``, whether the story is still owned
-        there and its last journal activity), the claim's age against the policy's run wall clock
-        (the longest a run may advance), and whether it may therefore still be live."""
+        there by the one rule admission uses, ``story_ownership``, whether its instance is the
+        marker's and its last journal activity), the claim's age against the policy's run wall
+        clock, and whether it may therefore still be live: it is, unless that run is the marker's
+        (same id, same instance) and proves it finished with the story."""
         run_id, local = str(target.marker.get("run") or ""), None
         try:
             root = self.store.state_dir / run_id
             if run_id and RUN_ID_RE.match(run_id) and "--" not in run_id and (root / "run.json").is_file():
-                raw = json.loads((root / "stories" / f"{story}.json").read_text(encoding="utf-8")) if (root / "stories" / f"{story}.json").is_file() else None
-                phase = raw.get("phase") if isinstance(raw, dict) else ("unreadable" if (root / "stories" / f"{story}.json").is_file() else None)
+                record = json.loads((root / "run.json").read_text(encoding="utf-8"))
+                if not isinstance(record, dict):
+                    raise ValueError("run.json is not a record")  # a torn run record is never read as a legacy run without an instance (fail closed)
+                instance = record.get("instance")
+                same = (instance if isinstance(instance, str) else None) == (target.marker.get("inst") or None)  # a run that shares only the id (another machine, another state dir) proves nothing about this claim
+                story_file = root / "stories" / f"{story}.json"
+                phase, owned = story_ownership(story_file) if story_file.is_file() else (None, False)
                 journal = root / "journal.jsonl"
-                local = {"run_id": run_id, "phase": phase, "owns_story": phase is not None and (phase in ACTIVE_PHASES or phase == "conflict" or phase == "unreadable"),  # the same ownership as ``other_runs_with_active_stories``
+                local = {"run_id": run_id, "instance": instance if isinstance(instance, str) else None, "same_instance": same, "phase": phase, "owns_story": owned,
+                         "finished": same and phase is not None and not owned,  # the only local proof that the claim's coordinator is done with the story
                          "last_activity": datetime.fromtimestamp(journal.stat().st_mtime, tz=timezone.utc).isoformat().replace("+00:00", "Z") if journal.is_file() else None}
         except (OSError, ValueError) as exc:
-            local = {"run_id": run_id, "phase": "unreadable", "owns_story": True, "error": str(exc)}  # an unreadable local run is live (fail closed)
+            local = {"run_id": run_id, "instance": None, "same_instance": False, "phase": "unreadable", "owns_story": True, "finished": False, "error": str(exc)}  # an unreadable local run is live (fail closed)
         problems: list[str] = []
         created, now = _parse_time(target.created_at, "created_at", problems), _parse_time(self._at(), "now", problems)
         updated = _parse_time(target.updated_at, "updated_at", problems) if target.updated_at is not None else None
-        age = int((now - max(t for t in (created, updated) if t is not None)).total_seconds() // 60) if not problems else None  # an edited claim is as young as its edit (fail closed: possibly live)
+        age = int((now - max(t for t in (created, updated) if t is not None)).total_seconds() // 60) if not problems else None  # an edited claim is as young as its edit; informational only
         wall = int(self.policy.max_wall_clock_minutes)
-        return {"local_run": local, "claim_age_minutes": age, "wall_clock_minutes": wall, "possibly_live": age is None or age <= wall, "target_updated_at": target.updated_at}
+        return {"local_run": local, "claim_age_minutes": age, "wall_clock_minutes": wall, "possibly_live": not (local is not None and local["finished"]), "target_updated_at": target.updated_at}
 
     def _claim_released(self, claim: dict) -> bool:
         """Whether a later release, block or proposal by the same author, run and instance as this

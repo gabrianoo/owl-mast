@@ -118,11 +118,14 @@ class DismissClaimTests(unittest.TestCase):
             self.assertEqual(ctx.exception.code, "dismiss-target-invalid")
             with self.assertRaises(Refused):
                 h.coordinator.dismiss_claim(23, stray.comment_id, "   ")
-            report = h.coordinator.dismiss_claim(23, stray.comment_id, "stranger's comment, owner checked the issue")
+            with self.assertRaises(Refused) as ctx:  # no run here proves the stranger's coordinator finished: the attestation is required however old the claim
+                h.coordinator.dismiss_claim(23, stray.comment_id, "stranger's comment, owner checked the issue")
+            self.assertEqual(ctx.exception.code, "dismiss-target-live")
+            report = h.coordinator.dismiss_claim(23, stray.comment_id, "stranger's comment, owner checked the issue: no such run anywhere", force=True)
             self.assertEqual((report["target"], report["target_author"]), (stray.comment_id, "stranger"))
             dismissals = markers(h.fake, 23, "dismiss")
             self.assertEqual((len(dismissals), dismissals[0].author, dismissals[0].marker["target"]), (1, "machine", str(stray.comment_id)))
-            self.assertEqual(h.coordinator.dismiss_claim(23, stray.comment_id, "again")["dismissal_comment_id"], dismissals[0].comment_id)
+            self.assertEqual(h.coordinator.dismiss_claim(23, stray.comment_id, "again", force=True)["dismissal_comment_id"], dismissals[0].comment_id)
             self.assertEqual(len(markers(h.fake, 23, "dismiss")), 1)  # idempotent
             self.assertEqual(len(events(h, "foreign-claim-dismissed")), 2)
             self.assertEqual(h.reserve().phase, "reserved")
@@ -160,6 +163,10 @@ class DismissClaimTests(unittest.TestCase):
                 buf = io.StringIO()
                 with redirect_stdout(buf):
                     code = cli.main(["--policy", policy, "--state-dir", str(h.state_dir), "--run-id", "run-1", "--live", "dismiss-claim", "--issue", "21", "--comment-id", str(stray.comment_id), "--reason", "owner"])
+                self.assertEqual((code, json.loads(buf.getvalue())["error"]["code"]), (3, "dismiss-target-live"))
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    code = cli.main(["--policy", policy, "--state-dir", str(h.state_dir), "--run-id", "run-1", "--live", "dismiss-claim", "--issue", "21", "--comment-id", str(stray.comment_id), "--reason", "owner: machine x is gone", "--force"])
                 self.assertEqual((code, json.loads(buf.getvalue())["target"]), (0, stray.comment_id))
         finally:
             h.close()

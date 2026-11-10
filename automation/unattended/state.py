@@ -52,6 +52,25 @@ def validate_run_id(run_id) -> str:
 PHASES = ("claim-incomplete", "reserved", "claimed", "implemented", "checks-passed", "checks-failed", "review-authorized", "review-requested", "review-approved", "changes-requested", "repair-authorized", "proposed", "blocked", "cancelled", "conflict")
 ACTIVE_PHASES = ("claim-incomplete", "reserved", "claimed", "implemented", "checks-passed", "checks-failed", "review-authorized", "review-requested", "review-approved", "changes-requested", "repair-authorized")
 TERMINAL_PHASES = ("proposed", "blocked", "cancelled", "conflict")
+FINISHED_PHASES = ("proposed", "blocked", "cancelled")  # the phases in which a run no longer owns the story; ``conflict`` still does (its claim may be restored)
+
+
+def story_ownership(path: Path) -> tuple[str, bool]:
+    """How a story file of another run reads for ownership: ``(phase label, owned)``. The label
+    is the recorded phase when it is one of ``PHASES``; a file that is not readable JSON, not a
+    record, has no string phase or names a phase this code does not know is reported as such
+    and counts as owned (fail closed). Every reader of another run's ownership uses this one
+    rule, so admission and ``dismiss-claim`` never disagree."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        phase = raw.get("phase") if isinstance(raw, dict) else None
+        if not isinstance(phase, str):
+            raise ValueError("no phase")
+    except (OSError, UnicodeDecodeError, ValueError):
+        return f"unreadable story file {path.name}", True
+    if phase not in PHASES:
+        return f"unknown phase {phase!r} in story file {path.name}", True
+    return phase, phase not in FINISHED_PHASES
 ADVANCING_KINDS = ("claim", "proposal")  # intents that move a story forward; never replayed from a terminal story or a cancelled run
 # A task authorization is an ownership obligation from the moment it is issued until it is resolved:
 #   pending      issued, may be launched, its receipt binds into work
@@ -598,25 +617,20 @@ class Store:
         return stories, unreadable
 
     def other_runs_with_active_stories(self) -> dict[str, list[str]]:
-        """Stories still owned by *other* runs under this state directory (active or
-        ``conflict`` phase), by run id. Budgets and the single-active-story rule are scoped to
+        """Stories still owned by *other* runs under this state directory (any phase but
+        ``proposed``, ``blocked`` or ``cancelled``: active, ``conflict``, unknown), by run id. Budgets and the single-active-story rule are scoped to
         one run id, so admission consults this before a second run can take a story while an
         earlier run of the same operator still owns one. A story file another run left
-        unreadable is reported as owned (fail closed)."""
+        unreadable, or in a phase this code does not know, is reported as owned (fail closed;
+        ``story_ownership`` is the one rule, shared with ``dismiss-claim``)."""
         found: dict[str, list[str]] = {}
         if not self.state_dir.exists():
             return found
         # a run directory is one that carries run metadata; other directories under the state dir (backups, copies) are not runs
         for run_dir in sorted(p for p in self.state_dir.iterdir() if p.is_dir() and p.name.casefold() != self.run_id.casefold() and (p / "run.json").is_file()):
             for path in sorted((run_dir / "stories").glob("*.json")) if (run_dir / "stories").is_dir() else []:
-                try:
-                    raw = json.loads(path.read_text(encoding="utf-8"))
-                    phase = raw.get("phase") if isinstance(raw, dict) else None
-                    if not isinstance(phase, str):
-                        raise ValueError("no phase")
-                except (OSError, UnicodeDecodeError, ValueError):
-                    phase = f"unreadable story file {path.name}"
-                if phase in ACTIVE_PHASES or phase == "conflict" or phase.startswith("unreadable"):
+                phase, owned = story_ownership(path)
+                if owned:
                     found.setdefault(run_dir.name, []).append(f"{path.stem} ({phase})")
         return found
 

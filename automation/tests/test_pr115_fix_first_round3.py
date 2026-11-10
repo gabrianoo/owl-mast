@@ -86,7 +86,8 @@ class DismissClaimGateTests(unittest.TestCase):
             self.assertEqual((ctx.exception.code, ctx.exception.detail["evidence"]["local_run"]["phase"]), ("dismiss-target-live", "conflict"))
             b.phase, b.blocked = "cancelled", {"reason": "x", "at": NOW, "cancelled": True}
             Store(h.state_dir, "run-b").save_story(b)
-            self.assertEqual(h.coordinator.dismiss_claim(23, theirs.comment_id, "B is done", force=True)["evidence"]["local_run"]["owns_story"], False)
+            report = h.coordinator.dismiss_claim(23, theirs.comment_id, "B is done")  # local proof that B finished with the story: no --force needed
+            self.assertEqual((report["evidence"]["local_run"]["owns_story"], report["evidence"]["local_run"]["finished"], report["evidence"]["possibly_live"], report["evidence"]["forced"]), (False, True, False, False))
         finally:
             h.close()
 
@@ -104,13 +105,13 @@ class DismissClaimGateTests(unittest.TestCase):
             report = young.dismiss_claim(23, stray.comment_id, "machine x was decommissioned at 13:01, no run directory, no activity", force=True)
             self.assertTrue(report["evidence"]["forced"])
             self.assertEqual(events(h, "foreign-claim-dismissed")[0]["detail"]["evidence"]["forced"], True)
-            self.assertEqual(h.coordinator.dismiss_claim(23, stray.comment_id, "again")["dismissal_comment_id"], report["dismissal_comment_id"])  # idempotent, and older now
+            self.assertEqual(h.coordinator.dismiss_claim(23, stray.comment_id, "again", force=True)["dismissal_comment_id"], report["dismissal_comment_id"])  # idempotent (the attestation is still needed: age proves nothing)
             self.assertEqual([e["detail"]["posted"] for e in events(h, "foreign-claim-dismissed")], [True, False])
             self.assertEqual(h.reserve().phase, "reserved")
         finally:
             h.close()
 
-    def test_a_claim_older_than_the_wall_clock_is_dismissed_without_force(self):
+    def test_a_claim_older_than_the_wall_clock_still_needs_force_or_local_proof(self):
         h = two_story_harness()
         try:
             young = Coordinator(h.fake, h.policy, Store(h.state_dir, "run-1"), now=lambda: NOW, live=True)
@@ -124,10 +125,15 @@ class DismissClaimGateTests(unittest.TestCase):
             with self.assertRaises(Refused) as ctx:  # an edited claim is as young as its edit
                 young.dismiss_claim(21, edited.comment_id, "old")
             self.assertEqual((ctx.exception.code, ctx.exception.detail["evidence"]["claim_age_minutes"]), ("dismiss-target-live", 1))
-            report = h.coordinator.dismiss_claim(23, stray.comment_id, "abandoned run")
-            self.assertFalse(report["evidence"]["possibly_live"])
-            self.assertFalse(report["evidence"]["forced"])
-            self.assertGreater(report["evidence"]["claim_age_minutes"], 240)
+            with self.assertRaises(Refused) as ctx:  # days old, no run of its id here: its coordinator (another machine, past its wall clock, task still running) may still own the story
+                h.coordinator.dismiss_claim(23, stray.comment_id, "abandoned run")
+            self.assertEqual(ctx.exception.code, "dismiss-target-live")
+            self.assertEqual((ctx.exception.detail["evidence"]["local_run"], ctx.exception.detail["evidence"]["possibly_live"]), (None, True))
+            self.assertGreater(ctx.exception.detail["evidence"]["claim_age_minutes"], 240)
+            self.assertIn("wall clock still owns its story", str(ctx.exception))
+            self.assertEqual(markers(h.fake, 23, "dismiss"), [])
+            report = h.coordinator.dismiss_claim(23, stray.comment_id, "machine x was decommissioned, no run directory, no activity", force=True)
+            self.assertEqual((report["evidence"]["possibly_live"], report["evidence"]["forced"]), (True, True))
         finally:
             h.close()
 
@@ -150,10 +156,10 @@ class DismissClaimGateTests(unittest.TestCase):
             stray = h.fake.add_comment(23, render_marker(kind="claim", run="run-x", story=OTHER, op="claim") + "\nold", "stranger")
             h.fake.fail_once["post_comment"] = Outage("503")
             with self.assertRaises(Outage):
-                h.coordinator.dismiss_claim(23, stray.comment_id, "owner")
+                h.coordinator.dismiss_claim(23, stray.comment_id, "owner", force=True)
             self.assertEqual((len(events(h, "foreign-claim-dismiss-intent")), events(h, "foreign-claim-dismissed")), (1, []))
             self.assertIn("kind=dismiss", events(h, "foreign-claim-dismiss-intent")[0]["detail"]["body"])
-            report = h.coordinator.dismiss_claim(23, stray.comment_id, "owner @someone\nsee `this`")
+            report = h.coordinator.dismiss_claim(23, stray.comment_id, "owner @someone\nsee `this`", force=True)
             body = h.fake.comments[23][-1].body
             self.assertEqual((report["dismissal_comment_id"], "@" in body, "\n" in body.split("-->", 1)[1].strip()), (h.fake.comments[23][-1].comment_id, False, False))
             self.assertTrue(events(h, "foreign-claim-dismissed")[0]["detail"]["posted"])
