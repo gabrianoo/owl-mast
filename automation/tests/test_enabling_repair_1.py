@@ -10,7 +10,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from automation.tests.support import IMPLEMENTER, REVIEWER, controlled_cli_clock, ok_worktree, passing_runner
+from automation.tests.support import IMPLEMENTER, REVIEWER, REVIEW_BRANCH, REVIEW_WORKTREE, controlled_cli_clock, ok_worktree, passing_runner
 from automation.tests.test_activation import S, T0, LiveHarness, activation_text
 from automation.unattended import cli
 from automation.unattended.activation import Activation, load_activation
@@ -196,13 +196,13 @@ class R3SourceRereadTests(unittest.TestCase):
         self.h.h.fake.calls = []
         refuses(self, lambda: self.c.record_head(S, self.h.h.sha), "activation-required")
         refuses(self, lambda: self.c.authorize_repair(S), "activation-required")
-        exc = refuses(self, lambda: self.c.bind_receipt(S, REVIEWER, worktree_check=ok_worktree), "activation-required")
+        exc = refuses(self, lambda: self.c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree), "activation-required")
         self.assertNotIn("bound_for_cleanup", exc.detail)  # a missing file is not a run stop (PR #108 review): nothing is bound, the slot is not spent for cleanup
         state = self.store.load_story(S)
         self.assertEqual((state.phase, state.active_task, state.unresolved_authorization()["status"]), ("review-authorized", None, "pending"))
         self.assertEqual(self.h.h.fake.calls, NO_CALLS)
         self.h.path.write_text(activation_text(self.h.h.policy), encoding="utf-8")  # the same document presented again (a fresh instance: this one saw the source go): the receipt binds for work
-        self.assertEqual(self.h.coordinator().bind_receipt(S, REVIEWER, worktree_check=ok_worktree).phase, "review-requested")
+        self.assertEqual(self.h.coordinator().bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree).phase, "review-requested")
         self.h.path.unlink()
         refuses(self, lambda: self.c.record_review(S, self.h.h.sha, "approved", "r.md", self.h.terminal()), "activation-required")
         state = self.store.load_story(S)
@@ -215,8 +215,9 @@ class R3SourceRereadTests(unittest.TestCase):
         state.intents[0].status = "pending"
         self.store.save_story(state)
         self.h.path.unlink()
-        state = self.c.resume(S, ok_worktree)
-        self.assertEqual(state.phase, "claimed")
+        exc = refuses(self, lambda: self.c.resume(S, ok_worktree), "activation-required")  # deferred: a refusal that names what is owed, not a completed resume
+        self.assertTrue(exc.detail["deferred"])
+        self.assertEqual(self.store.load_story(S).phase, "claimed")
         events = [e["event"] for e in self.store.read_journal()]
         self.assertIn("resume-advancing-deferred", events)  # a missing file on a healthy run defers the replay (PR #108 review); it never abandons it
         self.assertNotIn("resume-advancing-abandoned", events)
@@ -345,7 +346,7 @@ class R6DurableStopTests(unittest.TestCase):
         self.h.clock[0] = "2026-11-07T14:00:01Z"
         refuses(self, lambda: self.c.record_head(S, self.h.h.sha), "activation-expired")
         self.h.clock[0] = T0
-        exc = refuses(self, lambda: self.h.coordinator().bind_receipt(S, REVIEWER, worktree_check=ok_worktree), "activation-expired")
+        exc = refuses(self, lambda: self.h.coordinator().bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree), "activation-expired")
         self.assertTrue(exc.detail["bound_for_cleanup"])
         refuses(self, lambda: self.h.coordinator().record_review(S, self.h.h.sha, "approved", "r.md", self.h.terminal()), "activation-expired")
         state = self.h.coordinator(activation=None).cancel(S, "x", self.h.terminal())

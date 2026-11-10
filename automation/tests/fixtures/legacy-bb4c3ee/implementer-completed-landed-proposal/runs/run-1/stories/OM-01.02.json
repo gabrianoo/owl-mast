@@ -3,9 +3,9 @@
  "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
  "authorizations": [
   {
-   "bound_at": "2026-11-07T12:06:37Z",
+   "bound_at": "2026-11-09T15:04:38Z",
    "id": "run-1:OM-01.02:1",
-   "issued_at": "2026-11-07T12:06:37Z",
+   "issued_at": "2026-11-09T15:04:38Z",
    "purpose": "implementation",
    "reason": null,
    "role": "implementer",
@@ -16,9 +16,9 @@
    "task_id": "task-impl-1"
   },
   {
-   "bound_at": "2026-11-07T12:06:37Z",
+   "bound_at": "2026-11-09T15:04:38Z",
    "id": "run-1:OM-01.02:2",
-   "issued_at": "2026-11-07T12:06:37Z",
+   "issued_at": "2026-11-09T15:04:38Z",
    "purpose": "review",
    "reason": null,
    "role": "reviewer",
@@ -32,7 +32,7 @@
  "blocked": null,
  "checks": [
   {
-   "at": "2026-11-07T12:06:37Z",
+   "at": "2026-11-09T15:04:38Z",
    "clean_after": true,
    "clean_before": true,
    "commands": [
@@ -66,10 +66,10 @@
  "claim": {
   "baseline_sha": "c5d9d2e",
   "branch": "t3/om-01-02",
-  "claimed_at": "2026-11-07T12:06:37Z",
-  "reserved_at": "2026-11-07T12:06:37Z",
+  "claimed_at": "2026-11-09T15:04:38Z",
+  "reserved_at": "2026-11-09T15:04:38Z",
   "scope": "dispatchable",
-  "worktree_path": "/tmp/tmpz3oeim4r/wt"
+  "worktree_path": "/tmp/tmpqszuseqr/wt"
  },
  "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
  "implementer_receipts": [
@@ -92,8 +92,8 @@
   {
    "body": "<!-- unattended kind=claim op=claim run=run-1 story=OM-01.02 -->\nUnattended reservation by run `run-1` from `c5d9d2e` (scope: dispatchable). An implementer task is delegated only after this reservation; its receipt is bound to the reservation. Project Status is owner-maintained; completion still requires checks, independent review and owner acceptance.",
    "comment_id": 1000,
-   "completed_at": "2026-11-07T12:06:37Z",
-   "created_at": "2026-11-07T12:06:37Z",
+   "completed_at": "2026-11-09T15:04:38Z",
+   "created_at": "2026-11-09T15:04:38Z",
    "kind": "claim",
    "marker": {
     "kind": "claim",
@@ -140,7 +140,7 @@
    "body": "<!-- unattended kind=proposal op=proposal-0399856038fd-pr7 pr=7 run=run-1 sha=0399856038fd9fd1eac8bd25460edb159ae6e011 story=OM-01.02 -->\nEvidence proposal from run `run-1` at exact commit `0399856038fd9fd1eac8bd25460edb159ae6e011` (PR #7, CI rollup: SUCCESS).\nsummary\n\nProposed task completion for owner application (the machine does not tick checkboxes or change Project Status):\n- [ ] OM-01.02-T1\n\nChecked boxes, CI pass, review approval, acceptance, merge and deployment remain distinct facts; this comment records review-approved implementation only.",
    "comment_id": null,
    "completed_at": null,
-   "created_at": "2026-11-07T12:06:37Z",
+   "created_at": "2026-11-09T15:04:38Z",
    "kind": "proposal",
    "marker": {
     "kind": "proposal",
@@ -192,7 +192,7 @@
  "item_id": "PVTI_21",
  "phase": "review-approved",
  "proposal": {
-  "at": "2026-11-07T12:06:37Z",
+  "at": "2026-11-09T15:04:38Z",
   "ci": "SUCCESS",
   "pr": 7,
   "sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -204,7 +204,7 @@
  "reviewer_receipts": [
   {
    "authorization": "run-1:OM-01.02:2",
-   "isolation": "",
+   "isolation": "worktree",
    "model": "gpt-6-astra",
    "options": {
     "reasoningEffort": "high"
@@ -220,7 +220,7 @@
  ],
  "reviews": [
   {
-   "at": "2026-11-07T12:06:37Z",
+   "at": "2026-11-09T15:04:38Z",
    "regression": false,
    "report": "report.md",
    "sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -261,7 +261,7 @@
  "story": "OM-01.02",
  "task_history": [
   {
-   "at": "2026-11-07T12:06:37Z",
+   "at": "2026-11-09T15:04:38Z",
    "authorization": "run-1:OM-01.02:1",
    "evidence_shape": "normalized",
    "operation": "record-task-terminal",
@@ -272,7 +272,7 @@
    "taskId": "task-impl-1"
   },
   {
-   "at": "2026-11-07T12:06:37Z",
+   "at": "2026-11-09T15:04:38Z",
    "authorization": "run-1:OM-01.02:2",
    "evidence_shape": "normalized",
    "operation": "record-task-terminal",
@@ -283,5 +283,5 @@
    "taskId": "task-review-1"
   }
  ],
- "updated_at": "2026-11-07T12:06:37Z"
+ "updated_at": "2026-11-09T15:04:38Z"
 }

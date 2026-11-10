@@ -40,9 +40,9 @@ Companion to `spec-eng-01-enabling-preflight.md`. Everything below was read, nev
 ```sh
 P=automation/examples/first-run-om-01-02.toml; A=<private approved activation, outside the repo>; R=<run id>
 python3 -m automation.unattended --policy $P verify-mapping && python3 -m automation.unattended --policy $P probe
-python3 -m automation.unattended --policy $P --activation $A --run-id $R check-activation            # must print "current": true (--run-id is required; the window must also cover the 240-minute budget; a document that already created a run is activation-used)
-python3 -m automation.unattended --policy $P --run-id $R status --read-only                           # monitoring: no lock, no write; a would-be stop is reported, not recorded
-python3 -m automation.unattended --policy $P --activation $A --run-id $R clear-clock-regression --reason "…"   # owner-only: clears a recorded clock-regression stop (never an expiry)
+python3 -m automation.unattended --policy $P --activation $A --run-id $R check-activation            # must print "current": true and "can_create": true (the window must also cover the 240-minute budget; a document that already created a run is activation-used). On a run that exists, "current": true means its activation is still current
+python3 -m automation.unattended --policy $P --run-id $R status --read-only                           # monitoring of an existing run: no lock, no file created, no write; a would-be stop is reported, not recorded
+python3 -m automation.unattended --policy $P --activation $A --run-id $R clear-clock-regression --clearance <owner clearance.toml>   # owner action: clears a recorded clock-regression stop once the clock has caught up, once per run (never an expiry); the loop is never given a clearance
 U="python3 -m automation.unattended --policy $P --activation $A --live --run-id $R"
 $U reserve OM-01.02 --baseline <sha>        # then delegate_task (implementer), bind-receipt, record-head, run-checks, authorize-review, bind-receipt, record-review, propose-evidence
 # stop conditions: wall clock 240 min, 6 task authorizations, 2 repair rounds, activation expiry — all refuse advancement; then:

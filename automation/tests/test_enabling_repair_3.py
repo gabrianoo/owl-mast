@@ -132,7 +132,13 @@ class Final1StaleCreationObjectTests(unittest.TestCase):
                     h.clock[0] = T0
                     buf = io.StringIO()
                     with redirect_stdout(buf):
-                        self.assertEqual(cli.main(args), 0)  # the unchanged source inside its window creates and reports
+                        rc = cli.main(args)  # a report never creates a run (PR #114 review): only an admitting command does, so the activation is not spent by a probe
+                    self.assertEqual((rc, json.loads(buf.getvalue())["error"]["code"]), (3, "run-not-found"))
+                    self.assertFalse(store.root.exists() and any(store.root.iterdir()))
+                    h.coordinator()  # the unchanged source inside its window creates the run (the admitting path)
+                    buf = io.StringIO()
+                    with redirect_stdout(buf):
+                        self.assertEqual(cli.main(args), 0)  # and status reports it
                     created = json.loads(buf.getvalue())
                     self.assertTrue(created["activation"]["recorded"]["approved"])
                     self.assertEqual((created["activation"]["recorded"]["validated_at"], created["run"]["started_at"]), (T0, T0))  # the recorded moments are the injected observation

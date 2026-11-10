@@ -12,7 +12,7 @@ import json
 import unittest
 
 from automation.tests.fake_transport import small_backlog
-from automation.tests.support import IMPLEMENTER, REVIEWER, Harness, evidence, failing_runner, git_commit, ok_worktree, passing_runner, receipt, run_of
+from automation.tests.support import Harness, IMPLEMENTER, REVIEWER, REVIEW_BRANCH, REVIEW_WORKTREE, evidence, failing_runner, git_commit, ok_worktree, passing_runner, receipt, run_of
 from automation.unattended.coordinator import NON_SUCCESS_TERMINAL_TASK_STATES, SUCCESSFUL_TERMINAL_TASK_STATES, Coordinator
 from automation.unattended.errors import Refused
 from automation.unattended.github import PullRequestRecord
@@ -216,7 +216,7 @@ class ReviewerUnsuccessfulTests(Base):
         self.c.record_head(S, sha2, evidence("task-impl-2", status="completed"))
         self.c.run_checks(S, sha2, str(self.h.worktree), passing_runner)
         self.c.authorize_review(S, sha2)
-        self.c.bind_receipt(S, receipt(REVIEWER, "task-review-2"), worktree_check=ok_worktree)
+        self.c.bind_receipt(S, receipt(REVIEWER, "task-review-2"), REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
         self.c.record_task_terminal(S, evidence("task-review-2", status="interrupted"))
         with self.assertRaises(Refused) as ctx:
             self.fresh().record_review(S, sha2, "approved", "r2.md")

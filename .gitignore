@@ -17,4 +17,3 @@ build/
 *.iml
 .vscode/
 .unattended-runs/
-*.used.json

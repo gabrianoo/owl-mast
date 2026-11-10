@@ -6,6 +6,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
+import lombok.NonNull;
 import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.transaction.ReactiveTransaction;
 import org.springframework.transaction.reactive.TransactionSynchronization;
@@ -97,7 +98,7 @@ public final class ScopedTransactions {
             Mono.defer(() -> work.apply(scope))
                 .materialize()
                 .flatMap(signal -> rejectIfPoisoned(binding, signal))
-                .<T>dematerialize());
+                .dematerialize());
   }
 
   private Mono<Binding> joinOrBind(
@@ -114,6 +115,7 @@ public final class ScopedTransactions {
       return bindTenant(requested).thenReturn(binding);
     }
     Binding bound = (Binding) transaction.getResource(SCOPE_RESOURCE);
+    assert bound != null;
     if (requested.equals(bound.scope())) {
       return Mono.just(bound);
     }
@@ -126,23 +128,17 @@ public final class ScopedTransactions {
    * Ties the binding to the physical transaction: hidden while the transaction is suspended,
    * restored on resume, removed after completion, and enforced at the real commit boundary.
    */
-  private static final class ScopeSynchronization implements TransactionSynchronization {
-
-    private final TransactionSynchronizationManager transaction;
-    private final Binding binding;
-
-    private ScopeSynchronization(TransactionSynchronizationManager transaction, Binding binding) {
-      this.transaction = transaction;
-      this.binding = binding;
-    }
+  private record ScopeSynchronization(
+      TransactionSynchronizationManager transaction, Binding binding)
+      implements TransactionSynchronization {
 
     @Override
-    public Mono<Void> suspend() {
+    public @NonNull Mono<Void> suspend() {
       return Mono.fromRunnable(this::unbindIfOwned);
     }
 
     @Override
-    public Mono<Void> resume() {
+    public @NonNull Mono<Void> resume() {
       return Mono.fromRunnable(() -> {
         if (!transaction.hasResource(SCOPE_RESOURCE)) {
           transaction.bindResource(SCOPE_RESOURCE, binding);
@@ -151,14 +147,14 @@ public final class ScopedTransactions {
     }
 
     @Override
-    public Mono<Void> beforeCommit(boolean readOnly) {
+    public @NonNull Mono<Void> beforeCommit(boolean readOnly) {
       return binding.poisoned().get()
           ? Mono.error(IncompatibleScopeException.transactionPoisoned())
           : Mono.empty();
     }
 
     @Override
-    public Mono<Void> afterCompletion(int status) {
+    public @NonNull Mono<Void> afterCompletion(int status) {
       return Mono.fromRunnable(this::unbindIfOwned);
     }
 

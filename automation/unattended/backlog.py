@@ -14,6 +14,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from .errors import Refused
 from .github import IssueRecord, ProjectItem, Transport
 
 ID_MARKER_RE = re.compile(r"<!--\s*owl-mast-id:\s*(?P<id>E\d{2}|OM-\d{2}\.\d{2}|[A-Z]+-[0-9A-Z.]+)\s*-->")
@@ -84,6 +85,7 @@ class Snapshot:
     taken_at: str
     repo: str
     entries: list[Entry] = field(default_factory=list)
+    dropped_items: dict[str, int] = field(default_factory=dict)  # Project items not attached to this backlog, counted by repository ("?" for an unknown one): reported, never silently lost
 
     def duplicate_ids(self) -> list[str]:
         """Stable ids carried by more than one issue. ``by_id`` keeps only one of them, so
@@ -101,7 +103,7 @@ class Snapshot:
         return {e.number: e for e in self.entries}
 
     def to_json(self) -> str:
-        return json.dumps({"taken_at": self.taken_at, "repo": self.repo, "entries": [asdict(e) for e in self.entries]}, indent=1, sort_keys=True)
+        return json.dumps({"taken_at": self.taken_at, "repo": self.repo, "entries": [asdict(e) for e in self.entries], "dropped_items": dict(self.dropped_items)}, indent=1, sort_keys=True)
 
     @classmethod
     def from_json(cls, text: str) -> "Snapshot":
@@ -113,7 +115,10 @@ class Snapshot:
             for key in ("labels", "depends_on", "epic_prerequisites"):
                 e[key] = tuple(e[key])
             entries.append(Entry(**e))
-        return cls(raw["taken_at"], raw["repo"], entries)
+        dropped = raw.get("dropped_items", {})
+        if not isinstance(dropped, dict):
+            raise TypeError("dropped_items must be an object")
+        return cls(raw["taken_at"], raw["repo"], entries, {str(k): int(v) for k, v in dropped.items()})
 
 
 def parse_declaration(value: str | None) -> tuple[tuple[str, ...], bool]:
@@ -155,13 +160,42 @@ def normalize(issue: IssueRecord, item: ProjectItem | None, body_sha256: str) ->
     )
 
 
+def project_items_for(items: list[ProjectItem], repo: str, dropped: dict[str, int] | None = None) -> dict[int, ProjectItem]:
+    """The Project items that belong to ``repo``, keyed by issue number. Items of other
+    repositories (a user Project can hold several) and items whose repository is unknown are
+    dropped: another repository's Status must never attach to this backlog's story. The
+    comparison ignores case (GitHub's ``nameWithOwner`` is canonical, the policy's spelling may
+    not be); every dropped item is counted by repository in ``dropped`` so the snapshot can
+    report what it did not attach. Two items for one issue of this repository are ambiguous and
+    refuse."""
+    out: dict[int, ProjectItem] = {}
+    wanted = repo.casefold()
+    for item in items:
+        if item.issue_number is None or item.repository is None or item.repository.casefold() != wanted:
+            if dropped is not None:
+                key = item.repository or "?"
+                dropped[key] = dropped.get(key, 0) + 1
+            continue
+        if item.issue_number in out:
+            raise Refused(f"Project holds more than one item for {repo}#{item.issue_number} ({out[item.issue_number].item_id}, {item.item_id}); the Status is ambiguous, nothing is admitted", code="ambiguous-project-item", issue=item.issue_number)
+        out[item.issue_number] = item
+    return out
+
+
 def take_snapshot(transport: Transport, repo: str, now: str) -> Snapshot:
     import hashlib
 
     issues = transport.list_issues()
-    items = {i.issue_number: i for i in transport.list_project_items() if i.issue_number is not None}
+    dropped: dict[str, int] = {}
+    all_items = transport.list_project_items()
+    items = project_items_for(all_items, repo, dropped)
+    if all_items and not items and issues and any(key != "?" for key in dropped):
+        # every item links another repository although this one has issues: the Project is not this backlog's (wrong number,
+        # renamed or transferred repository); an all-unknown Status set must not read as "no Project item" for every story.
+        # Items without a linked issue (drafts, or a transport that does not report the repository) are not evidence of that.
+        raise Refused(f"none of the {len(all_items)} Project items links an issue of {repo} (items by repository: {dropped}); the Project or the repository name in the policy is wrong, nothing is admitted", code="project-items-foreign", dropped=dropped)
     entries = [normalize(i, items.get(i.number), hashlib.sha256(i.body.encode("utf-8")).hexdigest()) for i in issues]
-    return Snapshot(now, repo, entries)
+    return Snapshot(now, repo, entries, dropped)
 
 
 def verify_mapping(snapshot: Snapshot, tasks_index_text: str | None = None) -> dict:
@@ -174,7 +208,7 @@ def verify_mapping(snapshot: Snapshot, tasks_index_text: str | None = None) -> d
     others = [e for e in snapshot.entries if e.kind == "other"]
     tasks = [t for s in stories for t in s.tasks]
 
-    counts = {"epics": len(epics), "stories": len(stories), "tasks": len(tasks), "other_issues": len(others), "project_items": sum(1 for e in snapshot.entries if e.item_id)}
+    counts = {"epics": len(epics), "stories": len(stories), "tasks": len(tasks), "other_issues": len(others), "project_items": sum(1 for e in snapshot.entries if e.item_id), "dropped_project_items": dict(snapshot.dropped_items)}
     for key, expected in EXPECTED.items():
         if counts[key] != expected:
             problems.append(f"{key}: expected {expected}, found {counts[key]}")

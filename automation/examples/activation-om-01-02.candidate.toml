@@ -7,13 +7,15 @@
 # activation-invalid / activation-expired (a window that does not cover the 240-minute budget at run
 # start refuses activation-window-short; a document that already created a run, activation-used). Activation is the owner's
 # separate decision: the owner writes a private, run-specific copy OUTSIDE the repository (never
-# commit an approved activation), sets approved = true, the exact run id, the sha256 of the exact
-# policy file in use and a window of at most 24 hours that still covers the 240-minute wall-clock
+# commit an approved activation), sets approved = true, the exact run id, the canonical digest of the
+# policy in use (see binding.policy_digest below) and a window of at most 24 hours that still covers the 240-minute wall-clock
 # budget at run start, replaces both evidence placeholders with the published GitHub comment or review
-# URLs, then verifies it with (--run-id is required; "current": true is the go signal)
+# URLs (two different comments), then verifies it with ("current": true is the go signal; without
+# --run-id the command only reports the policy digest and is current for nothing)
 #   python3 -m automation.unattended --policy automation/examples/first-run-om-01-02.toml --activation <copy> --run-id <run> check-activation
-# One activation creates exactly one live run: creation writes `<copy>.used.json` beside the file and a
-# second creation from the same document refuses (activation-used), whatever the state directory.
+# One activation creates exactly one live run: creation records the document digest in the per-machine
+# use ledger (~/.local/state/owl-mast/activation-ledger/) and a second creation from the same content,
+# under any file name or state directory, refuses (activation-used). A re-issued document is a new one.
 # Trust model: this is an engineering approval by the trusted coordinator/owner on the trusted
 # machine under the 2026-11-06 operating agreement. It is not a credential and is not signed.
 
@@ -26,7 +28,7 @@ agreement = "_bmad-output/implementation-artifacts/spec-eng-01-trusted-operation
 
 [binding]
 repository = "gabrianoo/owl-mast"
-policy_digest = "0000000000000000000000000000000000000000000000000000000000000000"   # sha256sum automation/examples/first-run-om-01-02.toml at approval time
+policy_digest = "0000000000000000000000000000000000000000000000000000000000000000"   # the canonical policy digest: `python3 -m automation.unattended --policy automation/examples/first-run-om-01-02.toml check-activation` reports it as policy_digest, with or without --activation (not sha256sum of the file: comments and whitespace do not change it)
 environment = "live"
 run_id = "REPLACE-WITH-THE-EXACT-RUN-ID"
 
@@ -35,7 +37,7 @@ stories = ["OM-01.02"]              # must equal dispatch.allow of the policy; E
 
 [targets]
 implementer = { provider = "claudeAgent", model = "claude-fable-5-1", isolation = "worktree", options = { effort = "high" } }
-reviewer = { provider = "codex", model = "gpt-6-astra", options = { reasoningEffort = "high" } }
+reviewer = { provider = "codex", model = "gpt-6-astra", isolation = "worktree", options = { reasoningEffort = "high" } }
 
 [budgets]
 max_stories_per_run = 1

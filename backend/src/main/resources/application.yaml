@@ -33,7 +33,10 @@ management:
       group:
         # Readiness refuses traffic until the schema baseline and the identity provider are proven.
         readiness:
-          include: readinessState,schemaBaseline,identityDiscovery
+          include:
+            - readinessState
+            - schemaBaseline
+            - identityDiscovery
 
 owlmast:
   identity:

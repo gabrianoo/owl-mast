@@ -15,11 +15,11 @@ from pathlib import Path
 from unittest import mock
 
 from automation.tests.fake_transport import small_backlog
-from automation.tests.support import IMPLEMENTER, REVIEWER, Harness, controlled_cli_clock, git_commit, ok_worktree, passing_runner, write_policy
+from automation.tests.support import IMPLEMENTER, REVIEW_BRANCH, REVIEW_WORKTREE, REVIEWER, Harness, controlled_cli_clock, git_commit, ok_worktree, passing_runner, write_policy
 from automation.tests.test_activation import CANDIDATE, CANDIDATE_POLICY, S, T0, LiveHarness, activation_text
 from automation.tests.test_enabling_repair_1 import EXPIRED, POLICY, claimed, refuses
 from automation.unattended import cli
-from automation.unattended.activation import Activation, load_activation
+from automation.unattended.activation import Activation, ActivationError, activation_use, ledger_path, load_activation, load_clearance
 from automation.unattended.coordinator import Coordinator
 from automation.unattended.errors import PolicyError, UnattendedError
 from automation.unattended.github import GhCliTransport
@@ -75,7 +75,7 @@ class MissingFileIsNotARunStopTests(unittest.TestCase):
         before = self.store.story_counts()
         bare = self.h.coordinator(activation=None)
         self.h.h.fake.calls = []
-        exc = refuses(self, lambda: bare.bind_receipt(S, REVIEWER, worktree_check=ok_worktree), "activation-required")
+        exc = refuses(self, lambda: bare.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree), "activation-required")
         self.assertNotIn("bound_for_cleanup", exc.detail)
         state = self.store.load_story(S)
         self.assertEqual((state.phase, state.active_task, state.unresolved_authorization()["status"]), ("review-authorized", None, "pending"))
@@ -83,7 +83,7 @@ class MissingFileIsNotARunStopTests(unittest.TestCase):
         self.assertNotIn(REVIEWER["taskId"], self.store.bound_task_ids())
         self.assertNotIn("receipt-bound-cleanup-only", [e["event"] for e in self.store.read_journal()])
         self.assertEqual(self.h.h.fake.calls, [])
-        self.assertEqual(self.h.coordinator().bind_receipt(S, REVIEWER, worktree_check=ok_worktree).phase, "review-requested")
+        self.assertEqual(self.h.coordinator().bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree).phase, "review-requested")
 
     def test_bind_receipt_without_the_file_still_binds_for_cleanup_on_a_stopped_run(self):
         c = review_authorized(self.h)
@@ -96,7 +96,7 @@ class MissingFileIsNotARunStopTests(unittest.TestCase):
 
     def test_reconcile_retained_execution_without_the_file_is_not_a_stopped_run(self):
         c = review_authorized(self.h)
-        c.bind_receipt(S, REVIEWER, worktree_check=ok_worktree)
+        c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
         c.record_review(S, self.h.h.sha, "changes-requested", "r.md", self.h.terminal())
         auth = c.authorize_repair(S).unresolved_authorization()
         bare = self.h.coordinator(activation=None)
@@ -118,10 +118,14 @@ class MissingFileIsNotARunStopTests(unittest.TestCase):
         state.phase = "claim-incomplete"  # the claim comment landed; the reserved transition did not persist
         self.store.save_story(state)
         bare = self.h.coordinator(activation=None)
-        bare.resume(S, ok_worktree)
+        self.h.h.fake.calls = []
+        for _ in range(2):  # a deferred resume is a refusal, not a completed resume, and a repeated one adds no journal line
+            exc = refuses(self, lambda: bare.resume(S, ok_worktree), "activation-required")
+            self.assertEqual((exc.detail["deferred"], exc.detail["ops"]), (True, ["claim"]))
+        self.assertEqual(self.h.h.fake.calls, [])  # nothing is read from or written to GitHub by a deferred resume (no revision check either)
         self.assertEqual(self.store.load_story(S).phase, "claim-incomplete")
-        withheld = [e for e in self.store.read_journal() if e["event"] == "reconciliation-withheld"]
-        self.assertTrue(withheld and withheld[-1]["detail"]["reason"].startswith("deferred, not withheld"))
+        events = [e["event"] for e in self.store.read_journal()]
+        self.assertEqual((events.count("reconciliation-deferred"), events.count("reconciliation-withheld")), (1, 0))
         self.assertEqual(c.resume(S, ok_worktree).phase, "reserved")  # the same document presented again completes the transition
 
 
@@ -134,11 +138,12 @@ class CheckActivationTests(unittest.TestCase):
     def tearDown(self):
         self.h.close()
 
-    def test_check_activation_without_run_id_refuses(self):
+    def test_check_activation_without_run_id_is_current_for_nothing(self):
         fresh = Path(self.h.h.tmpdir.name) / "cli-state"
-        with no_gh_calls() as calls:
+        with controlled_cli_clock(self.h.clock), no_gh_calls() as calls:
             code, out = run_cli(["--policy", str(POLICY(self.h)), "--activation", str(self.h.path), "--state-dir", str(fresh), "check-activation"])
-        self.assertEqual((code, out["error"]["code"]), (3, "activation-required"))
+        self.assertEqual((code, out["current"], out["can_create"], out["stop"], out["run_id"]), (2, False, False, "activation-invalid", None))
+        self.assertEqual(out["policy_digest"], self.h.h.policy.digest)  # the digest an activation must name is still reported
         self.assertFalse(fresh.exists())
         self.assertEqual(calls, [])
 
@@ -146,10 +151,10 @@ class CheckActivationTests(unittest.TestCase):
         fresh = Path(self.h.h.tmpdir.name) / "cli-state"
         with controlled_cli_clock(self.h.clock), no_gh_calls() as calls:
             code, out = run_cli(["--policy", str(POLICY(self.h)), "--activation", str(self.h.path), "--state-dir", str(fresh), "--run-id", "run-live", "check-activation"])
-        self.assertEqual((code, out["current"], out["stop"], out["problems"]), (0, True, None, []))
+        self.assertEqual((code, out["current"], out["can_create"], out["run_exists"], out["stop"], out["problems"]), (0, True, True, False, None, []))
         self.assertEqual(out["activation"]["id"], "eng01-test-activation")
         self.assertFalse(fresh.exists())
-        self.assertFalse(self.h.activation.ledger_path.exists())  # read-only: the document is not used by a check
+        self.assertIsNone(activation_use(self.h.activation.digest, self.h.activation.path))  # read-only: the document is not used by a check
         self.assertEqual(calls, [])
 
     def test_check_activation_bound_to_another_run_is_not_current(self):
@@ -173,16 +178,19 @@ class CheckActivationTests(unittest.TestCase):
 
     def test_check_activation_reports_a_used_document(self):
         claimed(self.h)
+        other = Path(self.h.h.tmpdir.name) / "other-state"
         with controlled_cli_clock(self.h.clock), no_gh_calls():
-            code, out = run_cli(cli_args(self.h, "check-activation"))
-        self.assertEqual((code, out["current"], out["stop"]), (2, False, "activation-used"))
+            code, out = run_cli(["--policy", str(POLICY(self.h)), "--activation", str(self.h.path), "--state-dir", str(other), "--run-id", "run-live", "check-activation"])
+        self.assertEqual((code, out["current"], out["can_create"], out["stop"]), (2, False, False, "activation-used"))
+        self.assertEqual(out["used"]["run_id"], "run-live")
+        self.assertFalse(other.exists())
 
 
 class EvidenceReferenceTests(unittest.TestCase):
     """Finding 4513640263: placeholder evidence never passes; a citation is a GitHub comment or review URL on the repository."""
 
     def test_committed_candidate_placeholders_are_reported(self):
-        problems = load_activation(CANDIDATE).problems(load_policy(CANDIDATE_POLICY), "r", T0)
+        problems = load_activation(CANDIDATE).creation_problems(load_policy(CANDIDATE_POLICY), "r", T0)
         placeholders = [m for c, m in problems if c == "activation-invalid" and "placeholder" in m]
         self.assertEqual(len(placeholders), 2, problems)
 
@@ -255,7 +263,7 @@ class StatusWriteTests(unittest.TestCase):
 
 
 class ClearClockRegressionTests(unittest.TestCase):
-    """Finding 4513640293: a backward clock step is recoverable by an owner-only, journaled command; expiry is not."""
+    """Finding 4513640293: a backward clock step is recoverable by a journaled owner action; expiry is not."""
 
     def setUp(self):
         self.h = LiveHarness()
@@ -272,34 +280,42 @@ class ClearClockRegressionTests(unittest.TestCase):
         refuses(self, lambda: self.c.record_head(S, self.h.h.sha, self.h.terminal()), "clock-regression")
         self.assertEqual(self.store.load_run().activation_stop["code"], "clock-regression")
 
+    def clearance(self, h=None, **over) -> dict:
+        h = h or self.h
+        stop = Store(h.h.state_dir, "run-live").load_run().activation_stop or {}
+        fields = {"run_id": "run-live", "activation_id": "eng01-test-activation", "approver": "owner (fixture)", "stop_observed_at": stop.get("observed_at", "none"), "reason": "WSL2 clock resynced after resume; verified by the owner", **over}
+        path = Path(h.h.tmpdir.name) / "clearance.toml"
+        path.write_text("".join(f"{key} = {json.dumps(value)}\n" for key, value in fields.items()), encoding="utf-8")
+        return load_clearance(path)
+
     def test_clear_needs_the_presented_current_activation_and_restores_advancement(self):
         self.regress()
-        self.h.clock[0] = "2026-11-07T11:30:00Z"
-        refuses(self, lambda: self.h.coordinator(activation=None).clear_clock_regression("resync"), "activation-required")
-        refuses(self, lambda: self.c.clear_clock_regression(""), "reason-missing")
+        self.h.clock[0] = "2026-11-07T11:56:00Z"  # back within the tolerance of the 12:00 high-water mark
+        refuses(self, lambda: self.h.coordinator(activation=None).clear_clock_regression(self.clearance()), "activation-required")
         self.assertEqual(self.store.load_run().activation_stop["code"], "clock-regression")
-        report = self.c.clear_clock_regression("WSL2 clock resynced after resume; verified by the owner")
+        report = self.c.clear_clock_regression(self.clearance())
         run = self.store.load_run()
-        self.assertEqual((run.activation_stop, run.last_observed_at, report["cleared"]["code"]), (None, "2026-11-07T11:30:00Z", "clock-regression"))
+        self.assertEqual((run.activation_stop, run.last_observed_at, report["cleared"]["code"]), (None, "2026-11-07T12:00:00Z", "clock-regression"))  # the high-water mark is kept, never lowered
         events = [e for e in self.store.read_journal() if e["event"] == "activation-stop-cleared"]
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["detail"]["reason"], "WSL2 clock resynced after resume; verified by the owner")
+        self.assertEqual(events[0]["detail"]["clearance"]["stop_observed_at"], "2026-11-07T11:00:00Z")
         self.assertEqual(self.c.record_head(S, self.h.h.sha, self.h.terminal()).phase, "implemented")
 
     def test_clear_refuses_without_a_stop_and_never_clears_expiry(self):
-        refuses(self, lambda: self.c.clear_clock_regression("nothing"), "no-stop-recorded")
+        refuses(self, lambda: self.c.clear_clock_regression(self.clearance()), "no-stop-recorded")
         self.h.clock[0] = EXPIRED
         refuses(self, lambda: self.c.record_head(S, self.h.h.sha, self.h.terminal()), "activation-expired")
-        refuses(self, lambda: self.c.clear_clock_regression("please"), "activation-expired")
+        refuses(self, lambda: self.c.clear_clock_regression(self.clearance()), "activation-expired")
         self.assertEqual(self.store.load_run().activation_stop["code"], "activation-expired")
 
     def test_clear_refuses_when_the_presented_activation_is_not_current_at_this_observation(self):
         self.regress()
         self.h.clock[0] = EXPIRED  # by the time the owner reacts, the window is over
-        refuses(self, lambda: self.c.clear_clock_regression("resync"), "activation-expired")
+        refuses(self, lambda: self.c.clear_clock_regression(self.clearance()), "activation-expired")
         self.assertEqual(self.store.load_run().activation_stop["code"], "clock-regression")
 
-    def test_clear_refuses_on_a_cancelled_run_before_the_run_started_and_after_the_wall_clock(self):
+    def test_clear_refuses_on_a_cancelled_run_and_after_the_wall_clock(self):
         h = LiveHarness(issued="2026-11-07T08:00:00Z", expires="2026-11-07T20:00:00Z")  # a long window: the wall clock (240 min) runs out before the approval does
         try:
             c = claimed(h)
@@ -308,22 +324,27 @@ class ClearClockRegressionTests(unittest.TestCase):
             c.status()
             h.clock[0] = "2026-11-07T11:00:00Z"
             refuses(self, lambda: c.record_head(S, h.h.sha, h.terminal()), "clock-regression")
-            h.clock[0] = "2026-11-07T09:00:00Z"  # inside the approval window but before the run started: the clock is still wrong
-            refuses(self, lambda: c.clear_clock_regression("too early"), "clock-regression")
             h.clock[0] = "2026-11-07T14:30:00Z"  # 270 minutes after the start: the wall clock is over
-            refuses(self, lambda: c.clear_clock_regression("too late"), "wall-clock-exceeded")
+            refuses(self, lambda: c.clear_clock_regression(self.clearance(h)), "wall-clock-exceeded")
             self.assertEqual(store.load_run().activation_stop["code"], "clock-regression")
             h.clock[0] = "2026-11-07T12:30:00Z"
             c.cancel_run("owner stop")
-            refuses(self, lambda: c.clear_clock_regression("cancelled"), "run-cancelled")
+            refuses(self, lambda: c.clear_clock_regression(self.clearance(h)), "run-cancelled")
             self.assertEqual(store.load_run().activation_stop["code"], "clock-regression")
         finally:
             h.close()
 
     def test_cli_clear_clock_regression(self):
+        path = Path(self.h.h.tmpdir.name) / "clearance.toml"
+        self.clearance()
         with controlled_cli_clock(self.h.clock), no_gh_calls():
-            code, out = run_cli(cli_args(self.h, "clear-clock-regression", "--reason", "x"))
-        self.assertEqual((code, out["error"]["code"]), (3, "no-stop-recorded"))
+            code, out = run_cli(cli_args(self.h, "clear-clock-regression", "--clearance", str(path)))
+            self.assertEqual((code, out["error"]["code"]), (3, "no-stop-recorded"))
+            code, out = run_cli(cli_args(self.h, "clear-clock-regression"))
+            self.assertEqual((code, out["error"]["code"]), (3, "input-invalid"))  # no clearance, no clear: a reason on the command line is not an owner action
+            path.write_text('run_id = "run-live"\n', encoding="utf-8")
+            code, out = run_cli(cli_args(self.h, "clear-clock-regression", "--clearance", str(path)))
+            self.assertEqual((code, out["error"]["code"]), (3, "clearance-invalid"))
 
 
 class ClockSourceTests(unittest.TestCase):
@@ -380,8 +401,9 @@ class RunOpenRefreshTests(unittest.TestCase):
         self.assertEqual(self.ensure(stale).run_id, "run-live")
 
     def test_an_activation_without_a_source_path_cannot_exist(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ActivationError) as ctx:  # inside the CLI's JSON error contract, never a bare ValueError
             Activation(**{**dataclasses.asdict(self.h.activation), "path": ""})
+        self.assertEqual(ctx.exception.code, "activation-invalid")
 
 
 class WindowCoverageTests(unittest.TestCase):
@@ -415,10 +437,10 @@ class LiveHelpTests(unittest.TestCase):
     """Finding 4513640367: the --live help lists every command that can reach a GitHub write."""
 
     def test_live_help_is_built_from_write_commands(self):
-        text = cli.build_parser().format_help()
+        live = next(a for a in cli.build_parser()._actions if "--live" in a.option_strings)  # the option's own help, not the whole usage (which lists every subcommand anyway)
         for command in cli.WRITE_COMMANDS:
-            self.assertIn(command, text)
-        self.assertIn("propose-evidence", text)
+            self.assertIn(command, live.help)
+        self.assertIn("propose-evidence", live.help)
 
 
 class UnlockedSnapshotTests(unittest.TestCase):
@@ -454,7 +476,10 @@ class UnlockedSnapshotTests(unittest.TestCase):
 
 
 class OneActivationOneRunTests(unittest.TestCase):
-    """Finding 4513640423: a use ledger beside the document makes a second live run from it impossible."""
+    """Finding 4513640423: a use ledger keyed on the document digest makes a second live run from it impossible."""
+
+    def ledger(self) -> Path:
+        return ledger_path(self.h.activation.digest, self.h.activation.path)
 
     def setUp(self):
         self.h = LiveHarness()
@@ -464,16 +489,17 @@ class OneActivationOneRunTests(unittest.TestCase):
     def tearDown(self):
         self.h.close()
 
-    def test_ledger_is_written_beside_the_source_at_creation(self):
-        ledger = json.loads(self.h.activation.ledger_path.read_text(encoding="utf-8"))
-        self.assertEqual((ledger["run_id"], ledger["digest"], ledger["state_dir"], ledger["created_at"]), ("run-live", self.h.activation.digest, str(self.h.h.state_dir), T0))
+    def test_ledger_is_written_at_creation_and_confirmed(self):
+        ledger = json.loads(self.ledger().read_text(encoding="utf-8"))
+        self.assertEqual((ledger["run_id"], ledger["digest"], ledger["state_dir"], ledger["created_at"], ledger["state"]), ("run-live", self.h.activation.digest, str(self.h.h.state_dir.resolve()), T0, "committed"))
+        self.assertEqual(self.ledger().name, self.h.activation.digest + ".json")  # keyed on the content, not on the file name
 
     def test_second_state_dir_refuses(self):
         other = Store(Path(self.h.h.tmpdir.name) / "runs-2", "run-live")
         self.h.h.fake.calls = []
         exc = refuses(self, lambda: Coordinator(self.h.h.fake, self.h.h.policy, other, now=lambda: T0, live=True, activation=self.h.activation), "activation-used")
-        self.assertIn(str(self.h.activation.ledger_path), str(exc))
-        other.state_dir.mkdir()  # the ledger itself (not only the pre-check) refuses a direct Store creation too
+        self.assertIn(str(self.ledger()), str(exc))
+        other.state_dir.mkdir()  # the locked creation (not only the coordinator's pre-check) refuses a direct Store creation too
         exc = refuses(self, lambda: other.ensure_run(self.h.h.policy.repo_slug, self.h.h.policy.digest, "live", activation=self.h.activation, policy=self.h.h.policy, now=T0), "activation-used")
         self.assertIsNone(other.load_run())
         self.assertEqual(self.h.h.fake.calls, [])
@@ -482,7 +508,7 @@ class OneActivationOneRunTests(unittest.TestCase):
         shutil.rmtree(self.store.root)
         refuses(self, lambda: self.h.coordinator(), "activation-used")
         self.assertIsNone(self.store.load_run())
-        self.assertTrue(self.h.activation.ledger_path.exists())
+        self.assertTrue(self.ledger().exists())
 
     def test_the_existing_run_keeps_working_with_its_ledger(self):
         self.assertEqual(self.c.record_head(S, self.h.h.sha, self.h.terminal()).phase, "implemented")

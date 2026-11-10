@@ -42,6 +42,7 @@ context: []
   - unanchored target options: `policy._target` refuses non-string option values (same rule as the activation loader).
 - Verification (worktree of `t3/pr108-review-findings`): `python3 -m unittest discover -s automation/tests -t .` runs 379 tests OK (339 on `main` + 40 new in `test_pr108_review_findings.py`; two R3 tests in `test_enabling_repair_1.py` rewritten for the new bind-receipt and resume behaviour). `automation/policy.toml` is byte-identical to `main`. CI result and per-thread replies are recorded on the follow-up PR (the record of review resolution lives on GitHub).
 - Blind Hunter (14 findings): patched 11, documented 2, deferred 1. Details in the Review Triage Log.
+- Follow-up of 2026-11-11 (reviews 5828027825 and 5850902826 on PR #114, see `spec-gh-114-resolve-review-findings.md`): the one deferral (the path-bound ledger) is closed in the same PR, the ledger is keyed on the document digest in a per-machine directory and `deferred-work.md` no longer carries the entry. Two findings stay documented limits, not fixes: a read-only status may be torn across files, and the window-coverage check is advisory at its exact boundary. The Intent above says no finding is declined; whether these two count as declined is the owner's call, and that block is not edited here.
 
 ## Review Triage Log
 

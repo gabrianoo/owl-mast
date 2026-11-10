@@ -15,9 +15,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import traceback
+from datetime import timedelta
 from pathlib import Path
 
-from .activation import load_activation
+from .activation import Activation, activation_use, load_activation, load_clearance, parse_utc
 from .backlog import Snapshot, load_tasks_index, take_snapshot, verify_mapping
 from .coordinator import Coordinator
 from .eligibility import plan
@@ -25,33 +27,55 @@ from .errors import UnattendedError
 from .github import GhCliTransport
 from .policy import load_policy
 from .probes import check_permissions, run_commands, write_probe
-from .state import Store, utcnow
+from .state import Store, utcnow, validate_run_id
 
 # Every command that can reach a GitHub write, directly or through a fallback (authorize-repair may block).
-WRITE_COMMANDS = {"reserve", "authorize-repair", "propose-evidence", "block", "cancel", "cancel-run", "resume", "rebase-revisions", "probe-write"}
+WRITE_COMMANDS = {"reserve", "authorize-repair", "propose-evidence", "block", "cancel", "cancel-run", "resume", "rebase-revisions", "probe-write", "dismiss-claim"}
 
 
 def _json(obj) -> None:
     print(json.dumps(obj, indent=1, sort_keys=True, default=str))
 
 
-def _load_json_arg(value: str) -> dict:
-    path = Path(value)
-    text = path.read_text(encoding="utf-8") if path.exists() else value
-    return json.loads(text)
+def _load_json_arg(value: str):
+    """A JSON document given inline or as a file path. Unreadable input (bad JSON, an unreadable
+    file, a path too long to test) is ``input-invalid`` inside the JSON error contract."""
+    text = value
+    try:
+        looks_inline = value.lstrip()[:1] in ("{", "[", '"') or value.strip() in ("null", "true", "false")
+        if not looks_inline:
+            path = Path(value)
+            if path.exists():
+                text = path.read_text(encoding="utf-8")
+    except (OSError, ValueError) as exc:  # ENAMETOOLONG, permission errors, embedded NUL
+        raise UnattendedError(f"argument {value[:60]!r} is neither readable JSON nor a readable file: {exc}", code="input-invalid") from exc
+    try:
+        return json.loads(text)
+    except ValueError as exc:
+        raise UnattendedError(f"argument {value[:60]!r} is not valid JSON: {exc}", code="input-invalid") from exc
 
 
 def _snapshot(args, transport, policy) -> Snapshot:
     if args.snapshot:
         try:
             return Snapshot.from_json(Path(args.snapshot).read_text(encoding="utf-8"))
-        except (OSError, ValueError, KeyError) as exc:
-            raise UnattendedError(f"snapshot {args.snapshot} unreadable: {exc}") from exc
+        except (OSError, ValueError, KeyError, TypeError) as exc:  # TypeError: an older or foreign entry shape
+            raise UnattendedError(f"snapshot {args.snapshot} unreadable: {exc}", code="input-invalid") from exc
     return take_snapshot(transport, policy.repo_slug, utcnow())
 
 
+class _Parser(argparse.ArgumentParser):
+    """Argument errors stay inside the JSON error contract (``input-invalid``, exit 3) instead of
+    argparse's usage text and exit 2, which is the exit code of a *negative result* (``probe-write``
+    not idempotent, ``plan``/``check-activation`` with problems) and must not be shared with a
+    malformed call. ``--help`` still prints the usage and exits 0."""
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        raise UnattendedError(f"invalid arguments: {message}", code="input-invalid", usage=self.format_usage().strip())
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="python3 -m automation.unattended", description=__doc__)
+    p = _Parser(prog="python3 -m automation.unattended", description=__doc__)
     p.add_argument("--policy", default="automation/policy.toml")
     p.add_argument("--state-dir", default=".unattended-runs")
     p.add_argument("--run-id", default=None, help="run identifier (required for state commands)")
@@ -59,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--snapshot", default=None, help="use a saved snapshot JSON instead of reading GitHub")
     p.add_argument("--live", action="store_true", help=f"allow GitHub writes ({', '.join(sorted(WRITE_COMMANDS))})")
     p.add_argument("--activation", default=None, help="run-bound activation authorization TOML (see automation/examples/activation-om-01-02.candidate.toml); required on the real transport to create a live run and for every admitting/advancing command; cleanup and status of a run activated earlier work on its recorded binding without it; the shipped candidate is unapproved and refuses")
-    sub = p.add_subparsers(dest="command", required=True)
+    sub = p.add_subparsers(dest="command", required=True, parser_class=_Parser)
 
     sub.add_parser("snapshot", help="read-only normalized backlog snapshot").add_argument("--out", default=None)
     vm = sub.add_parser("verify-mapping", help="read-only mapping verification (19/85/340, relationships)")
@@ -69,16 +93,17 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--out", default=None)
     sub.add_parser("check-permissions", help="probe the minimum GitHub permissions")
     sub.add_parser("probe", help="run the policy environment probes")
-    sub.add_parser("check-activation", help="read-only: load --activation and report whether it currently authorizes creating --run-id under --policy, with its whole wall-clock budget inside the window (touches no state, no GitHub); --run-id is required")
+    sub.add_parser("check-activation", help="read-only: load --activation and report, for --run-id under --policy and --state-dir, whether it can create that run now (can_create) or, when the run already exists, whether it is still that run's current activation (current); touches no state, no GitHub. Without --run-id it reports the policy digest and is current for nothing")
     pw = sub.add_parser("probe-write", help="bounded live write probe on an engineering-automation issue")
     pw.add_argument("--issue", type=int, required=True)
 
     evidence_help = "JSON for the ACTIVE execution: normalized {taskId, runId, status} or task_status-shaped {taskId, workState: result_available, hasPendingChildRuns: false, latestTerminalRunId, latestTerminalStatus} (childRunId/status/summary are stale and ignored); interrupted/failed/cancelled are terminal for release/cleanup only, never a success: only a completed/result_available record of the bound (task, run), in the relevant role and linked to the selected authorization, lets record-head/run-checks/authorize-review/authorize-repair/record-review/propose-evidence/resume advance, on the direct path, after record-task-terminal, after an upgrade and on restart"
     rv0 = sub.add_parser("reserve", help="admit a dispatchable story and authorize its implementer task BEFORE delegating it")
     rv0.add_argument("story"); rv0.add_argument("--baseline", required=True)
-    bd = sub.add_parser("bind-receipt", help="bind the delegated task receipt to the exact authorization its task was launched for (implementation needs --worktree/--branch)")
+    bd = sub.add_parser("bind-receipt", help="bind the delegated task receipt to the exact authorization its task was launched for (implementation and review receipts need --worktree/--branch: the task's own checkout; a reviewer in the implementer's worktree is refused)")
     bd.add_argument("story"); bd.add_argument("--receipt", required=True); bd.add_argument("--worktree", default=None); bd.add_argument("--branch", default=None)
     bd.add_argument("--authorization", default=None, help="id of the authorization the task was launched for (from reserve / authorize-review / authorize-repair); must match the story's unresolved authorization")
+    bd.add_argument("--for-cleanup", action="store_true", help="bind the receipt for cleanup only (slot spent, task owned, phase unchanged, no work authorized; exits 3 with cleanup-requested): the way to record a launched task when the activation file is lost for good on a run that is not stopped")
     rt = sub.add_parser("record-task-terminal", help="release the active task with its terminal evidence; changes nothing else"); rt.add_argument("story"); rt.add_argument("--task-evidence", required=True, help=evidence_help)
     no_launch_help = 'JSON {"authorization": "<id>", "reason": "..."}: the coordinator attests that no task was launched for exactly that unresolved authorization'
     nl = sub.add_parser("record-no-launch", help="resolve an unresolved authorization by attesting that no task was launched for it; changes nothing else"); nl.add_argument("story"); nl.add_argument("--no-launch", required=True, help=no_launch_help)
@@ -95,25 +120,64 @@ def build_parser() -> argparse.ArgumentParser:
     rr.add_argument("story"); rr.add_argument("--authorization", required=True); rr.add_argument("--receipt", required=True, help="JSON receipt of the retained owner task with its runId (and provider/model/options; optional worktree/branch)"); rr.add_argument("--task-evidence", required=True, help=evidence_help); rr.add_argument("--reason", required=True); rr.add_argument("--provenance", required=True, help="who observed the terminal evidence and how (e.g. original coordinator task_status snapshot, user-supplied)")
     rs = sub.add_parser("resume"); rs.add_argument("story")
     rb = sub.add_parser("rebase-revisions", help="explicitly accept changed GitHub revisions after human verification"); rb.add_argument("story"); rb.add_argument("--reason", required=True)
-    cc = sub.add_parser("clear-clock-regression", help="owner-only, journaled: clear a recorded clock-regression stop under the presented, current activation (an activation-expired stop is never cleared)"); cc.add_argument("--reason", required=True)
-    st = sub.add_parser("status", help="run report; a locked state write by default (records an observed expiry or clock regression durably)")
-    st.add_argument("--read-only", action="store_true", help="report without the store lock and without writing: a would-be stop is reported as would_stop, never recorded")
+    cc = sub.add_parser("clear-clock-regression", help="owner action, journaled: clear a recorded clock-regression stop under the presented, current activation AND an owner-written clearance naming exactly that stop (--clearance; the unattended loop is never given one); refuses while the clock is still behind the run's high-water mark, at most once per run, an activation-expired stop is never cleared")
+    cc.add_argument("--clearance", required=True, help="TOML file with exactly run_id, activation_id, approver, stop_observed_at and reason (see docs/unattended-execution.md)")
+    st = sub.add_parser("status", help="run report of an existing run; a locked state write by default (records an observed expiry or clock regression durably)")
+    st.add_argument("--read-only", action="store_true", help="monitoring form: the run is opened and reported without the store lock and without creating or writing anything; a would-be stop is reported as would_stop, never recorded")
+    dc = sub.add_parser("dismiss-claim", help="owner action: post a journaled dismissal of a stray or forged claim marker (by comment id) so it no longer blocks admission under this identity; never dismisses this run's own claim nor a claim a run under this state directory still owns; needs --live, the --run-id of an existing run and (live transport) its current activation (--activation), which journals it")
+    dc.add_argument("--issue", type=int, required=True); dc.add_argument("--comment-id", type=int, required=True); dc.add_argument("--reason", required=True)
+    dc.add_argument("--force", action="store_true", help="dismiss a claim that no run under --state-dir proves finished (its coordinator may still be running elsewhere, however old the claim: a run past its wall clock still owns its story until its task finishes); --reason must attest that it is dead")
     return p
 
 
+def _check_activation(args, policy, activation) -> tuple[dict, bool]:
+    """The ``check-activation`` report and whether it is a go. Two questions with two answers:
+    ``can_create`` (may this document create ``--run-id`` now: current, cited, unused, with the
+    whole wall-clock budget inside its window) and, for a run that already exists under
+    ``--state-dir``, ``current`` (is this document that run's activation and still current for
+    advancing: what every advancing operation checks). For a run that does not exist yet the two
+    are the same. A run that exists is also not current once it is cancelled, past its wall
+    clock or under a recorded stop. A run record that does not load is reported, never read as
+    "no run"; without ``--run-id`` no run is looked up and the document is current for nothing."""
+    now, run, problems = utcnow(), None, []
+    if args.run_id:
+        try:
+            run = Store(Path(args.state_dir), args.run_id).load_run()
+        except UnattendedError as exc:
+            problems.append((exc.code, str(exc)))
+    bound = run.policy_digest if run is not None else None
+    creation = activation.creation_problems(policy, args.run_id, now, state_dir=args.state_dir)
+    if run is not None:
+        creation.append(("activation-used", f"run {args.run_id} already exists under {args.state_dir}; a run is created once"))
+        problems += activation.problems(policy, args.run_id, now, bound_digest=bound)
+        if run.environment == "live" and not activation.matches(run.activation):
+            problems.append(("activation-mismatch", f"run {args.run_id} was created under activation {(run.activation or {}).get('id')!r}, not this document ({activation.id}, digest {activation.digest[:12]})"))
+        if run.activation_stop is not None:
+            problems.append((run.activation_stop["code"], f"the run carries a recorded stop: {run.activation_stop['message']}"))
+        if run.cancelled:
+            problems.append(("run-cancelled", f"run {args.run_id} is cancelled ({run.stop_reason}); it advances nothing"))
+        elif parse_utc(now) - parse_utc(run.started_at) > timedelta(minutes=policy.max_wall_clock_minutes):
+            problems.append(("wall-clock-exceeded", f"run {args.run_id} started at {run.started_at} and is past its wall-clock budget of {policy.max_wall_clock_minutes} minutes; it advances nothing"))
+    elif not problems:
+        problems = list(creation)
+    report = {"activation": activation.binding(), "approved": activation.approved, "run_id": args.run_id, "policy_digest": policy.digest, "bound_digest": bound, "run_exists": run is not None,
+              "current": not problems, "can_create": run is None and not problems and not creation, "stop": activation.stop_code(problems), "stops": Activation.stop_codes(problems), "problems": [m for _, m in problems],
+              "creation_problems": [m for _, m in creation], "used": activation_use(activation.digest, activation.path)}
+    return report, not problems
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
     try:
+        args = build_parser().parse_args(argv)  # inside the contract: a malformed call is one JSON document with exit 3, never usage text with exit 2
         policy = load_policy(Path(args.policy))
         activation = load_activation(Path(args.activation)) if args.activation else None
         if args.command == "check-activation":
-            if activation is None:
-                raise UnattendedError("check-activation needs --activation", code="activation-required")
-            if not args.run_id:
-                raise UnattendedError("check-activation needs --run-id: an activation authorizes exactly one run, so there is no run-less currency to report", code="activation-required")
-            problems = activation.creation_problems(policy, args.run_id, utcnow())
-            _json({"activation": activation.binding(), "approved": activation.approved, "run_id": args.run_id, "policy_digest": policy.digest, "current": not problems, "stop": activation.stop_code(problems), "problems": [m for _, m in problems]})
-            return 0 if not problems else 2
+            if activation is None:  # the digest an activation must name is readable before any activation exists; nothing is current without one
+                _json({"activation": None, "run_id": args.run_id, "policy_digest": policy.digest, "current": False, "can_create": False, "stop": "activation-required", "stops": ["activation-required"], "problems": ["no activation presented (--activation); only the policy digest is reported"]})
+                return 2
+            report, go = _check_activation(args, policy, activation)
+            _json(report)
+            return 0 if go else 2
         transport = GhCliTransport(policy.owner, policy.repo, policy.project_owner, policy.project_number)
         if args.command in WRITE_COMMANDS and not args.live:
             raise UnattendedError(f"{args.command} writes to GitHub; pass --live to confirm")
@@ -146,17 +210,23 @@ def main(argv: list[str] | None = None) -> int:
             _json({"ok": ok, "results": results})
             return 0 if ok else 2
         if args.command == "probe-write":
-            _json(write_probe(transport, args.issue, args.run_id or f"probe-{utcnow()}", utcnow()))
-            return 0
+            if not args.run_id:
+                raise UnattendedError("probe-write needs --run-id: the probe is idempotent only for a fixed identity (a second call with the same --run-id must find the first marker)", code="run-id-required")
+            report = write_probe(transport, args.issue, validate_run_id(args.run_id), utcnow())
+            _json(report)
+            return 0 if report["idempotent"] else 2
         if not args.run_id:
-            raise UnattendedError("--run-id is required for state commands")
-        coordinator = Coordinator(transport, policy, Store(Path(args.state_dir), args.run_id), live=bool(args.live), activation=activation)
+            raise UnattendedError("--run-id is required for state commands", code="run-id-required")
+        # Only an admitting command creates a run: a report or a cleanup command on a run that does not exist refuses
+        # run-not-found and never starts a run or spends an activation. status --read-only opens without the lock.
+        coordinator = Coordinator(transport, policy, Store(Path(args.state_dir), args.run_id), live=bool(args.live), activation=activation,
+                                  create=args.command == "reserve", read_only=args.command == "status" and bool(args.read_only))
         if args.command == "reserve":
             with coordinator.operation():
                 coordinator.require_activation("reserve")  # before any GitHub read on a live transport, under the lock
             state = coordinator.reserve(args.story, _snapshot(args, transport, policy), args.baseline)
         elif args.command == "bind-receipt":
-            state = coordinator.bind_receipt(args.story, _load_json_arg(args.receipt), args.worktree, args.branch, authorization=args.authorization)
+            state = coordinator.bind_receipt(args.story, _load_json_arg(args.receipt), args.worktree, args.branch, authorization=args.authorization, for_cleanup=bool(args.for_cleanup))
         elif args.command == "record-task-terminal":
             state = coordinator.record_task_terminal(args.story, _load_json_arg(args.task_evidence))
         elif args.command == "record-no-launch":
@@ -187,10 +257,13 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "rebase-revisions":
             state = coordinator.rebase_revisions(args.story, args.reason)
         elif args.command == "clear-clock-regression":
-            _json(coordinator.clear_clock_regression(args.reason))
+            _json(coordinator.clear_clock_regression(load_clearance(Path(args.clearance))))
             return 0
         elif args.command == "status":
             _json(coordinator.status(read_only=bool(args.read_only)))
+            return 0
+        elif args.command == "dismiss-claim":
+            _json(coordinator.dismiss_claim(args.issue, args.comment_id, args.reason, force=args.force))
             return 0
         else:  # pragma: no cover
             raise UnattendedError(f"unknown command {args.command}")
@@ -199,6 +272,10 @@ def main(argv: list[str] | None = None) -> int:
     except UnattendedError as exc:
         _json({"error": exc.as_dict()})
         return 3
+    except Exception as exc:  # noqa: BLE001 - the contract is one JSON document, never a bare traceback
+        # exit 4 tells a scripted caller apart from a refusal (3): the tool crashed, nothing was decided
+        _json({"error": {"code": "internal", "message": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc().splitlines()[-6:]}})
+        return 4
 
 
 if __name__ == "__main__":  # pragma: no cover

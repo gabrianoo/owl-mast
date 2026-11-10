@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from automation.tests.fake_transport import small_backlog
-from automation.tests.support import IMPLEMENTER, REVIEWER, Harness, failing_runner, git_commit, ok_worktree, passing_runner, receipt
+from automation.tests.support import Harness, IMPLEMENTER, REVIEWER, REVIEW_BRANCH, REVIEW_WORKTREE, failing_runner, git_commit, ok_worktree, passing_runner, receipt
 from automation.unattended import cli, coordinator, github
 from automation.unattended.errors import BudgetExhausted, ReceiptInvalid, Refused
 from automation.unattended.coordinator import Coordinator
@@ -200,7 +200,7 @@ class LifecycleTests(unittest.TestCase):
         self.h.checks()
         self.c.authorize_review("OM-01.02", self.h.sha)
         with self.assertRaises(ReceiptInvalid):
-            self.c.bind_receipt("OM-01.02", {**REVIEWER, "taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1"}, worktree_check=ok_worktree)
+            self.c.bind_receipt("OM-01.02", {**REVIEWER, "taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1"}, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
         with self.assertRaises(ReceiptInvalid):  # an implementer receipt cannot consume a reviewer authorization
             self.c.bind_receipt("OM-01.02", receipt(IMPLEMENTER, "task-impl-2"), worktree_check=ok_worktree)
         self.assertEqual(self.h.store.load_story("OM-01.02").phase, "review-authorized")
