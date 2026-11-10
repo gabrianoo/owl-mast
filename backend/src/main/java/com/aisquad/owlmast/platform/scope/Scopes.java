@@ -2,16 +2,17 @@ package com.aisquad.owlmast.platform.scope;
 
 import java.util.Optional;
 import java.util.function.Function;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 import reactor.core.publisher.Mono;
 import reactor.util.context.Context;
 import reactor.util.context.ContextView;
 
 /** Reads and binds the {@link ScopeContext} in the Reactor Context. There is no default scope. */
+@NoArgsConstructor(access = AccessLevel.PRIVATE)
 public final class Scopes {
 
   private static final Class<ScopeContext> KEY = ScopeContext.class;
-
-  private Scopes() {}
 
   /** The current scope, or a {@link MissingScopeException} when none is bound. */
   public static Mono<ScopeContext> current() {

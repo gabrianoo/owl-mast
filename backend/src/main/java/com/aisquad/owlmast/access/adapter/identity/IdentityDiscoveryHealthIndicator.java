@@ -3,6 +3,9 @@ package com.aisquad.owlmast.access.adapter.identity;
 import com.aisquad.owlmast.platform.diagnostics.SafeFailure;
 import java.time.Duration;
 import java.util.Map;
+import lombok.AccessLevel;
+import lombok.NonNull;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.health.contributor.Health;
 import org.springframework.boot.health.contributor.ReactiveHealthIndicator;
@@ -16,6 +19,7 @@ import reactor.core.publisher.Mono;
  * therefore cannot be "ready" with a missing or mismatched identity provider, bundled or external.
  */
 @Slf4j
+@RequiredArgsConstructor(access = AccessLevel.PACKAGE)
 final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator {
 
   static final Duration TIMEOUT = Duration.ofSeconds(3);
@@ -25,13 +29,8 @@ final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator 
   private final WebClient client;
   private final IdentityProperties properties;
 
-  IdentityDiscoveryHealthIndicator(WebClient client, IdentityProperties properties) {
-    this.client = client;
-    this.properties = properties;
-  }
-
   @Override
-  public Mono<Health> health() {
+  public @NonNull Mono<Health> health() {
     return client
         .get()
         .uri(properties.discoveryUri())

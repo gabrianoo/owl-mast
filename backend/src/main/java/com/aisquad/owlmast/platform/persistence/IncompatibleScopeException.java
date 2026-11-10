@@ -1,5 +1,7 @@
 package com.aisquad.owlmast.platform.persistence;
 
+import java.io.Serial;
+
 /**
  * A scoped transaction tried to join an active transaction that is already bound to a different
  * {@code ScopeContext} (tenant or principal), or a transaction in which such a rejection happened
@@ -7,7 +9,7 @@ package com.aisquad.owlmast.platform.persistence;
  */
 public final class IncompatibleScopeException extends IllegalStateException {
 
-  private static final long serialVersionUID = 1L;
+  @Serial private static final long serialVersionUID = 1L;
 
   private IncompatibleScopeException(String message) {
     super(message);

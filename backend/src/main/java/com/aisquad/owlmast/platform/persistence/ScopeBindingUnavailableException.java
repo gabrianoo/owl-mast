@@ -1,5 +1,7 @@
 package com.aisquad.owlmast.platform.persistence;
 
+import java.io.Serial;
+
 /**
  * {@code ScopedTransactions} was invoked where no actual, synchronized transaction exists (for
  * example an operator configured with {@code PROPAGATION_SUPPORTS} or {@code NEVER} and no outer
@@ -8,7 +10,7 @@ package com.aisquad.owlmast.platform.persistence;
  */
 public final class ScopeBindingUnavailableException extends IllegalStateException {
 
-  private static final long serialVersionUID = 1L;
+  @Serial private static final long serialVersionUID = 1L;
 
   ScopeBindingUnavailableException() {
     super(
