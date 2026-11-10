@@ -68,6 +68,7 @@ class Comment:
     body: str
     author: str
     created_at: str
+    updated_at: str | None = None  # GitHub keeps ``created_at`` across edits; the last edit time orders an edited claim (absent on older fixtures)
 
     @property
     def marker(self) -> dict[str, str] | None:
@@ -315,12 +316,12 @@ class GhCliTransport:
             if not isinstance(d, dict):
                 raise TypeError(f"comment is {type(d).__name__}")
             login = d["login"] if "login" in d else d["user"]["login"]
-            return Comment(int(d["id"]), d.get("body") or "", str(login), str(d["created_at"]))
+            return Comment(int(d["id"]), d.get("body") or "", str(login), str(d["created_at"]), str(d["updated_at"]) if d.get("updated_at") is not None else None)
         except (KeyError, TypeError, ValueError) as exc:
             raise TransportError(f"{where}: unexpected comment JSON ({exc})") from exc
 
     def list_comments(self, number: int) -> list[Comment]:
-        raw = self._run(["api", "--paginate", f"repos/{self.owner}/{self.repo}/issues/{number}/comments", "--jq", ".[] | {id, body, created_at, login: .user.login}"])
+        raw = self._run(["api", "--paginate", f"repos/{self.owner}/{self.repo}/issues/{number}/comments", "--jq", ".[] | {id, body, created_at, updated_at, login: .user.login}"])
         comments = []
         for line in raw.splitlines():
             if line.strip():

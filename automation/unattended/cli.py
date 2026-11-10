@@ -117,9 +117,21 @@ def build_parser() -> argparse.ArgumentParser:
     rs = sub.add_parser("resume"); rs.add_argument("story")
     rb = sub.add_parser("rebase-revisions", help="explicitly accept changed GitHub revisions after human verification"); rb.add_argument("story"); rb.add_argument("--reason", required=True)
     sub.add_parser("status")
-    dc = sub.add_parser("dismiss-claim", help="owner action: post a journaled dismissal of a stray or forged claim marker (by comment id) so it no longer blocks admission anywhere; never dismisses this run's own claim; needs --live and the --run-id of an existing run (activated earlier on the real transport), which journals it")
+    dc = sub.add_parser("dismiss-claim", help="owner action: post a journaled dismissal of a stray or forged claim marker (by comment id) so it no longer blocks admission under this identity; never dismisses this run's own claim nor a claim a run under this state directory still owns; needs --live, the --run-id of an existing run and (live transport) its current activation (--activation), which journals it")
     dc.add_argument("--issue", type=int, required=True); dc.add_argument("--comment-id", type=int, required=True); dc.add_argument("--reason", required=True)
+    dc.add_argument("--force", action="store_true", help="also dismiss a claim younger than the run wall clock (its coordinator may still be running elsewhere); --reason must attest that it is dead")
     return p
+
+
+def _bound_digest(state_dir: Path, run_id: str) -> tuple[str | None, list[tuple[str, str]]]:
+    """The policy digest an existing run under ``state_dir`` is bound to, read without touching
+    it, and the refusal its record raises when it is not a valid run of this id (reported, never
+    read as "no run"); None when there is no run (the activation is then checked as a new one)."""
+    try:
+        run = Store(state_dir, run_id).load_run()
+    except UnattendedError as exc:
+        return None, [(exc.code, str(exc))]
+    return (run.policy_digest if run is not None else None), []
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -130,8 +142,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "check-activation":
             if activation is None:
                 raise UnattendedError("check-activation needs --activation", code="activation-required")
-            problems = activation.problems(policy, args.run_id, utcnow())
-            _json({"activation": activation.binding(), "approved": activation.approved, "run_id": args.run_id, "policy_digest": policy.digest, "current": not problems, "stop": activation.stop_code(problems), "problems": [m for _, m in problems]})
+            bound, problems = _bound_digest(Path(args.state_dir), args.run_id)  # an existing run bound to the legacy raw-bytes digest still accepts an activation naming it
+            problems += activation.problems(policy, args.run_id, utcnow(), bound_digest=bound)
+            _json({"activation": activation.binding(), "approved": activation.approved, "run_id": args.run_id, "policy_digest": policy.digest, "bound_digest": bound, "current": not problems, "stop": activation.stop_code(problems), "problems": [m for _, m in problems]})
             return 0 if not problems else 2
         transport = GhCliTransport(policy.owner, policy.repo, policy.project_owner, policy.project_number)
         if args.command in WRITE_COMMANDS and not args.live:
@@ -212,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
             _json(coordinator.status())
             return 0
         elif args.command == "dismiss-claim":
-            _json(coordinator.dismiss_claim(args.issue, args.comment_id, args.reason))
+            _json(coordinator.dismiss_claim(args.issue, args.comment_id, args.reason, force=args.force))
             return 0
         else:  # pragma: no cover
             raise UnattendedError(f"unknown command {args.command}")

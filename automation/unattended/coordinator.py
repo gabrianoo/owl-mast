@@ -74,7 +74,9 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Callable
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+import json
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .activation import Activation, _parse_time, _utc_text, refresh_activation
@@ -85,7 +87,7 @@ from .github import PullRequestRecord, Transport, render_marker
 from .policy import Policy, Target
 from .probes import run_commands
 from .receipts import execution_run_id, validate_receipt
-from .state import ACTIVE_PHASES, UNRESOLVED_AUTHORIZATION_STATUSES, Intent, Store, StoryState, utcnow
+from .state import ACTIVE_PHASES, RUN_ID_RE, TERMINAL_PHASES, UNRESOLVED_AUTHORIZATION_STATUSES, Intent, Store, StoryState, utcnow
 
 WorktreeCheck = Callable[[str, str], tuple[bool, str]]
 
@@ -261,6 +263,34 @@ def revisions_of(entries: list[Entry]) -> dict[str, dict]:
                           "item_id": e.item_id, "item_updated_at": e.item_updated_at, "status": e.status} for e in entries}
 
 
+_EARLIEST, _LATEST = datetime.min.replace(tzinfo=timezone.utc), datetime.max.replace(tzinfo=timezone.utc)
+_MENTION_RE = re.compile(r"[@`\r\n]+")
+
+
+def _plain(text) -> str:
+    """Free text for a public comment body: no ``@`` (a mention would notify someone), no
+    backticks or line breaks (the value sits in a code span); markdown renders nothing of it."""
+    return _MENTION_RE.sub(" ", str(text if text is not None else "")).strip()
+
+
+def _claim_order(claim: dict, ours: bool = False) -> tuple[datetime, int]:
+    """The order claims race in, asymmetric so that an edit never produces two winners: another
+    coordinator's claim counts from its creation (GitHub keeps ``created_at`` across edits, so an
+    old comment edited into a claim marker is backdated and costs us our slot, which the owner
+    then clears with ``dismiss-claim``; the edit is reported), our own from the later of its
+    creation and last edit (an edited own claim loses). Then the comment id. A timestamp that
+    cannot be parsed fails closed the same way: a foreign claim sorts earliest, ours latest."""
+    problems: list[str] = []
+    created = _parse_time(claim.get("created_at"), "created_at", problems)
+    updated = _parse_time(claim.get("updated_at"), "updated_at", problems) if ours and claim.get("updated_at") is not None else None
+    when = None if problems or created is None else max(t for t in (created, updated) if t is not None)
+    return ((_LATEST if ours else _EARLIEST) if when is None else when, int(claim.get("comment_id") or 0))
+
+
+def _edited(claim: dict) -> bool:
+    return claim.get("updated_at") not in (None, claim.get("created_at"))
+
+
 def revision_diff(recorded: dict[str, dict], current: dict[str, dict]) -> dict[str, dict]:
     changed = {}
     for key in sorted(set(recorded) | set(current)):
@@ -323,7 +353,8 @@ class Coordinator:
     def _activation_problems(self) -> list[tuple[str, str]]:
         if self.activation is None:
             return [("activation-required", "no activation authorization presented (--activation); accepting residual risk is not activation")]
-        return self.activation.problems(self.policy, self.store.run_id, self._at())
+        run = getattr(self, "run", None)
+        return self.activation.problems(self.policy, self.store.run_id, self._at(), bound_digest=run.policy_digest if run is not None else None)
 
     def _activation_stop(self) -> str | None:
         """Why a live run advances nothing: a durable observed stop, else no, expired or non-matching activation. ``None`` on fixtures."""
@@ -550,8 +581,9 @@ class Coordinator:
     @staticmethod
     def _claim_unsettled(state: StoryState) -> bool:
         """True while the post-claim race check has not completed for this reservation (the flag
-        is written ``False`` with the claim and ``True`` by ``_settle_claim_race``; states written
-        before the flag existed carry no key and are read as settled)."""
+        is written ``False`` with the claim and ``True`` by ``_settle_claim_race``; a state written
+        before the flag existed carries no key and is read as settled, except a ``claim-incomplete``
+        reservation, which ``resume`` marks unsettled before it reports it reserved)."""
         return bool(state.claim) and state.claim.get("race_settled") is False
 
     def _apply_no_launch(self, state: StoryState, no_launch: dict, operation: str) -> dict:
@@ -793,23 +825,33 @@ class Coordinator:
             m = c.marker
             key = (m.get("run", ""), m.get("inst"), c.author)
             if m.get("kind") == "claim":
-                claims[key] = {**m, "comment_id": c.comment_id, "created_at": c.created_at, "author": c.author}
+                claims[key] = {**m, "comment_id": c.comment_id, "created_at": c.created_at, "updated_at": c.updated_at, "author": c.author}
             elif m.get("kind") in ("release", "block", "proposal"):
                 released.add(key)
             elif m.get("kind") == "dismiss" and c.author == author and m.get("target"):
                 dismissed.add(str(m["target"]))  # an owner-run ``dismiss-claim`` by our identity: the named stray or forged claim no longer counts
         return [m for key, m in claims.items() if not (key[2] == author and self._own_marker(m)) and key not in released and str(m["comment_id"]) not in dismissed]
 
-    def dismiss_claim(self, issue: int, comment_id: int, reason: str) -> dict:
+    def dismiss_claim(self, issue: int, comment_id: int, reason: str, force: bool = False) -> dict:
         """The owner's way out of a stray or forged claim marker (fail-closed trust counts any
         author's claim, and only its author's release clears it): post, as our identity, a
-        ``dismiss`` marker naming that comment, so every coordinator stops counting it. It never
-        dismisses one of our own claims, needs ``--live``, a reason and an existing run (on the
-        live transport: one activated earlier; the dismissal is journaled in that run, write-ahead
-        before the post), and is idempotent (one dismissal per target). Deleting the comment on
-        GitHub is the other way."""
+        ``dismiss`` marker naming that comment, so every coordinator under this identity stops
+        counting it. It is gated like an advancing operation: on the live transport it needs the
+        run's **current** activation (approved, unexpired, matching this policy and run, no
+        recorded stop), the owner's approval of this run, so it never works after expiry, under a
+        stop or through a drifted, cancelled or wall-clock-exceeded run. It needs ``--live``, a reason and an existing run (the
+        dismissal is journaled there, write-ahead before the post) and is idempotent.
+
+        It never dismisses this run's own claim, and it refuses a claim that may still be a live
+        coordinator's (``dismiss-target-live``): one whose run owns the story under this state
+        directory, always (cancel it in its own run); otherwise one younger than the policy's run
+        wall clock (a run older than that can no longer advance), unless ``force`` attests that
+        its coordinator is dead. The evidence (local run lookup, claim age, wall clock, force) is
+        journaled with the dismissal. Deleting the comment on GitHub is the other way."""
         with self.operation():
-            self.require_activation("dismiss-claim", advancing=False)
+            self.require_activation("dismiss-claim", advancing=True)
+            self._reload_run()
+            self._require_run_active("dismiss-claim")  # a cancelled run, or one past its wall clock, admits nothing and clears the way for nothing
             if not reason or not str(reason).strip():
                 raise Refused("dismiss-claim needs --reason (who decided and why)", code="reason-missing")
             if not self.live:
@@ -819,16 +861,64 @@ class Coordinator:
                 raise Refused(f"comment {comment_id} on issue #{issue} is not a claim marker", code="dismiss-target-invalid", comment_id=int(comment_id))
             if target.author == self._trusted_author() and self._own_marker(target.marker):
                 raise Refused(f"comment {comment_id} is this run's own claim; release it with cancel, not dismiss-claim", code="dismiss-target-invalid", comment_id=int(comment_id))
-            story = target.marker.get("story", "")
+            story = str(target.marker.get("story") or "")
+            snapshot = self._fresh_snapshot()
+            require_unique_ids(snapshot, "dismiss-claim")
+            allowed = {sid: e.number for sid, e in snapshot.by_id().items() if sid in self.policy.allow}
+            if not story or story not in self.policy.allow or allowed.get(story) != issue:
+                raise Refused(f"comment {comment_id} claims {story!r} on issue #{issue}, which is not a story of this policy's allowlist on its own issue ({allowed}); nothing to dismiss here", code="dismiss-target-invalid", comment_id=int(comment_id), story=story)
+            evidence = self._dismissal_evidence(target, story)
+            if evidence["local_run"] is not None and evidence["local_run"]["owns_story"]:
+                raise Refused(f"comment {comment_id} is the claim of run {evidence['local_run']['run_id']!r} under {self.store.state_dir}, which still owns {story} ({evidence['local_run']['phase']}); a live coordinator's claim is cancelled in its own run, never dismissed", code="dismiss-target-live", comment_id=int(comment_id), evidence=evidence)
+            if evidence["possibly_live"] and not force:
+                raise Refused(f"comment {comment_id} (by {target.author!r}, run {target.marker.get('run')!r}) is {evidence['claim_age_minutes']} minutes old, younger than the run wall clock of {evidence['wall_clock_minutes']} minutes, so its coordinator may still be running (another state directory or machine); pass --force only after attesting in --reason that it is dead (no run, no activity)", code="dismiss-target-live", comment_id=int(comment_id), evidence=evidence)
+            evidence["forced"] = bool(force)
             marker = {"kind": "dismiss", "run": self.store.run_id, "story": story, "op": f"dismiss-{int(comment_id)}", "target": str(int(comment_id)), **({"inst": self.run.instance} if self.run.instance else {})}
-            existing = [c for c in self._marked_comments(issue, story, "dismiss-claim") if (c.marker or {}).get("kind") == "dismiss" and (c.marker or {}).get("target") == str(int(comment_id))]
+            find = lambda: [c for c in self._marked_comments(issue, story, "dismiss-claim") if (c.marker or {}).get("kind") == "dismiss" and (c.marker or {}).get("target") == str(int(comment_id))]  # noqa: E731
+            existing, posted, readable = find(), False, True
             if not existing:
-                body = f"{render_marker(**marker)}\nClaim marker {int(comment_id)} by `{target.author}` (run `{target.marker.get('run')}`) dismissed by the owner through run `{self.store.run_id}`: {reason}. It no longer blocks admission. Nothing else is implied."
-                self.store.journal(None, "foreign-claim-dismiss-intent", {"issue": issue, "target": int(comment_id), "marker": marker, "body": body, "reason": reason})  # write-ahead: the complete effect is journaled before it is attempted; a repeat adopts the marker
-                posted = self.transport.post_comment(issue, body)
-                existing = [c for c in self._marked_comments(issue, story, "dismiss-claim") if (c.marker or {}).get("kind") == "dismiss" and (c.marker or {}).get("target") == str(int(comment_id))] or [posted]
-            self.store.journal(None, "foreign-claim-dismissed", {"issue": issue, "target": int(comment_id), "target_author": target.author, "target_marker": target.marker, "reason": reason, "dismissal_comment_id": existing[0].comment_id, "posted": len(existing) == 1})
-            return {"issue": issue, "target": int(comment_id), "target_author": target.author, "target_marker": target.marker, "dismissal_comment_id": existing[0].comment_id, "reason": reason}
+                body = f"{render_marker(**marker)}\nClaim marker {int(comment_id)} by `{_plain(target.author)}` (run `{_plain(target.marker.get('run'))}`) dismissed by the owner through run `{self.store.run_id}`: `{_plain(reason)}`. It no longer blocks admission. Nothing else is implied."
+                self.store.journal(None, "foreign-claim-dismiss-intent", {"issue": issue, "target": int(comment_id), "marker": marker, "body": body, "reason": reason, "evidence": evidence})  # write-ahead: the complete effect is journaled before it is attempted; a repeat adopts the marker
+                existing = find()  # landed between the first read and the intent: adopted, nothing posted
+                if not existing:
+                    existing, posted = [self.transport.post_comment(issue, body)], True
+                    readable = bool(find())  # read-after-write lag is reported, never hidden
+            self.store.journal(None, "foreign-claim-dismissed", {"issue": issue, "target": int(comment_id), "target_author": target.author, "target_marker": target.marker, "reason": reason, "dismissal_comment_id": existing[0].comment_id, "posted": posted, "readable": readable, "evidence": evidence})
+            return {"issue": issue, "target": int(comment_id), "target_author": target.author, "target_marker": target.marker, "dismissal_comment_id": existing[0].comment_id, "reason": reason, "evidence": evidence}
+
+    def _dismissal_evidence(self, target, story: str) -> dict:
+        """What is known about the coordinator behind a claim marker before it is dismissed: a run
+        of that id under this state directory (its ``run.json``, whether the story is still owned
+        there and its last journal activity), the claim's age against the policy's run wall clock
+        (the longest a run may advance), and whether it may therefore still be live."""
+        run_id, local = str(target.marker.get("run") or ""), None
+        try:
+            root = self.store.state_dir / run_id
+            if run_id and RUN_ID_RE.match(run_id) and "--" not in run_id and (root / "run.json").is_file():
+                raw = json.loads((root / "stories" / f"{story}.json").read_text(encoding="utf-8")) if (root / "stories" / f"{story}.json").is_file() else None
+                phase = raw.get("phase") if isinstance(raw, dict) else ("unreadable" if (root / "stories" / f"{story}.json").is_file() else None)
+                journal = root / "journal.jsonl"
+                local = {"run_id": run_id, "phase": phase, "owns_story": phase is not None and (phase in ACTIVE_PHASES or phase == "conflict" or phase == "unreadable"),  # the same ownership as ``other_runs_with_active_stories``
+                         "last_activity": datetime.fromtimestamp(journal.stat().st_mtime, tz=timezone.utc).isoformat().replace("+00:00", "Z") if journal.is_file() else None}
+        except (OSError, ValueError) as exc:
+            local = {"run_id": run_id, "phase": "unreadable", "owns_story": True, "error": str(exc)}  # an unreadable local run is live (fail closed)
+        problems: list[str] = []
+        created, now = _parse_time(target.created_at, "created_at", problems), _parse_time(self._at(), "now", problems)
+        updated = _parse_time(target.updated_at, "updated_at", problems) if target.updated_at is not None else None
+        age = int((now - max(t for t in (created, updated) if t is not None)).total_seconds() // 60) if not problems else None  # an edited claim is as young as its edit (fail closed: possibly live)
+        wall = int(self.policy.max_wall_clock_minutes)
+        return {"local_run": local, "claim_age_minutes": age, "wall_clock_minutes": wall, "possibly_live": age is None or age <= wall, "target_updated_at": target.updated_at}
+
+    def _claim_released(self, claim: dict) -> bool:
+        """Whether a later release, block or proposal by the same author, run and instance as this
+        claim is visible now on its issue (a fresh read): the only evidence that its holder gave
+        the story up."""
+        issue = next((e.number for e in self._fresh_snapshot().entries if e.stable_id == claim.get("on_story")), None) if claim.get("on_story") else None
+        if issue is None:
+            return False
+        key = (claim.get("run", ""), claim.get("inst"), claim.get("author"))
+        return any(c.marker.get("kind") in ("release", "block", "proposal") and (c.marker.get("run", ""), c.marker.get("inst"), c.author) == key and c.comment_id > int(claim["comment_id"])
+                   for c in self._marked_comments(issue, claim.get("on_story"), "claim race re-read", trusted_only=False))
 
     def _claims_elsewhere(self, snapshot: Snapshot, story: str) -> dict[str, list[dict]]:
         """Active claims by any other coordinator on any other allowlisted story: the GitHub-side
@@ -943,7 +1033,8 @@ class Coordinator:
         """Two coordinators can both see no foreign claim and both post. After our claim landed
         the claims are read again, on this story **and on every other allowlisted story** (the
         single-active-story rule across machines is check-then-post without this), and the
-        earliest claim wins (creation time, then comment id). A later claimant cancels itself in
+        earliest claim wins (``_claim_order``: a foreign claim from its creation, ours from its
+        last edit, then comment id; a lost earlier claim counts until its release is visible). A later claimant cancels itself in
         the same operation: its unlaunched authorization is resolved structurally (``reserve``
         never reported ``reserved``, so no task exists), the release it owes is posted and the
         call refuses ``claim-race-lost`` (same story) or ``claim-active-elsewhere`` (another story).
@@ -961,20 +1052,32 @@ class Coordinator:
             self.store.save_story(state)
             self.store.journal(state.story, "claim-unverifiable", {"comment_id": claim.comment_id})
             raise Conflict(f"claim comment {claim.comment_id} of {state.story} is no longer readable after posting; the story is in conflict, nothing may be launched for it", code="claim-unverifiable", comment_id=claim.comment_id)
-        foreign = [{**m, "on_story": state.story} for m in self._active_foreign_claims(issue, state.story, "claim race")]
-        for sid, claims in self._claims_elsewhere(snapshot or self._fresh_snapshot(), state.story).items():
-            foreign += [{**m, "on_story": sid} for m in claims]
-        earlier = sorted((m for m in foreign if (m["created_at"], m["comment_id"]) < (mine.created_at, mine.comment_id)), key=lambda m: (m["created_at"], m["comment_id"]))
+        snapshot = snapshot or self._fresh_snapshot()
+        ours = _claim_order({"comment_id": mine.comment_id, "created_at": mine.created_at, "updated_at": mine.updated_at}, ours=True)
+
+        def earlier_claims() -> tuple[list[dict], int]:
+            found = [{**m, "on_story": state.story} for m in self._active_foreign_claims(issue, state.story, "claim race")]
+            for sid, claims in self._claims_elsewhere(snapshot, state.story).items():
+                found += [{**m, "on_story": sid} for m in claims]
+            return sorted((m for m in found if _claim_order(m) < ours), key=_claim_order), len(found)
+
+        earlier, seen = earlier_claims()
+        if earlier and all(self._claim_released(m) for m in earlier):
+            # a holder that lost its own race posted its release in the meantime: the win is taken only on the visible
+            # release of every earlier claim (a claim that merely vanished from a read still counts: the first read stands)
+            self.store.journal(state.story, "claim-race-reread", {"ours": {"comment_id": mine.comment_id, "created_at": mine.created_at}, "released": [m["comment_id"] for m in earlier], "effect": "every earlier claim was released before we cancelled"})
+            earlier = []
         if not earlier:
             state.claim["race_settled"] = True
             self.store.save_story(state)
-            self.store.journal(state.story, "claim-race-settled", {"ours": {"comment_id": mine.comment_id, "created_at": mine.created_at}, "later_claims": len(foreign)})
+            self.store.journal(state.story, "claim-race-settled", {"ours": {"comment_id": mine.comment_id, "created_at": mine.created_at}, "later_claims": seen})
             return
         winner = earlier[0]
         same_story = winner["on_story"] == state.story
         code = "claim-race-lost" if same_story else "claim-active-elsewhere"
-        reason = (f"lost the claim race for {state.story} to run {winner.get('run')} (comment {winner['comment_id']} at {winner['created_at']} precedes ours, {mine.comment_id} at {mine.created_at})" if same_story
-                  else f"another coordinator's claim on {winner['on_story']} (run {winner.get('run')}, comment {winner['comment_id']} at {winner['created_at']}) precedes our claim on {state.story} ({mine.comment_id} at {mine.created_at}); one active story at a time")
+        when = f"{winner['created_at']}" + (f", edited {winner['updated_at']} (a claim counts from its creation; an edited one is cleared by the owner with dismiss-claim)" if _edited(winner) else "")
+        reason = (f"lost the claim race for {state.story} to run {winner.get('run')} (comment {winner['comment_id']} at {when} precedes ours, {mine.comment_id} at {mine.created_at})" if same_story
+                  else f"another coordinator's claim on {winner['on_story']} (run {winner.get('run')}, comment {winner['comment_id']} at {when}) precedes our claim on {state.story} ({mine.comment_id} at {mine.created_at}); one active story at a time")
         resolved = []
         auth = state.unresolved_authorization()
         if auth is not None and auth["purpose"] == "implementation":
@@ -1574,6 +1677,11 @@ class Coordinator:
             # attempt would be allowed. A stopped run (cancelled or past its wall clock) advances
             # nothing (cancel-run finishes the story).
             claim = state.intent("claim")
+            if claim is not None and state.phase == "claim-incomplete" and state.claim and "race_settled" not in state.claim:
+                # state written before the flag existed: a reservation that never reported ``reserved`` has never had its race settled
+                state.claim["race_settled"] = False
+                self.store.save_story(state)
+                self.store.journal(story, "claim-race-flag-added", {"effect": "legacy split reservation is settled before it is reported reserved"})
             if claim is not None and claim.status == "done" and state.phase == "claim-incomplete":
                 if stop:
                     self._withhold_reconciliation(state, claim, STOP_REASONS[stop])
@@ -1586,13 +1694,22 @@ class Coordinator:
                     self._settle_claim_race(state, claim, state.issue, fresh)
             if claim is not None and claim.status == "done" and state.phase == "conflict" and (state.blocked or {}).get("race_unsettled") and self._claim_unsettled(state):
                 # our claim was not readable back when the race was first checked (read-after-write lag): if it is visible now, the
-                # conflict was never a conflict; restore the phase it came from and settle the race (a loss still cancels and releases)
+                # conflict was never a conflict; behind the same revision gate as a fresh claim, restore the reservation and settle
+                # the race (changed revisions cancel and release, a lost race cancels and releases)
+                from_phase = (state.blocked or {}).get("from_phase")
                 if stop:
                     self._withhold_reconciliation(state, claim, STOP_REASONS[stop] + " (claim unverifiable; cancel-run finishes the story)")
+                elif from_phase != "reserved":
+                    self._withhold_reconciliation(state, claim, f"an unverifiable claim is restored only to reserved, not to {from_phase!r}; cancel finishes the story")
                 elif any(c.comment_id == claim.comment_id for c in self._marked_comments(state.issue, state.story, "claim re-verify")):
-                    state.phase, state.blocked = (state.blocked or {}).get("from_phase") or "reserved", None
+                    fresh, current = self._current_revisions(story)
+                    changed = revision_diff(claim.preconditions.get("revisions", state.revisions), current)
+                    if changed:
+                        return self._cancel_stale_claim(state, claim, changed)
+                    state.phase, state.blocked = "reserved", None
                     self.store.save_story(state)
                     self.store.journal(story, "claim-reverified", {"comment_id": claim.comment_id, "phase": state.phase})
+                    self._settle_claim_race(state, claim, state.issue, fresh)
                 else:
                     self.store.journal(story, "claim-still-unverifiable", {"comment_id": claim.comment_id})
             if claim is not None and claim.status == "done" and state.phase == "reserved" and self._claim_unsettled(state):
@@ -1634,6 +1751,10 @@ class Coordinator:
                 pending_advancing = []
             for intent in pending_advancing:
                 if intent.kind == "claim":
+                    if state.claim and "race_settled" not in state.claim:  # legacy pending reservation: settled below before it is reported reserved
+                        state.claim["race_settled"] = False
+                        self.store.save_story(state)
+                        self.store.journal(story, "claim-race-flag-added", {"effect": "legacy pending reservation is settled before it is reported reserved"})
                     fresh, current = self._current_revisions(story)
                     changed = revision_diff(intent.preconditions.get("revisions", state.revisions), current)
                     if changed:

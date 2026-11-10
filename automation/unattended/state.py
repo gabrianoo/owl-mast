@@ -517,9 +517,9 @@ class Store:
                     problems = activation.problems(policy, self.run_id, now)
                     if problems:
                         raise Refused(f"run {self.run_id}: activation {activation.id} does not currently authorize this run: " + "; ".join(m for _, m in problems), code=Activation.stop_code(problems), problems=[m for _, m in problems])
-                    if activation.repository != repo or not self.digest_bound(activation.policy_digest, policy):
-                        raise Refused(f"run {self.run_id}: activation {activation.id} binds {activation.repository} / {activation.policy_digest[:12]}, not {repo} / {policy_digest[:12]}", code="activation-mismatch")
-                    policy_digest = activation.policy_digest  # the run binds the digest its activation names (canonical, or the legacy raw-bytes digest of exactly these bytes)
+                    if activation.repository != repo or activation.policy_digest != policy.digest:
+                        raise Refused(f"run {self.run_id}: activation {activation.id} binds {activation.repository} / {activation.policy_digest[:12]}, not {repo} / {policy.digest[:12]}", code="activation-mismatch")
+                    policy_digest = policy.digest  # a new live run binds the canonical digest (the raw-bytes digest is recognized only on runs that already carry it)
                     binding = validate_binding(activation.binding(validated_at=now), self.run_id, repo, policy_digest)
                 targets = {name: asdict(getattr(policy, name)) for name in ("implementer", "reviewer")} if policy is not None else None
                 run = RunState(self.run_id, repo, policy_digest, utcnow(), environment=environment, activation=binding, instance=uuid.uuid4().hex[:16], targets=targets)

@@ -11,7 +11,7 @@ reviewable, journaled decision that names what was approved, so that the shipped
 the committed candidate and copied examples can never dispatch by accident.
 
 An activation is current only when all of these hold at the moment of the operation:
-``approved = true``; it names this repository, the canonical digest of the policy in use (``Policy.digest``: the parsed content, so comments and whitespace do not change it; an activation approved before the canonical digest existed may still name the raw-bytes digest of exactly these bytes),
+``approved = true``; it names this repository, the canonical digest of the policy in use (``Policy.digest``: the parsed content, so comments and whitespace do not change it; only a run that already exists bound to the legacy raw-bytes digest of exactly these bytes still accepts an activation naming that digest, never a new run),
 the ``live`` environment and the exact run id; its story scope, targets and budgets equal
 the policy's; ``issued_at <= now <= expires_at`` with a window of at most
 :data:`MAX_WINDOW_MINUTES`; and it cites the published lifecycle smoke and fresh review.
@@ -111,9 +111,12 @@ class Activation:
     def matches(self, binding: dict | None) -> bool:
         return isinstance(binding, dict) and (binding.get("id"), binding.get("digest")) == (self.id, self.digest)
 
-    def problems(self, policy: Policy, run_id: str | None, now: str) -> list[tuple[str, str]]:
+    def problems(self, policy: Policy, run_id: str | None, now: str, bound_digest: str | None = None) -> list[tuple[str, str]]:
         """Every reason this activation does not currently authorize ``run_id`` under
-        ``policy`` at ``now``, as ``(code, message)`` pairs; empty means current."""
+        ``policy`` at ``now``, as ``(code, message)`` pairs; empty means current. A new
+        activation must name the canonical digest of ``policy``; the legacy raw-bytes digest is
+        accepted only for a run that already exists and is bound to it (``bound_digest``, the
+        digest recorded in its ``run.json``), never for creating a run."""
         out: list[tuple[str, str]] = []
         if not self.approved:
             out.append(("activation-unapproved", "approved is false: the owner has not approved this activation (the committed candidate is never approved)"))
@@ -121,9 +124,10 @@ class Activation:
             out.append(("activation-invalid", f"binding.environment must be 'live', not {self.environment!r}"))
         if self.repository != policy.repo_slug:
             out.append(("activation-mismatch", f"binding.repository {self.repository!r} is not the policy repository {policy.repo_slug!r}"))
-        if self.policy_digest not in (policy.digest, getattr(policy, "raw_digest", None)):
-            # the canonical digest, or the legacy raw-bytes digest of exactly these bytes (an activation approved before the canonical digest existed)
-            out.append(("activation-mismatch", f"binding.policy_digest {self.policy_digest[:12]} is neither the canonical digest of the policy in use ({policy.digest[:12]}, see check-activation) nor the legacy raw-bytes digest of exactly these bytes ({str(getattr(policy, 'raw_digest', ''))[:12]}); the policy changed since approval or another policy file is in use"))
+        legacy = bound_digest is not None and self.policy_digest == bound_digest and bound_digest == getattr(policy, "raw_digest", None)  # an existing run bound to the raw-bytes digest of exactly these bytes
+        if self.policy_digest != policy.digest and not legacy:
+            hint = f" (the run is bound to {bound_digest[:12]})" if bound_digest and bound_digest != self.policy_digest else ""
+            out.append(("activation-mismatch", f"binding.policy_digest {self.policy_digest[:12]} is not the canonical digest of the policy in use ({policy.digest[:12]}, see check-activation){hint}; the policy changed since approval, another policy file is in use, or a new activation names the legacy raw-bytes digest (accepted only for a run that already exists under it)"))
         if run_id is not None and self.run_id != run_id:
             out.append(("activation-mismatch", f"binding.run_id {self.run_id!r} is not this run ({run_id!r}); an activation authorizes exactly one run"))
         if set(self.stories) != set(policy.allow):

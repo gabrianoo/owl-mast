@@ -166,21 +166,18 @@ class DismissClaimTests(unittest.TestCase):
 
 
 class LegacyDigestActivationTests(unittest.TestCase):
-    """Fix 3: an activation (and a live run) that names the raw-bytes digest of exactly these bytes is still current."""
+    """Fix 3: a live run that already exists bound to the raw-bytes digest of exactly these bytes still takes an activation naming it
+    (a new activation must name the canonical digest: ``test_pr115_fix_first_round3.RawDigestScopeTests``)."""
 
-    def test_raw_digest_activation_is_current_and_creates_a_run_bound_to_it(self):
+    def test_raw_digest_activation_is_current_only_for_a_run_bound_to_it(self):
         lh = LiveHarness()
         try:
             lh.path.write_text(activation_text(lh.h.policy, policy_digest=f'"{lh.h.policy.raw_digest}"'), encoding="utf-8")
             lh.activation = load_activation(lh.path)
-            self.assertEqual(lh.activation.problems(lh.h.policy, "run-live", lh.clock[0]), [])
-            c = lh.coordinator()
-            self.assertEqual(c.run.policy_digest, lh.h.policy.raw_digest)  # bound to the digest the activation names
-            self.assertIsNone(c.status()["stop"])
-            self.assertEqual(c.reserve(S, lh.h.snapshot, "c5d9d2e").phase, "reserved")  # advancing works: no activation-mismatch
-            self.assertEqual(events(lh.h, "policy-drift"), [])
+            self.assertEqual(lh.activation.problems(lh.h.policy, "run-live", lh.clock[0], bound_digest=lh.h.policy.raw_digest), [])
+            self.assertEqual(lh.activation.problems(lh.h.policy, "run-live", lh.clock[0])[0][0], "activation-mismatch")  # no existing run: a new activation names the canonical digest
             lh.path.write_text(activation_text(lh.h.policy, policy_digest='"' + "f" * 64 + '"'), encoding="utf-8")
-            self.assertEqual(load_activation(lh.path).problems(lh.h.policy, "run-live", lh.clock[0])[0][0], "activation-mismatch")
+            self.assertEqual(load_activation(lh.path).problems(lh.h.policy, "run-live", lh.clock[0], bound_digest="f" * 64)[0][0], "activation-mismatch")  # bound to a digest that is not this policy's
         finally:
             lh.close()
 
