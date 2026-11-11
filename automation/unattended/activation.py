@@ -414,11 +414,11 @@ def activation_use(digest: str, source_path: str) -> dict | None:
     except (OSError, ValueError):
         return {"unreadable": True}
     if not isinstance(used, dict):
-        return {"unreadable": True, "why": f"the record is a JSON {type(used).__name__}, not an object"}
+        return {"unreadable": True, "field": "record", "why": f"the record is a JSON {type(used).__name__}, not an object"}
     if "attempts" in used and not (isinstance(used["attempts"], list) and used["attempts"] and all(isinstance(a, dict) and "at" in a for a in used["attempts"])):
-        return {"unreadable": True, "why": "attempts is not a non-empty list of attempt records (objects with an at)"}  # only this tool writes the history: anything else is a damaged record, a use
+        return {"unreadable": True, "field": "attempts", "why": "attempts is not a non-empty list of attempt records (objects with an at)"}  # only this tool writes the history: anything else is a damaged record, a use
     if not isinstance(used.get("state_dir"), str):
-        return {"unreadable": True, "why": "state_dir is missing" if "state_dir" not in used else f"state_dir is not a string (it is {json.dumps(used['state_dir'])[:80]})"}  # every record names its state directory: without one it cannot be matched to a run
+        return {"unreadable": True, "field": "state_dir", "why": "state_dir is missing" if "state_dir" not in used else f"state_dir is not a string (it is {json.dumps(used['state_dir'])[:80]})"}  # every record names its state directory: without one it cannot be matched to a run
     return used
 
 
@@ -590,7 +590,7 @@ def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, r
             return ("unchanged", None)
         if used.get("unreadable"):
             why = used.get("why") or "the file cannot be read or is not JSON"
-            return ("error", {"type": "ledger-unreadable", "errno": None, "strerror": why, "message": f"the use ledger record of run {run_id} ({path}) is not a valid record: {why}; it cannot be confirmed, and a damaged record is a use: a later creation from this document refuses activation-used (inspect or restore that file)"})
+            return ("error", {"type": "ledger-unreadable", "errno": None, "strerror": used.get("field") or "unreadable", "message": f"the use ledger record of run {run_id} ({path}) is not a valid record: {why}; it cannot be confirmed, and a damaged record is a use: a later creation from this document refuses activation-used (inspect or restore that file)"})
         if used.get("state") not in ("pending", "aborted"):
             return ("unchanged", None)
         if _same_run_id_other_state_dir(used, state_dir, run_id):

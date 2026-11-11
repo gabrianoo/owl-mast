@@ -2,7 +2,7 @@
 title: 'PR #114 round 6: resolve review 5862675978'
 type: 'bugfix'
 created: '2026-11-11'
-status: 'in-progress'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: 'e9fbfade0882fc671e0c62af085016f5f51db0ae'
@@ -123,6 +123,35 @@ All work happens in the PR #114 worktree `/tmp/claude-1000/-mnt-c-Users-gabriano
 ## Spec Change Log
 
 ## Review Triage Log
+
+### Pass 1 (blind, edge-case, verification-gap)
+
+| # | Layer | Finding | Verdict | Evidence / route |
+|---|-------|---------|---------|------------------|
+| 1 | blind, edge | `state-dir-mismatch` / `ledger-unreadable` key on (type, None, None): a later advice change (dir gone, other field) is never journaled | medium | `_unconfirmed_key` drops the message; patch: discriminating `strerror` |
+| 2 | blind, edge | `run-json-exists` returned before the record is classified; note promises a confirmation that may not come | low | stat runs first in `abort_activation_use`; patch: classify first (direct reorder) |
+| 3 | edge | a committed record of another run reads `not-pending` ("another process changed it") | low | state checked before `_same_run`; patch with #2 |
+| 4 | blind | `abort_cause` copied into `attempts[-1]` uncapped | low | `record_activation_use` copies verbatim; patch: slice at the copy |
+| 5 | blind | `clock_stop.clearable` true while the clock is still behind the tolerance | medium | the clear refuses via `_stop_candidate`; patch: `wait_until` |
+| 6 | edge | policy drift: clearable true, the clear refuses (activation not current) | medium | `_refuse_unless_current`; patch: drift branch |
+| 7 | blind, edge, vg-other | not-clearable reason blames expires_at on a parse failure | low | `_clearable_clock_stop` returns False on parse problems; patch |
+| 8 | vg | cancelled and wall-clock-spent branches of `_clock_stop_report` untested | medium (gap) | pre-verified; patch: tests |
+| 9 | blind | `_clear_spent()` runs twice per status | false | memoized per operation (`_clear_spent_memo` under `_moment`) |
+| 10 | blind, edge | backup name fixed at the high-water mark → `backup-exists` for hours on retry | medium | stamp constant while clock behind; patch: add `observed_at` |
+| 11 | edge | durable clock stop (clear spent) still stamps with the regressed clock | medium | `under_clock_stop` only on the clearable path; patch |
+| 12 | blind | git in D state: `subprocess.run` waits unbounded after SIGKILL | low, rejected | real but rare; fix needs Popen handling beyond a direct correction |
+| 13 | blind | reverse scan `read_text` raises on a torn multibyte line | false | journal lines are `json.dumps` with `ensure_ascii=True`: ASCII only |
+| 14 | blind | SystemExit after the replace untested | low | patch: test |
+| 15 | blind | Js test pins unchanged behaviour | false | the thread asked for exactly that pin |
+| 16 | blind | `json.loads` patched process-wide in the scan test | low, rejected | test-only brittleness; no user or developer harm in everyday use |
+| 17 | blind | `_directory_exists` exception branch untested / TypeError dead | low, rejected | cosmetic; `os.path.isdir` does not raise for a str |
+| 18 | blind | `GIT_TIMEOUT_SECONDS` splits the regex comment | low | patch: move |
+| 19 | blind | `abort_note` PEP 8 spacing | low | patch |
+| 20 | blind | report/detail fields added to the refusal table; `ledger-unreadable` drops errno | low, rejected | the table already lists events (`journal-torn-line`); both unreadable causes need the same action |
+| 21 | edge | `_elapsed` ignores the `validated_at` fallback | false | `validated_at == started_at`, so the fallback adds 0 |
+| 22 | edge (low conf.) | later damage after a repair never re-journaled | false | a committing open journals `activation-use-confirmed`, which resets the set |
+
+Patches applied in b8bfb6b (implementer) plus one by the orchestrator: `ledger-unreadable` keys on the failing field (`field`), never on the bad value, so one damaged field is one journal line. Nothing deferred.
 
 ## Verification
 
