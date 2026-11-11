@@ -23,7 +23,7 @@ The foundation refuses every real-transport state command unconditionally (`live
 - AC5 Foreign run id, foreign repository, policy digest drift, scope drift, implementer/reviewer model drift, budget drift, non-live environment, over-long or inverted window, not-yet-valid and expired activations refuse at run start with the specific code, no calls, no run state. Policy drift after activation refuses the existing run (`run-binding-mismatch`) and a new one (`activation-mismatch`). (`test_foreign_scope_and_drift…`, `test_policy_drift…`)
 - AC6 After expiry every advancing operation refuses `activation-expired`; a late receipt binds for cleanup only; cancel with terminal evidence, record-task-terminal, resume (cleanup only), cancel-run work with the same or no activation and never advance; restart replays cleanup but abandons advancing intents. (`ExpiryAndCleanupTests`)
 - AC7 A changed or different activation refuses every operation including cleanup. (`test_changed_activation…`)
-- AC8 All previously qualified safeguards and the existing suite stay green: 324 tests (277 + 11 + 17 + 19), `./gradlew build --console=plain`, `scripts/verify-quality-gates.sh`. `.java-version`, backend, product specs and CI untouched.
+- AC8 All previously qualified safeguards and the existing suite stay green: 336 tests at `09dfc69` (277 + 11 + 17 + 19 + 12), `./gradlew build --console=plain`, `scripts/verify-quality-gates.sh`. `.java-version`, backend, product specs and CI untouched.
 - AC9 Preflight evidence is recorded with verified vs missing items and explicit blockers; no status, checkbox, Project or environment mutation.
 
 ## Code map

@@ -124,6 +124,7 @@ class CheckActivationWithoutRunIdTests(unittest.TestCase):
                 with redirect_stdout(buf):
                     code = cli.main(["--policy", str(Path(lh.h.tmpdir.name) / "policy.toml"), "--state-dir", str(lh.h.state_dir), "--activation", str(lh.path), "check-activation"])
                 out = json.loads(buf.getvalue())
-            self.assertEqual((code, out["run_id"], out["bound_digest"], out["policy_digest"], out["current"], out["problems"]), (0, None, None, lh.h.policy.digest, True, []))
+            # the digest is reported and no run is looked up; without a run id the document is current for nothing (PR #108 review: an activation authorizes exactly one run)
+            self.assertEqual((code, out["run_id"], out["bound_digest"], out["run_exists"], out["policy_digest"], out["current"], out["stop"]), (2, None, None, False, lh.h.policy.digest, False, "activation-invalid"))
         finally:
             lh.close()

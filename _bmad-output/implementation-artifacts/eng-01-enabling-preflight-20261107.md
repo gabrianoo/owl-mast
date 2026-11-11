@@ -2,13 +2,13 @@
 
 Companion to `spec-eng-01-enabling-preflight.md`. Everything below was read, never written: no status, checkbox, Project field, issue comment, cluster, service or credential was changed. Sanitized: no tokens, no private Notion content.
 
-**Status: activation target unspecified and unqualified. The enabling change was reviewed with changes requested at 96ad53a (R1–R6, repaired at aa80168), at aa80168 (F1–F3, repaired at ce0320e) and at ce0320e (FINAL-1/FINAL-2, owner-authorized repair round 3 applied); a fresh exact-commit review of the round-3 head is pending. Not eligible for activation approval, not approved, not enabled; activation itself stays blocked on the owner decisions listed at the end. OM-01.02 remains Backlog; PR #107 remains unmerged at f71167b.**
+**Status as of 2026-11-07 at f71167b (a point-in-time record; live merge and review state is on PR #107, PR #108 and #106, not here): activation target unspecified and unqualified. The enabling change was reviewed with changes requested at 96ad53a (R1–R6, repaired at aa80168), at aa80168 (F1–F3, repaired at ce0320e) and at ce0320e (FINAL-1/FINAL-2, owner-authorized repair round 3 applied); a fresh exact-commit review of the round-3 head is pending. Not eligible for activation approval, not approved, not enabled; activation itself stays blocked on the owner decisions listed at the end. OM-01.02 remains Backlog; PR #107 remains unmerged at f71167b.**
 
 ## Verified (read-only, this machine)
 
 | Item | Result |
 | --- | --- |
-| Baseline | worktree clean at `f71167bdaf0c8519cc71874af1167b4b66f9f3ee`; `origin/main` `c5d9d2e`; PR #107 OPEN, head f71167b, base `main`, no review decision |
+| Baseline (as of 2026-11-07) | worktree clean at `f71167bdaf0c8519cc71874af1167b4b66f9f3ee`; `origin/main` `c5d9d2e`; PR #107 OPEN, head f71167b, base `main`, no review decision; superseded since (PR #107 and PR #108 merged 2026-11-07) |
 | ENG-01 #106 | OPEN, label `engineering-automation` |
 | OM-01.02 #21 | OPEN, labels `story`, `scope:v1`; Project Status **Backlog** (candidate `plan` dry run: `awaiting-owner-acceptance`, "Ready requires owner acceptance"); `Depends on: OM-01.01` |
 | OM-01.01 #20 | CLOSED, reason `COMPLETED` (2026-11-06) — dependency satisfied |
@@ -26,7 +26,7 @@ Companion to `spec-eng-01-enabling-preflight.md`. Everything below was read, nev
 | Gate | State |
 | --- | --- |
 | Owner acceptance | OM-01.02 is Backlog; `Ready` is an owner Project action, not taken |
-| Enabling change | this PR: independently reviewed with changes requested at 96ad53a (R1-R6, repaired at aa80168), at aa80168 (F1-F3, repaired at ce0320e) and at ce0320e (FINAL-1/FINAL-2, owner-authorized round 3 applied); **fresh exact-commit review of the round-3 head pending; not approved, not merged**; PR #107 (f71167b) not merged |
+| Enabling change | this PR: independently reviewed with changes requested at 96ad53a (R1-R6, repaired at aa80168), at aa80168 (F1-F3, repaired at ce0320e) and at ce0320e (FINAL-1/FINAL-2, owner-authorized round 3 applied); **fresh exact-commit review of the round-3 head pending; not approved, not merged** (as of 2026-11-07; both PRs merged later that day, see the Baseline row); PR #107 (f71167b) not merged at that time |
 | Approved activation | none exists; the owner would write a private run-specific copy with `approved = true`, exact run id, sha256 of the exact policy file, ≤ 24 h window and the smoke/review references |
 | Kubernetes target (OM-01.02 AC1 "qualified Kubernetes/storage target") | **unspecified**: no cluster, context, namespace, storage class or node selection is recorded anywhere read; none was probed or chosen here |
 | Durable storage / persistent-volume ownership (T3) | unspecified; no evidence |
@@ -40,7 +40,9 @@ Companion to `spec-eng-01-enabling-preflight.md`. Everything below was read, nev
 ```sh
 P=automation/examples/first-run-om-01-02.toml; A=<private approved activation, outside the repo>; R=<run id>
 python3 -m automation.unattended --policy $P verify-mapping && python3 -m automation.unattended --policy $P probe
-python3 -m automation.unattended --policy $P --activation $A --run-id $R check-activation            # must print "current": true
+python3 -m automation.unattended --policy $P --activation $A --run-id $R check-activation            # must print "current": true and "can_create": true (the window must also cover the 240-minute budget; a document that already created a run is activation-used). On a run that exists, "current": true means its activation is still current
+python3 -m automation.unattended --policy $P --run-id $R status --read-only                           # monitoring of an existing run: no lock, no file created, no write; a would-be stop is reported, not recorded
+python3 -m automation.unattended --policy $P --activation $A --run-id $R clear-clock-regression --clearance <owner clearance.toml>   # owner action: clears a recorded clock-regression stop once the clock has caught up, once per run (never an expiry); the loop is never given a clearance
 U="python3 -m automation.unattended --policy $P --activation $A --live --run-id $R"
 $U reserve OM-01.02 --baseline <sha>        # then delegate_task (implementer), bind-receipt, record-head, run-checks, authorize-review, bind-receipt, record-review, propose-evidence
 # stop conditions: wall clock 240 min, 6 task authorizations, 2 repair rounds, activation expiry — all refuse advancement; then:

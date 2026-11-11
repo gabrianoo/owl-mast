@@ -415,16 +415,16 @@ class RawDigestScopeTests(unittest.TestCase):
             with mock.patch.object(cli, "utcnow", lambda: lh.clock[0]):
                 buf = io.StringIO()
                 with redirect_stdout(buf):
-                    code = cli.main(["--policy", str(Path(lh.h.tmpdir.name) / "policy.toml"), "--state-dir", str(lh.h.state_dir), "--run-id", "run-live", "--activation", str(raw_path), "check-activation"])
+                    code = cli.main(["--policy", str(Path(lh.h.tmpdir.name) / "policy.toml"), "--state-dir", str(lh.h.state_dir), "--run-id", "run-live", "--activation", str(raw_path), "check-activation", "--expect", "advance"])
                 self.assertEqual((code, json.loads(buf.getvalue())["bound_digest"]), (0, lh.h.policy.raw_digest))
                 buf = io.StringIO()
                 with redirect_stdout(buf):
-                    code = cli.main(["--policy", str(Path(lh.h.tmpdir.name) / "policy.toml"), "--state-dir", str(lh.h.state_dir), "--run-id", "run-new", "--activation", str(raw_path), "check-activation"])
+                    code = cli.main(["--policy", str(Path(lh.h.tmpdir.name) / "policy.toml"), "--state-dir", str(lh.h.state_dir), "--run-id", "run-new", "--activation", str(raw_path), "check-activation", "--expect", "create"])
                 self.assertEqual((code, json.loads(buf.getvalue())["current"]), (2, False))
                 run_json.write_text("{not json", encoding="utf-8")
                 buf = io.StringIO()
                 with redirect_stdout(buf):
-                    code = cli.main(["--policy", str(Path(lh.h.tmpdir.name) / "policy.toml"), "--state-dir", str(lh.h.state_dir), "--run-id", "run-live", "--activation", str(raw_path), "check-activation"])
+                    code = cli.main(["--policy", str(Path(lh.h.tmpdir.name) / "policy.toml"), "--state-dir", str(lh.h.state_dir), "--run-id", "run-live", "--activation", str(raw_path), "check-activation", "--expect", "advance"])
                 self.assertEqual(code, 2)
                 self.assertTrue(any("run.json is not readable JSON" in m for m in json.loads(buf.getvalue())["problems"]))  # a corrupt run is reported, never read as "no run"
         finally:

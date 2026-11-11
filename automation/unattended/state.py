@@ -34,7 +34,7 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .activation import Activation, refresh_activation, validate_binding, validate_high_water, validate_stop_record
+from .activation import Activation, _parse_time, abort_activation_use, confirm_activation_use, record_activation_use, refresh_activation, validate_binding, validate_high_water, validate_stop_record
 from .errors import Refused
 
 # A run id names a directory under the state dir and a marker value: one path segment, no
@@ -137,6 +137,22 @@ def atomic_write_text(path: Path, text: str) -> None:
             pass
         raise
     fsync_directory(path.parent)
+
+
+def abort_note(reason: str, run_id: str, state_dir) -> str:
+    """The note a failed creation carries when its use ledger record was not marked ``aborted``,
+    worded for the reason ``abort_activation_use`` returned: each cause needs its own advice, and
+    only an unmarked ``pending`` record of this run is burned."""
+    where = f"--run-id {run_id} --state-dir {os.path.realpath(state_dir)}"
+    notes = {
+        "run-json-exists": f"run.json exists: reopen the same run ({where}), the next open confirms the record; do not re-issue the activation",
+        "no-record": "the use ledger holds no record of this creation (it was removed); nothing was marked, and a retry writes a new record",
+        "unreadable": "the use ledger record of this document cannot be read or is not a valid record; it was left as it is, and a damaged record is a use: a retry refuses activation-used (inspect or restore that file, or re-issue the activation)",
+        "not-pending": "the use ledger record is no longer pending (another process changed it); it was left as it is, and a retry is judged on its state (check-activation reports it)",
+        "not-this-run": "the use ledger record names another run or state directory; it was left as it is, and this document creates nothing more (a retry refuses activation-used)",
+        "ledger-error": "the use ledger record could not be marked aborted (the ledger could not be written, or the run directory could not be examined); it stays pending and a retry refuses activation-used as an unconfirmed creation (re-issue the activation)",
+    }
+    return notes.get(reason, f"the use ledger record was not marked aborted ({reason!r}); a retry may refuse activation-used")
 
 
 class StoreBusy(Refused):
@@ -448,6 +464,8 @@ class Store:
                 problems.append(f"{key} must be a non-empty string")
         if raw["environment"] not in self.ENVIRONMENTS:
             problems.append(f"environment {raw['environment']!r} is not one of {list(self.ENVIRONMENTS)}")
+        if isinstance(raw["started_at"], str) and raw["started_at"].strip():
+            _parse_time(raw["started_at"], "started_at", problems)  # the wall-clock origin: a strict UTC time, or the record refuses instead of crashing in _elapsed
         for key in ("stories_claimed", "delegated_tasks", "repair_rounds"):
             if not isinstance(raw[key], int) or isinstance(raw[key], bool) or raw[key] < 0:
                 problems.append(f"{key} must be a non-negative integer")
@@ -499,30 +517,42 @@ class Store:
         digest existed are recognized, never rewritten)."""
         return recorded in (policy.digest, getattr(policy, "raw_digest", None))
 
-    def ensure_run(self, repo: str, policy_digest: str, environment: str, activation: Activation | None = None, policy=None, now: str | None = None) -> RunState:
-        """Create the run or validate its binding, under the store lock. A run belongs to exactly
-        one repository and transport environment (fixture or live); any other pairing is refused
-        before recovery or effects, so synthetic state can never drive production. A run is also
-        bound to the policy digest it was created under: reopening it under a policy whose bytes
-        changed is **policy drift**, journaled once here and reported by the coordinator as a run
-        stop (nothing is admitted or advanced; cleanup proceeds), never a silent rebind.
+    def ensure_run(self, repo: str, policy_digest: str, environment: str, activation: Activation | None = None, policy=None, now: str | None = None, owner: object = None, create: bool = True) -> RunState:
+        """Create the run or validate its binding, under the store lock (re-entrant for ``owner``,
+        the coordinator that already holds it). A run belongs to exactly one repository and
+        transport environment (fixture or live); any other pairing is refused before recovery or
+        effects, so synthetic state can never drive production. A run is also bound to the policy
+        digest it was created under: reopening it under a policy whose bytes changed is **policy
+        drift**, journaled once here and reported by the coordinator as a run stop (nothing is
+        admitted or advanced; cleanup proceeds), never a silent rebind.
 
         This is the only place a live run is created. It needs the loaded :class:`Activation`
         itself (never a dictionary), the :class:`Policy` in use and the current time, and it
         re-reads the activation source under the lock (a missing, changed or malformed source
         refuses: the loaded object is a cache, the file is the approval) and persists the binding
-        record only after ``Activation.problems`` of the fresh document is empty for exactly this
-        run id, policy and moment. Retained run artifacts (story checkpoints, a journal) without
-        run metadata are an incomplete restore: no new run is created around them and nothing is
-        written (``run-metadata-missing``). An existing live run's record is re-validated on every
-        call; a presented activation must be the one the run was created under."""
-        with self.locked():
+        record only after ``Activation.creation_problems`` of the fresh document is empty for exactly
+        this run id, policy and moment (current, and with a window that still covers the wall-clock
+        budget). The use of the document is recorded in the use ledger first (``record_activation_use``,
+        ``pending``; ``committed`` once ``run.json`` exists; ``aborted`` when ``save_run`` raised with
+        no ``run.json``, so only that same creation may be retried): one activation creates exactly
+        one run. A confirmation that cannot be written is journaled (``activation-use-unconfirmed``)
+        and retried by every later open; the record stays ``pending`` until then. With
+        ``create=False`` (every caller but an admitting one) a run that does not exist is refused
+        ``run-not-found`` and nothing is written: a report or a cleanup command never starts a run
+        or spends an approval. ``started_at`` is that same validated moment. Retained
+        run artifacts (story checkpoints, a journal) without run metadata are an incomplete restore:
+        no new run is created around them and nothing is written (``run-metadata-missing``). An
+        existing live run's record is re-validated on every call; a presented activation is re-read
+        from its source and must be the one the run was created under."""
+        with self.locked(owner):
             run = self.bound_run()
             created = run is None
             if run is None:
                 retained = self.retained_artifacts()
                 if retained:
                     raise Refused(f"run {self.run_id}: run.json is missing but {len(retained)} run artifact(s) are retained ({', '.join(retained[:4])}{'…' if len(retained) > 4 else ''}); refusing to create a new {environment} run around state of unknown provenance; restore the run metadata or recover by hand (nothing written)", code="run-metadata-missing", retained=retained)
+                if not create:
+                    raise Refused(f"run {self.run_id} does not exist under {self.state_dir}; only an admitting command (reserve) creates a run (nothing written)", code="run-not-found")
                 binding = None
                 if environment == "live":
                     if not isinstance(activation, Activation) or policy is None or now is None:
@@ -533,17 +563,32 @@ class Store:
                     activation = refresh_activation(activation, "run-start")
                     if activation is None:
                         raise Refused(f"run {self.run_id}: the activation source is gone; a live run is created only under a currently presented, approved activation (nothing written)", code="activation-required")
-                    problems = activation.problems(policy, self.run_id, now)
+                    problems = activation.creation_problems(policy, self.run_id, now, state_dir=self.state_dir)
                     if problems:
-                        raise Refused(f"run {self.run_id}: activation {activation.id} does not currently authorize this run: " + "; ".join(m for _, m in problems), code=Activation.stop_code(problems), problems=[m for _, m in problems])
+                        raise Refused(f"run {self.run_id}: activation {activation.id} does not currently authorize creating this run: " + "; ".join(m for _, m in problems), code=Activation.stop_code(problems), problems=[m for _, m in problems])
                     if activation.repository != repo or activation.policy_digest != policy.digest:
                         raise Refused(f"run {self.run_id}: activation {activation.id} binds {activation.repository} / {activation.policy_digest[:12]}, not {repo} / {policy.digest[:12]}", code="activation-mismatch")
                     policy_digest = policy.digest  # a new live run binds the canonical digest (the raw-bytes digest is recognized only on runs that already carry it)
                     binding = validate_binding(activation.binding(validated_at=now), self.run_id, repo, policy_digest)
-                targets = {name: asdict(getattr(policy, name)) for name in ("implementer", "reviewer")} if policy is not None else None
-                run = RunState(self.run_id, repo, policy_digest, utcnow(), environment=environment, activation=binding, instance=uuid.uuid4().hex[:16], targets=targets)
-                self.save_run(run)
+                    record_activation_use(activation, self.state_dir, self.run_id, now)  # one document, one run: refused (activation-used) before anything of this run is written; pending until run.json exists
+                try:  # from the ledger record on: any failure before run.json exists marks the creation aborted
+                    targets = {name: asdict(getattr(policy, name)) for name in ("implementer", "reviewer")} if policy is not None else None
+                    run = RunState(self.run_id, repo, policy_digest, now or utcnow(), environment=environment, activation=binding, instance=uuid.uuid4().hex[:16], targets=targets)
+                    self.save_run(run)
+                except BaseException as original:
+                    if binding is not None:
+                        try:
+                            reason = abort_activation_use(activation, self.state_dir, self.run_id, self.run_path, cause=original)  # known failed, no run.json: only this same creation may retry
+                            if reason != "aborted":
+                                original.add_note(abort_note(reason, self.run_id, self.state_dir))
+                        except BaseException as inner:  # noqa: BLE001 - nothing raised while marking may replace the creation's own error
+                            # not journaled: a journal line before run.json would be a retained artifact that refuses the retry
+                            original.add_note(f"marking the use ledger record aborted also failed ({type(inner).__name__}: {inner}); it stays pending and refuses as an unconfirmed creation")
+                    raise
+                outcome, unconfirmed = confirm_activation_use(binding, self.state_dir, self.run_id)  # run.json exists: the document has now created its one run
                 self.journal(None, "run-started", {"repo": repo, "policy_digest": policy_digest, "environment": environment, "activation": run.activation, "instance": run.instance})
+                if outcome == "error":  # only an error is journaled here: a creation that committed its record has nothing unconfirmed on record
+                    self._journal_unconfirmed(unconfirmed)
             elif run.repo != repo:
                 raise Refused(f"run {self.run_id} is bound to {run.repo}; refusing {repo}", code="run-binding-mismatch")
             elif run.environment != environment:
@@ -553,14 +598,73 @@ class Store:
                 last = next((e for e in reversed(self.read_journal()) if e.get("event") == "policy-drift"), None)
                 if not last or (last.get("detail") or {}).get("policy_digest") != policy_digest:
                     self.journal(None, "policy-drift", {"bound_digest": run.policy_digest, "policy_digest": policy_digest, "consequence": "advancing refuses policy-drift; cleanup proceeds under the recorded binding"})
+            if not created and environment == "live":
+                outcome, unconfirmed = confirm_activation_use(run.activation, self.state_dir, self.run_id)  # settles a creation that died between run.json and the ledger confirmation
+                if outcome == "committed":
+                    self._journal_confirmed()
+                elif outcome == "error":
+                    self._journal_unconfirmed(unconfirmed)
             if not created and environment == "live" and activation is not None:
                 if not isinstance(activation, Activation):
                     raise Refused(f"run {self.run_id}: an activation is presented as the loaded document, not as a dictionary", code="activation-invalid")
                 if not run.activation:
                     raise Refused(f"run {self.run_id} was never activated; activation {activation.id} cannot adopt it (a run is activated only at creation)", code="activation-required")
-                if not activation.matches(run.activation):
+                activation = refresh_activation(activation, "run-open")  # the file is the approval here too: a source edited or removed since it was loaded is not the presented document
+                if activation is not None and not activation.matches(run.activation):
                     raise Refused(f"run {self.run_id} was created under activation {run.activation.get('id')!r}; refusing activation {activation.id!r} (digest {activation.digest[:12]})", code="activation-mismatch")
             return run
+
+    @staticmethod
+    def _unconfirmed_key(detail: dict) -> tuple:
+        """The stable part of a confirmation failure: its type and errno (the refusal code of a
+        ``Refused``) and, for an ``OSError`` without an errno, its ``strerror``."""
+        errno = detail.get("errno")
+        return (detail.get("type"), errno, detail.get("strerror") if errno is None else None)
+
+    def _unconfirmed_since_confirmation(self) -> tuple[list[dict], set[tuple]]:
+        """The ``activation-use-unconfirmed`` lines since the last ``activation-use-confirmed``, in
+        journal order. Every open of a live run asks, so the journal is scanned backwards and the
+        scan stops at the first ``activation-use-confirmed`` line; only lines that contain
+        ``"activation-use-`` are parsed (a torn or foreign line is skipped). A permanent condition
+        (a moved state directory, an unwritable ledger) therefore costs one read of the file, which
+        :meth:`journal` already pays to count its lines, not a parse of every line."""
+        if not self.journal_path.exists():
+            return [], set()
+        lines: list[dict] = []
+        for raw in reversed(self.journal_path.read_text(encoding="utf-8").splitlines()):
+            if '"activation-use-' not in raw:
+                continue
+            try:
+                entry = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("event") == "activation-use-confirmed":
+                break
+            if entry.get("event") == "activation-use-unconfirmed":
+                lines.append(entry)
+        lines.reverse()
+        return lines, {self._unconfirmed_key(e.get("detail") or {}) for e in lines}
+
+    def _journal_unconfirmed(self, error: dict) -> None:
+        """The ledger record of this run's creation could not be marked ``committed``: it stays
+        ``pending``, so deleting the run directory now would leave an unconfirmed creation that
+        refuses every later creation from the document (``activation-used``), never one that
+        creates the run again. Journaled once per distinct :meth:`_unconfirmed_key` since the last
+        successful confirmation (the message names a random temporary file, so it differs on every
+        attempt; alternating causes add no line once each is on record); every later open retries."""
+        key = self._unconfirmed_key(error)
+        _, seen = self._unconfirmed_since_confirmation()
+        if key not in seen:
+            self.journal(None, "activation-use-unconfirmed", {"error": error.get("message"), "type": key[0], "errno": key[1], "strerror": error.get("strerror"), "consequence": "the use ledger record stays pending; every later open retries the confirmation; until then a deleted run directory refuses as an unconfirmed creation"})
+
+    def _journal_confirmed(self) -> None:
+        """A later open confirmed the record. Journaled (``activation-use-confirmed``) when an
+        unconfirmed line is on record, which also resets the set :meth:`_journal_unconfirmed` dedupes on."""
+        lines, _ = self._unconfirmed_since_confirmation()
+        if lines:
+            self.journal(None, "activation-use-confirmed", {"consequence": "the use ledger record is committed; the earlier activation-use-unconfirmed lines are settled"})
 
     # -- stories -------------------------------------------------------------------------
     def story_path(self, story: str) -> Path:

@@ -165,7 +165,9 @@ def _target(raw, name: str, problems: list[str]) -> Target | None:
         problems.append(f"targets.{name}.options must name at least one option (e.g. effort)")
         options = {}
     elif not all(isinstance(k, str) and isinstance(v, str) and v.strip() for k, v in options.items()):
-        problems.append(f"targets.{name}.options values must be strings (no coercion of numbers, booleans or tables)")
+        # the same rule as the activation loader: no coercion of numbers, booleans or tables, so the
+        # two documents compare option values under one typing rule
+        problems.append(f"targets.{name}.options must be a table of non-empty string values (no coercion of numbers, booleans or tables: write timeoutMs = \"600000\", not 600000)")
         options = {k: v for k, v in options.items() if isinstance(k, str) and isinstance(v, str)}
     isolation = raw.get("isolation", "")
     if not isinstance(isolation, str):
