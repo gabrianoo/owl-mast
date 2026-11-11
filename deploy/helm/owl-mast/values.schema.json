@@ -11,7 +11,7 @@
       "required": ["repository"],
       "properties": {
         "repository": {"type": "string", "minLength": 1},
-        "tag": {"type": "string"},
+        "tag": {"type": "string", "pattern": "^$|^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$"},
         "digest": {"type": "string", "pattern": "^$|^sha256:[a-f0-9]{64}$"},
         "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
       }
@@ -63,10 +63,18 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["periodSeconds", "failureThreshold"],
-      "properties": {"periodSeconds": {"type": "integer", "minimum": 1}, "failureThreshold": {"type": "integer", "minimum": 1}}
+      "properties": {
+        "periodSeconds": {"type": "integer", "minimum": 1},
+        "failureThreshold": {"type": "integer", "minimum": 1},
+        "timeoutSeconds": {"type": "integer", "minimum": 1}
+      }
     },
     "secretName": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"},
-    "sslMode": {"type": "string", "enum": ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]},
+    "sslMode": {
+      "type": "string",
+      "enum": ["disable", "allow", "prefer", "require"],
+      "description": "verify-ca and verify-full are not accepted until the chart mounts a CA trust (deferred, docs/installation.md): require encrypts the connection but does not authenticate the server."
+    },
     "dnsHost": {
       "type": "string",
       "maxLength": 253,
@@ -77,7 +85,8 @@
       "type": "string",
       "maxLength": 253,
       "pattern": "^$|^(\\*\\.)?[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$",
-      "description": "Lowercase DNS name, each label at most 63 characters, optional leading wildcard label."
+      "not": {"pattern": "^[0-9]+(\\.[0-9]+){3}$"},
+      "description": "Lowercase DNS name, each label at most 63 characters, optional leading wildcard label. Not an IP address: the API server rejects one as an Ingress host."
     },
     "annotations": {"type": "object", "additionalProperties": {"type": "string"}},
     "labels": {
@@ -123,9 +132,8 @@
         "resources": {"$ref": "#/$defs/resources"},
         "javaToolOptions": {
           "type": "string",
-          "pattern": "^\\s*(-(XX:[+-][A-Za-z0-9]+|XX:[A-Za-z0-9]+=[A-Za-z0-9.%]+|Xm[sxn][0-9]+[kKmMgG]?|Xss[0-9]+[kKmMgG]?)(\\s+|$))*$",
-          "not": {"pattern": "-XX:(VMOptionsFile|Flags|OnError|OnOutOfMemoryError)="},
-          "description": "JVM memory and tuning flags only (-XX:+Flag, -XX:-Flag, -XX:Name=value, -Xms/-Xmx/-Xmn/-Xss). System properties (-D), agents, argument files and -XX file/hook options are refused: they would override the chart-validated configuration."
+          "pattern": "^\\s*(-(Xm[sxn][0-9]+[kKmMgG]?|Xss[0-9]+[kKmMgG]?|XX:(MaxRAMPercentage|InitialRAMPercentage|MinRAMPercentage|MaxRAM|MaxMetaspaceSize|MetaspaceSize|MaxDirectMemorySize|ReservedCodeCacheSize|ActiveProcessorCount|MaxHeapFreeRatio|MinHeapFreeRatio|MaxGCPauseMillis|G1HeapRegionSize|ParallelGCThreads|ConcGCThreads|InitiatingHeapOccupancyPercent|SoftMaxHeapSize|MaxNewSize|NewSize|NewRatio|SurvivorRatio|TieredStopAtLevel)=[0-9]+(\\.[0-9]+)?[kKmMgG]?|XX:[+-](UseG1GC|UseZGC|UseSerialGC|UseParallelGC|UseShenandoahGC|UseContainerSupport|UseStringDeduplication|AlwaysPreTouch|ExitOnOutOfMemoryError|UseCompressedOops|UseCompressedClassPointers|TieredCompilation|DisableExplicitGC|UseNUMA))(\\s+|$))*$",
+          "description": "A named allow-list of JVM memory and tuning options (-Xms/-Xmx/-Xmn/-Xss and the -XX options listed in values.yaml). System properties (-D), agents, argument files and every other -XX option (file-loading, hook and attach options) are refused: they would override or bypass the chart-validated configuration."
         },
         "probes": {
           "type": "object",
@@ -134,7 +142,15 @@
           "properties": {
             "startup": {"$ref": "#/$defs/httpProbe"},
             "liveness": {"$ref": "#/$defs/httpProbe"},
-            "readiness": {"$ref": "#/$defs/httpProbe"}
+            "readiness": {
+              "allOf": [
+                {"$ref": "#/$defs/httpProbe"},
+                {
+                  "properties": {"periodSeconds": {"minimum": 6}},
+                  "description": "Greater than 5 s, the interval for which the backend caches its identity readiness result."
+                }
+              ]
+            }
           }
         },
         "extraEnv": {
@@ -178,7 +194,7 @@
         "probes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["liveness", "readiness"],
+          "required": ["readiness"],
           "properties": {"liveness": {"$ref": "#/$defs/httpProbe"}, "readiness": {"$ref": "#/$defs/httpProbe"}}
         }
       }
@@ -327,10 +343,14 @@
         "keycloak": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["image", "bootstrapExistingSecret", "bootstrapAdmin", "importRealm", "database", "service", "resources", "probes"],
+          "required": ["image", "bootstrapExistingSecret", "importRealm", "database", "service", "resources", "probes"],
           "properties": {
             "image": {"$ref": "#/$defs/pinnedImage"},
-            "bootstrapExistingSecret": {"$ref": "#/$defs/secretName"},
+            "bootstrapExistingSecret": {
+              "type": "string",
+              "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+              "description": "Required while bootstrapAdmin.enabled is true (the templates refuse an empty value then); may be empty once the bootstrap admin is retired."
+            },
             "bootstrapAdmin": {
               "type": "object",
               "additionalProperties": false,

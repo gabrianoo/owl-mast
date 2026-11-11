@@ -6,8 +6,10 @@
 
 nameOverride: ""
 fullnameOverride: ""
-# Extra labels applied to every rendered resource, including retained PersistentVolumeClaims. Keys under
-# app.kubernetes.io/ and helm.sh/ are reserved for the chart (selectors) and are refused.
+# Extra labels applied to every rendered resource, including retained PersistentVolumeClaims, and to the
+# backend, Keycloak, frontend and provisioning pods: editing them restarts those pods. The PostgreSQL pod
+# template does not carry them, so an edit never restarts the database. Keys under app.kubernetes.io/ and
+# helm.sh/ are reserved for the chart (selectors) and are refused.
 commonLabels: {}
 
 backend:
@@ -30,9 +32,18 @@ backend:
     limits:
       cpu: "1"
       memory: 1Gi
-  # JVM memory and tuning flags only: -XX:+Flag, -XX:-Flag, -XX:Name=value, -Xms/-Xmx/-Xmn/-Xss. System
-  # properties (-D...), agents (-javaagent, -agentlib, -agentpath), argument files (@file) and the -XX
-  # file/hook options are refused: they would override the validated issuer and database configuration.
+  # A named allow-list of JVM memory and tuning options, separated by whitespace:
+  #   -Xms/-Xmx/-Xmn/-Xss<size>
+  #   -XX:<Name>=<number, optional k/m/g> for MaxRAMPercentage, InitialRAMPercentage, MinRAMPercentage, MaxRAM,
+  #     MaxMetaspaceSize, MetaspaceSize, MaxDirectMemorySize, ReservedCodeCacheSize, ActiveProcessorCount,
+  #     MaxHeapFreeRatio, MinHeapFreeRatio, MaxGCPauseMillis, G1HeapRegionSize, ParallelGCThreads,
+  #     ConcGCThreads, InitiatingHeapOccupancyPercent, SoftMaxHeapSize, MaxNewSize, NewSize, NewRatio,
+  #     SurvivorRatio, TieredStopAtLevel
+  #   -XX:+<Flag> / -XX:-<Flag> for UseG1GC, UseZGC, UseSerialGC, UseParallelGC, UseShenandoahGC,
+  #     UseContainerSupport, UseStringDeduplication, AlwaysPreTouch, ExitOnOutOfMemoryError, UseCompressedOops,
+  #     UseCompressedClassPointers, TieredCompilation, DisableExplicitGC, UseNUMA
+  # Everything else is refused: system properties (-D...), agents, argument files (@file) and every other
+  # -XX option (file-loading, hook and attach options) would override or bypass the validated configuration.
   javaToolOptions: "-XX:MaxRAMPercentage=75"
   probes:
     startup:
@@ -45,14 +56,16 @@ backend:
       failureThreshold: 3
     readiness:
       path: /actuator/health/readiness
+      # Must be greater than 5: the backend caches its identity readiness result for 5 s, and a shorter
+      # period would let consecutive probes read one cached result (refused at render).
       periodSeconds: 10
       failureThreshold: 3
       # Longer than the backend's 3 s identity-discovery timeout, so a slow issuer is reported by the
       # readiness indicator's own reason instead of a kubelet probe timeout (the Kubernetes default is 1 s).
       timeoutSeconds: 5
   # Additional plain environment variables (name/value). Never put credentials here. Names that would
-  # override the validated configuration (OWLMAST_*, SPRING_*, MANAGEMENT_*, SERVER_*, JVM option
-  # variables) are refused by the schema.
+  # override the validated configuration (OWLMAST_*, SPRING_*, MANAGEMENT_*, SERVER_*, LOADER_*, JVM option
+  # and loader variables) and credential-like names are refused, by the schema and by the templates.
   extraEnv: []
 
 # Independent frontend artifact (AD-14). The shell image is delivered by OM-01.04; these values only
@@ -137,7 +150,7 @@ database:
     host: ""
     port: 5432
     # require (applied to R2DBC and JDBC URLs): encrypts the connection but does not authenticate the
-    # server. verify-ca | verify-full are refused at render until the chart mounts a CA trust (deferred).
+    # server. verify-ca | verify-full are not accepted until the chart mounts a CA trust (deferred).
     # disable | allow | prefer can fall back to plaintext and are refused unless allowInsecureTransport
     # is true.
     sslMode: require
@@ -183,16 +196,22 @@ postgresql:
     runAsUser: 999
     runAsGroup: 999
     fsGroup: 999
+  # Exec probes: timeoutSeconds is enforced by the kubelet (its default is 1 s, too short for psql on a
+  # loaded or CPU-limited node, which would flap the Service endpoints). Readiness covers the application
+  # database only; Keycloak's database is Keycloak's own concern.
   probes:
     startup:
       periodSeconds: 5
       failureThreshold: 36
+      timeoutSeconds: 5
     liveness:
       periodSeconds: 15
       failureThreshold: 3
+      timeoutSeconds: 5
     readiness:
       periodSeconds: 5
       failureThreshold: 3
+      timeoutSeconds: 5
 
 # Identity provider. There is no value that disables authentication: `bundled: false` requires
 # an external OpenID Connect issuer whose discovery document the backend verifies at readiness.
@@ -201,7 +220,8 @@ identity:
   # Realm used by the bundled issuer URL and the synthetic import. Browser realm/client policy is OM-02.01.
   realm: owl-mast
   external:
-    # https:// URL with a host, no query or fragment.
+    # https:// URL with a host, no query or fragment. The host is a DNS name whose last label starts with a
+    # letter, a single label, or an IPv4 address (what the backend's URI parser accepts; no IPv6 literal).
     issuerUri: ""
     # Accept a plaintext http:// issuer (disposable local fixtures only): discovery and signing keys
     # then travel unauthenticated.
@@ -212,11 +232,14 @@ identity:
       tag: "26.8.2"
       digest: sha256:3879c623248408de29a5303178b5816c77e8dfef3890c361f8c0bbeaa979ba3b
       pullPolicy: IfNotPresent
-    # Existing Secret with keys `username` and `password` for the temporary bootstrap admin.
+    # Existing Secret with keys `username` and `password` for the temporary bootstrap admin. Required while
+    # bootstrapAdmin.enabled is true; may be emptied once the bootstrap admin is retired.
     bootstrapExistingSecret: owl-mast-keycloak-bootstrap
     # The bootstrap admin is injected into the Keycloak pod while enabled. After creating a permanent
     # admin and deleting the temporary one (docs/installation.md), set enabled=false: the pod then no
-    # longer references the Secret, which can be deleted.
+    # longer references the Secret, which can be deleted. enabled=false on a FRESH install is an explicit
+    # choice that leaves Keycloak without any administrator: it fits only a reinstall on a retained volume
+    # or an external Keycloak database that already holds a permanent admin (NOTES warns on install).
     bootstrapAdmin:
       enabled: true
     # Import a minimal synthetic realm named `identity.realm` on start (fixture only).
@@ -226,7 +249,8 @@ identity:
     realmManagedByOperator: false
     # Trust X-Forwarded-* / Forwarded headers ("xforwarded" | "forwarded"). Leave empty unless a trusted
     # proxy that overwrites these headers is the only path to Keycloak (the OM-02.01 public-origin gate).
-    # Rendering then requires networkPolicy.enabled=true and networkPolicy.keycloak.extraFrom naming the proxy.
+    # Rendering then requires networkPolicy.enabled=true and networkPolicy.keycloak.extraFrom naming the proxy:
+    # every entry must select it (non-empty matchLabels or matchExpressions; an ipBlock narrower than /0).
     proxyHeaders: ""
     database:
       name: keycloak

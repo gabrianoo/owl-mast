@@ -100,9 +100,9 @@ spec:
               port: http
             periodSeconds: {{ .Values.backend.probes.readiness.periodSeconds }}
             failureThreshold: {{ .Values.backend.probes.readiness.failureThreshold }}
-            {{- with .Values.backend.probes.readiness.timeoutSeconds }}
-            timeoutSeconds: {{ . }}
-            {{- end }}
+            # Defaulted here as well: a release upgraded with --reuse-values carries no timeoutSeconds, and the
+            # kubelet default of 1 s is shorter than the backend's identity-discovery timeout.
+            timeoutSeconds: {{ dig "timeoutSeconds" 5 .Values.backend.probes.readiness }}
           resources:
             {{- toYaml .Values.backend.resources | nindent 12 }}
           volumeMounts:

@@ -174,6 +174,8 @@ fi
 if [[ "$args" == *" create secret generic "* ]]; then
   name="$(sed -E 's/.* create secret generic ([^ ]+).*/\1/' <<<"$args")"
   if [[ "$args" == *"--dry-run=client"* ]]; then  # built client-side only: nothing reaches the stub world
+    # a value fed on stdin is counted, never stored: the test checks that the password arrived there and not in argv
+    if [[ "$args" == *"--from-file=password=/dev/stdin"* ]]; then printf '%s %s\n' "$name" "$(wc -c | tr -d ' ')" >> "$STUB_CALLS.stdin"; fi
     printf '{"apiVersion":"v1","kind":"Secret","type":"Opaque","metadata":{"name":"%s"},"data":{"username":"dXNlcg==","password":"%s"}}\n' "$name" "$STUB_SENTINEL"; exit 0
   fi
   # a bare create leaves an object WITHOUT the ownership label (what a later run refuses as foreign)
@@ -625,6 +627,27 @@ class ReviewFindingsTests(unittest.TestCase):
                 self.assertEqual([c for c in h.calls.read_text().splitlines() if " label " in c], [])
             finally:
                 h.close()
+
+    def test_generated_password_is_never_a_process_argument(self):
+        """116/4544181109: the password was a --from-literal argument of kubectl, visible in the process list, while the
+        comment said it existed only in the pipe. It is now written to kubectl's stdin by a shell builtin."""
+        h = Harness(BASE_WORLD)
+        try:
+            r = h.source("ensure_secret owl-mast-test owl-mast-db owlmast_app; echo CONTINUED")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr); self.assertIn("CONTINUED", r.stdout)
+            calls = h.calls.read_text().splitlines()
+            self.assertEqual([c for c in calls if "password=" in c and "--from-file=password=/dev/stdin" not in c], [])
+            created = [c for c in calls if " create secret generic owl-mast-db " in c]
+            self.assertEqual(len(created), 1)
+            self.assertIn("--from-file=password=/dev/stdin", created[0]); self.assertIn("--from-literal=username=owlmast_app", created[0])
+            name, size = Path(str(h.calls) + ".stdin").read_text().split()
+            self.assertEqual(name, "owl-mast-db")
+            self.assertTrue(20 <= int(size) <= 32, size)  # the generated value, without a trailing newline
+            self.assertIn("secret owl-mast-test owl-mast-db owned", h.world.read_text())
+        finally:
+            h.close()
+        script = (REPO / "scripts" / "qualify-local-install.sh").read_text()
+        self.assertNotIn("--from-literal=password", script)
 
     def test_replication_never_overwrites_and_reports_its_failure(self):
         """109/4543776464: the destination appears between the absence check and the write, or the write fails."""

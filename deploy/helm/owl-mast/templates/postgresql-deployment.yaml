@@ -20,9 +20,8 @@ spec:
       labels:
         {{- include "owl-mast.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: postgresql
-        {{- with .Values.commonLabels }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
+      # No commonLabels on this pod template (they are on the Deployment, Service, claim and policy): with
+      # strategy Recreate a label edit would stop the database, and the backend and Keycloak with it.
       annotations:
         # The scripts only, never the ConfigMap's labels: a chart version bump or a commonLabels edit must not
         # recreate the database pod (the first-initialisation script does not rerun on an initialised volume).
@@ -99,25 +98,28 @@ spec:
               command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d postgres -h /var/run/postgresql"]
             periodSeconds: {{ .Values.postgresql.probes.startup.periodSeconds }}
             failureThreshold: {{ .Values.postgresql.probes.startup.failureThreshold }}
+            # Exec probe timeouts are enforced; the kubelet default of 1 s is too short on a loaded node.
+            timeoutSeconds: {{ dig "timeoutSeconds" 5 .Values.postgresql.probes.startup }}
           livenessProbe:
             exec:
               command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d postgres -h /var/run/postgresql"]
             periodSeconds: {{ .Values.postgresql.probes.liveness.periodSeconds }}
             failureThreshold: {{ .Values.postgresql.probes.liveness.failureThreshold }}
+            timeoutSeconds: {{ dig "timeoutSeconds" 5 .Values.postgresql.probes.liveness }}
           readinessProbe:
             exec:
               # Ready only over TCP (the final server, not the socket-only initialisation server) and only when
-              # every database the chart provisions exists: the application's and, with the identity bundle,
-              # Keycloak's.
+              # the application database exists. Keycloak's database is deliberately NOT part of it: a missing
+              # Keycloak database must leave only Keycloak unready. If it took this pod out of the Service, the
+              # backend would lose its database too and the provisioning hook could not reach the server.
               command:
                 - sh
                 - -c
                 - >-
                   psql -U "$POSTGRES_USER" -d "$OWLMAST_APP_DATABASE" -h 127.0.0.1 -Atc 'select 1' | grep -qx 1
-                  && { [ -z "${OWLMAST_KEYCLOAK_DATABASE:-}" ]
-                  || psql -U "$POSTGRES_USER" -d "$OWLMAST_KEYCLOAK_DATABASE" -h 127.0.0.1 -Atc 'select 1' | grep -qx 1; }
             periodSeconds: {{ .Values.postgresql.probes.readiness.periodSeconds }}
             failureThreshold: {{ .Values.postgresql.probes.readiness.failureThreshold }}
+            timeoutSeconds: {{ dig "timeoutSeconds" 5 .Values.postgresql.probes.readiness }}
           resources:
             {{- toYaml .Values.postgresql.resources | nindent 12 }}
           volumeMounts:

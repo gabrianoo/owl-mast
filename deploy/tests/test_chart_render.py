@@ -224,7 +224,6 @@ class ChartRenderTest(unittest.TestCase):
         for sets in (
             ("database.existingSecret=",),
             ("postgresql.adminExistingSecret=",),
-            ("identity.keycloak.bootstrapExistingSecret=",),
             ("identity.keycloak.database.existingSecret=",),
             ("auth.enabled=false",),  # no such knob: authentication cannot be switched off
             ("identity.enabled=false",),
@@ -249,8 +248,13 @@ class ChartRenderTest(unittest.TestCase):
     def test_common_labels_reach_pod_templates(self):
         docs = render("--set", "commonLabels.owlmast\\.aisquad\\.com/run=run-x", "--set", "postgresql.provisionKeycloakDatabase=true", *UPGRADE)
         for d in by_kind(docs, "Deployment") + by_kind(docs, "Job"):
-            self.assertEqual(d["spec"]["template"]["metadata"]["labels"]["owlmast.aisquad.com/run"], "run-x", d["metadata"]["name"])
             self.assertEqual(d["metadata"]["labels"]["owlmast.aisquad.com/run"], "run-x")
+            pod_labels = d["spec"]["template"]["metadata"]["labels"]
+            if d["metadata"]["name"].endswith("-postgresql"):
+                # the database pod template is the exception: a label edit must not restart PostgreSQL (ReviewCycle2Test)
+                self.assertNotIn("owlmast.aisquad.com/run", pod_labels)
+            else:
+                self.assertEqual(pod_labels["owlmast.aisquad.com/run"], "run-x", d["metadata"]["name"])
 
     def test_gateway_api_route_is_optional_explicit_and_exclusive_with_ingress(self):
         """Owner steering: stable Gateway API routing as a first-class option; the Gateway itself is operator-supplied."""
@@ -450,7 +454,8 @@ class ReviewFindingsTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             docs = [d for d in yaml.safe_load_all(result.stdout) if d]
             keys = [(d["kind"], d["metadata"]["name"]) for d in docs]
-            self.assertTrue(all(len(name) <= 63 for _, name in keys), [n for _, n in keys if len(n) > 63])
+            # the data claim keeps its 0.1.0 spelling (a claim name may have 253 characters); every other name fits a label
+            self.assertTrue(all(len(name) <= (253 if kind == "PersistentVolumeClaim" else 63) for kind, name in keys), [n for _, n in keys if len(n) > 63])
             self.assertEqual(len(keys), len(set(keys)), keys)
             names = {d["metadata"]["name"] for d in docs}
             # references resolve to rendered objects
@@ -610,12 +615,17 @@ class ReviewCycle1Test(unittest.TestCase):
         bad = ("-Dowlmast.identity.issuer-uri=http://attacker/realms/x", "-Dspring.r2dbc.url=r2dbc:postgresql://x/y", "-Dspring.config.additional-location=/tmp/x",
                "-javaagent:/tmp/agent.jar", "-agentlib:jdwp=transport=dt_socket", "-agentpath:/tmp/x.so", "@/tmp/argfile", "-XX:MaxRAMPercentage=75 -Dx=y",
                "-XX:VMOptionsFile=opts", "-XX:Flags=hotspotrc", "-XX:OnOutOfMemoryError=id", "-XX:OnError=id", "--add-opens=java.base/java.lang=ALL-UNNAMED",
-               "-cp /tmp", "-jar /tmp/x.jar", "-Xbootclasspath/a:/tmp/x.jar", "-XX:HeapDumpPath=/tmp/x", "XX:+UseZGC")
+               "-cp /tmp", "-jar /tmp/x.jar", "-Xbootclasspath/a:/tmp/x.jar", "-XX:HeapDumpPath=/tmp/x", "XX:+UseZGC",
+               # cycle 2 (4544181092): a named allow-list, so file-loading and attach-enabling options are refused too
+               "-XX:SharedArchiveFile=x", "-XX:AOTCache=x", "-XX:ErrorFile=x", "-XX:CompilerDirectivesFile=x", "-XX:+StartAttachListener",
+               "-XX:+EnableDynamicAgentLoading", "-XX:+HeapDumpOnOutOfMemoryError", "-XX:MaxRAMPercentage=x", "-XX:+UnlockDiagnosticVMOptions",
+               "-XX:MaxRAMPercentage=75 -XX:+StartAttachListener")
         for value in bad:
             # helm --set would split on commas and '='-free tokens are fine; --set-string keeps the value verbatim
             self.assertIn("schema", refused("--set-string", f"backend.javaToolOptions={value}").lower(), value)
             self.assertIn("backend.javaToolOptions", refused("--skip-schema-validation", "--set-string", f"backend.javaToolOptions={value}"), value)
-        for value in ("", "-XX:MaxRAMPercentage=75", "-XX:MaxRAMPercentage=75.5 -Xms256m -Xmx512M -Xss1m", "-XX:+UseZGC -XX:-UseCompressedOops", "  -Xmx1g  "):
+        for value in ("", "-XX:MaxRAMPercentage=75", "-XX:MaxRAMPercentage=75.5 -Xms256m -Xmx512M -Xss1m", "-XX:+UseZGC -XX:-UseCompressedOops", "  -Xmx1g  ",
+                      "-XX:MaxMetaspaceSize=256m -XX:ActiveProcessorCount=2 -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+ExitOnOutOfMemoryError"):
             backend = deployments_of(render("--set-string", f"backend.javaToolOptions={value}"))["t-owl-mast-backend"]
             self.assertEqual(env_of(backend)["JAVA_TOOL_OPTIONS"]["value"], value)
 
@@ -635,9 +645,12 @@ class ReviewCycle1Test(unittest.TestCase):
     def test_server_verifying_ssl_modes_fail_closed_until_a_ca_mount_exists(self):
         """116/4543777472: verify-ca/verify-full rendered and then crash-looped (no CA trust is mounted)."""
         for mode in ("verify-ca", "verify-full"):
-            err = refused(*sets(*self.EXTERNAL_DB, f"database.external.sslMode={mode}"))
+            # the schema no longer offers the modes (cycle 2, 4544181137); the template refuses on its own and names the deferral
+            self.assertIn("schema", refused(*sets(*self.EXTERNAL_DB, f"database.external.sslMode={mode}")).lower())
+            self.assertIn("schema", refused(*sets(*self.EXTERNAL_DB, f"identity.keycloak.database.external.sslMode={mode}")).lower())
+            err = refused("--skip-schema-validation", *sets(*self.EXTERNAL_DB, f"database.external.sslMode={mode}"))
             self.assertIn(f"database.external.sslMode={mode} is refused", err); self.assertIn("CA trust", err)
-            err = refused(*sets(*self.EXTERNAL_DB, f"identity.keycloak.database.external.sslMode={mode}"))
+            err = refused("--skip-schema-validation", *sets(*self.EXTERNAL_DB, f"identity.keycloak.database.external.sslMode={mode}"))
             self.assertIn(f"identity.keycloak.database.external.sslMode={mode} is refused", err)
             # the opt-in for plaintext does not unlock a mode that cannot work
             refused(*sets(*self.EXTERNAL_DB, f"database.external.sslMode={mode}", "database.external.allowInsecureTransport=true"))
@@ -715,10 +728,11 @@ class ReviewCycle1Test(unittest.TestCase):
             self.assertIn("-h /var/run/postgresql", command, probe); self.assertNotIn("127.0.0.1", command, probe)
         self.assertIn({"name": "run", "mountPath": "/var/run/postgresql"}, c["volumeMounts"])
         ready = c["readinessProbe"]["exec"]["command"][-1]
-        self.assertEqual(ready.count("-h 127.0.0.1"), 2)  # TCP only: the socket-only initialisation server is never Ready
-        self.assertIn('-d "$OWLMAST_APP_DATABASE"', ready); self.assertIn('-d "$OWLMAST_KEYCLOAK_DATABASE"', ready)
-        self.assertIn('[ -z "${OWLMAST_KEYCLOAK_DATABASE:-}" ]', ready)
-        # the variable the readiness guard reads is set exactly when Keycloak is the bundled consumer
+        self.assertEqual(ready.count("-h 127.0.0.1"), 1)  # TCP only: the socket-only initialisation server is never Ready
+        self.assertIn('-d "$OWLMAST_APP_DATABASE"', ready)
+        # cycle 2 (4544181074): readiness covers the application database only, never Keycloak's
+        self.assertNotIn("KEYCLOAK", ready)
+        # the variable the provisioning helper reads is set exactly when Keycloak is the bundled consumer
         self.assertIn("OWLMAST_KEYCLOAK_DATABASE", env_of(deployments_of(render())["t-owl-mast-postgresql"]))
         self.assertNotIn("OWLMAST_KEYCLOAK_DATABASE", env_of(deployments_of(render(*sets(*self.EXTERNAL_ID)))["t-owl-mast-postgresql"]))
 
@@ -731,7 +745,7 @@ class ReviewCycle1Test(unittest.TestCase):
         self.assertFalse([n for n in env if n.startswith("KC_BOOTSTRAP_ADMIN")])
         self.assertNotIn("owl-mast-keycloak-bootstrap", yaml.safe_dump_all(retired))  # the Secret is no longer referenced anywhere
         self.assertIn("identity.keycloak.bootstrapAdmin.enabled=false", notes())
-        self.assertNotIn("bootstrap admin", notes(*sets("identity.keycloak.bootstrapAdmin.enabled=false")))
+        self.assertNotIn("temporary Keycloak bootstrap admin", notes(*sets("identity.keycloak.bootstrapAdmin.enabled=false")))
         self.assertIn("schema", refused(*sets("identity.keycloak.bootstrapAdmin.enabled=maybe")).lower())
 
     def test_duplicate_parent_check_treats_the_release_namespace_as_the_default(self):
@@ -827,7 +841,7 @@ class ReviewCycle1Test(unittest.TestCase):
             result = helm("template", release, str(CHART), *UPGRADE, *sets("postgresql.provisionKeycloakDatabase=true"))
             self.assertEqual(result.returncode, 0, result.stderr)
             names[release] = {(d["kind"], d["metadata"]["name"]) for d in yaml.safe_load_all(result.stdout) if d}
-            self.assertTrue(all(len(n) <= 63 for _, n in names[release]))
+            self.assertTrue(all(len(n) <= 63 for kind, n in names[release] if kind != "PersistentVolumeClaim"))
         first, second = names.values()
         self.assertEqual(first & second, set())
         self.assertTrue(any(n.endswith("-postgresql-provision-scripts") for _, n in first))
@@ -881,7 +895,8 @@ class ReviewCycle1Test(unittest.TestCase):
     def test_existing_claim_install_with_the_hook_names_the_real_provisioning_path(self):
         """116/4543777557: the refusal said a fresh install provisions Keycloak, which is false for a reused volume."""
         err = refused(*sets("postgresql.provisionKeycloakDatabase=true", "postgresql.persistence.existingClaim=prior-data"))
-        self.assertIn('reuses the claim "prior-data"', err); self.assertIn("bash /owl-mast/provision-keycloak.sh", err)
+        self.assertIn('reuses the claim "prior-data"', err); self.assertIn("kubectl exec deploy/t-owl-mast-postgresql -- bash /owl-mast/provision-keycloak.sh", err)
+        self.assertNotIn("<release>", err)  # the Deployment is named after the fullname, not the release
         self.assertNotIn("a fresh install provisions", err)
         # the helper the message points at is mounted in the PostgreSQL pod with Keycloak's credentials
         pg = deployments_of(render(*sets("postgresql.persistence.existingClaim=prior-data")))["t-owl-mast-postgresql"]
@@ -906,6 +921,359 @@ class ReviewCycle1Test(unittest.TestCase):
                        "`identity.keycloak.bootstrapAdmin.enabled=false`"):
             self.assertIn(phrase, doc, phrase)
         self.assertNotIn("Qualified on 2026-11-07 for GitHub issue #21 on a disposable local Kind target;", doc)  # that was chart 0.1.0
+
+
+def issuer_samples():
+    """(kind, issuer) pairs of the sample file the backend's IdentityPropertiesTest reads as well."""
+    lines = (REPO / "backend" / "src" / "test" / "resources" / "identity" / "issuer-samples.txt").read_text().splitlines()
+    return [tuple(line.split(" ", 1)) for line in lines if line and not line.startswith("#")]
+
+
+@unittest.skipIf(HELM is None, "helm binary required (OWLMAST_HELM)")
+class ReviewCycle2Test(unittest.TestCase):
+    """2026-11-12 review 5866484238 (PR #116 at 031da2c): one test per finding, named by comment id."""
+
+    EXTERNAL_DB = ReviewFindingsTest.EXTERNAL_DB
+    EXTERNAL_ID = ReviewCycle1Test.EXTERNAL_ID
+    PROXY = ["identity.keycloak.proxyHeaders=xforwarded"]
+
+    @staticmethod
+    def container(docs, name):
+        return deployments_of(docs)[name]["spec"]["template"]["spec"]["containers"][0]
+
+    def test_postgresql_readiness_never_depends_on_keycloaks_database(self):
+        """4544181074: a missing Keycloak database took PostgreSQL out of its Service, so the backend lost its database and
+        the corrective pre-upgrade hook (pg_isready against the Service) could not reach the server."""
+        for args in ([], sets("postgresql.persistence.existingClaim=prior-data"), [*UPGRADE, *sets("postgresql.provisionKeycloakDatabase=true")]):
+            docs = render(*args)
+            ready = self.container(docs, "t-owl-mast-postgresql")["readinessProbe"]["exec"]["command"][-1]
+            self.assertEqual(ready, """psql -U "$POSTGRES_USER" -d "$OWLMAST_APP_DATABASE" -h 127.0.0.1 -Atc 'select 1' | grep -qx 1""")
+        # the Service keeps the default endpoint rule: readiness alone decides, and it is the application database's
+        service = [d for d in by_kind(render(), "Service") if d["metadata"]["name"] == "t-owl-mast-postgresql"][0]
+        self.assertNotIn("publishNotReadyAddresses", service["spec"])
+        doc = " ".join((REPO / "docs" / "installation.md").read_text().split())
+        self.assertIn("PostgreSQL stays Ready and keeps serving the application database", doc)
+        self.assertNotIn("its readiness probe covers every database the chart provisions", doc)
+
+    def test_data_claim_keeps_the_chart_0_1_0_name(self):
+        """4544181069: fullnames of 48-52 characters installed with chart 0.1.0 got a hashed claim name on upgrade, which
+        attached a new empty volume and left the data behind. The claim is <fullname>-postgresql-data, as in 0.1.0."""
+        def claim(release, *args):
+            result = helm("template", release, str(CHART), *args)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            docs = [d for d in yaml.safe_load_all(result.stdout) if d]
+            pvc = by_kind(docs, "PersistentVolumeClaim")
+            self.assertEqual(len(pvc), 1)
+            pg = [d for d in by_kind(docs, "Deployment") if d["metadata"]["labels"]["app.kubernetes.io/component"] == "postgresql"][0]
+            mounted = [v for v in pg["spec"]["template"]["spec"]["volumes"] if v["name"] == "data"][0]["persistentVolumeClaim"]["claimName"]
+            self.assertEqual(mounted, pvc[0]["metadata"]["name"])
+            self.assertEqual(pvc[0]["metadata"]["annotations"]["helm.sh/resource-policy"], "keep")
+            return mounted, pg["metadata"]["name"]
+        # every fullname chart 0.1.0 could install: up to 52 characters (its Service <fullname>-postgresql had to fit 63)
+        for length in (1, 30, 47, 48, 49, 50, 51, 52):
+            fullname = "f" * length
+            self.assertEqual(claim("t", *sets(f"fullnameOverride={fullname}")), (f"{fullname}-postgresql-data", f"{fullname}-postgresql"), length)
+        # the reviewed case: a 41-character release name gives the 50-character fullname <release>-owl-mast
+        release = "r" * 41
+        self.assertEqual(claim(release)[0], f"{release}-owl-mast-postgresql-data")
+        # the literal chart 0.1.0 expression, kept here so that a change of either helper is caught
+        legacy = (CHART / "templates" / "_helpers.tpl").read_text()
+        self.assertIn('{{- define "owl-mast.postgresql.dataClaim" -}}{{ printf "%s-data" (include "owl-mast.postgresql.fullname" .) }}{{- end -}}', legacy)
+        # longer fullnames could not install with 0.1.0: the claim follows the shortened, hashed PostgreSQL name
+        mounted, deployment = claim("t", *sets(f"fullnameOverride={'f' * 60}"))
+        self.assertEqual(mounted, f"{deployment}-data"); self.assertLessEqual(len(deployment), 63)
+        self.assertIn(f"existingClaim={release}-owl-mast-postgresql-data", notes_for(release))
+
+    def test_issuer_host_is_what_the_backend_parses(self):
+        """4544181050 (re-raised PRRT_kwDOVjxExc62YN_3): idp.123, 1.2.3.999 and similar hosts rendered, and the backend then
+        refused them at startup. The samples are the ones IdentityPropertiesTest runs through the backend."""
+        samples = issuer_samples()
+        self.assertGreaterEqual(len([k for k, _ in samples if k == "refuse"]), 15); self.assertGreaterEqual(len([k for k, _ in samples if k == "accept"]), 10)
+        for kind, issuer in samples:
+            args = ["--set-string", f"identity.external.issuerUri={issuer}", *sets("identity.bundled=false")]
+            if kind == "accept":
+                backend = deployments_of(render(*args))["t-owl-mast-backend"]
+                self.assertEqual(env_of(backend)["OWLMAST_IDENTITY_ISSUER_URI"]["value"], issuer)
+            else:
+                self.assertIn(kind, ("refuse", "chart-refuse"))
+                self.assertIn("identity.external.issuerUri", refused(*args), issuer)
+        for issuer in ("https://idp.123/realms/x", "https://1.2.3.999/realms/x", "https://idp.example.1/realms/x", "https://a.b-c.9z/realms/x"):
+            self.assertIn(("refuse", issuer), samples)  # the four reviewed issuers
+        java_test = (REPO / "backend/src/test/java/com/aisquad/owlmast/access/adapter/identity/IdentityPropertiesTest.java").read_text()
+        self.assertIn("identity/issuer-samples.txt", java_test)  # the backend half of the comparison exists
+
+    def test_common_labels_edit_does_not_touch_the_postgresql_pod_template(self):
+        """4544181064 (re-raised PRRT_kwDOVjxExc62YNzu): commonLabels were copied into the pod template, so an edit recreated
+        the database pod (strategy Recreate) although the annotation checksum was stable."""
+        def template(name, *args):
+            return [d for n, d in deployments_of(render(*args)).items() if n.endswith(name)][0]["spec"]["template"]
+        base = template("-postgresql")
+        self.assertEqual(base, template("-postgresql", *sets("commonLabels.team=owl")))
+        self.assertEqual(base, template("-postgresql", *sets("commonLabels.team=owl", "commonLabels.unit=core")))
+        self.assertEqual(set(base["metadata"]["labels"]), {"app.kubernetes.io/name", "app.kubernetes.io/instance", "app.kubernetes.io/component"})
+        # the labels still reach the Deployment, the Service, the claim and the policy of the database
+        labelled = render(*sets("commonLabels.team=owl"))
+        for kind in ("Deployment", "Service", "PersistentVolumeClaim", "NetworkPolicy", "ConfigMap"):
+            for d in by_kind(labelled, kind):
+                self.assertEqual(d["metadata"]["labels"]["team"], "owl", (kind, d["metadata"]["name"]))
+        # documented: the stateless pods do carry them, so an edit restarts those
+        for name in ("-backend", "-keycloak"):
+            self.assertEqual(template(name, *sets("commonLabels.team=owl"))["metadata"]["labels"]["team"], "owl")
+        doc = " ".join((REPO / "docs" / "installation.md").read_text().split())
+        self.assertIn("The PostgreSQL pod template carries no `commonLabels`", doc)
+
+    def test_postgresql_exec_probes_carry_a_timeout(self):
+        """4544181081: no timeoutSeconds was rendered, so the enforced 1 s kubelet default applied to sh + psql + grep."""
+        c = self.container(render(), "t-owl-mast-postgresql")
+        for probe in ("startupProbe", "livenessProbe", "readinessProbe"):
+            self.assertEqual(c[probe]["timeoutSeconds"], 5, probe)
+        custom = self.container(render(*sets("postgresql.probes.readiness.timeoutSeconds=9", "postgresql.probes.liveness.timeoutSeconds=7", "postgresql.probes.startup.timeoutSeconds=3")), "t-owl-mast-postgresql")
+        self.assertEqual([custom[p]["timeoutSeconds"] for p in ("startupProbe", "livenessProbe", "readinessProbe")], [3, 7, 9])
+        self.assertIn("schema", refused(*sets("postgresql.probes.readiness.timeoutSeconds=0")).lower())
+        # the Keycloak probes share the definition: nothing by default, passed through when set
+        kc = self.container(render(), "t-owl-mast-keycloak")
+        self.assertNotIn("timeoutSeconds", kc["readinessProbe"])
+        kc = self.container(render(*sets("identity.keycloak.probes.readiness.timeoutSeconds=4")), "t-owl-mast-keycloak")
+        self.assertEqual(kc["readinessProbe"]["timeoutSeconds"], 4)
+
+    def test_proxy_headers_need_a_peer_that_names_the_proxy(self):
+        """4544181085: extraFrom [{namespaceSelector: {}}] satisfied the guard and admitted every pod of the cluster."""
+        def peers(value):
+            return ["--set-json", f"networkPolicy.keycloak.extraFrom={value}", *sets(*self.PROXY)]
+        for value, named in (('[{"namespaceSelector":{}}]', "extraFrom[0].namespaceSelector is empty"),
+                             ('[{"podSelector":{}}]', "extraFrom[0].podSelector is empty"),
+                             ('[{"podSelector":{"matchLabels":{}}}]', "extraFrom[0].podSelector is empty"),
+                             ('[{"namespaceSelector":{"matchExpressions":[]}}]', "extraFrom[0].namespaceSelector is empty"),
+                             ('[{"namespaceSelector":{},"podSelector":{"matchLabels":{"app":"gw"}}}]', "extraFrom[0].namespaceSelector is empty"),
+                             ('[{"podSelector":{"matchLabels":{"app":"gw"}}},{"podSelector":{}}]', "extraFrom[1].podSelector is empty"),
+                             ('[{"ipBlock":{"cidr":"0.0.0.0/0"}}]', 'ipBlock.cidr "0.0.0.0/0" is refused'),
+                             ('[{"ipBlock":{"cidr":"::/0"}}]', 'ipBlock.cidr "::/0" is refused'),
+                             ('[{"ipBlock":{}}]', "ipBlock.cidr")):
+            err = refused(*peers(value))
+            self.assertIn("networkPolicy.keycloak." + named if named.startswith("extraFrom") else named, err, value)
+            self.assertIn("identity.keycloak.proxyHeaders=xforwarded", err, value)
+        # an empty peer: the schema refuses it, and so does the template on its own
+        self.assertIn("schema", refused(*peers("[{}]")).lower())
+        self.assertIn("networkPolicy.keycloak.extraFrom[0] is empty", refused("--skip-schema-validation", *peers("[{}]")))
+        for value in ('[{"podSelector":{"matchLabels":{"app":"gw"}}}]',
+                      '[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"gateway-system"}},"podSelector":{"matchExpressions":[{"key":"app","operator":"In","values":["gw"]}]}}]',
+                      '[{"ipBlock":{"cidr":"10.1.2.0/24"}}]'):
+            docs = render(*peers(value))
+            self.assertEqual(env_of(deployments_of(docs)["t-owl-mast-keycloak"])["KC_PROXY_HEADERS"]["value"], "xforwarded", value)
+            policy = [d for d in by_kind(docs, "NetworkPolicy") if d["metadata"]["name"] == "t-owl-mast-keycloak"][0]
+            self.assertEqual(len(policy["spec"]["ingress"][0]["from"]), 2)
+        # without proxyHeaders the peers are the operator's own policy choice and are rendered as given
+        render("--set-json", 'networkPolicy.keycloak.extraFrom=[{"namespaceSelector":{}}]')
+
+    def test_extra_env_denylist_holds_without_the_schema(self):
+        """4544181089: the denylist was schema-only, so --skip-schema-validation let JAVA_TOOL_OPTIONS back in through extraEnv,
+        after the chart's own variable (the later duplicate wins in Kubernetes)."""
+        for name in ("JAVA_TOOL_OPTIONS", "OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER", "OWLMAST_IDENTITY_ISSUER_URI", "owlmast_database_jdbc_url", "SPRING_R2DBC_URL",
+                     "MANAGEMENT_SERVER_PORT", "SERVER_PORT", "LOADER_PATH", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "JAVA_OPTS", "CLASSPATH", "LD_PRELOAD",
+                     "LD_LIBRARY_PATH", "PATH", "JAVA_HOME"):
+            args = sets(f"backend.extraEnv[0].name={name}", "backend.extraEnv[0].value=x")
+            self.assertIn("schema", refused(*args).lower(), name)
+            err = refused("--skip-schema-validation", *args)
+            self.assertIn(f'backend.extraEnv[0].name "{name}" is refused', err, name)
+        for name, message in (("DB_PASSWORD", "looks like a credential"), ("api_token", "looks like a credential"), ("1BAD", "not a valid environment variable name"), ("A-B", "not a valid environment variable name")):
+            self.assertIn(message, refused("--skip-schema-validation", *sets(f"backend.extraEnv[0].name={name}", "backend.extraEnv[0].value=x")), name)
+        self.assertIn("backend.extraEnv[1].name", refused("--skip-schema-validation", *sets("backend.extraEnv[0].name=TZ", "backend.extraEnv[0].value=UTC", "backend.extraEnv[1].name=JAVA_TOOL_OPTIONS", "backend.extraEnv[1].value=-Dx=y")))
+        for skip in ([], ["--skip-schema-validation"]):
+            env = self.container(render(*skip, *sets("backend.extraEnv[0].name=TZ", "backend.extraEnv[0].value=UTC")), "t-owl-mast-backend")["env"]
+            self.assertEqual(env[-1], {"name": "TZ", "value": "UTC"})
+            self.assertEqual(len([e for e in env if e["name"] == "JAVA_TOOL_OPTIONS"]), 1)
+
+    def test_java_tool_options_pattern_is_one_named_allow_list_in_schema_and_template(self):
+        """4544181092: -XX:Name=value was open apart from four names. Both layers now use the same named allow-list."""
+        import json
+        helper = re.search(r'define "owl-mast.javaToolOptionsPattern" -}}\n(.*)\n', (CHART / "templates" / "_helpers.tpl").read_text()).group(1)
+        schema = json.loads((CHART / "values.schema.json").read_text())["properties"]["backend"]["properties"]["javaToolOptions"]
+        self.assertEqual(schema["pattern"], helper)
+        self.assertNotIn("not", schema)  # no deny-list left: what is not named is refused
+        self.assertNotIn("[A-Za-z0-9]+=", helper); self.assertNotIn("[+-][A-Za-z0-9]+", helper)  # no open -XX form
+        comment = (CHART / "values.yaml").read_text()
+        valued, flags = re.search(r"XX:\(([A-Za-z0-9|]+)\)=", helper).group(1), re.search(r"XX:\[\+-\]\(([A-Za-z0-9|]+)\)", helper).group(1)
+        self.assertIn("MaxRAMPercentage", valued); self.assertIn("UseZGC", flags)
+        for name in (valued + "|" + flags).split("|"):
+            self.assertIn(name, comment, name)  # every accepted option is listed for the operator
+
+    def test_notes_say_that_require_does_not_authenticate_the_server(self):
+        """4544181102: NOTES recommended sslMode=require for an untrusted network without saying it leaves the server unauthenticated."""
+        text = " ".join(notes().split())
+        self.assertIn("sslMode=require encrypts the connection but does NOT authenticate the server", text)
+        self.assertIn("an active interceptor can still pose as the database", text)
+        self.assertIn("sslMode=verify-full with a mounted CA) is not shipped yet (deferred", text)
+        deferred = (REPO / "_bmad-output" / "implementation-artifacts" / "deferred-work.md").read_text()
+        self.assertIn("sslMode=verify-ca|verify-full", deferred)
+        self.assertIn("TLS for the bundled PostgreSQL", deferred)  # leftover of thread zl: the bundled instance's plaintext is tracked too
+
+    def test_readiness_period_is_longer_than_the_backends_cache_interval(self):
+        """4544181114: the cache interval was tied to the probe period only by a literal 10 s in a Java test."""
+        source = (IDENTITY_JAVA / "IdentityDiscoveryHealthIndicator.java").read_text()
+        ttl = int(re.search(r"Duration CACHE_TTL = Duration\.ofSeconds\((\d+)\)", source).group(1))
+        self.assertGreater(self.container(render(), "t-owl-mast-backend")["readinessProbe"]["periodSeconds"], ttl)
+        for period in (1, ttl - 1, ttl):
+            args = sets(f"backend.probes.readiness.periodSeconds={period}")
+            self.assertIn("schema", refused(*args).lower(), period)
+            err = refused("--skip-schema-validation", *args)
+            self.assertIn(f"backend.probes.readiness.periodSeconds={period} is refused", err); self.assertIn(f"greater than {ttl}", err)
+        accepted = self.container(render(*sets(f"backend.probes.readiness.periodSeconds={ttl + 1}")), "t-owl-mast-backend")
+        self.assertEqual(accepted["readinessProbe"]["periodSeconds"], ttl + 1)
+        # liveness and startup make no cached outbound call and stay free
+        render(*sets("backend.probes.liveness.periodSeconds=1", "backend.probes.startup.periodSeconds=1"))
+
+    def chart_with_0_1_0_values(self):
+        """What `helm upgrade --reuse-values` renders from: the new templates and schema over the OLD chart's values (Helm
+        replaces the new chart's defaults with the old release's coalesced values)."""
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        chart = Path(tmp.name) / "owl-mast"
+        shutil.copytree(CHART, chart)
+        shutil.copy(REPO / "deploy" / "tests" / "data" / "values-0.1.0.yaml", chart / "values.yaml")
+        return chart
+
+    def test_reuse_values_from_chart_0_1_0_renders_with_the_new_defaults(self):
+        """4544181120: --reuse-values keeps the 0.1.0 values without the new keys; the schema then refused the missing
+        bootstrapAdmin, and the templates dereferenced nil."""
+        chart = self.chart_with_0_1_0_values()
+        old = yaml.safe_load((chart / "values.yaml").read_text())
+        self.assertNotIn("bootstrapAdmin", old["identity"]["keycloak"]); self.assertNotIn("networkPolicy", old)  # really the 0.1.0 values
+        def template(*args):
+            result = helm("template", "t", str(chart), *UPGRADE, *args)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return [d for d in yaml.safe_load_all(result.stdout) if d]
+        docs = template()
+        d = deployments_of(docs)
+        self.assertIn("KC_BOOTSTRAP_ADMIN_PASSWORD", env_of(d["t-owl-mast-keycloak"]))  # bootstrapAdmin.enabled defaults to true
+        self.assertEqual({p["metadata"]["name"] for p in by_kind(docs, "NetworkPolicy")}, {"t-owl-mast-postgresql", "t-owl-mast-keycloak"})  # default on
+        backend = d["t-owl-mast-backend"]["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual(backend["readinessProbe"]["timeoutSeconds"], 5)  # still longer than the discovery timeout
+        self.assertEqual(env_of(d["t-owl-mast-backend"])["OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER"]["value"], "true")
+        pg = d["t-owl-mast-postgresql"]["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual(pg["readinessProbe"]["timeoutSeconds"], 5)
+        self.assertEqual(by_kind(docs, "PersistentVolumeClaim")[0]["metadata"]["name"], "t-owl-mast-postgresql-data")
+        # the same with the routing and frontend values a 0.1.0 release could carry, and with the other three combinations
+        routed = template(*sets("frontend.enabled=true", "frontend.image.tag=x", *INGRESS_ON))
+        frontend = deployments_of(routed)["t-owl-mast-frontend"]["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual(frontend["livenessProbe"]["httpGet"]["path"], "/")
+        self.assertNotIn("/actuator", [p["path"] for p in by_kind(routed, "Ingress")[0]["spec"]["rules"][0]["http"]["paths"]])
+        template(*GATEWAY_API, *sets("routing.gateway.enabled=true", "routing.gateway.parentRefs[0].name=gw", "routing.gateway.hostnames[0]=owl.example"))
+        template(*sets("identity.bundled=false", "identity.external.issuerUri=https://idp.example/realms/owl-mast"))
+        template(*sets("identity.keycloak.bootstrapAdmin.enabled=false"))
+        # a 0.1.0 external database kept the old default sslMode=prefer: that is refused with the value named, not a nil error
+        result = helm("template", "t", str(chart), *UPGRADE, *sets("database.bundled=false", "database.external.host=pg.example"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("database.external.sslMode=prefer can send database credentials in plaintext", result.stderr)
+        template(*sets("database.bundled=false", "database.external.host=pg.example", "database.external.sslMode=require",
+                       "identity.keycloak.database.external.host=kc.example", "identity.keycloak.database.external.sslMode=require"))
+        # helm lint over the same values: the schema requires no key that chart 0.1.0 did not have
+        self.assertEqual(helm("lint", str(chart)).returncode, 0)
+        doc = " ".join((REPO / "docs" / "installation.md").read_text().split())
+        self.assertIn("`--reuse-values`", doc); self.assertIn("`--reset-then-reuse-values`", doc)
+
+    def test_schema_offers_only_the_ssl_modes_the_chart_accepts(self):
+        """4544181137: the schema still listed verify-ca and verify-full, which the template always refuses."""
+        import json
+        schema = json.loads((CHART / "values.schema.json").read_text())
+        self.assertEqual(schema["$defs"]["sslMode"]["enum"], ["disable", "allow", "prefer", "require"])
+        self.assertIn("CA trust", schema["$defs"]["sslMode"]["description"])
+        for mode in ("verify-ca", "verify-full", "bogus"):
+            self.assertIn("schema", refused(*sets(*self.EXTERNAL_DB, f"database.external.sslMode={mode}")).lower())
+        self.assertIn("must be one of disable, allow, prefer, require", refused("--skip-schema-validation", *sets(*self.EXTERNAL_DB, "database.external.sslMode=bogus")))
+
+    def test_ingress_hosts_refuse_ip_addresses(self):
+        """4544181145: routing.ingress.host=10.0.0.1 rendered, and the API server then rejected the Ingress mid-install."""
+        for host in ("10.0.0.1", "192.168.1.10", "1.2.3.4"):
+            args = sets("routing.ingress.enabled=true", f"routing.ingress.host={host}")
+            self.assertIn("schema", refused(*args).lower(), host)
+            err = refused("--skip-schema-validation", *args)
+            self.assertIn(f'routing.ingress.host "{host}" is an IP address', err)
+            tls = sets(*INGRESS_ON, f"routing.ingress.tls[0].hosts[0]={host}", "routing.ingress.tls[0].hosts[1]=owl.example", "routing.ingress.tls[0].secretName=owl-tls")
+            self.assertIn("schema", refused(*tls).lower(), host)
+            self.assertIn(f'routing.ingress.tls[0].hosts entry "{host}" is an IP address', refused("--skip-schema-validation", *tls))
+        # DNS names with numeric labels are not IP addresses
+        for host in ("10.0.0.1.nip.io", "1.2.3", "a.1.2.3.4", "1-2-3-4.example"):
+            docs = render(*sets("routing.ingress.enabled=true", f"routing.ingress.host={host}"))
+            self.assertEqual(by_kind(docs, "Ingress")[0]["spec"]["rules"][0]["host"], host)
+
+    def test_install_without_a_bootstrap_admin_is_an_explicit_warned_choice(self):
+        """4544181156: bootstrapAdmin.enabled=false on a fresh install starts Keycloak with no administrator. It is not refused
+        (a reinstall on a retained volume, or an external Keycloak database, already holds one), but NOTES says so."""
+        text = " ".join(notes(*sets("identity.keycloak.bootstrapAdmin.enabled=false")).split())
+        self.assertIn("WARNING: identity.keycloak.bootstrapAdmin.enabled=false on an install: Keycloak starts WITHOUT a bootstrap administrator", text)
+        self.assertNotIn("WITHOUT a bootstrap administrator", notes())
+        self.assertNotIn("WITHOUT a bootstrap administrator", notes(*sets(*self.EXTERNAL_ID, "identity.keycloak.bootstrapAdmin.enabled=false")))
+        self.assertIn("enabled=false on a FRESH install is an explicit", (CHART / "values.yaml").read_text())
+
+    def test_bootstrap_secret_is_required_only_while_the_admin_is_enabled(self):
+        """4544181161: the schema refused an empty bootstrapExistingSecret, so the helper's 'required only when enabled' branch
+        was dead and a retired bootstrap admin could not clear the value."""
+        err = refused(*sets("identity.keycloak.bootstrapExistingSecret="))
+        self.assertIn("identity.keycloak.bootstrapExistingSecret is required when identity.bundled=true and identity.keycloak.bootstrapAdmin.enabled=true", err)
+        docs = render(*sets("identity.keycloak.bootstrapExistingSecret=", "identity.keycloak.bootstrapAdmin.enabled=false"))
+        self.assertFalse([n for n in env_of(deployments_of(docs)["t-owl-mast-keycloak"]) if n.startswith("KC_BOOTSTRAP_ADMIN")])
+        render(*sets("identity.keycloak.bootstrapExistingSecret=", *self.EXTERNAL_ID))  # not referenced without the bundle
+        self.assertIn("schema", refused(*sets("identity.keycloak.bootstrapExistingSecret=Not_A_Name")).lower())
+
+    def test_retired_bootstrap_secret_leaves_the_distinct_secret_check(self):
+        """4544181191: nothing exercised the rule that the bootstrap Secret joins the distinct-Secret check only while enabled."""
+        for other in ("owl-mast-postgres-admin", "owl-mast-db", "owl-mast-keycloak-db"):
+            same = [f"identity.keycloak.bootstrapExistingSecret={other}"]
+            err = refused(*sets(*same))
+            self.assertIn("identity.keycloak.bootstrapExistingSecret", err); self.assertIn("each principal needs its own Secret", err)
+            docs = render(*sets(*same, "identity.keycloak.bootstrapAdmin.enabled=false"))  # a retired leftover value is not a principal
+            self.assertFalse([n for n in env_of(deployments_of(docs)["t-owl-mast-keycloak"]) if n.startswith("KC_BOOTSTRAP_ADMIN")])
+
+    def test_shared_external_server_warning_ignores_case_and_trailing_dot_and_respects_the_port(self):
+        """4544181189: the warning's normalisation and its port clause were not pinned."""
+        marker = "share the external PostgreSQL"
+        for host in ("PG.example.", "pg.example.", "PG.EXAMPLE", "pg.example"):
+            self.assertIn(marker, notes(*sets(*self.EXTERNAL_DB, f"identity.keycloak.database.external.host={host}")), host)
+        self.assertIn(marker, notes(*sets("database.bundled=false", "database.external.host=PG.Example.", "identity.keycloak.database.external.host=pg.example")))
+        # two servers on one host: a different port is a different server
+        self.assertNotIn(marker, notes(*sets(*self.EXTERNAL_DB, "identity.keycloak.database.external.port=5433")))
+        self.assertNotIn(marker, notes(*sets(*self.EXTERNAL_DB, "database.external.port=6432")))
+        self.assertIn(marker, notes(*sets(*self.EXTERNAL_DB, "database.external.port=6432", "identity.keycloak.database.external.port=6432")))
+        # the same rule decides the database-name refusal (AC3)
+        same_name = "identity.keycloak.database.name=owlmast"
+        self.assertIn("AC3", refused(*sets(*self.EXTERNAL_DB, "identity.keycloak.database.external.host=PG.example.", same_name)))
+        render(*sets(*self.EXTERNAL_DB, "identity.keycloak.database.external.port=5433", same_name))
+
+    def test_startup_probe_timeout_is_passed_through(self):
+        """4544181197: the startupProbe.timeoutSeconds passthrough had no test."""
+        self.assertNotIn("timeoutSeconds", self.container(render(), "t-owl-mast-backend")["startupProbe"])
+        c = self.container(render(*sets("backend.probes.startup.timeoutSeconds=4")), "t-owl-mast-backend")
+        self.assertEqual(c["startupProbe"]["timeoutSeconds"], 4)
+        self.assertNotIn("timeoutSeconds", c["livenessProbe"]); self.assertEqual(c["readinessProbe"]["timeoutSeconds"], 5)
+
+    def test_image_tags_cannot_be_blank(self):
+        """Leftover of the cycle-1 thread on an empty image tag: a whitespace-only tag still rendered 'owl-mast/backend: '."""
+        for tag in (" ", "  ", "a b", "-x", ".x", "x" * 129):
+            args = ["--set-string", f"backend.image.tag={tag}"]
+            self.assertIn("schema", refused(*args).lower(), repr(tag))
+            self.assertIn("backend.image.tag", refused("--skip-schema-validation", *args), repr(tag))
+            self.assertIn("frontend.image.tag", refused("--skip-schema-validation", "--set-string", f"frontend.image.tag={tag}", *sets("frontend.enabled=true")), repr(tag))
+        for tag in ("0.1.0", "v1_2-rc.3", "x" * 128):
+            self.assertEqual(self.container(render("--set-string", f"backend.image.tag={tag}"), "t-owl-mast-backend")["image"], f"owl-mast/backend:{tag}")
+
+    def test_documents_name_objects_after_the_fullname(self):
+        """Leftovers of fixed cycle-1 threads: <release>-postgresql in the docs, and the frontend comment about /actuator."""
+        doc = (REPO / "docs" / "installation.md").read_text()
+        self.assertNotIn("<release>-postgresql", doc)
+        self.assertIn("<fullname>-postgresql", doc)
+        nginx = (REPO / "frontend" / "nginx" / "default.conf.template").read_text()
+        self.assertNotIn("routes `/api` and `/actuator`", nginx)
+        flat = " ".join(doc.split())
+        for phrase in ("deliberately named after another release's shortened name", "a trailing slash is part of the issuer", "publishedIssuer"):
+            self.assertIn(phrase, flat, phrase)
+
+
+def notes_for(release, *args):
+    result = helm("install", release, str(CHART), "--dry-run=client", *args)
+    if result.returncode != 0:
+        raise AssertionError(result.stderr)
+    return result.stdout.split("NOTES:", 1)[1]
 
 
 if __name__ == "__main__":

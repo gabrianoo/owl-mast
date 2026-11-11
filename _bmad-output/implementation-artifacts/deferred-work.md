@@ -12,3 +12,8 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-gh-116-review-cycle-1.md`
   summary: Check the rendered HTTPRoutes and each refused input against a real API server that has the pinned Gateway API v1.4.0 standard CRDs installed (`kubectl apply --dry-run=server`, no controller), so the chart's hand-written copy of the CEL rules is compared with the upstream CEL.
   evidence: PR #109 thread 4543776368. The offline suite validates the OpenAPI schema with jsonschema and cannot evaluate CEL. A server-side check needs a cluster with cluster-scoped CRDs: either the retained Kind target (owner-authorized mutation) or a disposable Kind cluster in CI (a new CI job and its runtime budget). Owner decision on where it runs; reported as manifest/API-server acceptance, separate from controller qualification.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-gh-116-review-cycle-2.md`
+  summary: TLS for the bundled PostgreSQL: serve a certificate from the bundled instance and connect the backend and Keycloak with a verifying `sslmode`, so credentials and data do not cross the pod network in plaintext.
+  evidence: PR #109 thread 4543776321 (cycle 1) was closed by documentation only, and the cycle-2 review (5866484238) noted that nothing tracked it. Today the bundled instance has no TLS and both consumers use `sslmode=disable`; isolation rests on the NetworkPolicy and the cluster network (NOTES and `docs/installation.md` say so). It depends on the CA trust mount deferred above (`sslMode=verify-ca|verify-full`), because the clients need the same trust to verify the bundled server. Owner decision: certificate source (operator-supplied Secret or a generated one) and whether it ships with the CA mount.
+

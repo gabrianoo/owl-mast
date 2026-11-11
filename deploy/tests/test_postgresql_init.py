@@ -297,21 +297,27 @@ class PostgresInitTests(unittest.TestCase):
         finally:
             pg.close()
 
-    def test_rendered_probes_run_in_the_image_and_readiness_covers_keycloaks_database(self):
-        """109/4543776343: the probe commands as rendered. Startup and liveness answer on the Unix socket (the only
-        listener during first initialisation); readiness needs TCP and every provisioned database."""
+    def test_rendered_probes_run_in_the_image_and_readiness_ignores_keycloaks_database(self):
+        """109/4543776343 and 116/4544181074: the probe commands as rendered. Startup and liveness answer on the Unix socket
+        (the only listener during first initialisation); readiness needs TCP and the APPLICATION database only. The
+        identity bundle enabled on a volume initialised without it must leave PostgreSQL Ready: otherwise its Service
+        loses its endpoints, the backend loses its database, and the provisioning hook cannot reach the server."""
         pg = DisposablePostgres(render_scripts("identity.bundled=false", "identity.external.issuerUri=https://idp.example/realms/owl-mast"), keycloak=False)
         try:
             pg.wait_ready()
             for name in ("startupProbe", "livenessProbe", "readinessProbe"):
                 r = self.probe(pg, name)
                 self.assertEqual(r.returncode, 0, (name, r.stdout, r.stderr))
-            # the identity bundle enabled on this volume without provisioning: PostgreSQL is not Ready until Keycloak's database exists
-            missing = self.probe(pg, "readinessProbe", OWLMAST_KEYCLOAK_DATABASE="keycloak")
-            self.assertNotEqual(missing.returncode, 0)
-            self.assertEqual(self.probe(pg, "livenessProbe", OWLMAST_KEYCLOAK_DATABASE="keycloak").returncode, 0)  # alive, only not ready
+            # the bundle-on-old-volume case: Keycloak's database does not exist, and the pod carries Keycloak's variables
+            self.assertNotEqual(pg.sql("ADMIN", "keycloak", "select 1").returncode, 0)
+            for name in ("readinessProbe", "livenessProbe"):
+                r = self.probe(pg, name, OWLMAST_KEYCLOAK_DATABASE="keycloak")
+                self.assertEqual(r.returncode, 0, (name, r.stdout, r.stderr))
+            # the repair the docs name still works in that state, and readiness is unchanged by it
             self.assertEqual(pg.provision_keycloak().returncode, 0)
             self.assertEqual(self.probe(pg, "readinessProbe", OWLMAST_KEYCLOAK_DATABASE="keycloak").returncode, 0)
+            # readiness does follow the application database: a name that does not exist is not Ready
+            self.assertNotEqual(self.probe(pg, "readinessProbe", OWLMAST_APP_DATABASE="missing").returncode, 0)
         finally:
             pg.close()
 

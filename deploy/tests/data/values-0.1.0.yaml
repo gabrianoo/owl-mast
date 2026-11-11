@@ -1,0 +1,210 @@
+# Owl Mast installation values (OM-01.02). No credential values live here: every credential is an
+# existing Kubernetes Secret reference with the keys `username` and `password`.
+# Pins are immutable digests qualified on 2026-11-07 (docs/installation.md).
+
+nameOverride: ""
+fullnameOverride: ""
+# Extra labels applied to every rendered resource, including retained PersistentVolumeClaims.
+commonLabels: {}
+
+backend:
+  image:
+    repository: owl-mast/backend
+    tag: "0.1.0"
+    # Set to the produced image digest (sha256:...) for immutable installs; the tag is then informative.
+    digest: ""
+    pullPolicy: IfNotPresent
+  replicas: 1
+  containerPort: 8080
+  service:
+    type: ClusterIP
+    port: 8080
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  javaToolOptions: "-XX:MaxRAMPercentage=75"
+  probes:
+    startup:
+      path: /actuator/health/liveness
+      periodSeconds: 5
+      failureThreshold: 36
+    liveness:
+      path: /actuator/health/liveness
+      periodSeconds: 10
+      failureThreshold: 3
+    readiness:
+      path: /actuator/health/readiness
+      periodSeconds: 10
+      failureThreshold: 3
+  # Additional plain environment variables (name/value). Never put credentials here.
+  extraEnv: []
+
+# Independent frontend artifact (AD-14). The shell image is delivered by OM-01.04; these values only
+# define its deployment and routing contract. Disabled until an image is supplied.
+frontend:
+  enabled: false
+  image:
+    repository: owl-mast/frontend
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+  replicas: 1
+  containerPort: 8080
+  service:
+    type: ClusterIP
+    port: 80
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+  probes:
+    readiness:
+      path: /
+      periodSeconds: 10
+      failureThreshold: 3
+
+# Routing contract between the independent artifacts. Public origins stay an OM-02.01 gate; the
+# Ingress is disabled by default and never created without an explicit host.
+routing:
+  apiPathPrefix: /api
+  actuatorPathPrefix: /actuator
+  frontendPathPrefix: /
+  ingress:
+    enabled: false
+    className: ""
+    host: ""
+    annotations: {}
+    tls: []
+  # Gateway API (stable gateway.networking.k8s.io/v1 HTTPRoute) as the first-class routing option. The
+  # operator supplies the Gateway (GatewayClass, controller, listeners, TLS) and the Gateway API CRDs;
+  # the chart renders an HTTPRoute attached to the referenced parent(s). Mutually exclusive with the
+  # Ingress: enabling both is refused as ambiguous.
+  gateway:
+    enabled: false
+    # At least one parent Gateway reference is required when enabled.
+    parentRefs: []
+    #  - name: shared-gateway
+    #    namespace: gateway-system
+    #    sectionName: https
+    hostnames: []
+    annotations: {}
+
+# Application database. `bundled: true` deploys the PostgreSQL/VectorChord instance below;
+# `bundled: false` requires compatible external connection values (PostgreSQL 18 with VectorChord
+# 1.1.1 and its pgvector dependency installed in the database).
+database:
+  bundled: true
+  name: owlmast
+  # Existing Secret with keys `username` and `password` for the application principal.
+  existingSecret: owl-mast-db
+  external:
+    host: ""
+    port: 5432
+    # disable | allow | prefer | require | verify-ca | verify-full (applied to R2DBC and JDBC URLs)
+    sslMode: prefer
+
+# Bundled PostgreSQL 18.3 with VectorChord 1.1.1 (pgvector 0.8.2 as its required dependency).
+postgresql:
+  image:
+    repository: tensorchord/vchord-postgres
+    tag: pg18-v1.1.1
+    digest: sha256:700ff05ebdc7e4afd4dd8442e0684293046c3833677fec326550000a04cf8a91
+    pullPolicy: IfNotPresent
+  # Existing Secret with keys `username` and `password` for the provisioning superuser. It
+  # initialises databases, principals, grants and extensions once; runtime principals never use it.
+  adminExistingSecret: owl-mast-postgres-admin
+  service:
+    port: 5432
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  persistence:
+    # Empty selects the cluster default StorageClass. The claim is retained on uninstall
+    # (helm.sh/resource-policy: keep) and never recreated on upgrade.
+    storageClass: ""
+    size: 10Gi
+    accessModes:
+      - ReadWriteOnce
+    # Reuse a claim that this installation previously created (or an operator-owned claim with
+    # compatible ownership). Empty creates a new run-owned claim.
+    existingClaim: ""
+  # Set to true for the upgrade that enables the identity bundle on a bundled PostgreSQL whose volume
+  # was initialised with identity.bundled=false: first-initialisation scripts never rerun, so a
+  # PRE-upgrade hook Job (with its own script ConfigMap, waiting for PostgreSQL readiness) provisions
+  # Keycloak's database and principal before Helm waits for the Keycloak and backend consumers.
+  # Idempotent: nothing existing is dropped; an existing role keeps its password. Meaningful only on
+  # an upgrade of an existing release; leave false afterwards.
+  provisionKeycloakDatabase: false
+  securityContext:
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+  probes:
+    startup:
+      periodSeconds: 5
+      failureThreshold: 36
+    liveness:
+      periodSeconds: 15
+      failureThreshold: 3
+    readiness:
+      periodSeconds: 5
+      failureThreshold: 3
+
+# Identity provider. There is no value that disables authentication: `bundled: false` requires
+# an external OpenID Connect issuer whose discovery document the backend verifies at readiness.
+identity:
+  bundled: true
+  # Realm used by the bundled issuer URL and the synthetic import. Browser realm/client policy is OM-02.01.
+  realm: owl-mast
+  external:
+    issuerUri: ""
+  keycloak:
+    image:
+      repository: quay.io/keycloak/keycloak
+      tag: "26.8.2"
+      digest: sha256:3879c623248408de29a5303178b5816c77e8dfef3890c361f8c0bbeaa979ba3b
+      pullPolicy: IfNotPresent
+    # Existing Secret with keys `username` and `password` for the temporary bootstrap admin.
+    bootstrapExistingSecret: owl-mast-keycloak-bootstrap
+    # Import a minimal synthetic realm named `identity.realm` on start (fixture only).
+    importRealm: true
+    database:
+      name: keycloak
+      # Existing Secret with keys `username` and `password` for Keycloak's own database principal.
+      existingSecret: owl-mast-keycloak-db
+      # Used only when database.bundled is false: where Keycloak's database lives.
+      external:
+        host: ""
+        port: 5432
+        sslMode: prefer
+    service:
+      port: 8080
+      managementPort: 9000
+    resources:
+      requests:
+        cpu: 500m
+        memory: 768Mi
+      limits:
+        cpu: "1"
+        memory: 1536Mi
+    probes:
+      startup:
+        periodSeconds: 5
+        failureThreshold: 60
+      liveness:
+        periodSeconds: 15
+        failureThreshold: 3
+      readiness:
+        periodSeconds: 10
+        failureThreshold: 3

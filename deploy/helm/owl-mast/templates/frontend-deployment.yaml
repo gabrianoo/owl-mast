@@ -48,10 +48,10 @@ spec:
               value: {{ .Values.routing.apiPathPrefix | quote }}
           livenessProbe:
             httpGet:
-              path: {{ .Values.frontend.probes.liveness.path }}
+              path: {{ dig "liveness" "path" "/" .Values.frontend.probes }}
               port: http
-            periodSeconds: {{ .Values.frontend.probes.liveness.periodSeconds }}
-            failureThreshold: {{ .Values.frontend.probes.liveness.failureThreshold }}
+            periodSeconds: {{ dig "liveness" "periodSeconds" 15 .Values.frontend.probes }}
+            failureThreshold: {{ dig "liveness" "failureThreshold" 3 .Values.frontend.probes }}
           readinessProbe:
             httpGet:
               path: {{ .Values.frontend.probes.readiness.path }}

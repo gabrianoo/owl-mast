@@ -371,7 +371,9 @@ create_labelled_secret() { # create_labelled_secret <namespace> <name> <owner> <
   # One API call creates the Secret WITH its ownership label: the object is built client-side (--dry-run=client,
   # nothing reaches the server), labelled in memory and created with `create`, which never overwrites. A separate
   # `label` call could fail or be interrupted after the create and leave an unlabelled Secret that every later
-  # run refuses as foreign. The value exists only in the pipe.
+  # run refuses as foreign. A value the caller pipes in on stdin (--from-file=<key>=/dev/stdin) exists only in
+  # pipes; a --from-literal value is a kubectl argument, visible in the process list while the command runs, so
+  # it is for non-secret keys only.
   local ns="$1" name="$2" owner="$3" err; shift 3
   if ! err="$(k -n "$ns" create secret generic "$name" "$@" --dry-run=client -o json \
         | python3 -c 'import json,sys; s=json.load(sys.stdin); s["metadata"].setdefault("labels",{})[sys.argv[1]]=sys.argv[2]; print(json.dumps(s))' "$RUN_LABEL_KEY" "$owner" \
@@ -388,7 +390,11 @@ ensure_secret() { # ensure_secret <namespace> <name> <username> [owner]: random 
     *) refuse "secret $ns/$name: $state" ;;
   esac
   local password; password="$(openssl rand -base64 30 | tr -d '/+=' | cut -c1-32)"
-  create_labelled_secret "$ns" "$name" "$owner" --from-literal=username="$user" --from-literal=password="$password"  # created with its explicit identity in one call
+  # The password goes in on stdin, written by a shell builtin: it is never an argument of any process. printf
+  # adds no newline, so the Secret holds exactly the generated value.
+  # (Process substitution, not a pipeline: the function must run in this shell so that its refusal stops the run.)
+  create_labelled_secret "$ns" "$name" "$owner" --from-literal=username="$user" --from-file=password=/dev/stdin \
+    < <(printf '%s' "$password")  # created with its explicit identity in one call
   log "secret $ns/$name created (synthetic, value not recorded)"
 }
 replicate_secret() { # replicate_secret <src-ns> <src-name> <dst-ns> <dst-name>: same values, owned source only, piped in memory only

@@ -9,9 +9,14 @@
 #   - the JVM is the qualified Temurin 27.0.1 and starts on a read-only root with /tmp as tmpfs;
 #   - the application jar is present at /app/owl-mast.jar and is a Spring Boot executable archive;
 #   - the APPLICATION starts on that read-only root as the chart runs it (UID/GID, no capabilities, no new
-#     privileges, /tmp the only writable path): the image's own entrypoint launches Spring Boot, which gets as
-#     far as binding the configuration and stops only on the deliberately missing identity issuer. A broken
-#     launcher, a class-loading failure or a write outside /tmp fails here instead of on the next Kind run.
+#     privileges, /tmp the only writable path): the image's own entrypoint launches Spring Boot with a complete
+#     configuration (an https issuer, database URLs on a closed loopback port). The context binds the
+#     configuration, creates its beans and stops at the FIRST DATABASE CONNECTION (the Flyway initializer), which
+#     is refused by design. A broken launcher, a class-loading failure, a configuration-binding failure or a
+#     filesystem write outside /tmp up to that point fails here instead of on the next Kind run.
+#     NOT proven here (image-level proof, not runtime qualification): everything after the first database
+#     connection, that is the migrations, the R2DBC pool, the Netty listener and any file the running
+#     application writes. Those belong to the Kind qualification (scripts/qualify-local-install.sh).
 # Usage: scripts/verify-backend-image.sh   (builds the bootJar first unless OWLMAST_SKIP_BOOTJAR=1)
 set -euo pipefail
 
@@ -58,24 +63,30 @@ check "application jar present at /app/owl-mast.jar" run --entrypoint test "$IMA
 check "application jar is a Spring Boot executable archive" bash -c "docker run --rm --network none --entrypoint sh '$IMAGE' -c 'cd /tmp && jar tf /app/owl-mast.jar 2>/dev/null || unzip -l /app/owl-mast.jar' | grep 'BOOT-INF/lib/' >/dev/null"
 check "entrypoint runs the application jar" bash -c "[ \"\$(docker image inspect -f '{{json .Config.Entrypoint}}' '$IMAGE')\" = '[\"java\",\"-jar\",\"/app/owl-mast.jar\"]' ]"
 
-# The application itself, started by the image's own entrypoint exactly as the chart's pod runs it. No issuer is
-# configured and there is no network, so a healthy image reaches Spring Boot's configuration binding and exits
-# with the IdentityProperties message; any other ending is a failure of the image, not of the configuration.
-echo "== start the application on the read-only root (expected to stop on the missing identity issuer)"
+# The application itself, started by the image's own entrypoint exactly as the chart's pod runs it, with the
+# variables the chart sets. There is no network and nothing listens on the loopback port, so a healthy image
+# binds its configuration, creates its beans and exits when the Flyway initializer's first connection is
+# refused; any other ending is a failure of the image, not of the configuration.
+echo "== start the application on the read-only root (expected to stop at the first database connection)"
 smoke_name="owlmast-backend-smoke-$$"
 smoke_rc=0
 smoke_log="$(timeout 180 docker run --name "$smoke_name" --network none --read-only --tmpfs /tmp:rw,size=64m \
   --user "$chart_uid:$chart_gid" --cap-drop ALL --security-opt no-new-privileges \
-  -e JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=75 "$IMAGE" 2>&1)" || smoke_rc=$?
+  -e JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=75 \
+  -e OWLMAST_IDENTITY_ISSUER_URI=https://idp.invalid/realms/owl-mast -e OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER=false \
+  -e OWLMAST_DATABASE_R2DBC_URL=r2dbc:postgresql://127.0.0.1:1/owlmast -e OWLMAST_DATABASE_JDBC_URL=jdbc:postgresql://127.0.0.1:1/owlmast \
+  -e OWLMAST_DATABASE_USERNAME=smoke -e OWLMAST_DATABASE_PASSWORD=smoke "$IMAGE" 2>&1)" || smoke_rc=$?
 docker rm -f "$smoke_name" >/dev/null 2>&1 || true
 check "the application process ended by itself (no hang, exit code $smoke_rc)" test "$smoke_rc" -ne 0 -a "$smoke_rc" -ne 124
 check "Spring Boot started from the image entrypoint" grep -q 'Starting OwlMastApplication' <<<"$smoke_log"
-check "startup stopped on the missing identity issuer, i.e. it reached configuration binding" grep -q 'owlmast.identity.issuer-uri is required' <<<"$smoke_log"
-check "no filesystem, launcher or class-loading failure on the read-only root" bash -c '! grep -Eqi "Read-only file system|Permission denied|AccessDeniedException|ClassNotFoundException|NoClassDefFoundError|Unable to access jarfile|no main manifest attribute|UnsatisfiedLinkError" <<<"$1"' _ "$smoke_log"
+check "configuration binding succeeded (no identity or binding refusal)" bash -c '! grep -Eq "owlmast\.identity\.|Failed to bind properties|ConfigurationPropertiesBindException" <<<"$1"' _ "$smoke_log"
+check "bean creation reached the actuator endpoints" grep -q "Exposing 1 endpoint beneath base path '/actuator'" <<<"$smoke_log"
+check "startup stopped at the first database connection (Flyway initializer, connection refused)" bash -c 'grep -q "flywayInitializer" <<<"$1" && grep -q "Connection to 127.0.0.1:1 refused" <<<"$1"' _ "$smoke_log"
+check "no filesystem, launcher or class-loading failure on the read-only root up to that point" bash -c '! grep -Eqi "Read-only file system|Permission denied|AccessDeniedException|ClassNotFoundException|NoClassDefFoundError|Unable to access jarfile|no main manifest attribute|UnsatisfiedLinkError" <<<"$1"' _ "$smoke_log"
 if [ "$failures" -ne 0 ]; then echo "---- application output (last 40 lines)"; tail -n 40 <<<"$smoke_log"; fi
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures backend image check(s) failed"
   exit 1
 fi
-echo "backend image $IMAGE honours the chart's runtime contract"
+echo "backend image $IMAGE honours the chart's image contract (start proven up to the first database connection; runtime qualification is the Kind run)"

@@ -48,7 +48,10 @@ Suffixed resource name, at most 63 characters: the fullname is shortened BEFORE 
 long release name or fullnameOverride never renders a name the API server rejects. A shortened base carries a
 6-character hash of the release name and the whole fullname, so two releases whose fullnames share the kept
 prefix never render the same name (a hook's before-hook-creation policy deletes by name, without an ownership
-check). Names that fit are unchanged. Usage: include "owl-mast.suffixedName" (list . "postgresql-data")
+check). Names that fit are unchanged. Usage: include "owl-mast.suffixedName" (list . "postgresql-init")
+The hash keeps two releases apart by accident, not by intent: an operator who deliberately names a release
+after another release's shortened name plus its hash renders the same names. Helm's ownership check then
+refuses the shared objects; only the hook Job and its ConfigMap are replaced by name (docs/installation.md).
 */}}
 {{- define "owl-mast.suffixedName" -}}
 {{- $root := index . 0 -}}
@@ -67,7 +70,13 @@ check). Names that fit are unchanged. Usage: include "owl-mast.suffixedName" (li
 {{- define "owl-mast.keycloak.fullname" -}}{{ include "owl-mast.suffixedName" (list . "keycloak") }}{{- end -}}
 {{- define "owl-mast.backend.fullname" -}}{{ include "owl-mast.suffixedName" (list . "backend") }}{{- end -}}
 {{- define "owl-mast.frontend.fullname" -}}{{ include "owl-mast.suffixedName" (list . "frontend") }}{{- end -}}
-{{- define "owl-mast.postgresql.dataClaim" -}}{{ include "owl-mast.suffixedName" (list . "postgresql-data") }}{{- end -}}
+{{/*
+The data claim keeps the chart 0.1.0 spelling, <postgresql fullname>-data, and is never shortened on its own:
+a PersistentVolumeClaim name may have 253 characters, and a different name on upgrade would attach a new,
+empty volume while the old one stays behind, detached. Every fullname chart 0.1.0 could install (at most 52
+characters, the limit of its PostgreSQL Service name) therefore renders the claim it already has.
+*/}}
+{{- define "owl-mast.postgresql.dataClaim" -}}{{ printf "%s-data" (include "owl-mast.postgresql.fullname" .) }}{{- end -}}
 {{- define "owl-mast.postgresql.initConfigMap" -}}{{ include "owl-mast.suffixedName" (list . "postgresql-init") }}{{- end -}}
 {{- define "owl-mast.postgresql.provisionScripts" -}}{{ include "owl-mast.suffixedName" (list . "postgresql-provision-scripts") }}{{- end -}}
 {{- define "owl-mast.postgresql.provisionJob" -}}{{ include "owl-mast.suffixedName" (list . "postgresql-provision-keycloak") }}{{- end -}}
@@ -113,10 +122,31 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- if and (not $v.backend.image.tag) (not $v.backend.image.digest) -}}
 {{- fail "backend.image.tag or backend.image.digest is required: without either the image reference renders as \"<repository>:\" and the pod fails at pull time" -}}
 {{- end -}}
-{{- /* JVM memory and -XX tuning flags only: a system property, agent or argument file here would override the validated configuration */ -}}
+{{- include "owl-mast.validateImageTag" (list "backend.image.tag" $v.backend.image.tag) -}}
+{{- /* A named allow-list of JVM memory and tuning options: a system property, agent, argument file, or an -XX option that */ -}}
+{{- /* loads a file or opens the attach mechanism would override or bypass the validated configuration */ -}}
 {{- $jvm := $v.backend.javaToolOptions | default "" -}}
-{{- if or (not (regexMatch "^\\s*(-(XX:[+-][A-Za-z0-9]+|XX:[A-Za-z0-9]+=[A-Za-z0-9.%]+|Xm[sxn][0-9]+[kKmMgG]?|Xss[0-9]+[kKmMgG]?)(\\s+|$))*$" $jvm)) (regexMatch "-XX:(VMOptionsFile|Flags|OnError|OnOutOfMemoryError)=" $jvm) -}}
-{{- fail (printf "backend.javaToolOptions %q is refused: only JVM memory and tuning flags are accepted (-XX:+Flag, -XX:-Flag, -XX:Name=value, -Xms/-Xmx/-Xmn/-Xss). System properties (-D), agents (-javaagent, -agentlib, -agentpath), argument files (@file), -XX:VMOptionsFile, -XX:Flags and -XX:On* hooks would override the chart-validated issuer and database configuration" $jvm) -}}
+{{- if not (regexMatch (include "owl-mast.javaToolOptionsPattern" .) $jvm) -}}
+{{- fail (printf "backend.javaToolOptions %q is refused: only the listed JVM memory and tuning options are accepted (-Xms/-Xmx/-Xmn/-Xss with a size, and the -XX options named in values.yaml, such as -XX:MaxRAMPercentage=75 or -XX:+UseZGC). System properties (-D), agents (-javaagent, -agentlib, -agentpath), argument files (@file) and every other -XX option (file-loading, hook and attach options included) are refused: they would override the chart-validated issuer and database configuration" $jvm) -}}
+{{- end -}}
+{{- /* the schema's extraEnv rules, repeated here so that --skip-schema-validation does not reopen them: a later */ -}}
+{{- /* duplicate of a variable the chart renders wins in Kubernetes */ -}}
+{{- range $i, $e := $v.backend.extraEnv -}}
+{{- $name := toString (get $e "name") -}}
+{{- if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $name) -}}
+{{- fail (printf "backend.extraEnv[%d].name %q is not a valid environment variable name" $i $name) -}}
+{{- end -}}
+{{- if or (regexMatch "(?i)^(OWLMAST_|SPRING_|MANAGEMENT_|SERVER_|LOADER_)" $name) (regexMatch "(?i)^(JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS|JAVA_OPTS|JAVA_HOME|PATH|CLASSPATH|LD_PRELOAD|LD_LIBRARY_PATH)$" $name) -}}
+{{- fail (printf "backend.extraEnv[%d].name %q is refused: it would override the chart-validated configuration (OWLMAST_*, SPRING_*, MANAGEMENT_*, SERVER_*, LOADER_*), the JVM options or the dynamic loader" $i $name) -}}
+{{- end -}}
+{{- if regexMatch "(?i)(password|secret|token|credential)" $name -}}
+{{- fail (printf "backend.extraEnv[%d].name %q looks like a credential: credentials are existing Secret references, never plain values" $i $name) -}}
+{{- end -}}
+{{- end -}}
+{{- /* the readiness indicator caches its result for 5 s (IdentityDiscoveryHealthIndicator.CACHE_TTL): a shorter or */ -}}
+{{- /* equal period would let consecutive probes read one cached result */ -}}
+{{- if le (int $v.backend.probes.readiness.periodSeconds) 5 -}}
+{{- fail (printf "backend.probes.readiness.periodSeconds=%v is refused: it must be greater than 5, the interval for which the backend caches its identity readiness result, so every probe observes a current result" $v.backend.probes.readiness.periodSeconds) -}}
 {{- end -}}
 {{- if not $v.database.existingSecret -}}
 {{- fail "database.existingSecret is required: an existing Secret with keys username and password for the application principal" -}}
@@ -132,7 +162,7 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- include "owl-mast.validateSslMode" (list "database.external" $v.database.external) -}}
 {{- end -}}
 {{- if $v.identity.bundled -}}
-{{- if and $v.identity.keycloak.bootstrapAdmin.enabled (not $v.identity.keycloak.bootstrapExistingSecret) -}}
+{{- if and (eq (include "owl-mast.keycloak.bootstrapAdminEnabled" .) "true") (not $v.identity.keycloak.bootstrapExistingSecret) -}}
 {{- fail "identity.keycloak.bootstrapExistingSecret is required when identity.bundled=true and identity.keycloak.bootstrapAdmin.enabled=true" -}}
 {{- end -}}
 {{- if not $v.identity.keycloak.database.existingSecret -}}
@@ -159,11 +189,33 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- end -}}
 {{- /* trusted forwarding headers only where a named proxy is the sole admitted path besides the backend */ -}}
 {{- if $v.identity.keycloak.proxyHeaders -}}
-{{- if not $v.networkPolicy.enabled -}}
+{{- $policy := $v.networkPolicy | default dict -}}
+{{- if not (dig "enabled" true $policy) -}}
 {{- fail (printf "identity.keycloak.proxyHeaders=%s needs networkPolicy.enabled=true: without the Keycloak NetworkPolicy any pod can reach :8080 and send forged X-Forwarded-*/Forwarded headers" $v.identity.keycloak.proxyHeaders) -}}
 {{- end -}}
-{{- if not (dig "keycloak" "extraFrom" list $v.networkPolicy) -}}
+{{- $peers := dig "keycloak" "extraFrom" list $policy -}}
+{{- if not $peers -}}
 {{- fail (printf "identity.keycloak.proxyHeaders=%s needs networkPolicy.keycloak.extraFrom to name the trusted proxy: with no entry the policy admits only the backend, whose direct requests are not proxied" $v.identity.keycloak.proxyHeaders) -}}
+{{- end -}}
+{{- /* a peer must NAME the proxy: an empty peer or an empty selector admits every pod, a /0 block every address */ -}}
+{{- range $i, $peer := $peers -}}
+{{- if not $peer -}}
+{{- fail (printf "networkPolicy.keycloak.extraFrom[%d] is empty: with identity.keycloak.proxyHeaders=%s every entry must name the trusted proxy (podSelector, namespaceSelector or ipBlock), because an empty peer admits every pod" $i $v.identity.keycloak.proxyHeaders) -}}
+{{- end -}}
+{{- range $key := list "podSelector" "namespaceSelector" -}}
+{{- if hasKey $peer $key -}}
+{{- $selector := get $peer $key | default dict -}}
+{{- if and (not (get $selector "matchLabels")) (not (get $selector "matchExpressions")) -}}
+{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].%s is empty: with identity.keycloak.proxyHeaders=%s it must select the trusted proxy by matchLabels or matchExpressions, because an empty selector admits every %s, each able to send forged X-Forwarded-*/Forwarded headers" $i $key $v.identity.keycloak.proxyHeaders (ternary "pod of the release namespace" "pod of every namespace" (eq $key "podSelector"))) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey $peer "ipBlock" -}}
+{{- $cidr := toString (get (get $peer "ipBlock" | default dict) "cidr") -}}
+{{- if or (not (contains "/" $cidr)) (hasSuffix "/0" $cidr) -}}
+{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].ipBlock.cidr %q is refused: with identity.keycloak.proxyHeaders=%s it must be the proxy's own address range, not every address" $i $cidr $v.identity.keycloak.proxyHeaders) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- else -}}
@@ -171,8 +223,15 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- if not $issuer -}}
 {{- fail "identity.bundled=false requires identity.external.issuerUri: disabling the bundled Keycloak never disables authentication" -}}
 {{- end -}}
-{{- /* authority: a DNS name of RFC 1123 labels (an IPv4 address included) with an optional port 1-65535 */ -}}
-{{- $authority := "[A-Za-z0-9]([-A-Za-z0-9]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([-A-Za-z0-9]*[A-Za-z0-9])?)*(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?" -}}
+{{- /* host: what java.net.URI in the backend parses as a server host (IdentityProperties refuses a null host): a */ -}}
+{{- /* dotted IPv4 address with octets 0-255, a single label, or labels whose LAST one starts with a letter; an */ -}}
+{{- /* optional trailing dot. idp.123 or 1.2.3.999 parse with no host there and are refused here. An IPv6 literal */ -}}
+{{- /* is not accepted by the chart. Then an optional port 1-65535. */ -}}
+{{- $octet := "(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])" -}}
+{{- $label := "[A-Za-z0-9]([-A-Za-z0-9]*[A-Za-z0-9])?" -}}
+{{- $top := "[A-Za-z]([-A-Za-z0-9]*[A-Za-z0-9])?" -}}
+{{- $host := printf "((%s\\.){3}%s|%s\\.?|(%s\\.)+%s\\.?)" $octet $octet $label $label $top -}}
+{{- $authority := printf "%s(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?" $host -}}
 {{- /* path: RFC 3986 pchar segments without '@' (what java.net.URI in the backend accepts), percent escapes complete */ -}}
 {{- $path := "(/([-A-Za-z0-9._~!$&'()*+,;=:]|%[0-9A-Fa-f]{2})*)*" -}}
 {{- if regexMatch (printf "^https://%s%s$" $authority $path) $issuer -}}
@@ -181,7 +240,7 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- fail (printf "identity.external.issuerUri %q uses plaintext http: discovery and signing keys could be substituted in transit. Use https://, or set identity.external.allowInsecureIssuer=true to accept plaintext explicitly (disposable local fixtures only)" $issuer) -}}
 {{- end -}}
 {{- else -}}
-{{- fail (printf "identity.external.issuerUri %q must be an absolute https:// URL with a host, an optional port 1-65535, valid path characters and no query, fragment or user info" $issuer) -}}
+{{- fail (printf "identity.external.issuerUri %q must be an absolute https:// URL with a host the backend can parse (a DNS name whose last label starts with a letter, a single label, or an IPv4 address with octets 0-255; no IPv6 literal), an optional port 1-65535, valid path characters and no query, fragment or user info" $issuer) -}}
 {{- end -}}
 {{- end -}}
 {{- /* AC3: every principal has its own Secret */ -}}
@@ -189,7 +248,7 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- if $v.database.bundled -}}{{- $secrets = append $secrets (list "postgresql.adminExistingSecret" $v.postgresql.adminExistingSecret) -}}{{- end -}}
 {{- if $v.identity.bundled -}}
 {{- $secrets = append $secrets (list "identity.keycloak.database.existingSecret" $v.identity.keycloak.database.existingSecret) -}}
-{{- if $v.identity.keycloak.bootstrapAdmin.enabled -}}
+{{- if eq (include "owl-mast.keycloak.bootstrapAdminEnabled" .) "true" -}}
 {{- $secrets = append $secrets (list "identity.keycloak.bootstrapExistingSecret" $v.identity.keycloak.bootstrapExistingSecret) -}}
 {{- end -}}
 {{- end -}}
@@ -206,7 +265,7 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- end -}}
 {{- if .Release.IsInstall -}}
 {{- if $v.postgresql.persistence.existingClaim -}}
-{{- fail (printf "postgresql.provisionKeycloakDatabase=true is refused on install: the pre-upgrade hook needs the release's existing PostgreSQL. This install reuses the claim %q, whose initialised volume never reruns the first-initialisation script: if it was initialised with identity.bundled=false, install first, then provision Keycloak's database in the PostgreSQL pod (kubectl exec deploy/<release>-postgresql -- bash /owl-mast/provision-keycloak.sh; docs/installation.md), or install with the identity mode the volume was initialised with and enable the bundle with this value on helm upgrade" $v.postgresql.persistence.existingClaim) -}}
+{{- fail (printf "postgresql.provisionKeycloakDatabase=true is refused on install: the pre-upgrade hook needs the release's existing PostgreSQL. This install reuses the claim %q, whose initialised volume never reruns the first-initialisation script: if it was initialised with identity.bundled=false, install first, then provision Keycloak's database in the PostgreSQL pod (kubectl exec deploy/%s -- bash /owl-mast/provision-keycloak.sh; docs/installation.md), or install with the identity mode the volume was initialised with and enable the bundle with this value on helm upgrade" $v.postgresql.persistence.existingClaim (include "owl-mast.postgresql.fullname" .)) -}}
 {{- end -}}
 {{- fail "postgresql.provisionKeycloakDatabase=true is refused on install: a fresh install provisions Keycloak's database at first initialisation, and the pre-upgrade hook needs the release's existing PostgreSQL (use it on helm upgrade; helm template needs --is-upgrade)" -}}
 {{- end -}}
@@ -215,6 +274,7 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- if and (not $v.frontend.image.tag) (not $v.frontend.image.digest) -}}
 {{- fail "frontend.enabled=true requires frontend.image.tag or frontend.image.digest (artifact delivered by OM-01.04)" -}}
 {{- end -}}
+{{- include "owl-mast.validateImageTag" (list "frontend.image.tag" $v.frontend.image.tag) -}}
 {{- end -}}
 {{- if $v.routing.ingress.enabled -}}
 {{- include "owl-mast.validateIngress" . -}}
@@ -248,11 +308,11 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- define "owl-mast.validateSslMode" -}}
 {{- $path := index . 0 -}}
 {{- $ext := index . 1 -}}
-{{- if not (has $ext.sslMode (list "disable" "allow" "prefer" "require" "verify-ca" "verify-full")) -}}
-{{- fail (printf "%s.sslMode must be one of disable, allow, prefer, require, verify-ca, verify-full" $path) -}}
-{{- end -}}
 {{- if has $ext.sslMode (list "verify-ca" "verify-full") -}}
 {{- fail (printf "%s.sslMode=%s is refused: it needs a CA trust the chart does not mount yet (deferred, see docs/installation.md), so the backend and Keycloak would render and then fail every database connection. Use require, which encrypts the connection but does not authenticate the server" $path $ext.sslMode) -}}
+{{- end -}}
+{{- if not (has $ext.sslMode (list "disable" "allow" "prefer" "require")) -}}
+{{- fail (printf "%s.sslMode must be one of disable, allow, prefer, require" $path) -}}
 {{- end -}}
 {{- if and (has $ext.sslMode (list "disable" "allow" "prefer")) (not $ext.allowInsecureTransport) -}}
 {{- fail (printf "%s.sslMode=%s can send database credentials in plaintext: use require, or set %s.allowInsecureTransport=true to accept plaintext explicitly" $path $ext.sslMode $path) -}}
@@ -263,11 +323,15 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- define "owl-mast.validateIngress" -}}
 {{- $in := .Values.routing.ingress -}}
 {{- $hostPattern := "^(\\*\\.)?[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$" -}}
+{{- $ipPattern := "^[0-9]+(\\.[0-9]+){3}$" -}}
 {{- if not $in.host -}}
 {{- fail "routing.ingress.enabled=true requires routing.ingress.host" -}}
 {{- end -}}
 {{- if or (gt (len $in.host) 253) (not (regexMatch $hostPattern $in.host)) -}}
 {{- fail (printf "routing.ingress.host %q is not a valid Ingress host: lowercase DNS name with labels of at most 63 characters, optional leading wildcard label '*.', no scheme, port or path" $in.host) -}}
+{{- end -}}
+{{- if regexMatch $ipPattern $in.host -}}
+{{- fail (printf "routing.ingress.host %q is an IP address: the Kubernetes API server rejects an IP address as an Ingress host (it must be a DNS name)" $in.host) -}}
 {{- end -}}
 {{- if $in.tls -}}
 {{- $covered := false -}}
@@ -281,6 +345,9 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- range $t.hosts -}}
 {{- if or (gt (len .) 253) (not (regexMatch $hostPattern .)) -}}
 {{- fail (printf "routing.ingress.tls[%d].hosts entry %q is not a valid DNS name" $i .) -}}
+{{- end -}}
+{{- if regexMatch $ipPattern . -}}
+{{- fail (printf "routing.ingress.tls[%d].hosts entry %q is an IP address: the Kubernetes API server rejects an IP address as an Ingress TLS host" $i .) -}}
 {{- end -}}
 {{- if eq . $in.host -}}{{- $covered = true -}}{{- end -}}
 {{- if and (hasPrefix "*." .) (not (hasPrefix "*." $in.host)) (contains "." $in.host) -}}
@@ -349,7 +416,7 @@ by the operator's Gateway.
 {{- $_ := set $seen $parent $section -}}
 {{- end -}}
 {{- end -}}
-{{- if and (not $gw.hostnames) (not $gw.allowAllListenerHostnames) -}}
+{{- if and (not $gw.hostnames) (not (dig "allowAllListenerHostnames" false $gw)) -}}
 {{- fail "routing.gateway.hostnames is empty: an HTTPRoute without hostnames attaches to every hostname of the referenced listener(s), including other tenants' on a shared Gateway. List the hostnames, or set routing.gateway.allowAllListenerHostnames=true to accept every listener hostname explicitly" -}}
 {{- end -}}
 {{- if gt (len $gw.hostnames) 16 -}}
@@ -371,4 +438,25 @@ by the operator's Gateway.
 {{- if or (not (hasPrefix "/" $path)) (gt (len $path) 1024) (contains "//" $path) (contains "/./" $path) (contains "/../" $path) (contains "%2f" $path) (contains "%2F" $path) (contains "#" $path) (hasSuffix "/." $path) (hasSuffix "/.." $path) (not (regexMatch "^(?:[-A-Za-z0-9/._~!$&'()*+,;=:@]|[%][0-9a-fA-F]{2})+$" $path)) -}}
 {{- fail (printf "routing path prefix %q is not a valid HTTPRoute PathPrefix value: it must start with '/', be at most 1024 characters, use only valid path characters or %%XX escapes, and contain none of '//', '/./', '/../', '%%2f', '%%2F' or '#'" $path) -}}
 {{- end -}}
+{{- end -}}
+
+{{/* An image tag as registries accept it; a blank or whitespace-only tag would render "<repository>: ". validateImageTag (list "<values path>" <tag>) */}}
+{{- define "owl-mast.validateImageTag" -}}
+{{- $tag := index . 1 | default "" | toString -}}
+{{- if and $tag (not (regexMatch "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$" $tag)) -}}
+{{- fail (printf "%s %q is not a valid image tag: letters, digits, '_', '.' and '-', not starting with '.' or '-', at most 128 characters (no whitespace)" (index . 0) $tag) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+backend.javaToolOptions: whitespace-separated options, each one of the heap and stack sizes or a NAMED -XX
+option. The same expression is the schema's pattern (deploy/tests pins that they are identical).
+*/}}
+{{- define "owl-mast.javaToolOptionsPattern" -}}
+^\s*(-(Xm[sxn][0-9]+[kKmMgG]?|Xss[0-9]+[kKmMgG]?|XX:(MaxRAMPercentage|InitialRAMPercentage|MinRAMPercentage|MaxRAM|MaxMetaspaceSize|MetaspaceSize|MaxDirectMemorySize|ReservedCodeCacheSize|ActiveProcessorCount|MaxHeapFreeRatio|MinHeapFreeRatio|MaxGCPauseMillis|G1HeapRegionSize|ParallelGCThreads|ConcGCThreads|InitiatingHeapOccupancyPercent|SoftMaxHeapSize|MaxNewSize|NewSize|NewRatio|SurvivorRatio|TieredStopAtLevel)=[0-9]+(\.[0-9]+)?[kKmMgG]?|XX:[+-](UseG1GC|UseZGC|UseSerialGC|UseParallelGC|UseShenandoahGC|UseContainerSupport|UseStringDeduplication|AlwaysPreTouch|ExitOnOutOfMemoryError|UseCompressedOops|UseCompressedClassPointers|TieredCompilation|DisableExplicitGC|UseNUMA))(\s+|$))*$
+{{- end -}}
+
+{{/* 0.2.0 value read with its default, so a release upgraded with --reuse-values (0.1.0 values, no new keys) renders. */}}
+{{- define "owl-mast.keycloak.bootstrapAdminEnabled" -}}
+{{- dig "bootstrapAdmin" "enabled" true .Values.identity.keycloak | toString -}}
 {{- end -}}

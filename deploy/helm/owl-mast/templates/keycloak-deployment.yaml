@@ -93,7 +93,7 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.identity.keycloak.database.existingSecret }}
                   key: password
-            {{- if .Values.identity.keycloak.bootstrapAdmin.enabled }}
+            {{- if eq (include "owl-mast.keycloak.bootstrapAdminEnabled" .) "true" }}
             # Temporary: switch identity.keycloak.bootstrapAdmin.enabled off once a permanent admin exists.
             - name: KC_BOOTSTRAP_ADMIN_USERNAME
               valueFrom:
@@ -126,18 +126,27 @@ spec:
               port: management
             periodSeconds: {{ .Values.identity.keycloak.probes.startup.periodSeconds }}
             failureThreshold: {{ .Values.identity.keycloak.probes.startup.failureThreshold }}
+            {{- with (dig "timeoutSeconds" 0 .Values.identity.keycloak.probes.startup) }}
+            timeoutSeconds: {{ . }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /health/live
               port: management
             periodSeconds: {{ .Values.identity.keycloak.probes.liveness.periodSeconds }}
             failureThreshold: {{ .Values.identity.keycloak.probes.liveness.failureThreshold }}
+            {{- with (dig "timeoutSeconds" 0 .Values.identity.keycloak.probes.liveness) }}
+            timeoutSeconds: {{ . }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /health/ready
               port: management
             periodSeconds: {{ .Values.identity.keycloak.probes.readiness.periodSeconds }}
             failureThreshold: {{ .Values.identity.keycloak.probes.readiness.failureThreshold }}
+            {{- with (dig "timeoutSeconds" 0 .Values.identity.keycloak.probes.readiness) }}
+            timeoutSeconds: {{ . }}
+            {{- end }}
           resources:
             {{- toYaml .Values.identity.keycloak.resources | nindent 12 }}
           # Read-only root: Keycloak writes its runtime data, the start-time (re)build of the Quarkus

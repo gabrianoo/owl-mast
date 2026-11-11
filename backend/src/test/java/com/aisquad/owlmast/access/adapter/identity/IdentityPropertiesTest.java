@@ -3,6 +3,10 @@ package com.aisquad.owlmast.access.adapter.identity;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
@@ -35,6 +39,46 @@ class IdentityPropertiesTest {
         .hasMessageContaining("absolute URL");
     assertThatThrownBy(() -> new IdentityProperties("ftp://idp.example/realms/x", false))
         .hasMessageContaining("http or https");
+  }
+
+  /**
+   * The chart's issuer rule and this class are compared on one sample file: the chart render test
+   * (deploy/tests/test_chart_render.py) renders every {@code accept} line and is refused on every
+   * {@code refuse} and {@code chart-refuse} line. Here every {@code accept} and {@code
+   * chart-refuse} line must construct and every {@code refuse} line must throw, so the chart never
+   * renders an issuer that stops the backend at startup.
+   */
+  @Test
+  void theChartsIssuerSamplesAgreeWithThisClass() throws IOException {
+    List<String> lines;
+    try (InputStream in = getClass().getResourceAsStream("/identity/issuer-samples.txt")) {
+      assertThat(in).as("identity/issuer-samples.txt on the test classpath").isNotNull();
+      lines = new String(in.readAllBytes(), StandardCharsets.UTF_8).lines().toList();
+    }
+    int accepted = 0;
+    int refused = 0;
+    for (String line : lines) {
+      if (line.isBlank() || line.startsWith("#")) {
+        continue;
+      }
+      String kind = line.substring(0, line.indexOf(' '));
+      String issuer = line.substring(line.indexOf(' ') + 1);
+      switch (kind) {
+        case "accept", "chart-refuse" -> {
+          assertThat(new IdentityProperties(issuer, false).issuerUri()).as(line).isEqualTo(issuer);
+          accepted++;
+        }
+        case "refuse" -> {
+          assertThatThrownBy(() -> new IdentityProperties(issuer, false))
+              .as(line)
+              .isInstanceOf(IllegalArgumentException.class);
+          refused++;
+        }
+        default -> throw new AssertionError("unknown sample kind: " + line);
+      }
+    }
+    assertThat(accepted).isGreaterThanOrEqualTo(10);
+    assertThat(refused).isGreaterThanOrEqualTo(15);
   }
 
   @Test

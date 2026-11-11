@@ -1,0 +1,44 @@
+# Issuer samples shared by the chart render tests (deploy/tests/test_chart_render.py) and the backend
+# (IdentityPropertiesTest): the chart must refuse every issuer the backend refuses, so that nothing renders
+# and then crash-loops the backend, and must accept the hosts java.net.URI parses as a server host.
+#   accept        the chart renders it and IdentityProperties accepts it
+#   refuse        the chart refuses it and IdentityProperties refuses it
+#   chart-refuse  the chart refuses it although IdentityProperties accepts it (a deliberate, narrower chart rule)
+accept https://idp.example/realms/owl-mast
+accept https://idp.example/realms/owl-mast/
+accept https://idp.example:8443/realms/x
+accept https://IDP.Example/realms/x
+accept https://idp/realms/x
+accept https://idp.example./realms/x
+accept https://x--y.example/realms/x
+accept https://a.b-c.z9/realms/x
+accept https://10.0.0.1/realms/x
+accept https://255.255.255.255:65535/realms/x
+accept https://0.0.0.0/realms/x
+accept https://123/realms/x
+accept https://9z/realms/x
+accept https://idp.example
+refuse https://idp.123/realms/x
+refuse https://1.2.3.999/realms/x
+refuse https://idp.example.1/realms/x
+refuse https://a.b-c.9z/realms/x
+refuse https://1.2.3/realms/x
+refuse https://1.2.3.4.5/realms/x
+refuse https://1.2.3.4./realms/x
+refuse https://256.1.1.1/realms/x
+refuse https://idp.example../realms/x
+refuse https://a-.example/realms/x
+refuse https://-a.example/realms/x
+refuse https://a.example-/realms/x
+refuse https://a_b.example/realms/x
+refuse https://.example/realms/x
+refuse https:///realms/x
+refuse https://idp.example:0/realms/x
+refuse https://idp.example:99999/realms/x
+refuse https://user@idp.example/realms/x
+refuse https://idp.example/realms/x?a=b
+refuse https://idp.example/realms/x#f
+chart-refuse https://[::1]/realms/x
+chart-refuse https://[2001:db8::1]:8443/realms/x
+chart-refuse https://01.2.3.4/realms/x
+chart-refuse HTTPS://idp.example/realms/x

@@ -22,8 +22,14 @@ import reactor.core.publisher.Mono;
  *
  * <p>The outcome, UP or DOWN, is cached for {@link #CACHE_TTL}: however often the readiness
  * endpoint is evaluated, the identity provider receives at most one discovery request per interval,
- * and concurrent evaluations share one request. The interval is shorter than the readiness probe
- * period, so every kubelet probe still observes a current result.
+ * and concurrent evaluations share one request. An evaluation may therefore observe a result up to
+ * {@link #CACHE_TTL} old. The installation chart refuses a readiness probe period that is not
+ * greater than this interval, so consecutive kubelet probes never read the same cached result; a
+ * chart render test reads the constant from this file.
+ *
+ * <p>On an issuer mismatch the published value is reported (health detail {@code publishedIssuer}
+ * and one warning per evaluation), shortened and reduced to printable characters: it comes from the
+ * remote response, and an operator needs it to correct a difference as small as a trailing slash.
  */
 @Slf4j
 final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator {
@@ -33,6 +39,7 @@ final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator 
       new ParameterizedTypeReference<>() {};
 
   static final Duration CACHE_TTL = Duration.ofSeconds(5);
+  static final int MAX_REPORTED_ISSUER_LENGTH = 200;
 
   private final WebClient client;
   private final IdentityProperties properties;
@@ -79,9 +86,27 @@ final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator 
       return down("discovery document has no issuer");
     }
     if (!published.equals(properties.issuerUri())) {
-      return down("published issuer differs from the configured issuer");
+      String reported = printable(published);
+      log.warn(
+          "Identity discovery: the published issuer [{}] differs from the configured issuer [{}]",
+          reported,
+          properties.issuerUri());
+      return Health.down()
+          .withDetail("reason", "published issuer differs from the configured issuer")
+          .withDetail("issuer", properties.issuerUri())
+          .withDetail("publishedIssuer", reported)
+          .build();
     }
     return Health.up().withDetail("issuer", properties.issuerUri()).build();
+  }
+
+  /** A remote value made safe to report: bounded, and printable ASCII only. */
+  private static String printable(String value) {
+    String bounded =
+        value.length() > MAX_REPORTED_ISSUER_LENGTH
+            ? value.substring(0, MAX_REPORTED_ISSUER_LENGTH) + "..."
+            : value;
+    return bounded.replaceAll("[^\\x21-\\x7E]", "?");
   }
 
   private Health down(String reason) {
