@@ -36,7 +36,9 @@ DOCS = Path(__file__).resolve().parents[2] / "docs" / "unattended-execution.md"
 
 
 def git(*args: str) -> None:
-    subprocess.run(["git", "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", *args], check=True, capture_output=True)
+    """git for fixtures, isolated from the developer's global and system config (signing, hooks)."""
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    subprocess.run(["git", "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", *args], check=True, capture_output=True, env=env)
 
 
 def stop_of(store: Store) -> dict | None:
@@ -105,6 +107,26 @@ class GitFailureRefusesTests(ClearanceLocationCase):
         dubious = subprocess.CompletedProcess(["git"], 128, stdout="", stderr="fatal: detected dubious ownership in repository at '/mnt/c/x'")
         with mock.patch.object(cli_module.subprocess, "run", return_value=dubious):
             self.assert_refused(self.clear(self.outside))
+
+    def test_inherited_git_variables_cannot_hide_a_work_tree(self):
+        repo = self.tmp / "ceiling-checkout"
+        (repo / "notes").mkdir(parents=True)
+        git("init", "-q", str(repo))
+        inside = write_clearance(repo / "notes" / "clearance.toml", self.h)
+        hostile = {"GIT_CEILING_DIRECTORIES": str(repo), "GIT_DIR": str(self.tmp / "nowhere")}
+        with mock.patch.dict(os.environ, hostile):
+            self.assert_refused(self.clear(inside))
+
+    def test_a_translated_locale_still_allows_a_directory_outside_any_repository(self):
+        with mock.patch.dict(os.environ, {"LANG": "de_DE.UTF-8", "LC_ALL": "de_DE.UTF-8", "LANGUAGE": "de"}):
+            self.assertIsNone(cli_module._work_tree(self.outside.parent))
+            code, out = self.clear(self.outside)
+        self.assertEqual((code, out["run"]["activation_stop"]), (0, None))
+
+    def test_a_mistyped_clearance_path_is_reported_as_unreadable(self):
+        with mock.patch.object(cli_module.subprocess, "run", side_effect=AssertionError("git must not be asked")):
+            error = self.assert_refused(self.clear(self.tmp / "no-such-dir" / "clearance.toml"))
+        self.assertIn("cannot read clearance", error["message"])
 
     def test_not_a_git_repository_is_the_one_answer_that_allows(self):
         self.assertIsNone(cli_module._work_tree(self.outside.parent))
@@ -190,7 +212,9 @@ class UnconfirmedStableKeyTests(LiveCase):
             self.h.coordinator(activation=None)
         with mock.patch.object(activation_module, "_write_ledger", side_effect=Refused("ledger gone", code="activation-ledger-unwritable")):
             self.h.coordinator(activation=None)
-        self.assertEqual([(d["type"], d["errno"]) for d in self.unconfirmed()], [("OSError", 28), ("OSError", 5), ("Refused", None)])
+        with mock.patch.object(activation_module, "_write_ledger", side_effect=Refused("no home", code="activation-invalid")):
+            self.h.coordinator(activation=None)
+        self.assertEqual([(d["type"], d["errno"]) for d in self.unconfirmed()], [("OSError", 28), ("OSError", 5), ("Refused", "activation-ledger-unwritable"), ("Refused", "activation-invalid")])  # two refusal codes, two lines
 
     def test_confirm_returns_type_errno_and_message(self):
         self.h.coordinator()
@@ -242,7 +266,8 @@ class RetryAttemptHistoryTests(LiveCase):
         used = record(self.h)
         self.assertEqual((used["state"], used["created_at"], used["first_attempt_at"]), ("pending", "2026-11-07T10:05:00Z", T0))
         self.assertEqual([a["at"] for a in used["attempts"]], [T0, "2026-11-07T10:05:00Z"])
-        self.assertEqual(used["attempts"][-1]["pid"], os.getpid())
+        self.assertEqual([sorted(a) for a in used["attempts"]], [["at", "pid", "source"]] * 2)  # one shape for every entry
+        self.assertEqual([a["pid"] for a in used["attempts"]], [None, os.getpid()])  # the first attempt's pid was never recorded
         self.assertNotIn("retried_at", used)
         exc = refuses(self, lambda: self.h.coordinator(), "activation-used")
         self.assertIn("at 2026-11-07T10:05:00Z is unconfirmed", str(exc))  # the attempt that may have created the run, not the first one
@@ -281,7 +306,7 @@ class ConfirmRulesTests(LiveCase):
                 report = self.h.coordinator(activation=None).status()
         self.assertEqual(report["run"]["run_id"], "run-live")
         lines = [e["detail"] for e in self.store.read_journal() if e["event"] == "activation-use-unconfirmed"]
-        self.assertEqual([(d["type"], d["errno"]) for d in lines], [("Refused", None)])
+        self.assertEqual([(d["type"], d["errno"]) for d in lines], [("Refused", "activation-ledger-unwritable")])
         self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["state"], "pending")
         del c
 
@@ -369,6 +394,19 @@ class FailedClearRestoresTheStopTests(LiveCase):
         self.assertEqual((c.run.activation_stop, c.run.last_observed_at), (stop, mark))
         self.assertTrue(c._clearable_clock_stop())
 
+    def test_a_save_that_fails_after_run_json_was_written_follows_the_disk(self):
+        c = claimed(self.h)
+        regress(self, self.h, c)
+        self.h.clock[0] = "2026-11-07T11:58:00Z"
+        def fail_after_replace(path):  # atomic_write_text replaced run.json, then the directory fsync fails
+            raise OSError(5, "Input/output error")
+
+        with mock.patch.object(state_module, "fsync_directory", fail_after_replace):
+            with self.assertRaises(OSError):
+                c.clear_clock_regression(clearance(self.h))
+        self.assertIsNone(stop_of(self.store))  # run.json was replaced before the fsync failed
+        self.assertEqual((c.run.activation_stop, c.run.last_observed_at), (None, self.store.load_run().last_observed_at))
+
 
 # -- 4A: _clear_spent once per operation -------------------------------------------------------------------------------
 class ClearSpentOncePerOperationTests(LiveCase):
@@ -404,7 +442,7 @@ class StopIdTests(LiveCase):
         self.assertRegex(stop["stop_id"], r"^[0-9a-f]{32}$")
         legacy = {k: v for k, v in stop.items() if k != "stop_id"}
         self.assertEqual(validate_stop_record(legacy, "run-live"), legacy)  # a stop recorded before round 4
-        for bad in ("x", 7, "A" * 32):
+        for bad in ("x", 7, "A" * 32, "a" * 32 + "\n"):
             refuses(self, lambda: validate_stop_record({**stop, "stop_id": bad}, "run-live"), "run-state-invalid")
         refuses(self, lambda: validate_stop_record({**stop, "other": 1}, "run-live"), "run-state-invalid")
 
@@ -433,6 +471,37 @@ class StopIdTests(LiveCase):
         self.h.clock[0] = "2026-11-07T11:58:00Z"
         refuses(self, lambda: c.clear_clock_regression(clearance(self.h)), "clock-clear-exhausted")
 
+    def legacy_started_line(self, observed_at: str) -> None:
+        self.store.journal(None, "activation-stop-clear-started", {"stop_observed_at": observed_at})  # LABELLED MUTATION: a line written before stop ids
+
+    def drop_stop_id(self) -> None:
+        raw = json.loads(self.store.run_path.read_text(encoding="utf-8"))
+        raw["activation_stop"].pop("stop_id")  # LABELLED MUTATION: an older stop
+        self.store.run_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    def test_legacy_stop_and_legacy_line_with_the_same_observation_is_not_spent(self):
+        c = claimed(self.h)
+        regress(self, self.h, c)
+        self.drop_stop_id()
+        self.legacy_started_line(stop_of(self.store)["observed_at"])  # a failed save of this same stop's clear
+        self.h.clock[0] = "2026-11-07T11:58:00Z"
+        self.assertIsNone(c.clear_clock_regression(clearance(self.h))["run"]["activation_stop"])
+
+    def test_legacy_stop_and_legacy_line_for_another_observation_is_spent(self):
+        c = claimed(self.h)
+        regress(self, self.h, c)
+        self.drop_stop_id()
+        self.legacy_started_line("2026-11-07T10:30:00Z")
+        self.h.clock[0] = "2026-11-07T11:58:00Z"
+        refuses(self, lambda: c.clear_clock_regression(clearance(self.h)), "clock-clear-exhausted")
+
+    def test_a_line_without_an_id_names_an_older_stop_than_one_with_an_id(self):
+        c = claimed(self.h)
+        regress(self, self.h, c)
+        self.legacy_started_line(stop_of(self.store)["observed_at"])  # same second, but written before stop ids existed
+        self.h.clock[0] = "2026-11-07T11:58:00Z"
+        refuses(self, lambda: c.clear_clock_regression(clearance(self.h)), "clock-clear-exhausted")
+
     def test_a_legacy_stop_without_an_id_is_compared_on_its_observation(self):
         c = claimed(self.h)
         regress(self, self.h, c)
@@ -454,6 +523,8 @@ class ExpectRequiredTests(LiveCase):
                 self.assertEqual((code, out["error"]["code"]), (3, "expect-required"), activation)
             code, out = run_cli(["--policy", str(POLICY(self.h)), "--activation", str(self.h.path), "check-activation"])
             self.assertEqual((code, out["current"]), (2, False))  # without --run-id it is not needed: current for nothing
+            code, out = run_cli(["--policy", str(POLICY(self.h)), "--activation", str(self.h.path), "check-activation", "--expect", "advance"])
+            self.assertEqual((code, out["error"]["code"]), (3, "expect-required"))  # an expectation about no run
         self.assertEqual(calls, [])
 
     def test_every_documented_run_id_example_passes_expect(self):

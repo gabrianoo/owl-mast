@@ -595,7 +595,8 @@ class Coordinator:
         the owner may retry it.
 
         A stop is identified by its ``stop_id`` when both the stop and the line carry one (stops
-        recorded since round 4), otherwise by its ``observed_at`` (legacy). The answer is computed
+        older stops have none), otherwise by its ``observed_at``. When the stop has a ``stop_id`` and the
+        line has none, the line names another (older) stop: the clear is spent. The answer is computed
         once per operation (and, inside ``resume``, from the journal read the operation shares)."""
         stop = self.run.activation_stop
         clock = stop if stop is not None and stop.get("code") == "clock-regression" else None
@@ -615,8 +616,8 @@ class Coordinator:
                 break
             if entry.get("event") == "activation-stop-clear-started":
                 detail = entry.get("detail") or {}
-                if clock is not None and detail.get("stop_id") and clock.get("stop_id"):
-                    same = detail["stop_id"] == clock["stop_id"]
+                if clock is not None and clock.get("stop_id"):
+                    same = detail.get("stop_id") == clock["stop_id"]  # a line without an id was written for an older stop
                 else:
                     same = clock is not None and detail.get("stop_observed_at") == clock.get("observed_at")
                 if not same:
@@ -2111,7 +2112,7 @@ class Coordinator:
         stop exists or reused for another one). **Owner-only is a convention on the trusted machine,
         not a control**: every field of a clearance is readable by the loop, so a process on this
         machine can write one; the tool only refuses a clearance kept inside the state directory or
-        any git work tree, or where git cannot tell (``clearance-invalid``; the CLI checks the work trees, the coordinator its state directory, both without regard to case). Like the activation it is a reviewable,
+        any git work tree, or where git cannot tell (``clearance-invalid``; the work-tree refusal is applied by the CLI, the coordinator itself checks only its state directory, both without regard to case). Like the activation it is a reviewable,
         journaled approval, not authentication.
 
         A clock that is still behind is never trusted: the clear refuses (``clock-regression``)
@@ -2142,7 +2143,7 @@ class Coordinator:
             if not isinstance(where, str) or not where.strip():
                 raise Refused("clear-clock-regression: the clearance names no source path, so where it was kept cannot be checked; load it with load_clearance (nothing is cleared)", code="clearance-invalid")
             if is_inside(where, self.store.state_dir):  # by real path and without regard to case (a case-insensitive mount)
-                raise Refused(f"clear-clock-regression: the clearance {where} lies inside the state directory {self.store.state_dir}, where the unattended loop works; keep it outside the state directory and the work tree (owner-only is a trusted-machine convention, not authentication)", code="clearance-invalid")
+                raise Refused(f"clear-clock-regression: the clearance {where} lies inside the state directory {self.store.state_dir}, where the unattended loop works; keep it outside the state directory and outside every git work tree (the CLI refuses those) (owner-only is a trusted-machine convention, not authentication)", code="clearance-invalid")
             expected = {"run_id": self.store.run_id, "activation_id": self.run.activation["id"], "approver": self.run.activation["approver"], "stop_observed_at": stop["observed_at"]}
             wrong = [f"{key} {clearance.get(key)!r} is not {value!r}" for key, value in expected.items() if clearance.get(key) != value]
             if wrong or not str(clearance.get("reason") or "").strip():
@@ -2167,7 +2168,11 @@ class Coordinator:
             try:
                 self.store.save_run(self.run)
             except BaseException:
-                self.run.activation_stop, self.run.last_observed_at = previous  # run.json still has the stop: so does this object
+                # save_run may fail after run.json was replaced (the directory fsync): the object follows what is on disk
+                try:
+                    self._reload_run()
+                except BaseException:  # noqa: BLE001 - the save's own error is the one raised
+                    self.run.activation_stop, self.run.last_observed_at = previous
                 raise
             seq = self.store.journal(None, "activation-stop-cleared", detail)
             return {**detail, "journal_seq": seq, "run": self.run.__dict__}

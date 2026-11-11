@@ -601,7 +601,7 @@ class Store:
         creates the run again. Journaled once per distinct ``(type, errno)``, the stable part of the
         error (its message names a random temporary file, so it differs on every attempt); every
         later open retries."""
-        key = (error.get("type"), error.get("errno"))
+        key = (error.get("type"), error.get("errno"))  # errno, or the refusal code of a Refused
         last = next((e for e in reversed(self.read_journal()) if e.get("event") == "activation-use-unconfirmed"), None)
         detail = (last or {}).get("detail") or {}
         if last is None or (detail.get("type"), detail.get("errno")) != key:

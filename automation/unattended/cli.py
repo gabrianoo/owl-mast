@@ -139,13 +139,22 @@ class WorkTreeUnknown(Exception):
     for another reason than "not a git repository", such as dubious ownership)."""
 
 
+def _git_env() -> dict[str, str]:
+    """The environment git runs in for the work-tree rule: no inherited ``GIT_*`` variable (``GIT_DIR``,
+    ``GIT_WORK_TREE``, ``GIT_CEILING_DIRECTORIES``... could make git answer "not a git repository" inside a
+    work tree) and the C locale, so the one message that allows is never translated."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(LC_ALL="C", LANGUAGE="")
+    return env
+
+
 def _work_tree(path) -> str | None:
     """The git work tree containing ``path``; ``None`` only when git answers that it is not inside
     one (exit 128 with "not a git repository"). Any other outcome (git missing, a timeout, another
     exit code or message, an empty answer) raises :class:`WorkTreeUnknown`: a rule that depends on
     git never passes because git failed."""
     try:
-        out = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=30)
+        out = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=30, env=_git_env())
     except (OSError, subprocess.SubprocessError) as exc:
         raise WorkTreeUnknown(f"git could not be run on {path}: {type(exc).__name__}: {exc}") from exc
     if out.returncode == 0 and out.stdout.strip():
@@ -162,6 +171,8 @@ def _clearance_forbidden(args) -> dict[str, str | None]:
     cannot answer for any of them the clear refuses ``clearance-invalid`` (cannot determine the work
     tree): the rule never passes because git failed."""
     clearance = Path(os.path.realpath(args.clearance))
+    if not clearance.is_file():  # a mistyped path is reported as what it is, before git is asked about a directory that may not exist
+        raise Refused(f"cannot read clearance {args.clearance}: no such file", code="clearance-invalid", path=str(clearance))
     # the named places first, so a refusal says the most specific one; the clearance's own work tree covers every other
     places = {"--repo-root": Path(args.repo_root), "the tool's own location": Path(__file__).resolve().parent, "the clearance's own directory": clearance.parent}
     roots: dict[str, str | None] = {"--state-dir": args.state_dir}
@@ -266,6 +277,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "check-activation":
             if args.run_id and not args.expect:  # exit 0 must answer one question: may I create this run, or may it advance
                 raise UnattendedError("check-activation --run-id needs --expect create|advance: without it exit 0 would not say whether the run may be created or may advance (a mistyped or new run id would read as current)", code="expect-required")
+            if args.expect and not args.run_id:  # an expectation about no run would be answered by nothing
+                raise UnattendedError("check-activation --expect needs --run-id: create and advance are questions about one run", code="expect-required")
             if activation is None:  # the digest an activation must name is readable before any activation exists; nothing is current without one
                 _json(_activation_report(run_id=args.run_id, policy_digest=policy.digest, current=False, can_create=False, stop="activation-required", stops=["activation-required"], problems=["no activation presented (--activation); only the policy digest is reported"], expect=args.expect))
                 return 2

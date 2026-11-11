@@ -47,10 +47,10 @@ BINDING_RECORD_KEYS = {"id", "digest", "approver", "issued_at", "expires_at", "p
 # The durable observed stop a live run persists (``RunState.activation_stop``): exactly this shape, one of these
 # codes, a strict UTC observation time. Anything else is not "no stop": it is a malformed record and refuses.
 STOP_RECORD_KEYS = {"code", "observed_at", "message", "operation"}
-# A stop recorded since round 4 also carries ``stop_id`` (a uuid4 hex), so two stops observed at the same second are
-# still two stops (the once-per-run clear compares it); a stop recorded earlier has none and is still valid.
+# A recorded stop also carries ``stop_id`` (a uuid4 hex), so two stops observed at the same second are still two
+# stops (the once-per-run clear compares it); older stops have none and are still valid.
 STOP_RECORD_OPTIONAL_KEYS = {"stop_id"}
-STOP_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+STOP_ID_RE = re.compile(r"[0-9a-f]{32}")  # used with fullmatch: no trailing newline
 STOP_RECORD_CODES = ("activation-expired", "clock-regression")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 BUDGET_KEYS = ("max_stories_per_run", "max_concurrent_implementers", "max_repair_rounds", "max_delegated_tasks", "max_wall_clock_minutes")
@@ -66,8 +66,8 @@ TIME_CODES = ("activation-expired", "activation-not-yet-valid")
 # Only the shape is checked (the whole value, ASCII digits, the owner/repository compared without
 # regard to case, as GitHub does): the tool never fetches the comment, so what it says, who wrote
 # it and whether it is the smoke or the review stay the approver's statement. The comment or review
-# id is 1 to 20 digits (GitHub ids are 64-bit), so it always converts to an integer: a longer one is
-# not a citation (and would exceed Python's integer conversion limit).
+# id is 1 to 20 digits, leading zeros included: a sanity limit (GitHub ids are far shorter); a longer
+# value is not a citation.
 EVIDENCE_URL_RE = re.compile(r"https://github\.com/([^/\s#?]+/[^/\s#?]+)/(?:issues/[0-9]+#issuecomment|pull/[0-9]+#(?:issuecomment|pullrequestreview))-([0-9]{1,20})", re.ASCII)
 PLACEHOLDER_RE = re.compile(r"^\s*REPLACE|[<>]")
 # The use ledger: one record per activation **digest** in one directory per user account and machine
@@ -501,7 +501,7 @@ def record_activation_use(activation: Activation, state_dir: str | os.PathLike, 
         # the failed creation of this same run, retried: pending again until its run.json exists. ``created_at`` is this
         # attempt (an unconfirmed refusal names when the creation that may exist was tried); the history is kept
         first = used.get("first_attempt_at") or used.get("created_at")
-        attempts = list(used.get("attempts") or [{"at": used.get("created_at"), "source": used.get("source")}])
+        attempts = list(used.get("attempts") or [{"at": used.get("created_at"), "pid": None, "source": used.get("source")}])
         attempts.append({"at": now, "pid": os.getpid(), "source": os.path.realpath(activation.path)})
         record = {**{k: v for k, v in used.items() if k != "retried_at"}, "state": "pending", "created_at": now, "first_attempt_at": first, "attempts": attempts, "source": os.path.realpath(activation.path)}
         try:
@@ -522,7 +522,7 @@ def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, r
     run created before the ledger existed), an unreadable one and a record of another run are left
     alone. Returns ``None`` when nothing is left to confirm, or why the confirmation could not be
     written as ``{type, errno, message}`` (the record stays as it is; the caller journals
-    ``activation-use-unconfirmed`` once per ``(type, errno)``: the message carries the random name
+    ``activation-use-unconfirmed`` once per ``(type, errno)``, the refusal code standing in for the errno of a ``Refused``: the message carries the random name
     of the temporary file and differs on every attempt)."""
     if not isinstance(binding, dict) or not isinstance(binding.get("digest"), str) or not isinstance(binding.get("path"), str):
         return None
@@ -532,7 +532,8 @@ def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, r
             return None
         _write_ledger(ledger_path(binding["digest"], binding["path"]), {**used, "state": "committed"}, replace=True)
     except (OSError, Refused) as exc:
-        return {"type": type(exc).__name__, "errno": getattr(exc, "errno", None), "message": f"{type(exc).__name__}: {exc}"}
+        # errno identifies an OSError; a Refused is identified by its code (two different refusals are two lines)
+        return {"type": type(exc).__name__, "errno": exc.code if isinstance(exc, Refused) else getattr(exc, "errno", None), "message": f"{type(exc).__name__}: {exc}"}
     return None
 
 
@@ -673,7 +674,7 @@ def validate_stop_record(stop, run_id: str) -> dict | None:
         raise Refused(f"run {run_id}: persisted activation_stop is {type(stop).__name__}, not a stop record or null; a malformed stop is never read as 'no stop' (restore run.json from the run that wrote it, or recover by hand)", code="run-state-invalid")
     if set(stop) - STOP_RECORD_OPTIONAL_KEYS != STOP_RECORD_KEYS:
         problems.append(f"keys {sorted((set(stop) - STOP_RECORD_OPTIONAL_KEYS) ^ STOP_RECORD_KEYS)} differ from the stop record shape {sorted(STOP_RECORD_KEYS)} (plus the optional {sorted(STOP_RECORD_OPTIONAL_KEYS)})")
-    if "stop_id" in stop and not (isinstance(stop["stop_id"], str) and STOP_ID_RE.match(stop["stop_id"])):
+    if "stop_id" in stop and not (isinstance(stop["stop_id"], str) and STOP_ID_RE.fullmatch(stop["stop_id"])):
         problems.append(f"stop_id {stop.get('stop_id')!r} is not a 32-digit lowercase hex id")
     if stop.get("code") not in STOP_RECORD_CODES:
         problems.append(f"code {stop.get('code')!r} is not a recorded stop code {list(STOP_RECORD_CODES)}")
