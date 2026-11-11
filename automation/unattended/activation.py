@@ -541,7 +541,7 @@ def record_activation_use(activation: Activation, state_dir: str | os.PathLike, 
         first = used.get("first_attempt_at") or used.get("created_at")
         attempts = [dict(a) for a in (used.get("attempts") or [{"at": used.get("created_at"), "pid": None, "source": used.get("source")}])]
         if used.get("abort_cause") is not None:
-            attempts[-1]["abort_cause"] = used["abort_cause"]  # why the attempt that is retried now failed
+            attempts[-1]["abort_cause"] = str(used["abort_cause"])[:500]  # why the attempt that is retried now failed; capped here too (a record written by hand or an older version)
         attempts.append({"at": now, "pid": os.getpid(), "source": os.path.realpath(activation.path)})
         if len(attempts) > 1 + MAX_RECENT_ATTEMPTS:
             attempts = attempts[:1] + attempts[-MAX_RECENT_ATTEMPTS:]  # bounded: the first attempt and the latest ones
@@ -590,17 +590,18 @@ def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, r
             return ("unchanged", None)
         if used.get("unreadable"):
             why = used.get("why") or "the file cannot be read or is not JSON"
-            return ("error", {"type": "ledger-unreadable", "errno": None, "strerror": None, "message": f"the use ledger record of run {run_id} ({path}) is not a valid record: {why}; it cannot be confirmed, and a damaged record is a use: a later creation from this document refuses activation-used (inspect or restore that file)"})
+            return ("error", {"type": "ledger-unreadable", "errno": None, "strerror": why, "message": f"the use ledger record of run {run_id} ({path}) is not a valid record: {why}; it cannot be confirmed, and a damaged record is a use: a later creation from this document refuses activation-used (inspect or restore that file)"})
         if used.get("state") not in ("pending", "aborted"):
             return ("unchanged", None)
         if _same_run_id_other_state_dir(used, state_dir, run_id):
             recorded = used.get("state_dir")
-            if _directory_exists(recorded):
+            exists = _directory_exists(recorded)
+            if exists:
                 advice = "open the run through the directory it was created under to confirm it"
             else:
                 advice = (f"the recorded directory no longer exists, so the record cannot be settled from here: this document is spent "
                           f"(it creates no other run); moving the directory back to {recorded!r} and opening the run there is the only way to confirm it")
-            return ("error", {"type": "state-dir-mismatch", "errno": None, "strerror": None, "message": f"the use ledger record of run {run_id} names the state directory {recorded!r}, not {os.path.realpath(state_dir)!r}; it stays {used.get('state')} ({advice})"})
+            return ("error", {"type": "state-dir-mismatch", "errno": None, "strerror": "recorded directory exists" if exists else "recorded directory gone", "message": f"the use ledger record of run {run_id} names the state directory {recorded!r}, not {os.path.realpath(state_dir)!r}; it stays {used.get('state')} ({advice})"})
         if not _same_run(used, state_dir, run_id):
             return ("unchanged", None)
         _write_ledger(path, {**used, "state": "committed"}, replace=True)
@@ -646,22 +647,23 @@ def abort_activation_use(activation: Activation, state_dir: str | os.PathLike, r
     would mark a creation aborted whose ``run.json`` may exist. The caller (``Store.ensure_run``)
     also guards against anything else raised here, so the original error is never replaced."""
     try:
-        try:
-            os.stat(run_path)
-        except (FileNotFoundError, NotADirectoryError):
-            pass  # known absent
-        else:
-            return "run-json-exists"  # the creation is not known to have failed
+        # the record first: the run.json advice ("the next open confirms the record") holds only for a pending record of this run
         path = ledger_path(activation.digest, activation.path)
         used = activation_use(activation.digest, activation.path)
         if used is None:
             return "no-record"
         if used.get("unreadable"):
             return "unreadable"
-        if used.get("state") != "pending":
-            return "not-pending"
         if not _same_run(used, state_dir, run_id):
             return "not-this-run"
+        if used.get("state") != "pending":
+            return "not-pending"
+        try:
+            os.stat(run_path)
+        except (FileNotFoundError, NotADirectoryError):
+            pass  # known absent
+        else:
+            return "run-json-exists"  # the creation is not known to have failed
         marked = {**used, "state": "aborted"}
         if cause is not None:
             marked["abort_cause"] = f"{type(cause).__name__}: {cause}"[:500]

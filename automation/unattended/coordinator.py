@@ -675,17 +675,29 @@ class Coordinator:
         clearable = self._clearable_clock_stop()
         expires_at = (self.run.activation or {}).get("expires_at")
         high_water = self._high_water_text()
+        problems: list[str] = []
+        now, mark = _parse_time(self._at(), "now", problems), _parse_time(high_water, "high-water mark", problems)
+        _parse_time(expires_at, "expires_at", problems)
+        wait_until = None  # the time the clock must read before a clear can run (null when it is not behind)
+        if not problems and now is not None and mark is not None and now < mark - timedelta(minutes=CLOCK_REGRESSION_TOLERANCE_MINUTES):
+            wait_until = _utc_text(mark - timedelta(minutes=CLOCK_REGRESSION_TOLERANCE_MINUTES))
         reason = None
         if self.run.cancelled:
             reason = f"the run is cancelled ({self.run.stop_reason}): the stop is history"
         elif spent:
             reason = "the run's one clear is spent (clock-clear-exhausted): cancel the run"
+        elif problems:
+            clearable = False
+            reason = "a recorded time cannot be parsed (" + "; ".join(problems) + "): no clear can be judged"
         elif not clearable:
             reason = f"the later of the clock and the high-water mark {high_water} is past the recorded expires_at {expires_at}: no clear can succeed"
+        elif self._policy_drift():
+            clearable = False
+            reason = "the policy changed since the run was created (policy drift): the activation is not current, so no clear can succeed"
         elif self._elapsed(on_high_water=True) > timedelta(minutes=self.policy.max_wall_clock_minutes):
             clearable = False
             reason = f"the wall-clock budget of {self.policy.max_wall_clock_minutes} minutes is spent, judged on the high-water mark: the run is over"
-        return {"clearable": clearable, "clear_spent": spent, "high_water": high_water, "expires_at": expires_at, "reason": reason}
+        return {"clearable": clearable, "clear_spent": spent, "high_water": high_water, "expires_at": expires_at, "wait_until": wait_until if clearable else None, "reason": reason}
 
     def _stop_message(self, code: str) -> str:
         if code == "run-cancelled":
@@ -1498,7 +1510,8 @@ class Coordinator:
             self.require_activation("reconcile-retained-execution", advancing=False)
             self._reload_run()  # binding validated and the latest cancellation/budgets read under the lock; never saved from a stale object
             stop = self._durable_run_stop(skip_clearable=True)  # like resume and bind-receipt: a clock stop the owner can still clear is not a stopped run for a pending repair
-            under_clock_stop = False  # reconciled under a clearable clock-regression stop: the clock is behind the run's high-water mark
+            # under a recorded clock-regression stop (clearable or durable) the clock may be far behind the run's high-water mark
+            under_clock_stop = self.environment == "live" and (self.run.activation_stop or {}).get("code") == "clock-regression"
             if not stop and self._clearable_clock_stop():
                 recorded = self.run.activation_stop
                 story_state = self._story(story)  # an unknown story or authorization is refused as it is without a stop
@@ -1511,7 +1524,6 @@ class Coordinator:
                     # a revoked authorization binds for cleanup only, before and after a clear (and after it the run is no longer
                     # stopped, so the reconciliation would refuse run-not-stopped): it is reconciled under the recorded stop
                     stop = "clock-regression"
-                    under_clock_stop = True
                 else:
                     raise Refused(f"reconcile-retained-execution: {STOP_REASONS['clock-regression']} (recorded {recorded['observed_at']}: {recorded['message']}); the owner can still clear it, so the run is not stopped and nothing was reconciled: clear the stop or cancel the run (clear-clock-regression, after which a pending repair binds for work through bind-receipt; or cancel-run); a revoked authorization is reconciled under the stop", code="clock-regression", stop=recorded)
             if not stop:
@@ -1607,7 +1619,8 @@ class Coordinator:
             observed_at = self.now()
             stamp = self._at_least_high_water(observed_at) if under_clock_stop else observed_at  # never before events already recorded for the run
             safe_auth = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in auth["id"])
-            backup = self.store.story_path(story).with_name(f"{story}.json.bak-{stamp.replace(':', '')}-{safe_auth}")
+            observed_part = f"-obs{observed_at.replace(':', '')}" if stamp != observed_at else ""  # the mark stays fixed while the clock is behind: the real observation keeps a retry from hitting backup-exists
+            backup = self.store.story_path(story).with_name(f"{story}.json.bak-{stamp.replace(':', '')}{observed_part}-{safe_auth}")
             if backup.exists():
                 raise Refused(f"backup {backup.name} already exists; refusing to overwrite an earlier audit copy (retry a moment later)", code="backup-exists", backup=backup.name)
             backup.write_text(self.store.story_path(story).read_text(encoding="utf-8"), encoding="utf-8")

@@ -139,7 +139,6 @@ def atomic_write_text(path: Path, text: str) -> None:
     fsync_directory(path.parent)
 
 
-
 def abort_note(reason: str, run_id: str, state_dir) -> str:
     """The note a failed creation carries when its use ledger record was not marked ``aborted``,
     worded for the reason ``abort_activation_use`` returned: each cause needs its own advice, and
@@ -154,6 +153,7 @@ def abort_note(reason: str, run_id: str, state_dir) -> str:
         "ledger-error": "the use ledger record could not be marked aborted (the ledger could not be written, or the run directory could not be examined); it stays pending and a retry refuses activation-used as an unconfirmed creation (re-issue the activation)",
     }
     return notes.get(reason, f"the use ledger record was not marked aborted ({reason!r}); a retry may refuse activation-used")
+
 
 class StoreBusy(Refused):
     code = "store-busy"

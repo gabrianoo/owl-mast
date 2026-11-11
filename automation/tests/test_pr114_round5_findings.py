@@ -285,8 +285,8 @@ class StateDirMissingIsUnreadableTests(LiveCase):
             self.assertIs(used["unreadable"], True, bad)
             self.assertIn("state_dir", used["why"], bad)  # adapted in round 6 (I-): the field is named
             self.h.coordinator(activation=None)
-        # adapted in round 6 (I7): an unreadable record of this run is journaled once, never a state-dir mismatch
-        self.assertEqual([e["detail"]["type"] for e in self.store.read_journal() if e["event"] == "activation-use-unconfirmed"], ["ledger-unreadable"])
+        # adapted in round 6 (I7): an unreadable record of this run is journaled once per failing variant (the why), never a state-dir mismatch
+        self.assertEqual([e["detail"]["type"] for e in self.store.read_journal() if e["event"] == "activation-use-unconfirmed"], ["ledger-unreadable"] * 3)
 
 
 class StateDirMismatchJournaledTests(LiveCase):

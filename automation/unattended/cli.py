@@ -152,11 +152,13 @@ def _git_env() -> dict[str, str]:
     return env
 
 
+GIT_TIMEOUT_SECONDS = 30
+
+
 # The one git answer that means "outside every work tree": the plain discovery failure, after git walked
 # every parent directory. ``not a git repository: <path>`` (a ``.git`` gitfile pointing at a gitdir that is
 # gone, e.g. a pruned delegated worktree: git stops walking there) and ``Stopping at filesystem boundary``
 # are not that answer.
-GIT_TIMEOUT_SECONDS = 30
 NOT_A_WORK_TREE_RE = re.compile(r"fatal: not a git repository \(or any of the parent directories\)(?:: \.git)?")
 
 

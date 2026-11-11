@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 from automation.tests import test_pr114_round5_findings as r5
-from automation.tests.support import controlled_cli_clock
+from automation.tests.support import controlled_cli_clock, write_policy
 from automation.tests.test_activation import S, T0
 from automation.tests.test_enabling_repair_1 import claimed, refuses
 from automation.tests.test_pr108_review_findings import cli_args, no_gh_calls, run_cli
@@ -26,7 +26,9 @@ from automation.unattended import activation as activation_module
 from automation.unattended import cli as cli_module
 from automation.unattended import state as state_module
 from automation.unattended.activation import Activation, _retryable_creation, abort_activation_use, activation_use, confirm_activation_use, ledger_path, record_activation_use, use_refusal
+from automation.unattended.coordinator import Coordinator
 from automation.unattended.errors import Refused
+from automation.unattended.policy import load_policy
 from automation.unattended.state import Store
 
 REPO = "gabrianoo/owl-mast"
@@ -62,6 +64,7 @@ class AbortReasonTests(LiveCase):
         set_ledger(self.h, attempts=[{"at": T0}])
         self.assertEqual(self.abort(), "aborted")
         self.assertEqual(record(self.h)["state"], "aborted")
+        set_ledger(self.h, state="pending")  # the record is classified first: only a pending record of this run reaches run.json
         self.store.run_path.parent.mkdir(parents=True)
         self.store.run_path.write_text("{}", encoding="utf-8")
         self.assertEqual(self.abort(), "run-json-exists")
@@ -137,6 +140,15 @@ class ClearInterruptedAfterReplaceTests(LiveCase):
         self.c = claimed(self.h)
         regress(self, self.h, self.c)
         self.h.clock[0] = "2026-11-07T11:58:00Z"
+
+    def test_system_exit_after_the_replace_propagates_and_is_journaled(self):
+        with mock.patch.object(state_module, "fsync_directory", side_effect=SystemExit("killed")):
+            with self.assertRaises(SystemExit):
+                self.c.clear_clock_regression(clearance(self.h))
+        self.assertIsNone(stop_of(self.store))
+        cleared = [e["detail"] for e in self.store.read_journal() if e["event"] == "activation-stop-cleared"]
+        self.assertEqual(len(cleared), 1)
+        self.assertIn("SystemExit", cleared[0]["interrupted"])
 
     def test_keyboard_interrupt_after_the_replace_propagates_and_is_journaled(self):
         with mock.patch.object(state_module, "fsync_directory", side_effect=KeyboardInterrupt()):
@@ -319,7 +331,7 @@ class StatusClockStopTests(LiveCase):
     def test_a_clearable_stop(self):
         regress(self, self.h, self.c)
         report = self.c.status()["activation"]["clock_stop"]
-        self.assertEqual(report, {"clearable": True, "clear_spent": False, "high_water": "2026-11-07T12:00:00Z", "expires_at": self.store.load_run().activation["expires_at"], "reason": None})
+        self.assertEqual(report, {"clearable": True, "clear_spent": False, "high_water": "2026-11-07T12:00:00Z", "expires_at": self.store.load_run().activation["expires_at"], "wait_until": "2026-11-07T11:55:00Z", "reason": None})
         self.assertEqual(self.c.status(read_only=True)["activation"]["clock_stop"]["clearable"], True)
 
     def test_a_spent_clear(self):
@@ -495,6 +507,158 @@ class AbortCauseCapTests(LiveCase):
         attempts = record(self.h)["attempts"]
         self.assertLessEqual(len(attempts[0]["abort_cause"]), 500)
         self.assertTrue(all(len(a.get("abort_cause", "")) <= 500 for a in attempts))
+
+
+# -- review follow-up -------------------------------------------------------------------------------------------------------
+class UnconfirmedVariantKeyTests(LiveCase):
+    """A change of advice is a new line: the mismatch keys on whether the recorded directory exists, the
+    unreadable record on the field that failed."""
+
+    def test_a_recorded_directory_that_vanishes_after_the_first_line_adds_a_second(self):
+        self.h.coordinator()
+        other = Path(self.h.h.tmpdir.name) / "copied-from"
+        other.mkdir()
+        set_ledger(self.h, state="pending", state_dir=str(other))
+        self.h.coordinator(activation=None)
+        self.h.coordinator(activation=None)
+        other.rmdir()
+        self.h.coordinator(activation=None)
+        self.h.coordinator(activation=None)
+        lines = [d for d in unconfirmed(self.store) if d["type"] == "state-dir-mismatch"]
+        self.assertEqual([d["strerror"] for d in lines], ["recorded directory exists", "recorded directory gone"])
+        self.assertIn("cannot be settled from here", lines[1]["error"])
+
+    def test_another_failing_field_adds_a_line(self):
+        self.h.coordinator()
+        set_ledger(self.h, state_dir=7)
+        self.h.coordinator(activation=None)
+        set_ledger(self.h, state_dir=str(self.h.h.state_dir), attempts=[])
+        self.h.coordinator(activation=None)
+        self.h.coordinator(activation=None)
+        lines = [d for d in unconfirmed(self.store) if d["type"] == "ledger-unreadable"]
+        self.assertEqual(len(lines), 2)
+        self.assertIn("state_dir", lines[0]["strerror"])
+        self.assertIn("attempts", lines[1]["strerror"])
+
+
+class AbortClassifiesTheRecordFirstTests(LiveCase):
+    """The record is classified before run.json is examined: `run-json-exists` is said only of a pending
+    record of this run, and a record of another run is `not-this-run` whatever its state."""
+
+    def abort(self) -> str:
+        return abort_activation_use(self.h.activation, self.h.h.state_dir, "run-live", self.store.run_path)
+
+    def test_run_json_exists_is_said_only_of_this_runs_pending_record(self):
+        self.store.run_path.parent.mkdir(parents=True)
+        self.store.run_path.write_text("{}", encoding="utf-8")
+        self.assertEqual(self.abort(), "no-record")
+        record_activation_use(self.h.activation, self.h.h.state_dir, "run-other", T0)
+        self.assertEqual(self.abort(), "not-this-run")
+        set_ledger(self.h, run_id="run-live", attempts="x")
+        self.assertEqual(self.abort(), "unreadable")
+        set_ledger(self.h, attempts=[{"at": T0}], state="committed")
+        self.assertEqual(self.abort(), "not-pending")
+        set_ledger(self.h, state="pending")
+        self.assertEqual(self.abort(), "run-json-exists")
+
+    def test_a_committed_record_of_another_run_is_not_this_run(self):
+        record_activation_use(self.h.activation, self.h.h.state_dir, "run-other", T0)
+        set_ledger(self.h, state="committed")
+        self.assertEqual(self.abort(), "not-this-run")
+
+
+class RetryCapsACopiedAbortCauseTests(LiveCase):
+    """An over-long `abort_cause` already in the record is capped when the retry copies it."""
+
+    def test_a_hand_written_cause_is_capped_in_the_history(self):
+        with mock.patch.object(Store, "save_run", side_effect=OSError(28, "No space left on device")):
+            with self.assertRaises(OSError):
+                self.h.coordinator()
+        set_ledger(self.h, abort_cause="y" * 2000)  # written by hand or by an older version
+        self.h.coordinator()
+        self.assertEqual(len(record(self.h)["attempts"][0]["abort_cause"]), 500)
+
+
+class ClockStopReportBranchesTests(LiveCase):
+    """`clock_stop` says when the clear can run, and why not on every branch."""
+
+    def setUp(self):
+        super().setUp()
+        self.c = claimed(self.h)
+        regress(self, self.h, self.c)
+
+    def report(self, c=None) -> dict:
+        return (c or self.c).status()["activation"]["clock_stop"]
+
+    def test_wait_until_is_null_once_the_clock_has_caught_up(self):
+        self.assertEqual(self.report()["wait_until"], "2026-11-07T11:55:00Z")
+        self.h.clock[0] = "2026-11-07T11:58:00Z"
+        self.assertIsNone(self.report()["wait_until"])
+
+    def test_policy_drift_is_not_clearable(self):
+        folder = Path(self.h.h.tmpdir.name) / "drift"
+        folder.mkdir()
+        drifted = load_policy(write_policy(folder, allow='["OM-01.02"]', max_delegated_tasks="7"))
+        reopened = Coordinator(self.h.h.fake, drifted, Store(self.h.h.state_dir, "run-live"), now=lambda: self.h.clock[0], live=True, activation=None)
+        report = self.report(reopened)
+        self.assertFalse(report["clearable"])
+        self.assertIn("policy drift", report["reason"])
+
+    def test_an_unparseable_time_has_its_own_reason(self):
+        with self.c.operation():
+            self.c._reload_run()
+            self.c.run.last_observed_at = "not a time"  # LABELLED MUTATION in memory: the load boundary refuses it on disk
+            report = self.c._clock_stop_report()
+        self.assertFalse(report["clearable"])
+        self.assertIn("cannot be parsed", report["reason"])
+        self.assertNotIn("expires_at", report["reason"])
+
+    def test_a_cancelled_run(self):
+        self.c.cancel_run("owner stops")
+        report = self.report()
+        self.assertFalse(report["clearable"])
+        self.assertIn("cancelled", report["reason"])
+
+    def test_a_spent_wall_clock(self):
+        raw = json.loads(self.store.run_path.read_text(encoding="utf-8"))
+        raw["started_at"] = "2026-11-07T00:00:00Z"  # LABELLED MUTATION: the budget judged on the 12:00 mark is spent
+        self.store.run_path.write_text(json.dumps(raw), encoding="utf-8")
+        report = self.report()
+        self.assertFalse(report["clearable"])
+        self.assertIn("wall-clock budget", report["reason"])
+
+
+class ReconcileBackupAndDurableStopStampTests(LiveCase):
+    """The backup name carries the real observation when it differs from the stamp, and a durable
+    clock-regression stop is stamped with the high-water mark too."""
+
+    def revoked_under_stop(self):
+        c, auth = r5.ReconcileRevokedUnderClearableStopTests.repair(self)
+        refuses(self, lambda: c.cancel(S, "owner stops the repair"), "authorization-unresolved")
+        regress(self, self.h, c)
+        return c, auth, *r5.ReconcileRevokedUnderClearableStopTests.evidence()
+
+    def test_a_retry_after_a_failed_save_does_not_hit_backup_exists(self):
+        c, auth, receipt, evidence = self.revoked_under_stop()
+        with mock.patch.object(Store, "save_story", side_effect=OSError(28, "No space left on device")):
+            with self.assertRaises(OSError):
+                c.reconcile_retained_execution(S, auth["id"], receipt, evidence, "r", "p")
+        self.h.clock[0] = "2026-11-07T11:01:00Z"  # still behind the 12:00 mark
+        c.reconcile_retained_execution(S, auth["id"], receipt, evidence, "r", "p")
+        line = next(e for e in self.store.read_journal() if e["event"] == "retained-execution-reconciled")
+        self.assertIn("2026-11-07T120000Z-obs2026-11-07T110100Z", line["detail"]["backup"])
+
+    def test_a_durable_clock_stop_is_stamped_with_the_high_water_mark(self):
+        c, auth, receipt, evidence = self.revoked_under_stop()
+        self.h.clock[0] = "2026-11-07T11:58:00Z"
+        c.clear_clock_regression(clearance(self.h))
+        regress(self, self.h, c)  # a second stop: the one clear is spent, the stop is durable
+        with c.operation():
+            c._reload_run()
+            self.assertFalse(c._clearable_clock_stop())
+        state = c.reconcile_retained_execution(S, auth["id"], receipt, evidence, "r", "p")
+        recorded = state.authorization(auth["id"])
+        self.assertEqual((recorded["bound_at"], recorded["reconciliation"]["observed_at"]), ("2026-11-07T12:00:00Z", "2026-11-07T11:00:00Z"))
 
 
 if __name__ == "__main__":
