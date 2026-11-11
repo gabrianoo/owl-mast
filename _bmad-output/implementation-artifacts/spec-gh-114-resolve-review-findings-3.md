@@ -2,7 +2,7 @@
 title: 'PR #114 round 4: resolve review 5860194023'
 type: 'bugfix'
 created: '2026-11-11'
-status: 'in-progress'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '54c89c1dcb15058540741eb547d2fc5b5ba0fe0e'
@@ -61,7 +61,7 @@ Thread ids are `PRRT_kwDOVjxExc62NX…` suffixes. The full comment text is in `g
 - [x] `coordinator.py` + tests -- `status --read-only` ledger test; wall clock on the high-water mark in `_durable_run_stop` and `check-activation`; `--reason` pairing before the gate; in-memory restore on a failed clear; `_clear_spent` once per operation; `stop_id` -- 3d, 3i, 31, 38, 4A, 4H
 - [x] `cli.py` + tests -- `--expect` required with `--run-id`; one report shape -- 3t, 3y
 - [x] `activation.py` + tests -- empty/relative home refuses; evidence id bounded -- 4M, 4P
-- [ ] GitHub -- reply to and resolve all 20 threads; refresh the PR body
+- [x] GitHub -- reply to and resolve all 20 threads; refresh the PR body
 
 **Acceptance Criteria:**
 - Given the full suite, when run, then it passes, and reverting any fix fails at least one named test.
@@ -104,9 +104,39 @@ Thread ids are `PRRT_kwDOVjxExc62NX…` suffixes. The full comment text is in `g
 - Not changed: `_bmad-output/implementation-artifacts/eng-01-enabling-preflight-20261107.md` still shows `check-activation` without `--expect`; it is a dated record of that preflight, not a procedure.
 - Not done here, by the Code Map's instruction (commit locally, do not push or touch GitHub): the replies, thread resolution and PR body refresh. The GitHub task stays open for the parent.
 
+- Review pass 1: 15 patches in `16535f6`, nothing deferred. The locale test passes on this machine even without the fix, because no non-English git locale is installed.
+
 ## Spec Change Log
 
 ## Review Triage Log
+
+Pass 1 (blind B1–B18, edge E1–E10, verification-gap V1–V2) on 5bfb1a4:
+
+| # | Finding | Verdict | Evidence / route |
+|---|---------|---------|------------------|
+| B1 | `STOP_ID_RE` with `$` accepts a trailing newline | low | reproduced: validates; direct correction; patch |
+| B2/E2 | inherited `GIT_*` env can make git deny a work tree | medium | `_work_tree` passes `os.environ`; the loop controls it; patch |
+| B3/E1/V2 | translated git message makes every clear refuse | medium | match is on English stderr; patch (`LC_ALL=C`) |
+| B4/B13 | work-tree rule is CLI-only; coordinator message is out of date | low | coordinator checks only the state dir; patch (message + docs) |
+| B5 | home as a git work tree blocks every clear; no recommended location | low | patch (docs); the tmp-guard in tests is rejected (suite runs outside repos) |
+| B6 | every `Refused` merges into one dedupe key | low | `Refused` has no errno; patch (`code`) |
+| B7 | alternating errors and pre-upgrade lines still add lines | low | bounded by distinct causes; fix adds history scanning; rejected |
+| B8 | `_clear_spent` fills the journal view early | false | the view is used only for `_journal_once`'s three event names, which the replays never write |
+| B9/E6/V1 | legacy fallback allows a second clear in the mixed case; untested | medium | `coordinator.py:_clear_spent`; patch + legacy tests |
+| B10 | test `git()` inherits the global git config | low | gpgsign or hooks break the suite; patch |
+| B11 | the symlink-comment test greps the source | low | the comment-only fix has no behaviour to test; rejected |
+| B12 | `--expect` without `--run-id` is accepted | low | patch (refuse) |
+| B14 | "round 4" jargon in docs and code | low | patch |
+| B15 | spec paths and status | — | fix edits this build's spec; rejected by rule |
+| B16 | first `attempts` entry has no `pid` | low | patch (`pid: None`) |
+| B17 | doc-example check is narrow; dated preflight record | low | the preflight file is a dated record; rejected |
+| B18/E10 | 20-digit bound vs leading zeros; wrong reason in the comment | low | patch (comment, docs) |
+| E3 | clearance on a separate mount inside a worktree | low | git's boundary message still says "not a git repository"; exotic; rejected |
+| E4 | a missing parent dir reports "cannot determine work tree" | low | message quality; patch (existence check first) |
+| E5 | casefold refuses a legitimate case-only sibling on a case-sensitive fs | low | fails closed; rejected |
+| E7 | `attempts` not a list | false | the record is written only by this tool; a damaged record is caught by `activation_use` |
+| E8 | in-memory restore wrong when the save raised after the replace | medium | `atomic_write_text` fsyncs after `os.replace`; patch (reload from disk) |
+| E9 | claim: "any work tree" depends on discovery | — | covered by B2/E2 |
 
 ## Verification
 
