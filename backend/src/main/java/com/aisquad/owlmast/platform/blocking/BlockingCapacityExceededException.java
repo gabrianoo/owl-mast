@@ -1,9 +1,11 @@
 package com.aisquad.owlmast.platform.blocking;
 
+import java.io.Serial;
+
 /** The bounded blocking adapter refused a call because its thread and queue capacity is full. */
 public final class BlockingCapacityExceededException extends RuntimeException {
 
-  private static final long serialVersionUID = 1L;
+  @Serial private static final long serialVersionUID = 1L;
 
   BlockingCapacityExceededException(String operation, int maxConcurrency, int maxQueuedPerThread) {
     super(

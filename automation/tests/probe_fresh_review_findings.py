@@ -9,7 +9,7 @@ transcript after the repair is ``…-after-2026-11-06.txt``. In-memory GitHub an
 git worktree only; nothing touches live GitHub or T3."""
 
 from automation.tests.fake_transport import CrashAfterEffect, small_backlog
-from automation.tests.support import IMPLEMENTER, REVIEWER, Harness, ok_worktree, receipt
+from automation.tests.support import Harness, IMPLEMENTER, REVIEWER, REVIEW_BRANCH, REVIEW_WORKTREE, ok_worktree, receipt
 from automation.tests.test_final_findings import fresh, markers, pending_proposal
 from automation.unattended.coordinator import Coordinator
 from automation.unattended.errors import Outage, UnattendedError
@@ -101,9 +101,9 @@ def main() -> None:
     print("  OM-01.04:", h.store.load_story("OM-01.04").phase, "active_task", h.store.load_story("OM-01.04").active_task, "bound ids run-wide", sorted(h.store.bound_task_ids()))
     attempt("bind a fresh task-impl-2", lambda: h.coordinator.bind_receipt("OM-01.04", receipt(IMPLEMENTER, "task-impl-2"), str(h.worktree), "t3/om-01-02", ok_worktree).phase)
     h.checks("OM-01.04"); h.coordinator.authorize_review("OM-01.04", h.sha)
-    attempt("bind reviewer with task-impl-1 (cross-role, cross-story)", lambda: h.coordinator.bind_receipt("OM-01.04", receipt(REVIEWER, "task-impl-1"), worktree_check=ok_worktree).phase)
-    attempt("bind reviewer with task-impl-2 (same story, other role)", lambda: h.coordinator.bind_receipt("OM-01.04", receipt(REVIEWER, "task-impl-2"), worktree_check=ok_worktree).phase)
-    attempt("bind reviewer with fresh task-review-1", lambda: h.coordinator.bind_receipt("OM-01.04", REVIEWER, worktree_check=ok_worktree).phase)
+    attempt("bind reviewer with task-impl-1 (cross-role, cross-story)", lambda: h.coordinator.bind_receipt("OM-01.04", receipt(REVIEWER, "task-impl-1"), REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree).phase)
+    attempt("bind reviewer with task-impl-2 (same story, other role)", lambda: h.coordinator.bind_receipt("OM-01.04", receipt(REVIEWER, "task-impl-2"), REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree).phase)
+    attempt("bind reviewer with fresh task-review-1", lambda: h.coordinator.bind_receipt("OM-01.04", REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree).phase)
     h.close()
 
     print("F4 authorize review, restart after the wall-clock deadline, repeat authorization and bind")
@@ -111,7 +111,7 @@ def main() -> None:
     c = fresh(h); c.now = lambda: "2099-01-01T00:00:00Z"
     attempt("EXPIRED_AUTHORIZATION authorize_review again", lambda: c.authorize_review(S, h.sha).pending_authorization()["id"])
     print("  pending authorization unchanged:", h.store.load_story(S).pending_authorization()["id"] == issued, "delegated_tasks", h.store.story_counts()["delegated_tasks"])
-    attempt("EXPIRED_AUTHORIZATION_BOUND bind reviewer receipt", lambda: c.bind_receipt(S, REVIEWER, worktree_check=ok_worktree).phase)
+    attempt("EXPIRED_AUTHORIZATION_BOUND bind reviewer receipt", lambda: c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree).phase)
     s = h.store.load_story(S)
     print("  phase", s.phase, "active_task", s.active_task, "authorization", {k: s.authorizations[-1][k] for k in ("status", "task_id", "cleanup_only")}, "delegated_tasks", h.store.story_counts()["delegated_tasks"])
     attempt("record_review after the deadline", lambda: c.record_review(S, h.sha, "approved", "r", {"taskId": "task-review-1", "runId": "task-review-1" + ":run:1", "status": "result_available"}).phase)

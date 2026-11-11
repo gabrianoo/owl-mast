@@ -82,12 +82,28 @@ class StaleRevisionTests(unittest.TestCase):
         self.assertEqual(state.revisions["OM-01.02"]["status"], "Ready")
 
     def test_foreign_active_claim_is_refused(self):
-        other = Coordinator(self.h.fake, self.h.policy, Store(self.h.state_dir, "run-other"), live=True)
+        # another coordinator on another machine (its own state directory) holds the claim marker
+        other = Coordinator(self.h.fake, self.h.policy, Store(self.h.state_dir.parent / "elsewhere", "run-other"), live=True)
         other.reserve("OM-01.02", self.h.snapshot, "c5d9d2e")
-        self.h.snapshot = take_snapshot(self.h.fake, "x/y", "now")
+        self.h.snapshot = take_snapshot(self.h.fake, "gabrianoo/owl-mast", "now")
         with self.assertRaises(Refused) as ctx:
             self.h.claim()
         self.assertIn("claimed by another run", str(ctx.exception))
+
+    def test_another_run_in_the_same_state_dir_with_an_active_story_blocks_admission(self):
+        """PR #107 review finding 5: budgets are per run id, so a second run id under the same
+        state directory admits nothing while an earlier run still owns a story."""
+        self.h.close()
+        self.h = Harness(small_backlog(), allow='["OM-01.02", "OM-01.04"]')
+        other = Coordinator(self.h.fake, self.h.policy, Store(self.h.state_dir, "run-other"), live=True)
+        other.reserve("OM-01.02", self.h.snapshot, "c5d9d2e")
+        with self.assertRaises(Refused) as ctx:
+            self.h.coordinator.reserve("OM-01.04", self.h.snapshot, "c5d9d2e")
+        self.assertEqual(ctx.exception.code, "run-concurrent")
+        self.assertEqual(ctx.exception.detail["runs"], {"run-other": ["OM-01.02 (reserved)"]})
+        self.assertEqual(self.h.coordinator.status()["other_runs_with_active_stories"], {"run-other": ["OM-01.02 (reserved)"]})
+        other.cancel("OM-01.02", "stop", no_launch={"authorization": "run-other:OM-01.02:1", "reason": "never launched"})
+        self.assertEqual(self.h.coordinator.reserve("OM-01.04", self.h.snapshot, "c5d9d2e").phase, "reserved")
 
     def test_owner_status_is_never_written(self):
         self.h.to_review_approved()
@@ -137,9 +153,9 @@ class IdempotencyAndRetryTests(unittest.TestCase):
 
     def test_duplicate_marker_is_a_conflict_on_claim_and_stays_one_on_resume(self):
         """Reviewer probe B5/E4: recovery enforces the same exactly-one-marker rule."""
-        marker = render_marker(kind="claim", op="claim", run="run-1", story="OM-01.02")
-        self.h.fake.comments[21].append(Comment(1, marker + "\nfirst", "x", "t"))
-        self.h.fake.comments[21].append(Comment(2, marker + "\nsecond", "y", "t"))
+        marker = render_marker(kind="claim", op="claim", run="run-1", inst=self.h.store.load_run().instance, story="OM-01.02")
+        self.h.fake.comments[21].append(Comment(1, marker + "\nfirst", "machine", "t"))  # the trusted author's own duplicates
+        self.h.fake.comments[21].append(Comment(2, marker + "\nsecond", "machine", "t"))
         with self.assertRaises(Conflict):
             self.h.claim()
         self.assertEqual(self.h.store.load_story("OM-01.02").phase, "conflict")
@@ -260,12 +276,12 @@ class ConcurrencyAndBindingTests(unittest.TestCase):
         original = self.h.coordinator._active_foreign_claims
         seen = {}
 
-        def interleave(issue, story):
+        def interleave(issue, story, context="admission"):
             try:
                 c2.reserve("OM-01.04", self.h.snapshot, "base")
             except StoreBusy as exc:
                 seen["busy"] = str(exc)
-            return original(issue, story)
+            return original(issue, story, context)
 
         self.h.coordinator._active_foreign_claims = interleave
         self.h.reserve()
@@ -282,12 +298,12 @@ class ConcurrencyAndBindingTests(unittest.TestCase):
             self.h.reserve()
         self.assertEqual(ctx.exception.code, "no-reclaim")
         c2 = Coordinator(self.h.fake, self.h.policy, Store(self.h.state_dir, "run-2"), live=True)
-        snap = take_snapshot(self.h.fake, "x/y", "now")
+        snap = take_snapshot(self.h.fake, "gabrianoo/owl-mast", "now")
         self.assertEqual(c2.reserve("OM-01.02", snap, "base").phase, "reserved")
         self.assertEqual(c2._active_foreign_claims(21, "OM-01.02"), [])
-        c3 = Coordinator(self.h.fake, self.h.policy, Store(self.h.state_dir, "run-3"), live=True)
+        c3 = Coordinator(self.h.fake, self.h.policy, Store(self.h.state_dir.parent / "elsewhere", "run-3"), live=True)  # another machine: only the marker protects the story
         with self.assertRaises(Refused) as ctx:
-            c3.reserve("OM-01.02", take_snapshot(self.h.fake, "x/y", "now"), "base")
+            c3.reserve("OM-01.02", take_snapshot(self.h.fake, "gabrianoo/owl-mast", "now"), "base")
         self.assertIn("claimed by another run", str(ctx.exception))
 
     def test_lock_is_held_across_the_whole_operation_against_other_processes(self):

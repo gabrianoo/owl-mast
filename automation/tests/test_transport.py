@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from automation.tests.support import IMPLEMENTER, REVIEWER, make_git_repo, ok_worktree, passing_runner, write_policy
+from automation.tests.support import IMPLEMENTER, REVIEWER, REVIEW_BRANCH, REVIEW_WORKTREE, make_git_repo, ok_worktree, passing_runner, write_policy
 from automation.unattended.backlog import take_snapshot
 from automation.unattended.coordinator import Coordinator
 from automation.unattended.errors import NotFound, Outage, PermissionDenied, Refused, TransportError
@@ -58,9 +58,9 @@ class ScriptedGh:
                     ISSUE_FIELDS(21, "OM-01.02", parent=1, body_extra="**Depends on:** OM-01.01\n")]}}}})
             if "items(first:100" in query:
                 def item(n, sid, status):
-                    return {"id": f"PVTI_{n}", "updatedAt": "2026-11-06T10:00:00Z", "content": {"number": n},
+                    return {"id": f"PVTI_{n}", "updatedAt": "2026-11-06T10:00:00Z", "content": {"number": n, "repository": {"nameWithOwner": "gabrianoo/owl-mast"}},
                             "fieldValues": {"nodes": [{"name": status, "field": {"name": "Status"}}, {"text": sid, "field": {"name": "Stable ID"}}, {}]}}
-                return json.dumps({"data": {"user": {"projectV2": {"items": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [item(1, "E01", "Backlog"), item(20, "OM-01.01", "Done"), item(21, "OM-01.02", "Ready")]}}}}})
+                return json.dumps({"data": {"repositoryOwner": {"projectV2": {"items": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [item(1, "E01", "Backlog"), item(20, "OM-01.01", "Done"), item(21, "OM-01.02", "Ready")]}}}}})
             if "pullRequest(number:7)" in query and "reviews(first:100, after:" in query:
                 cursor = query.split("after:", 1)[1].split(")", 1)[0].strip('"')
                 return json.dumps({"data": {"repository": {"pullRequest": {"reviews": self._reviews_payload(cursor)}}}})
@@ -69,8 +69,10 @@ class ScriptedGh:
                                                                            "reviews": self._reviews_payload(None),
                                                                            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}}}}})
             if "projectV2(number:2){ id fields" in query:
-                return json.dumps({"data": {"user": {"projectV2": {"id": "PVT", "fields": {"nodes": [{"id": "F", "name": "Status", "options": [{"id": "o1", "name": "Ready"}]}]}}}}})
+                return json.dumps({"data": {"repositoryOwner": {"projectV2": {"id": "PVT", "fields": {"nodes": [{"id": "F", "name": "Status", "options": [{"id": "o1", "name": "Ready"}]}]}}}}})
             raise AssertionError(f"unexpected graphql {query[:80]}")
+        if args[:3] == ["api", "user", "--jq"]:
+            return "machine\n"
         if args[:2] == ["api", "--paginate"]:
             return "\n".join(json.dumps({"id": i, "body": c["body"], "created_at": "t", "login": "machine"}) for i, c in enumerate(self.comments, start=100))
         if args[:3] == ["api", "-X", "POST"]:
@@ -185,7 +187,7 @@ class CoordinatorOverTransportTests(unittest.TestCase):
         self.c.record_head("OM-01.02", self.sha, {"taskId": IMPLEMENTER["taskId"], "runId": IMPLEMENTER["taskId"] + ":run:1", "status": "result_available"})
         self.c.run_checks("OM-01.02", self.sha, str(self.worktree), passing_runner)
         self.c.authorize_review("OM-01.02", self.sha)
-        self.c.bind_receipt("OM-01.02", REVIEWER, worktree_check=ok_worktree)
+        self.c.bind_receipt("OM-01.02", REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
         self.c.record_review("OM-01.02", self.sha, "approved", "r", {"taskId": REVIEWER["taskId"], "runId": REVIEWER["taskId"] + ":run:1", "status": "result_available"})
 
     def test_changes_requested_in_raw_response_refuses_proposal(self):

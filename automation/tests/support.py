@@ -80,8 +80,12 @@ def run_of(task_id: str, ordinal: int = 1) -> str:
     return f"{task_id}:run:{ordinal}"
 
 
+# The reviewer's own checkout: never the implementer's worktree (bind-receipt refuses ``reviewer-worktree-shared``). Tests pass
+# ``ok_worktree`` as the identity check, so the path need not exist; it only has to differ from the claim.
+REVIEW_WORKTREE = "/nonexistent/owlmast-review-worktree"
+REVIEW_BRANCH = "t3/om-01-02-review"
 IMPLEMENTER = {"taskId": "task-impl-1", "runId": run_of("task-impl-1"), "providerInstanceId": "claudeAgent", "model": "claude-fable-5-1", "options": [{"id": "effort", "value": "high"}], "isolation": "worktree"}
-REVIEWER = {"taskId": "task-review-1", "runId": run_of("task-review-1"), "providerInstanceId": "codex", "model": "gpt-6-astra", "options": {"reasoningEffort": "high"}}
+REVIEWER = {"taskId": "task-review-1", "runId": run_of("task-review-1"), "providerInstanceId": "codex", "model": "gpt-6-astra", "options": {"reasoningEffort": "high"}, "isolation": "worktree"}
 
 
 def receipt(base: dict, task_id: str, ordinal: int = 1) -> dict:
@@ -147,7 +151,7 @@ class Harness:
     def request_review(self, story="OM-01.02", receipt_=None):
         """Authorize the reviewer task before the simulated launch, then bind its receipt."""
         self.coordinator.authorize_review(story, self.sha)
-        return self.coordinator.bind_receipt(story, receipt_ or REVIEWER, worktree_check=ok_worktree)
+        return self.coordinator.bind_receipt(story, receipt_ or REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
 
     def repair(self, story="OM-01.02", receipt_=None):
         """Authorize a repair round before the simulated launch, then bind its receipt."""

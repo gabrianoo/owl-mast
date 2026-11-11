@@ -19,7 +19,7 @@ There is no internal delegation, waiting or looping here.
     python3 -m automation.tests.lifecycle_smoke --dir D head      --sha SHA --task-evidence E.json --source real|fixture
     python3 -m automation.tests.lifecycle_smoke --dir D check     --sha SHA
     python3 -m automation.tests.lifecycle_smoke --dir D authorize-review --sha SHA
-    python3 -m automation.tests.lifecycle_smoke --dir D bind      --receipt R.json [--authorization ID] --source real|fixture      (reviewer)
+    python3 -m automation.tests.lifecycle_smoke --dir D bind      --receipt R.json --worktree W2 --branch B [--authorization ID] --source real|fixture      (reviewer: its OWN checkout, never the implementer's)
     python3 -m automation.tests.lifecycle_smoke --dir D review    --sha SHA --verdict approved|changes-requested --report REF --task-evidence E.json --source real|fixture
     python3 -m automation.tests.lifecycle_smoke --dir D cancel    --reason R [--task-evidence E.json] [--no-launch N.json] --source real|fixture
     python3 -m automation.tests.lifecycle_smoke --dir D terminal  --task-evidence E.json --source real|fixture

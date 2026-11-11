@@ -15,8 +15,9 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
+from automation.tests import install_test_ledger
 from automation.tests.fake_transport import small_backlog
-from automation.tests.support import IMPLEMENTER, REVIEWER, ROOT, Harness, ok_worktree, passing_runner, write_policy
+from automation.tests.support import Harness, IMPLEMENTER, REVIEWER, REVIEW_BRANCH, REVIEW_WORKTREE, ROOT, ok_worktree, passing_runner, write_policy
 from automation.unattended import cli
 from automation.unattended.activation import Activation, load_activation
 from automation.unattended.coordinator import Coordinator
@@ -36,7 +37,7 @@ def activation_text(policy, run_id="run-live", approved=True, issued=T0, expires
         "approved": "true" if approved else "false", "id": '"eng01-test-activation"', "approver": '"owner (fixture)"', "issued_at": f'"{issued}"', "expires_at": f'"{expires}"',
         "agreement": '"spec-eng-01-trusted-operation.md"', "repository": f'"{policy.repo_slug}"', "policy_digest": f'"{policy.digest}"', "environment": '"live"', "run_id": f'"{run_id}"',
         "stories": json.dumps(list(policy.allow)), "impl_model": '"claude-fable-5-1"', "rev_model": '"gpt-6-astra"', "max_delegated_tasks": "6", "max_wall_clock_minutes": "240",
-        "extra": "",
+        "extra": "", "smoke": f'"https://github.com/{policy.repo_slug}/pull/107#issuecomment-6706853226"', "review": f'"https://github.com/{policy.repo_slug}/pull/107#issuecomment-6706853227"',
     }
     fields.update(over)
     return f"""
@@ -56,7 +57,7 @@ run_id = {fields['run_id']}
 stories = {fields['stories']}
 [targets]
 implementer = {{ provider = "claudeAgent", model = {fields['impl_model']}, isolation = "worktree", options = {{ effort = "high" }} }}
-reviewer = {{ provider = "codex", model = {fields['rev_model']}, options = {{ reasoningEffort = "high" }} }}
+reviewer = {{ provider = "codex", model = {fields['rev_model']}, isolation = "worktree", options = {{ reasoningEffort = "high" }} }}
 [budgets]
 max_stories_per_run = 1
 max_concurrent_implementers = 1
@@ -64,8 +65,8 @@ max_repair_rounds = 2
 max_delegated_tasks = {fields['max_delegated_tasks']}
 max_wall_clock_minutes = {fields['max_wall_clock_minutes']}
 [evidence]
-lifecycle_smoke = "fixture smoke reference"
-fresh_review = "fixture review reference"
+lifecycle_smoke = {fields['smoke']}
+fresh_review = {fields['review']}
 """
 
 
@@ -73,6 +74,7 @@ class LiveHarness:
     """A Harness whose fake transport is marked live, plus a movable clock and an activation file."""
 
     def __init__(self, **over):
+        install_test_ledger()  # the ledger override holds however this module was loaded (automation/tests/__init__.py)
         self.h = Harness(small_backlog())
         self.h.fake.live = True
         self.clock = [T0]
@@ -122,7 +124,7 @@ class CandidateAndLoaderTests(unittest.TestCase):
                 for policy in (ROOT / "automation/policy.toml", CANDIDATE_POLICY):
                     buf = io.StringIO()
                     with redirect_stdout(buf):
-                        code = cli.main(["--policy", str(policy), "--activation", str(CANDIDATE), "--run-id", "r", "check-activation"])
+                        code = cli.main(["--policy", str(policy), "--activation", str(CANDIDATE), "--run-id", "r", "check-activation", "--expect", "create"])
                     out = json.loads(buf.getvalue())
                     self.assertEqual((code, out["current"], out["approved"]), (2, False, False), policy)
                     buf = io.StringIO()
@@ -143,7 +145,9 @@ class CandidateAndLoaderTests(unittest.TestCase):
                 "secret-like-key": activation_text(h.policy, extra='token = "x"'),
                 "credential-value": activation_text(h.policy, approver='"ghp_' + "a" * 36 + '"'),
                 "bad-story": activation_text(h.policy, stories='["E17"]'),
-                "missing-evidence": activation_text(h.policy).replace('fresh_review = "fixture review reference"', ""),
+                "missing-evidence": "\n".join(l for l in activation_text(h.policy).splitlines() if not l.startswith("fresh_review")),
+                "stories-not-strings": activation_text(h.policy, stories='["OM-01.02", 1]'),
+                "stories-duplicate": activation_text(h.policy, stories='["OM-01.02", "OM-01.02"]'),
                 "approved-not-bool": activation_text(h.policy).replace("approved = true", 'approved = "yes"'),
                 "not-toml": "approved = \n",
             }
@@ -175,7 +179,7 @@ class AdmissionTests(unittest.TestCase):
         c.record_head(S, self.lh.h.sha, self.lh.terminal())
         c.run_checks(S, self.lh.h.sha, str(self.lh.h.worktree), passing_runner)
         c.authorize_review(S, self.lh.h.sha)
-        c.bind_receipt(S, REVIEWER, worktree_check=ok_worktree)
+        c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
         state = c.record_review(S, self.lh.h.sha, "approved", "report.md", self.lh.terminal())
         self.assertEqual(state.phase, "review-approved")
         status = c.status()
@@ -225,9 +229,21 @@ class AdmissionTests(unittest.TestCase):
         with self.assertRaises(Refused) as ctx:  # the activation names the old digest, so a new run is refused…
             Coordinator(self.lh.h.fake, drifted, Store(self.lh.h.state_dir, "run-new"), now=lambda: T0, live=True, activation=self.lh.activation)
         self.assertEqual(ctx.exception.code, "activation-mismatch")
-        with self.assertRaises(Refused) as ctx:  # …and the existing run is bound to the old policy digest
-            Coordinator(self.lh.h.fake, drifted, Store(self.lh.h.state_dir, "run-live"), now=lambda: T0, live=True, activation=self.lh.activation)
-        self.assertEqual(ctx.exception.code, "run-binding-mismatch")
+        # …and the existing run opens under the changed policy as a stopped run (policy drift, journaled once):
+        # the activation binds the old digest so advancement refuses, while cleanup proceeds (PR #107 review finding 23)
+        drifted_c = Coordinator(self.lh.h.fake, drifted, Store(self.lh.h.state_dir, "run-live"), now=lambda: T0, live=True, activation=self.lh.activation)
+        status = drifted_c.status()
+        self.assertEqual((status["stop"], status["policy_drift"]["policy_digest"]), ("policy-drift", drifted.digest))
+        with self.assertRaises(Refused) as ctx:
+            drifted_c.bind_receipt(S, IMPLEMENTER, str(self.lh.h.worktree), "t3/om-01-02", ok_worktree)
+        self.assertEqual((ctx.exception.code, ctx.exception.detail.get("bound_for_cleanup")), ("policy-drift", True))  # a late receipt binds for cleanup only
+        with self.assertRaises(Refused) as ctx:
+            drifted_c.record_head(S, self.lh.h.sha, self.lh.terminal())
+        self.assertEqual(ctx.exception.code, "activation-mismatch")  # the activation names the old digest: nothing advances
+        result = drifted_c.cancel_run("policy changed under the run", task_evidence={S: self.lh.terminal(status="cancelled")})
+        self.assertEqual([s["phase"] for s in result["cancelled"]], ["cancelled"])
+        events = [e["event"] for e in Store(self.lh.h.state_dir, "run-live").read_journal()]
+        self.assertEqual(events.count("policy-drift"), 1)
 
     def test_changed_activation_refuses_every_operation_including_cleanup(self):
         c = self.lh.coordinator()
@@ -279,7 +295,7 @@ class ExpiryAndCleanupTests(unittest.TestCase):
         c.authorize_review(S, self.lh.h.sha)  # the reviewer may already have been launched
         self.expire()
         with self.assertRaises(BudgetExhausted) as ctx:
-            c.bind_receipt(S, REVIEWER, worktree_check=ok_worktree)
+            c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
         self.assertEqual(ctx.exception.code, "activation-expired")
         self.assertTrue(ctx.exception.detail["bound_for_cleanup"])
         state = self.store.load_story(S)

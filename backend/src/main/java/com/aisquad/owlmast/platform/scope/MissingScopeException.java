@@ -1,11 +1,13 @@
 package com.aisquad.owlmast.platform.scope;
 
+import java.io.Serial;
+
 /**
  * Raised when an operation requires a {@link ScopeContext} and none was established: fail closed.
  */
 public final class MissingScopeException extends RuntimeException {
 
-  private static final long serialVersionUID = 1L;
+  @Serial private static final long serialVersionUID = 1L;
 
   public MissingScopeException() {
     super(

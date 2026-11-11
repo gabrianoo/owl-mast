@@ -3,9 +3,9 @@
  "approved_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
  "authorizations": [
   {
-   "bound_at": "2026-11-07T12:06:36Z",
+   "bound_at": "2026-11-09T15:04:36Z",
    "id": "run-1:OM-01.02:1",
-   "issued_at": "2026-11-07T12:06:36Z",
+   "issued_at": "2026-11-09T15:04:36Z",
    "purpose": "implementation",
    "reason": null,
    "role": "implementer",
@@ -16,9 +16,9 @@
    "task_id": "task-impl-1"
   },
   {
-   "bound_at": "2026-11-07T12:06:37Z",
+   "bound_at": "2026-11-09T15:04:36Z",
    "id": "run-1:OM-01.02:2",
-   "issued_at": "2026-11-07T12:06:37Z",
+   "issued_at": "2026-11-09T15:04:36Z",
    "purpose": "review",
    "reason": null,
    "role": "reviewer",
@@ -32,7 +32,7 @@
  "blocked": null,
  "checks": [
   {
-   "at": "2026-11-07T12:06:37Z",
+   "at": "2026-11-09T15:04:36Z",
    "clean_after": true,
    "clean_before": true,
    "commands": [
@@ -66,10 +66,10 @@
  "claim": {
   "baseline_sha": "c5d9d2e",
   "branch": "t3/om-01-02",
-  "claimed_at": "2026-11-07T12:06:36Z",
-  "reserved_at": "2026-11-07T12:06:36Z",
+  "claimed_at": "2026-11-09T15:04:36Z",
+  "reserved_at": "2026-11-09T15:04:36Z",
   "scope": "dispatchable",
-  "worktree_path": "/tmp/tmpgxg9qk43/wt"
+  "worktree_path": "/tmp/tmp49se3fu6/wt"
  },
  "head_sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
  "implementer_receipts": [
@@ -92,8 +92,8 @@
   {
    "body": "<!-- unattended kind=claim op=claim run=run-1 story=OM-01.02 -->\nUnattended reservation by run `run-1` from `c5d9d2e` (scope: dispatchable). An implementer task is delegated only after this reservation; its receipt is bound to the reservation. Project Status is owner-maintained; completion still requires checks, independent review and owner acceptance.",
    "comment_id": 1000,
-   "completed_at": "2026-11-07T12:06:36Z",
-   "created_at": "2026-11-07T12:06:36Z",
+   "completed_at": "2026-11-09T15:04:36Z",
+   "created_at": "2026-11-09T15:04:36Z",
    "kind": "claim",
    "marker": {
     "kind": "claim",
@@ -145,7 +145,7 @@
  "reviewer_receipts": [
   {
    "authorization": "run-1:OM-01.02:2",
-   "isolation": "",
+   "isolation": "worktree",
    "model": "gpt-6-astra",
    "options": {
     "reasoningEffort": "high"
@@ -161,7 +161,7 @@
  ],
  "reviews": [
   {
-   "at": "2026-11-07T12:06:37Z",
+   "at": "2026-11-09T15:04:36Z",
    "regression": false,
    "report": "report.md",
    "sha": "0399856038fd9fd1eac8bd25460edb159ae6e011",
@@ -202,7 +202,7 @@
  "story": "OM-01.02",
  "task_history": [
   {
-   "at": "2026-11-07T12:06:37Z",
+   "at": "2026-11-09T15:04:36Z",
    "authorization": "run-1:OM-01.02:1",
    "evidence_shape": "normalized",
    "operation": "record-task-terminal",
@@ -213,7 +213,7 @@
    "taskId": "task-impl-1"
   },
   {
-   "at": "2026-11-07T12:06:37Z",
+   "at": "2026-11-09T15:04:36Z",
    "authorization": "run-1:OM-01.02:2",
    "evidence_shape": "normalized",
    "operation": "record-task-terminal",
@@ -224,5 +224,5 @@
    "taskId": "task-review-1"
   }
  ],
- "updated_at": "2026-11-07T12:06:37Z"
+ "updated_at": "2026-11-09T15:04:36Z"
 }

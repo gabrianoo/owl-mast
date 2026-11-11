@@ -5,16 +5,17 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.util.Properties;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 
 /**
  * Reads the published contract from {@code owlmast/api-contract.properties}, the single source that
  * the pre-rollout check ({@code scripts/check-api-compatibility.py}) also reads.
  */
+@NoArgsConstructor(access = AccessLevel.PRIVATE)
 public final class PublishedApiContract {
 
   public static final String RESOURCE = "owlmast/api-contract.properties";
-
-  private PublishedApiContract() {}
 
   public static ApiContractVersion load() {
     try (InputStream stream =

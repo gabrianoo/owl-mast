@@ -13,7 +13,7 @@ touches live GitHub or T3."""
 import json
 
 from automation.tests.fake_transport import small_backlog
-from automation.tests.support import IMPLEMENTER, REVIEWER, Harness, git_commit, ok_worktree, passing_runner, receipt
+from automation.tests.support import Harness, IMPLEMENTER, REVIEWER, REVIEW_BRANCH, REVIEW_WORKTREE, git_commit, ok_worktree, passing_runner, receipt
 from automation.tests.test_final_findings import fresh, markers
 from automation.unattended.errors import UnattendedError
 from automation.unattended.github import PullRequestRecord
@@ -124,14 +124,14 @@ def main() -> None:
     print(json.dumps({"after_record_head_B": {"phase": s.phase, "old_authorization": {k: s.authorizations[-1][k] for k in ("id", "status", "sha")}}}))
     attempt("run_checks(B) while A unresolved", lambda: h.coordinator.run_checks(S, h.sha, str(h.worktree), passing_runner).phase)
     attempt("authorize_review(B) while A unresolved", lambda: h.coordinator.authorize_review(S, h.sha).pending_authorization())
-    attempt("A's late receipt binds (cleanup only)", lambda: h.coordinator.bind_receipt(S, REVIEWER, worktree_check=ok_worktree, authorization=old["id"]).phase)
+    attempt("A's late receipt binds (cleanup only)", lambda: h.coordinator.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree, authorization=old["id"]).phase)
     s = h.store.load_story(S)
     print(json.dumps({"after_A_receipt": {"phase": s.phase, "bound_receipt_sha": s.reviewer_receipts[-1]["sha"], "bound_authorization": s.reviewer_receipts[-1]["authorization"], "active_task": s.active_task}}))
     attempt("record_review(B, approved) with A's reviewer evidence", lambda: h.coordinator.record_review(S, h.sha, "approved", "report for old commit", {"taskId": REVIEWER["taskId"], "runId": REVIEWER["taskId"] + ":run:1", "status": "result_available"}).phase)
     attempt("record_task_terminal(A)", lambda: h.coordinator.record_task_terminal(S, {"taskId": REVIEWER["taskId"], "runId": REVIEWER["taskId"] + ":run:1", "status": "result_available"}).active_task)
     attempt("run_checks(B)", lambda: h.coordinator.run_checks(S, h.sha, str(h.worktree), passing_runner).phase)
     new = attempt("authorize_review(B)", lambda: h.coordinator.authorize_review(S, h.sha).pending_authorization())
-    attempt("bind a fresh reviewer to B", lambda: h.coordinator.bind_receipt(S, receipt(REVIEWER, "task-review-2"), worktree_check=ok_worktree, authorization=new["id"]).phase)
+    attempt("bind a fresh reviewer to B", lambda: h.coordinator.bind_receipt(S, receipt(REVIEWER, "task-review-2"), REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree, authorization=new["id"]).phase)
     attempt("record_review(B, approved) with the new reviewer's evidence", lambda: h.coordinator.record_review(S, h.sha, "approved", "report for B", {"taskId": "task-review-2", "runId": "task-review-2" + ":run:1", "status": "result_available"}).phase)
     s = h.store.load_story(S)
     print(json.dumps({"case": "late_old_review_cannot_consume_new_authorization", "old_sha": old_sha, "new_sha": h.sha, "old_authorization": old["id"], "new_authorization": new["id"], "phase": s.phase, "approved_sha": s.approved_sha, "reviewer_receipt_shas": [r["sha"] for r in s.reviewer_receipts], "delegated_tasks": h.store.story_counts()["delegated_tasks"]}))
