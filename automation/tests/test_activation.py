@@ -124,7 +124,7 @@ class CandidateAndLoaderTests(unittest.TestCase):
                 for policy in (ROOT / "automation/policy.toml", CANDIDATE_POLICY):
                     buf = io.StringIO()
                     with redirect_stdout(buf):
-                        code = cli.main(["--policy", str(policy), "--activation", str(CANDIDATE), "--run-id", "r", "check-activation"])
+                        code = cli.main(["--policy", str(policy), "--activation", str(CANDIDATE), "--run-id", "r", "check-activation", "--expect", "create"])
                     out = json.loads(buf.getvalue())
                     self.assertEqual((code, out["current"], out["approved"]), (2, False, False), policy)
                     buf = io.StringIO()

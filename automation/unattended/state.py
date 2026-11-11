@@ -559,9 +559,13 @@ class Store:
                     targets = {name: asdict(getattr(policy, name)) for name in ("implementer", "reviewer")} if policy is not None else None
                     run = RunState(self.run_id, repo, policy_digest, now or utcnow(), environment=environment, activation=binding, instance=uuid.uuid4().hex[:16], targets=targets)
                     self.save_run(run)
-                except BaseException:
+                except BaseException as original:
                     if binding is not None:
-                        abort_activation_use(activation, self.state_dir, self.run_id, self.run_path)  # known failed, no run.json: only this same creation may retry; a failure to mark leaves it pending (refused as unconfirmed)
+                        try:
+                            abort_activation_use(activation, self.state_dir, self.run_id, self.run_path)  # known failed, no run.json: only this same creation may retry; a failure to mark leaves it pending (refused as unconfirmed)
+                        except BaseException as inner:  # noqa: BLE001 - nothing raised while marking may replace the creation's own error
+                            # not journaled: a journal line before run.json would be a retained artifact that refuses the retry
+                            original.add_note(f"marking the use ledger record aborted also failed ({type(inner).__name__}: {inner}); it stays pending and refuses as an unconfirmed creation")
                     raise
                 unconfirmed = confirm_activation_use(binding, self.state_dir, self.run_id)  # run.json exists: the document has now created its one run
                 self.journal(None, "run-started", {"repo": repo, "policy_digest": policy_digest, "environment": environment, "activation": run.activation, "instance": run.instance})
@@ -590,14 +594,18 @@ class Store:
                     raise Refused(f"run {self.run_id} was created under activation {run.activation.get('id')!r}; refusing activation {activation.id!r} (digest {activation.digest[:12]})", code="activation-mismatch")
             return run
 
-    def _journal_unconfirmed(self, error: str) -> None:
+    def _journal_unconfirmed(self, error: dict) -> None:
         """The ledger record of this run's creation could not be marked ``committed``: it stays
         ``pending``, so deleting the run directory now would leave an unconfirmed creation that
         refuses every later creation from the document (``activation-used``), never one that
-        creates the run again. Journaled once per distinct error; every later open retries."""
+        creates the run again. Journaled once per distinct ``(type, errno)``, the stable part of the
+        error (its message names a random temporary file, so it differs on every attempt); every
+        later open retries."""
+        key = (error.get("type"), error.get("errno"))
         last = next((e for e in reversed(self.read_journal()) if e.get("event") == "activation-use-unconfirmed"), None)
-        if last is None or (last.get("detail") or {}).get("error") != error:
-            self.journal(None, "activation-use-unconfirmed", {"error": error, "consequence": "the use ledger record stays pending; every later open retries the confirmation; until then a deleted run directory refuses as an unconfirmed creation"})
+        detail = (last or {}).get("detail") or {}
+        if last is None or (detail.get("type"), detail.get("errno")) != key:
+            self.journal(None, "activation-use-unconfirmed", {"error": error.get("message"), "type": key[0], "errno": key[1], "consequence": "the use ledger record stays pending; every later open retries the confirmation; until then a deleted run directory refuses as an unconfirmed creation"})
 
     # -- stories -------------------------------------------------------------------------
     def story_path(self, story: str) -> Path:

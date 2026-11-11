@@ -335,7 +335,7 @@ class EvidenceRuleTests(LiveCase):
             self.assertEqual(c.record_head(S, h.h.sha, h.terminal()).phase, "implemented")  # mid-run: not stranded by the new rule
             self.assertIsNone(h.coordinator().status()["stop"])
             with controlled_cli_clock(h.clock), no_gh_calls():
-                code, out = run_cli(cli_args(h, "check-activation"))
+                code, out = run_cli(cli_args(h, "check-activation", "--expect", "advance"))  # round 4: --expect is required with --run-id
             self.assertEqual((code, out["current"], out["can_create"]), (0, True, False))
             self.assertTrue(any("evidence." in m for m in out["creation_problems"]))
         finally:
@@ -346,14 +346,15 @@ class CheckActivationRunAwareTests(LiveCase):
     """`check-activation` answers "is my running activation still current" for a run that exists
     and "can this document create the run" for one that does not (#114 thread on cli.py:114)."""
 
-    def check(self, *extra: str) -> tuple[int, dict]:
+    def check(self, *extra: str, expect: str = "advance") -> tuple[int, dict]:
+        # round 4 (thread 3t): --expect is required with --run-id; these tests ask "may it advance" unless they say otherwise
         with controlled_cli_clock(self.h.clock), no_gh_calls() as calls:
-            code, out = run_cli(cli_args(self.h, "check-activation", *extra))
+            code, out = run_cli(cli_args(self.h, "check-activation", "--expect", expect, *extra))
         self.assertEqual(calls, [])
         return code, out
 
     def test_an_existing_run_under_its_own_activation_is_current(self):
-        code, out = self.check()
+        code, out = self.check(expect="create")
         self.assertEqual((code, out["current"], out["can_create"], out["run_exists"]), (0, True, True, False))
         claimed(self.h)
         before = tree(Path(self.h.h.tmpdir.name))
@@ -386,7 +387,7 @@ class CheckActivationRunAwareTests(LiveCase):
             claimed(h)
             h.clock[0] = "2026-11-07T14:30:00Z"
             with controlled_cli_clock(h.clock), no_gh_calls():
-                code, out = run_cli(cli_args(h, "check-activation"))
+                code, out = run_cli(cli_args(h, "check-activation", "--expect", "advance"))
             self.assertEqual((code, out["current"], out["stop"]), (2, False, "wall-clock-exceeded"))
         finally:
             h.close()
@@ -402,7 +403,7 @@ class CheckActivationRunAwareTests(LiveCase):
         other = Path(self.h.h.tmpdir.name) / "other.toml"
         other.write_text(activation_text(self.h.h.policy, expires="2026-11-07T15:00:00Z"), encoding="utf-8")
         with controlled_cli_clock(self.h.clock), no_gh_calls():
-            code, out = run_cli(["--policy", str(POLICY(self.h)), "--state-dir", str(self.h.h.state_dir), "--run-id", "run-live", "--activation", str(other), "check-activation"])
+            code, out = run_cli(["--policy", str(POLICY(self.h)), "--state-dir", str(self.h.h.state_dir), "--run-id", "run-live", "--activation", str(other), "check-activation", "--expect", "advance"])
         self.assertEqual((code, out["current"], out["stop"]), (2, False, "activation-mismatch"))
 
 

@@ -150,7 +150,7 @@ class CheckActivationTests(unittest.TestCase):
     def test_check_activation_success_path_reports_current_without_state_or_calls(self):
         fresh = Path(self.h.h.tmpdir.name) / "cli-state"
         with controlled_cli_clock(self.h.clock), no_gh_calls() as calls:
-            code, out = run_cli(["--policy", str(POLICY(self.h)), "--activation", str(self.h.path), "--state-dir", str(fresh), "--run-id", "run-live", "check-activation"])
+            code, out = run_cli(["--policy", str(POLICY(self.h)), "--activation", str(self.h.path), "--state-dir", str(fresh), "--run-id", "run-live", "check-activation", "--expect", "create"])
         self.assertEqual((code, out["current"], out["can_create"], out["run_exists"], out["stop"], out["problems"]), (0, True, True, False, None, []))
         self.assertEqual(out["activation"]["id"], "eng01-test-activation")
         self.assertFalse(fresh.exists())
@@ -159,7 +159,7 @@ class CheckActivationTests(unittest.TestCase):
 
     def test_check_activation_bound_to_another_run_is_not_current(self):
         with controlled_cli_clock(self.h.clock), no_gh_calls():
-            code, out = run_cli(["--policy", str(POLICY(self.h)), "--activation", str(self.h.path), "--run-id", "run-other", "check-activation"])
+            code, out = run_cli(["--policy", str(POLICY(self.h)), "--activation", str(self.h.path), "--run-id", "run-other", "check-activation", "--expect", "create"])
         self.assertEqual((code, out["current"], out["stop"]), (2, False, "activation-mismatch"))
 
     def test_problems_never_skips_the_run_binding(self):
@@ -180,7 +180,7 @@ class CheckActivationTests(unittest.TestCase):
         claimed(self.h)
         other = Path(self.h.h.tmpdir.name) / "other-state"
         with controlled_cli_clock(self.h.clock), no_gh_calls():
-            code, out = run_cli(["--policy", str(POLICY(self.h)), "--activation", str(self.h.path), "--state-dir", str(other), "--run-id", "run-live", "check-activation"])
+            code, out = run_cli(["--policy", str(POLICY(self.h)), "--activation", str(self.h.path), "--state-dir", str(other), "--run-id", "run-live", "check-activation", "--expect", "create"])
         self.assertEqual((code, out["current"], out["can_create"], out["stop"]), (2, False, False, "activation-used"))
         self.assertEqual(out["used"]["run_id"], "run-live")
         self.assertFalse(other.exists())
@@ -417,7 +417,7 @@ class WindowCoverageTests(unittest.TestCase):
             self.assertIsNone(Store(h.h.state_dir, "run-live").load_run())
             self.assertEqual(h.h.fake.calls, [])
             with controlled_cli_clock(h.clock), no_gh_calls():
-                code, out = run_cli(cli_args(h, "check-activation"))
+                code, out = run_cli(cli_args(h, "check-activation", "--expect", "create"))
             self.assertEqual((code, out["current"], out["stop"]), (2, False, "activation-window-short"))
             self.assertEqual(h.activation.problems(h.h.policy, "run-live", T0), [])  # current, just too short to start a run
         finally:

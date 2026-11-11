@@ -47,6 +47,10 @@ BINDING_RECORD_KEYS = {"id", "digest", "approver", "issued_at", "expires_at", "p
 # The durable observed stop a live run persists (``RunState.activation_stop``): exactly this shape, one of these
 # codes, a strict UTC observation time. Anything else is not "no stop": it is a malformed record and refuses.
 STOP_RECORD_KEYS = {"code", "observed_at", "message", "operation"}
+# A stop recorded since round 4 also carries ``stop_id`` (a uuid4 hex), so two stops observed at the same second are
+# still two stops (the once-per-run clear compares it); a stop recorded earlier has none and is still valid.
+STOP_RECORD_OPTIONAL_KEYS = {"stop_id"}
+STOP_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 STOP_RECORD_CODES = ("activation-expired", "clock-regression")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 BUDGET_KEYS = ("max_stories_per_run", "max_concurrent_implementers", "max_repair_rounds", "max_delegated_tasks", "max_wall_clock_minutes")
@@ -61,8 +65,10 @@ TIME_CODES = ("activation-expired", "activation-not-yet-valid")
 # Placeholders (``REPLACE…``, angle brackets) and anything else are not citations.
 # Only the shape is checked (the whole value, ASCII digits, the owner/repository compared without
 # regard to case, as GitHub does): the tool never fetches the comment, so what it says, who wrote
-# it and whether it is the smoke or the review stay the approver's statement.
-EVIDENCE_URL_RE = re.compile(r"https://github\.com/([^/\s#?]+/[^/\s#?]+)/(?:issues/[0-9]+#issuecomment|pull/[0-9]+#(?:issuecomment|pullrequestreview))-([0-9]+)", re.ASCII)
+# it and whether it is the smoke or the review stay the approver's statement. The comment or review
+# id is 1 to 20 digits (GitHub ids are 64-bit), so it always converts to an integer: a longer one is
+# not a citation (and would exceed Python's integer conversion limit).
+EVIDENCE_URL_RE = re.compile(r"https://github\.com/([^/\s#?]+/[^/\s#?]+)/(?:issues/[0-9]+#issuecomment|pull/[0-9]+#(?:issuecomment|pullrequestreview))-([0-9]{1,20})", re.ASCII)
 PLACEHOLDER_RE = re.compile(r"^\s*REPLACE|[<>]")
 # The use ledger: one record per activation **digest** in one directory per user account and machine
 # (the home directory of the account running the tool), written when a live run is created from the
@@ -372,13 +378,18 @@ def ledger_root(source_path: str) -> Path:
     """The directory of the use ledger, one per user account and machine. One fixed place, not
     configurable by a flag or an environment variable (the unattended loop could set either): the
     home directory comes from the account database, not from ``$HOME``. A uid without an account
-    entry (a container, an NSS outage) has no ledger and refuses ``activation-ledger-unwritable``.
-    The test suite replaces this function; ``source_path`` (the activation file) is unused here."""
+    entry (a container, an NSS outage) has no ledger and refuses ``activation-ledger-unwritable``,
+    and so does an entry whose home directory is empty or relative (some container and system
+    accounts): the ledger would resolve under the current directory, and another directory would
+    be another, empty ledger. The test suite replaces this function; ``source_path`` (the activation
+    file) is unused here."""
     uid = os.getuid()
     try:
         home = pwd.getpwuid(uid).pw_dir
     except KeyError as exc:
         raise Refused(f"the use ledger has no home: uid {uid} has no entry in the account database (a container uid or an NSS outage); no live run is created and no use can be checked without the ledger", code="activation-ledger-unwritable", uid=uid) from exc
+    if not isinstance(home, str) or not home or not os.path.isabs(home):
+        raise Refused(f"the use ledger has no home: the account entry of uid {uid} names the home directory {home!r}, which is not an absolute path; the ledger would follow the current directory, so no live run is created and no use can be checked", code="activation-ledger-unwritable", uid=uid, home=home)
     return Path(home).joinpath(*USE_LEDGER_DIR)
 
 
@@ -469,7 +480,8 @@ def record_activation_use(activation: Activation, state_dir: str | os.PathLike, 
     It is written ``pending`` and confirmed (:func:`confirm_activation_use`) once ``run.json``
     exists. A creation whose ``save_run`` raised while ``run.json`` was absent is marked ``aborted``
     (:func:`abort_activation_use`): only that same creation (same state directory, same run id)
-    may be retried, and the retry sets the record back to ``pending``. A ``pending`` record without
+    may be retried, and the retry sets the record back to ``pending`` with ``created_at`` set to the
+    retry, ``first_attempt_at`` kept and the attempt appended to ``attempts``. A ``pending`` record without
     ``run.json`` is ambiguous (the process died in between, or the run directory was deleted
     after a confirmation that failed) and refuses ``activation-used``: the document is burned and
     is re-issued. Like the activation itself this is a trusted-machine control, not
@@ -486,8 +498,12 @@ def record_activation_use(activation: Activation, state_dir: str | os.PathLike, 
         used = activation_use(activation.digest, activation.path) or {"unreadable": True}
         if not _retryable_creation(used, state_dir, run_id):
             raise Refused(f"run {run_id}: activation {activation.id}: " + use_refusal(used, path), code="activation-used", used=used, ledger=str(path)) from None
-        # the failed creation of this same run, retried: pending again until its run.json exists
-        record = {**used, "state": "pending", "retried_at": now}
+        # the failed creation of this same run, retried: pending again until its run.json exists. ``created_at`` is this
+        # attempt (an unconfirmed refusal names when the creation that may exist was tried); the history is kept
+        first = used.get("first_attempt_at") or used.get("created_at")
+        attempts = list(used.get("attempts") or [{"at": used.get("created_at"), "source": used.get("source")}])
+        attempts.append({"at": now, "pid": os.getpid(), "source": os.path.realpath(activation.path)})
+        record = {**{k: v for k, v in used.items() if k != "retried_at"}, "state": "pending", "created_at": now, "first_attempt_at": first, "attempts": attempts, "source": os.path.realpath(activation.path)}
         try:
             _write_ledger(path, record, replace=True)
         except OSError as exc:
@@ -498,14 +514,16 @@ def record_activation_use(activation: Activation, state_dir: str | os.PathLike, 
     return record
 
 
-def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, run_id: str) -> str | None:
+def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, run_id: str) -> dict | None:
     """Mark the use of a run's activation as ``committed`` once its ``run.json`` exists: from then
     on the document creates nothing again, even after the run directory is deleted. Called after
     creation and on every later open of the run, so a ``pending`` (crash between ``run.json`` and
     this write) or ``aborted`` record of this run is settled by the next open. A missing record (a
     run created before the ledger existed), an unreadable one and a record of another run are left
     alone. Returns ``None`` when nothing is left to confirm, or why the confirmation could not be
-    written (the record stays as it is; the caller journals ``activation-use-unconfirmed``)."""
+    written as ``{type, errno, message}`` (the record stays as it is; the caller journals
+    ``activation-use-unconfirmed`` once per ``(type, errno)``: the message carries the random name
+    of the temporary file and differs on every attempt)."""
     if not isinstance(binding, dict) or not isinstance(binding.get("digest"), str) or not isinstance(binding.get("path"), str):
         return None
     try:
@@ -514,17 +532,19 @@ def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, r
             return None
         _write_ledger(ledger_path(binding["digest"], binding["path"]), {**used, "state": "committed"}, replace=True)
     except (OSError, Refused) as exc:
-        return f"{type(exc).__name__}: {exc}"
+        return {"type": type(exc).__name__, "errno": getattr(exc, "errno", None), "message": f"{type(exc).__name__}: {exc}"}
     return None
 
 
 def abort_activation_use(activation: Activation, state_dir: str | os.PathLike, run_id: str, run_path: Path) -> bool:
     """After ``save_run`` raised: mark this run's ``pending`` record ``aborted`` when ``run.json``
     does not exist, so the same creation may be retried. Returns whether the record was marked; a
-    failure leaves it ``pending`` (refused as unconfirmed), never raises over the original error."""
-    if run_path.exists():
-        return False
+    failure leaves it ``pending`` (refused as unconfirmed). A ledger or file-system error returns
+    ``False``; the caller (``Store.ensure_run``) also guards against anything else, so the original
+    error is never replaced."""
     try:
+        if run_path.exists():  # PermissionError on the run directory is a failure to mark, never a new error
+            return False
         path = ledger_path(activation.digest, activation.path)
         used = activation_use(activation.digest, activation.path)
         if used is None or used.get("state") != "pending" or not _same_run(used, state_dir, run_id):
@@ -543,6 +563,20 @@ def ledger_report(digest: str, source_path: str) -> dict:
         return {"root": None, "record": None, "error": exc.code, "message": str(exc)}
 
 
+def _fold(path: str | os.PathLike) -> tuple[str, ...]:
+    """The components of a real path, case-folded: the comparison form for containment. The state
+    directory may sit on a case-insensitive mount (WSL drvfs under ``/mnt/c``), where ``realpath``
+    does not normalise case, so a path that differs only by case is the same place."""
+    return Path(os.path.normcase(os.path.realpath(path)).casefold()).parts
+
+
+def is_inside(path: str | os.PathLike, root: str | os.PathLike) -> bool:
+    """Whether ``path`` is ``root`` or lies under it, by real path and without regard to case
+    (:func:`_fold`): a clearance spelled with another case is still inside."""
+    inner, outer = _fold(path), _fold(root)
+    return inner[:len(outer)] == outer
+
+
 def load_clearance(path: Path, refuse_inside: dict[str, str | os.PathLike] | None = None) -> dict:
     """The owner's clearance of one recorded ``clock-regression`` stop, for
     ``clear-clock-regression --clearance``: a TOML file with exactly :data:`CLEARANCE_KEYS` as
@@ -553,17 +587,21 @@ def load_clearance(path: Path, refuse_inside: dict[str, str | os.PathLike] | Non
     Owner-only is a **convention** on the trusted machine, not a control: every field is readable
     by the unattended loop (``run.json``, ``status``), so a process on this machine can write a
     valid clearance. What the tool enforces is where it is read from: a clearance whose real path
-    lies inside one of ``refuse_inside`` (the state directory, the repository work tree) refuses
-    ``clearance-invalid``, so one is never picked up from where the loop works."""
+    lies inside one of ``refuse_inside`` (the state directory, any git work tree the CLI found) refuses
+    ``clearance-invalid``, so one is never picked up from where the loop works. The comparison
+    ignores case (:func:`is_inside`)."""
     real = Path(os.path.realpath(path))
     for label, root in (refuse_inside or {}).items():
         if root is None:
             continue
         base = Path(os.path.realpath(root))
-        if real == base or real.is_relative_to(base):
-            raise Refused(f"clearance {path} lies inside {label} ({base}); a clearance is the owner's document and is kept outside the state directory and the repository work tree, where the unattended loop works (owner-only is a trusted-machine convention, not authentication)", code="clearance-invalid", path=str(real), inside=label)
+        if is_inside(real, base):
+            raise Refused(f"clearance {path} lies inside {label} ({base}); a clearance is the owner's document and is kept outside the state directory and outside every git work tree, where the unattended loop works (owner-only is a trusted-machine convention, not authentication)", code="clearance-invalid", path=str(real), inside=label)
     try:
-        text = real.read_bytes()  # the resolved path that was checked, never the name again (a symlink swapped in between is not read)
+        # the resolved path that was checked, not the name again. This narrows a race, it does not close one: the path is
+        # resolved again component by component, so a directory swapped for a symlink after the check is followed, and a
+        # hard link is never detected. Where a clearance is read from is hygiene on the trusted machine, not a control.
+        text = real.read_bytes()
         raw = tomllib.loads(text.decode("utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise Refused(f"cannot read clearance {path}: {exc}", code="clearance-invalid") from exc
@@ -623,8 +661,9 @@ def validate_binding(binding, run_id: str, repo: str, policy_digest: str) -> dic
 
 def validate_stop_record(stop, run_id: str) -> dict | None:
     """The persisted durable stop of a live run: ``None`` (no stop observed) or exactly
-    :data:`STOP_RECORD_KEYS` with a code from :data:`STOP_RECORD_CODES`, a strict UTC
-    ``observed_at`` and non-empty ``message`` / ``operation`` strings. Nothing else is read as
+    :data:`STOP_RECORD_KEYS` (plus the optional ``stop_id``, a uuid4 hex) with a code from
+    :data:`STOP_RECORD_CODES`, a strict UTC ``observed_at`` and non-empty ``message`` /
+    ``operation`` strings. Nothing else is read as
     the absence of a stop: ``false``, a list, a string, a partial or unknown-code record refuse
     ``run-state-invalid`` (no truthiness, no silent replacement)."""
     if stop is None:
@@ -632,8 +671,10 @@ def validate_stop_record(stop, run_id: str) -> dict | None:
     problems: list[str] = []
     if not isinstance(stop, dict):
         raise Refused(f"run {run_id}: persisted activation_stop is {type(stop).__name__}, not a stop record or null; a malformed stop is never read as 'no stop' (restore run.json from the run that wrote it, or recover by hand)", code="run-state-invalid")
-    if set(stop) != STOP_RECORD_KEYS:
-        problems.append(f"keys {sorted(set(stop) ^ STOP_RECORD_KEYS)} differ from the stop record shape {sorted(STOP_RECORD_KEYS)}")
+    if set(stop) - STOP_RECORD_OPTIONAL_KEYS != STOP_RECORD_KEYS:
+        problems.append(f"keys {sorted((set(stop) - STOP_RECORD_OPTIONAL_KEYS) ^ STOP_RECORD_KEYS)} differ from the stop record shape {sorted(STOP_RECORD_KEYS)} (plus the optional {sorted(STOP_RECORD_OPTIONAL_KEYS)})")
+    if "stop_id" in stop and not (isinstance(stop["stop_id"], str) and STOP_ID_RE.match(stop["stop_id"])):
+        problems.append(f"stop_id {stop.get('stop_id')!r} is not a 32-digit lowercase hex id")
     if stop.get("code") not in STOP_RECORD_CODES:
         problems.append(f"code {stop.get('code')!r} is not a recorded stop code {list(STOP_RECORD_CODES)}")
     _parse_time(stop.get("observed_at"), "observed_at", problems)

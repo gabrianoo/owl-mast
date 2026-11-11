@@ -77,10 +77,11 @@ from contextlib import contextmanager
 import json
 import os
 import re
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .activation import Activation, _parse_time, _utc_text, ledger_report, refresh_activation
+from .activation import Activation, _parse_time, _utc_text, is_inside, ledger_report, refresh_activation
 from .backlog import Entry, Snapshot, take_snapshot
 from .eligibility import Decision, decide
 from .errors import BudgetExhausted, Conflict, ReceiptInvalid, Refused, StaleRevision, UnattendedError
@@ -300,6 +301,16 @@ def revision_diff(recorded: dict[str, dict], current: dict[str, dict]) -> dict[s
     return changed
 
 
+def check_cleanup_reason(reason: str | None, for_cleanup: bool) -> None:
+    """The ``bind-receipt`` pairing of ``--reason`` with ``--for-cleanup``, checked before anything
+    runs (the CLI calls it before the coordinator is built, the coordinator before its gate), so a
+    malformed call writes nothing at all, not even the gate's high-water mark."""
+    if reason is not None and not for_cleanup:
+        raise Refused("bind-receipt --reason is the cause of a --for-cleanup bind and is journaled only with it; without --for-cleanup it would be dropped, so it is refused (nothing was bound or written)", code="reason-without-for-cleanup")
+    if for_cleanup and not str(reason or "").strip():
+        raise Refused("bind-receipt --for-cleanup needs --reason: binding for cleanup only spends the story slot and ends the story's work, so the cause is journaled with it (for example: the activation file is lost for good); nothing was bound or written", code="reason-required")
+
+
 def require_unique_ids(snapshot: Snapshot, context: str) -> None:
     """Refuse before any ``by_id`` reduction when a stable id is carried by several issues."""
     dupes = snapshot.duplicate_ids()
@@ -321,6 +332,7 @@ class Coordinator:
         self._foreign_reported: set[int] | None = None  # comment ids already journaled as foreign markers (loaded from the journal on first use)
         self._journal_view: list[dict] | None = None  # one journal read shared by every _journal_once of a resume (``_journal_scope``)
         self._journal_scope = False
+        self._clear_spent_memo: tuple | None = None  # ``_clear_spent`` of the operation in progress: (stop identity, answer), reset at every operation boundary
         self.read_only = read_only
         if read_only:
             self._open_read_only()
@@ -382,6 +394,8 @@ class Coordinator:
         if lock and getattr(self, "read_only", False):
             raise Refused("this coordinator was opened read-only (status --read-only): it takes no lock and writes nothing, so no other operation runs on it", code="read-only")
         outer = self._moment is None
+        if outer:
+            self._clear_spent_memo = None
         try:
             if lock:
                 with self.store.locked(self):
@@ -395,6 +409,7 @@ class Coordinator:
         finally:
             if outer:
                 self._moment = None
+                self._clear_spent_memo = None
 
     def _at(self) -> str:
         """The operation's clock observation; outside an operation, the clock itself."""
@@ -444,7 +459,7 @@ class Coordinator:
             return
         stop, now, high_water = self._stop_candidate(operation)
         if stop:
-            self.run.activation_stop = {**stop, "operation": operation}
+            self.run.activation_stop = {**stop, "operation": operation, "stop_id": uuid.uuid4().hex}  # two stops observed at the same second are still two stops (``_clear_spent``)
             self.store.save_run(self.run)
             self.store.journal(None, "activation-stopped", self.run.activation_stop)
         elif now > high_water:
@@ -546,7 +561,9 @@ class Coordinator:
         reconciliation): ``run-cancelled``, the recorded ``activation_stop`` (which outranks
         policy drift and a wall clock that ran out at the same moment: it is the journaled cause),
         ``policy-drift`` and ``wall-clock-exceeded`` (a local expiry; it does not stop a launched
-        child). A current problem of the *presented* document, above all a file that is simply not
+        child), judged on the later of this observation and the run's high-water mark: a clock still
+        within the regression tolerance behind the mark never gives a run back time it was already
+        observed to have used. A current problem of the *presented* document, above all a file that is simply not
         presented (``activation-required``), is temporary: it refuses advancement now and never
         spends a slot, abandons an intent or opens stopped-run cleanup on a healthy run.
 
@@ -566,7 +583,7 @@ class Coordinator:
             return code
         if self._policy_drift():
             return "policy-drift"
-        if self._elapsed() > timedelta(minutes=self.policy.max_wall_clock_minutes):
+        if self._elapsed(on_high_water=True) > timedelta(minutes=self.policy.max_wall_clock_minutes):
             return "wall-clock-exceeded"
         return None
 
@@ -575,15 +592,39 @@ class Coordinator:
         line exists, or an ``activation-stop-clear-started`` line for a stop other than the one
         recorded now (that clear's save went through; its confirming line was lost). A
         ``clear-started`` line for the stop recorded now is a clear whose save failed: not spent,
-        the owner may retry it."""
+        the owner may retry it.
+
+        A stop is identified by its ``stop_id`` when both the stop and the line carry one (stops
+        recorded since round 4), otherwise by its ``observed_at`` (legacy). The answer is computed
+        once per operation (and, inside ``resume``, from the journal read the operation shares)."""
         stop = self.run.activation_stop
-        current = stop["observed_at"] if stop is not None and stop.get("code") == "clock-regression" else None
-        for entry in self.store.read_journal():
+        clock = stop if stop is not None and stop.get("code") == "clock-regression" else None
+        key = (clock.get("stop_id"), clock.get("observed_at")) if clock is not None else None
+        if self._moment is not None and self._clear_spent_memo is not None and self._clear_spent_memo[0] == key:
+            return self._clear_spent_memo[1]
+        if self._journal_scope:
+            if self._journal_view is None:
+                self._journal_view = self.store.read_journal()
+            journal = self._journal_view
+        else:
+            journal = self.store.read_journal()
+        spent = False
+        for entry in journal:
             if entry.get("event") == "activation-stop-cleared":
-                return True
-            if entry.get("event") == "activation-stop-clear-started" and (entry.get("detail") or {}).get("stop_observed_at") != current:
-                return True
-        return False
+                spent = True
+                break
+            if entry.get("event") == "activation-stop-clear-started":
+                detail = entry.get("detail") or {}
+                if clock is not None and detail.get("stop_id") and clock.get("stop_id"):
+                    same = detail["stop_id"] == clock["stop_id"]
+                else:
+                    same = clock is not None and detail.get("stop_observed_at") == clock.get("observed_at")
+                if not same:
+                    spent = True
+                    break
+        if self._moment is not None:
+            self._clear_spent_memo = (key, spent)
+        return spent
 
     def _clearable_clock_stop(self) -> bool:
         """A recorded ``clock-regression`` stop the owner can still clear: live, not cancelled, the
@@ -602,7 +643,7 @@ class Coordinator:
             if self.run.activation_stop is not None and self.run.activation_stop["code"] == code:
                 return STOP_REASONS[code] + f" (durable stop observed {self.run.activation_stop['observed_at']}: {self.run.activation_stop['message']})"
             return STOP_REASONS[code] + ": " + "; ".join(m for _, m in self._activation_problems())
-        return f"wall clock budget of {self.policy.max_wall_clock_minutes} minutes exceeded ({int(self._elapsed().total_seconds() // 60)} minutes elapsed since {self.run.started_at})"
+        return f"wall clock budget of {self.policy.max_wall_clock_minutes} minutes exceeded ({int(self._elapsed(on_high_water=True).total_seconds() // 60)} minutes elapsed since {self.run.started_at}, judged on the later of the clock and the run's high-water mark)"
 
     def _require_run_active(self, operation: str) -> None:
         """A cancelled run, or one past its wall-clock budget, advances nothing: no admission,
@@ -1254,16 +1295,16 @@ class Coordinator:
 
         Under a recorded ``clock-regression`` stop the owner can still clear, a work bind refuses
         with ``clock-regression`` and binds nothing (the authorization stays unresolved for the bind
-        after the clear); ``--for-cleanup`` still binds for cleanup."""
+        after the clear); ``--for-cleanup`` still binds for cleanup.
+
+        The ``--reason`` / ``--for-cleanup`` pairing is checked before the operation starts (no lock,
+        no gate, nothing written): a malformed call is a no-op."""
+        check_cleanup_reason(reason, for_cleanup)
         with self.operation():
             self.require_activation("bind-receipt", advancing=False)
             self._reload_run()
             if not isinstance(receipt, dict):
                 raise ReceiptInvalid(f"bind-receipt: the receipt must be a JSON object, not {type(receipt).__name__}")
-            if reason is not None and not for_cleanup:
-                raise Refused("bind-receipt --reason is the cause of a --for-cleanup bind and is journaled only with it; without --for-cleanup it would be dropped, so it is refused (nothing was bound)", code="reason-without-for-cleanup")
-            if for_cleanup and not str(reason or "").strip():
-                raise Refused("bind-receipt --for-cleanup needs --reason: binding for cleanup only spends the story slot and ends the story's work, so the cause is journaled with it (for example: the activation file is lost for good)", code="reason-required")
             state = self._story(story)
             stop = self._durable_run_stop(skip_clearable=True)  # only a permanent stop binds for cleanup; a file that is not presented, or a clock stop the owner can still clear, is not one
             clearable = stop is None and self._clearable_clock_stop()
@@ -1403,7 +1444,10 @@ class Coordinator:
         with self.operation():
             self.require_activation("reconcile-retained-execution", advancing=False)
             self._reload_run()  # binding validated and the latest cancellation/budgets read under the lock; never saved from a stale object
-            stop = self._durable_run_stop()
+            stop = self._durable_run_stop(skip_clearable=True)  # like resume and bind-receipt: a clock stop the owner can still clear is not a stopped run
+            if not stop and self._clearable_clock_stop():
+                recorded = self.run.activation_stop
+                raise Refused(f"reconcile-retained-execution: {STOP_REASONS['clock-regression']} (recorded {recorded['observed_at']}: {recorded['message']}); the owner can still clear it, so the run is not stopped and nothing was reconciled: clear the stop (clear-clock-regression), after which the repair binds for work through bind-receipt, or cancel the run", code="clock-regression", stop=recorded)
             if not stop:
                 raise Refused("reconcile-retained-execution is cleanup for a stopped run only (cancelled, past its wall clock or under a recorded activation stop); an active run binds a receipt through bind-receipt, and a missing --activation does not make it a stopped run", code="run-not-stopped")
             state = self._story(story)
@@ -2067,7 +2111,7 @@ class Coordinator:
         stop exists or reused for another one). **Owner-only is a convention on the trusted machine,
         not a control**: every field of a clearance is readable by the loop, so a process on this
         machine can write one; the tool only refuses a clearance kept inside the state directory or
-        the repository work tree (``clearance-invalid``). Like the activation it is a reviewable,
+        any git work tree, or where git cannot tell (``clearance-invalid``; the CLI checks the work trees, the coordinator its state directory, both without regard to case). Like the activation it is a reviewable,
         journaled approval, not authentication.
 
         A clock that is still behind is never trusted: the clear refuses (``clock-regression``)
@@ -2097,7 +2141,7 @@ class Coordinator:
             where = clearance.get("path")
             if not isinstance(where, str) or not where.strip():
                 raise Refused("clear-clock-regression: the clearance names no source path, so where it was kept cannot be checked; load it with load_clearance (nothing is cleared)", code="clearance-invalid")
-            if Path(os.path.realpath(where)).is_relative_to(Path(os.path.realpath(self.store.state_dir))):
+            if is_inside(where, self.store.state_dir):  # by real path and without regard to case (a case-insensitive mount)
                 raise Refused(f"clear-clock-regression: the clearance {where} lies inside the state directory {self.store.state_dir}, where the unattended loop works; keep it outside the state directory and the work tree (owner-only is a trusted-machine convention, not authentication)", code="clearance-invalid")
             expected = {"run_id": self.store.run_id, "activation_id": self.run.activation["id"], "approver": self.run.activation["approver"], "stop_observed_at": stop["observed_at"]}
             wrong = [f"{key} {clearance.get(key)!r} is not {value!r}" for key, value in expected.items() if clearance.get(key) != value]
@@ -2116,10 +2160,15 @@ class Coordinator:
             detail = {"cleared": cleared, "clearance": clearance, "reason": str(clearance["reason"]), "observed_at": self._at(), "high_water": high_water_text, "activation": self.activation.id}
             # write-ahead: the clear is started on record (naming the stop) before the stop is gone, and confirmed after; a
             # save that fails leaves a started line for the stop still recorded, which a retry may use (see ``_clear_spent``)
-            self.store.journal(None, "activation-stop-clear-started", {**detail, "stop_observed_at": stop["observed_at"]})  # the whole decision (reason, clearance, high-water mark) is on record even if the confirming line is lost
+            self.store.journal(None, "activation-stop-clear-started", {**detail, "stop_observed_at": stop["observed_at"], "stop_id": stop.get("stop_id")})  # the whole decision (reason, clearance, high-water mark) is on record even if the confirming line is lost
+            previous = (self.run.activation_stop, self.run.last_observed_at)
             self.run.activation_stop = None
             self.run.last_observed_at = high_water_text
-            self.store.save_run(self.run)
+            try:
+                self.store.save_run(self.run)
+            except BaseException:
+                self.run.activation_stop, self.run.last_observed_at = previous  # run.json still has the stop: so does this object
+                raise
             seq = self.store.journal(None, "activation-stop-cleared", detail)
             return {**detail, "journal_seq": seq, "run": self.run.__dict__}
 

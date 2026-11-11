@@ -141,7 +141,7 @@ class LedgerRootTests(LiveCase):
 
     def test_check_activation_and_status_print_the_ledger_root_and_record(self):
         with controlled_cli_clock(self.h.clock), no_gh_calls():
-            code, out = run_cli(cli_args(self.h, "check-activation"))
+            code, out = run_cli(cli_args(self.h, "check-activation", "--expect", "create"))
         self.assertEqual((code, out["ledger_root"], out["used"]), (0, str(ledger_root(self.h.activation.path)), None))
         c = claimed(self.h)
         ledger = c.status()["activation"]["ledger"]
@@ -153,7 +153,7 @@ class LedgerRootTests(LiveCase):
             refuses(self, lambda: ledger_path("d" * 64, "x.toml"), "activation-ledger-unwritable")
             refuses(self, lambda: self.h.coordinator(), "activation-ledger-unwritable")
             with controlled_cli_clock(self.h.clock), no_gh_calls():
-                code, out = run_cli(cli_args(self.h, "check-activation"))
+                code, out = run_cli(cli_args(self.h, "check-activation", "--expect", "create"))
         self.assertEqual(code, 2)  # a negative answer, not an internal error (exit 4)
         self.assertIn("activation-ledger-unwritable", out["stops"])
         self.assertIsNone(out["ledger_root"])
@@ -483,7 +483,7 @@ class CheckActivationExpectTests(LiveCase):
         claimed(self.h)
         self.assertEqual(self.check("--expect", "create")[0], 2)  # the run exists: this document creates nothing more
         self.assertEqual(self.check("--expect", "advance")[0], 0)
-        self.assertEqual(self.check()[0], 0)  # without --expect: current, as before
+        self.assertEqual(self.check()[0], 3)  # round 4 (thread 3t): with --run-id, --expect is required (expect-required)
         code, out = run_cli(cli_args(self.h, "check-activation", "--expect", "maybe"))
         self.assertEqual((code, out["error"]["code"]), (3, "input-invalid"))
 
@@ -588,7 +588,7 @@ class FollowUpCliTests(LiveCase):
 
     def test_a_malformed_run_id_is_a_reported_problem(self):
         with controlled_cli_clock(self.h.clock), no_gh_calls():
-            code, out = run_cli(["--policy", str(POLICY(self.h)), "--state-dir", str(self.h.h.state_dir), "--run-id", "Bad Run", "--activation", str(self.h.path), "check-activation"])
+            code, out = run_cli(["--policy", str(POLICY(self.h)), "--state-dir", str(self.h.h.state_dir), "--run-id", "Bad Run", "--activation", str(self.h.path), "check-activation", "--expect", "advance"])
         self.assertEqual(code, 2)
         self.assertIn("run-id-invalid", out["stops"])
         self.assertFalse(out["current"])
@@ -731,7 +731,7 @@ class FollowUpLedgerTests(LiveCase):
         path = ledger_path(self.h.activation.digest, self.h.activation.path)
         path.write_text(json.dumps({**json.loads(path.read_text(encoding="utf-8")), "state": "pending"}), encoding="utf-8")  # LABELLED MUTATION
         for error in ("No space left on device", "No space left on device", "Input/output error"):
-            with mock.patch.object(activation_module, "_write_ledger", side_effect=OSError(28, error)):
+            with mock.patch.object(activation_module, "_write_ledger", side_effect=OSError(5 if "Input" in error else 28, error)):  # round 4 (thread 3E): one line per (type, errno), so the third error has its own errno
                 self.h.coordinator(activation=None)
         lines = [e["detail"]["error"] for e in self.store.read_journal() if e["event"] == "activation-use-unconfirmed"]
         self.assertEqual(len(lines), 2)
