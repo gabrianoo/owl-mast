@@ -245,8 +245,9 @@ class AbortHandlerNeverMasksTests(LiveCase):
 
     def test_abort_returns_false_when_the_run_path_cannot_be_checked(self):
         record_activation_use(self.h.activation, self.h.h.state_dir, "run-live", T0)
-        unreadable = mock.Mock(exists=mock.Mock(side_effect=PermissionError(13, "Permission denied")))
-        self.assertFalse(abort_activation_use(self.h.activation, self.h.h.state_dir, "run-live", unreadable))
+        # adapted in round 5 (QS): the run path is examined with os.stat, no longer Path.exists()
+        with mock.patch.object(activation_module.os, "stat", side_effect=PermissionError(13, "Permission denied")):
+            self.assertFalse(abort_activation_use(self.h.activation, self.h.h.state_dir, "run-live", self.store.run_path))
         self.assertEqual(record(self.h)["state"], "pending")
 
 
@@ -266,7 +267,7 @@ class RetryAttemptHistoryTests(LiveCase):
         used = record(self.h)
         self.assertEqual((used["state"], used["created_at"], used["first_attempt_at"]), ("pending", "2026-11-07T10:05:00Z", T0))
         self.assertEqual([a["at"] for a in used["attempts"]], [T0, "2026-11-07T10:05:00Z"])
-        self.assertEqual([sorted(a) for a in used["attempts"]], [["at", "pid", "source"]] * 2)  # one shape for every entry
+        self.assertEqual([sorted(a) for a in used["attempts"]], [["abort_cause", "at", "pid", "source"], ["at", "pid", "source"]])  # one shape for every entry; adapted in round 5 (Ot): an aborted attempt records why
         self.assertEqual([a["pid"] for a in used["attempts"]], [None, os.getpid()])  # the first attempt's pid was never recorded
         self.assertNotIn("retried_at", used)
         exc = refuses(self, lambda: self.h.coordinator(), "activation-used")
@@ -402,8 +403,7 @@ class FailedClearRestoresTheStopTests(LiveCase):
             raise OSError(5, "Input/output error")
 
         with mock.patch.object(state_module, "fsync_directory", fail_after_replace):
-            with self.assertRaises(OSError):
-                c.clear_clock_regression(clearance(self.h))
+            refuses(self, lambda: c.clear_clock_regression(clearance(self.h)), "clear-save-uncertain")  # adapted in round 5 (Ol): a clear that took effect is reported as such, not as a crash
         self.assertIsNone(stop_of(self.store))  # run.json was replaced before the fsync failed
         self.assertEqual((c.run.activation_stop, c.run.last_observed_at), (None, self.store.load_run().last_observed_at))
 

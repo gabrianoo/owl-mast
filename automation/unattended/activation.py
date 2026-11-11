@@ -67,7 +67,7 @@ TIME_CODES = ("activation-expired", "activation-not-yet-valid")
 # regard to case, as GitHub does): the tool never fetches the comment, so what it says, who wrote
 # it and whether it is the smoke or the review stay the approver's statement. The comment or review
 # id is 1 to 20 digits, leading zeros included: a sanity limit (GitHub ids are far shorter); a longer
-# value is not a citation.
+# value is not a citation, and neither is an id whose value is 0 (``-0``, ``-000``: GitHub never issues it).
 EVIDENCE_URL_RE = re.compile(r"https://github\.com/([^/\s#?]+/[^/\s#?]+)/(?:issues/[0-9]+#issuecomment|pull/[0-9]+#(?:issuecomment|pullrequestreview))-([0-9]{1,20})", re.ASCII)
 PLACEHOLDER_RE = re.compile(r"^\s*REPLACE|[<>]")
 # The use ledger: one record per activation **digest** in one directory per user account and machine
@@ -81,6 +81,8 @@ USE_LEDGER_DIR = (".local", "state", "owl-mast", "activation-ledger")  # under t
 # Ledger record states: ``pending`` (written before run.json; a crash or a deleted run directory leaves it
 # ambiguous), ``committed`` (run.json exists), ``aborted`` (the creation failed and run.json was absent).
 LEDGER_STATES = ("pending", "committed", "aborted")
+# A retried creation keeps its first attempt and the latest ones in ``attempts``; older ones are dropped.
+MAX_RECENT_ATTEMPTS = 10
 
 
 class ActivationError(Refused):
@@ -208,6 +210,10 @@ class Activation:
                 out.append(("activation-invalid", f"evidence.{key} {value!r} is a placeholder, not a citation of the published {key.replace('_', ' ')}"))
             elif not match or match.group(1).lower() != policy.repo_slug.lower():
                 out.append(("activation-invalid", f"evidence.{key} {value!r} is not a GitHub comment or review URL on {policy.repo_slug} (https://github.com/{policy.repo_slug}/(issues|pull)/<n>#issuecomment-<id>, or pull/<n>#pullrequestreview-<id>: reviews exist only on pull requests)"))
+        for key in EVIDENCE_KEYS:
+            match = EVIDENCE_URL_RE.fullmatch(self.evidence.get(key, ""))
+            if match and not PLACEHOLDER_RE.search(self.evidence.get(key, "")) and int(match.group(2)) == 0:
+                out.append(("activation-invalid", f"evidence.{key} {self.evidence[key]!r} cites id 0, which GitHub never issues; a placeholder-like id is not a citation"))
         if not out:
             # the numeric id is the publication, whatever kind or issue/pull path the URL spells and however
             # many leading zeros it carries: ``issuecomment-05`` and ``pullrequestreview-5`` cite one id twice
@@ -408,11 +414,24 @@ def activation_use(digest: str, source_path: str) -> dict | None:
         return None
     except (OSError, ValueError):
         return {"unreadable": True}
-    return used if isinstance(used, dict) else {"unreadable": True}
+    if not isinstance(used, dict):
+        return {"unreadable": True}
+    if "attempts" in used and not (isinstance(used["attempts"], list) and all(isinstance(a, dict) for a in used["attempts"])):
+        return {"unreadable": True}  # only this tool writes the history: anything but a list of records is a damaged record, a use
+    return used
 
 
 def _same_run(used: dict, state_dir, run_id) -> bool:
-    return state_dir is not None and used.get("run_id") == run_id and used.get("state_dir") == os.path.realpath(state_dir)
+    """Whether the record names this run: the same run id under the same state directory, compared by
+    real path and without regard to case (:func:`_fold`), like every containment check (the state
+    directory may sit on a case-insensitive mount)."""
+    return state_dir is not None and used.get("run_id") == run_id and isinstance(used.get("state_dir"), str) and _fold(used["state_dir"]) == _fold(state_dir)
+
+
+def _same_document_other_dir(used: dict, state_dir, run_id) -> bool:
+    """The record names this run id under another state directory (another mount path, a moved or
+    copied directory): this run cannot confirm it."""
+    return state_dir is not None and used.get("run_id") == run_id and not _same_run(used, state_dir, run_id)
 
 
 def _retryable_creation(used: dict, state_dir, run_id) -> bool:
@@ -501,9 +520,13 @@ def record_activation_use(activation: Activation, state_dir: str | os.PathLike, 
         # the failed creation of this same run, retried: pending again until its run.json exists. ``created_at`` is this
         # attempt (an unconfirmed refusal names when the creation that may exist was tried); the history is kept
         first = used.get("first_attempt_at") or used.get("created_at")
-        attempts = list(used.get("attempts") or [{"at": used.get("created_at"), "pid": None, "source": used.get("source")}])
+        attempts = [dict(a) for a in (used.get("attempts") or [{"at": used.get("created_at"), "pid": None, "source": used.get("source")}])]
+        if used.get("abort_cause") is not None:
+            attempts[-1]["abort_cause"] = used["abort_cause"]  # why the attempt that is retried now failed
         attempts.append({"at": now, "pid": os.getpid(), "source": os.path.realpath(activation.path)})
-        record = {**{k: v for k, v in used.items() if k != "retried_at"}, "state": "pending", "created_at": now, "first_attempt_at": first, "attempts": attempts, "source": os.path.realpath(activation.path)}
+        if len(attempts) > 1 + MAX_RECENT_ATTEMPTS:
+            attempts = attempts[:1] + attempts[-MAX_RECENT_ATTEMPTS:]  # bounded: the first attempt and the latest ones
+        record = {**{k: v for k, v in used.items() if k not in ("retried_at", "abort_cause")}, "state": "pending", "created_at": now, "first_attempt_at": first, "attempts": attempts, "source": os.path.realpath(activation.path)}
         try:
             _write_ledger(path, record, replace=True)
         except OSError as exc:
@@ -514,7 +537,7 @@ def record_activation_use(activation: Activation, state_dir: str | os.PathLike, 
     return record
 
 
-def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, run_id: str) -> dict | None:
+def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, run_id: str, report_success: bool = False) -> dict | None:
     """Mark the use of a run's activation as ``committed`` once its ``run.json`` exists: from then
     on the document creates nothing again, even after the run directory is deleted. Called after
     creation and on every later open of the run, so a ``pending`` (crash between ``run.json`` and
@@ -523,34 +546,54 @@ def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, r
     alone. Returns ``None`` when nothing is left to confirm, or why the confirmation could not be
     written as ``{type, errno, message}`` (the record stays as it is; the caller journals
     ``activation-use-unconfirmed`` once per ``(type, errno)``, the refusal code standing in for the errno of a ``Refused``: the message carries the random name
-    of the temporary file and differs on every attempt)."""
+    of the temporary file and differs on every attempt; an ``OSError`` without an errno is told apart
+    by its ``strerror``). An unconfirmed record of this run id under a state directory that is not
+    this one (another mount path, a moved directory) is reported as ``state-dir-mismatch``: it cannot
+    be confirmed from here, and it is not silently left pending. With ``report_success`` a record that
+    this call marked ``committed`` returns ``{"confirmed": True}``."""
     if not isinstance(binding, dict) or not isinstance(binding.get("digest"), str) or not isinstance(binding.get("path"), str):
         return None
     try:
         used = activation_use(binding["digest"], binding["path"])
-        if used is None or used.get("state") not in ("pending", "aborted") or not _same_run(used, state_dir, run_id):
+        if used is None or used.get("state") not in ("pending", "aborted"):
+            return None
+        if _same_document_other_dir(used, state_dir, run_id):
+            return {"type": "state-dir-mismatch", "errno": None, "strerror": None, "message": f"the use ledger record of run {run_id} names the state directory {used.get('state_dir')!r}, not {os.path.realpath(state_dir)!r}; it stays {used.get('state')} (open the run through the directory it was created under to confirm it)"}
+        if not _same_run(used, state_dir, run_id):
             return None
         _write_ledger(ledger_path(binding["digest"], binding["path"]), {**used, "state": "committed"}, replace=True)
     except (OSError, Refused) as exc:
         # errno identifies an OSError; a Refused is identified by its code (two different refusals are two lines)
-        return {"type": type(exc).__name__, "errno": exc.code if isinstance(exc, Refused) else getattr(exc, "errno", None), "message": f"{type(exc).__name__}: {exc}"}
-    return None
+        errno = exc.code if isinstance(exc, Refused) else getattr(exc, "errno", None)
+        strerror = (getattr(exc, "strerror", None) or str(exc)) if isinstance(exc, OSError) and errno is None else None
+        return {"type": type(exc).__name__, "errno": errno, "strerror": strerror, "message": f"{type(exc).__name__}: {exc}"}
+    return {"confirmed": True} if report_success else None
 
 
-def abort_activation_use(activation: Activation, state_dir: str | os.PathLike, run_id: str, run_path: Path) -> bool:
+def abort_activation_use(activation: Activation, state_dir: str | os.PathLike, run_id: str, run_path: Path, cause: BaseException | None = None) -> bool:
     """After ``save_run`` raised: mark this run's ``pending`` record ``aborted`` when ``run.json``
-    does not exist, so the same creation may be retried. Returns whether the record was marked; a
-    failure leaves it ``pending`` (refused as unconfirmed). A ledger or file-system error returns
-    ``False``; the caller (``Store.ensure_run``) also guards against anything else, so the original
-    error is never replaced."""
+    is known not to exist, so the same creation may be retried; ``cause`` (the creation's error) is
+    recorded as ``abort_cause``. Returns whether the record was marked; a failure leaves it
+    ``pending`` (refused as unconfirmed). Only ``FileNotFoundError`` / ``NotADirectoryError`` from
+    ``os.stat`` mean the file is absent: ``Path.exists()`` answers ``False`` for an unreadable run
+    directory from Python 3.13 on, which would mark a creation aborted whose ``run.json`` may exist.
+    A ledger or file-system error returns ``False``; the caller (``Store.ensure_run``) also guards
+    against anything else, so the original error is never replaced."""
     try:
-        if run_path.exists():  # PermissionError on the run directory is a failure to mark, never a new error
-            return False
+        try:
+            os.stat(run_path)
+        except (FileNotFoundError, NotADirectoryError):
+            pass  # known absent
+        else:
+            return False  # run.json exists: the creation is not known to have failed
         path = ledger_path(activation.digest, activation.path)
         used = activation_use(activation.digest, activation.path)
         if used is None or used.get("state") != "pending" or not _same_run(used, state_dir, run_id):
             return False
-        _write_ledger(path, {**used, "state": "aborted"}, replace=True)
+        marked = {**used, "state": "aborted"}
+        if cause is not None:
+            marked["abort_cause"] = f"{type(cause).__name__}: {cause}"[:500]
+        _write_ledger(path, marked, replace=True)
     except (OSError, Refused):
         return False
     return True
@@ -597,7 +640,7 @@ def load_clearance(path: Path, refuse_inside: dict[str, str | os.PathLike] | Non
             continue
         base = Path(os.path.realpath(root))
         if is_inside(real, base):
-            raise Refused(f"clearance {path} lies inside {label} ({base}); a clearance is the owner's document and is kept outside the state directory and outside every git work tree, where the unattended loop works (owner-only is a trusted-machine convention, not authentication)", code="clearance-invalid", path=str(real), inside=label)
+            raise Refused(f"clearance {path} lies inside, or inside a case variant of, {label} ({base}; paths are compared without regard to case); a clearance is the owner's document and is kept outside the state directory and outside every git work tree, where the unattended loop works (owner-only is a trusted-machine convention, not authentication)", code="clearance-invalid", path=str(real), inside=label)
     try:
         # the resolved path that was checked, not the name again. This narrows a race, it does not close one: the path is
         # resolved again component by component, so a directory swapped for a symlink after the check is followed, and a

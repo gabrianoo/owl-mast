@@ -562,7 +562,8 @@ class Store:
                 except BaseException as original:
                     if binding is not None:
                         try:
-                            abort_activation_use(activation, self.state_dir, self.run_id, self.run_path)  # known failed, no run.json: only this same creation may retry; a failure to mark leaves it pending (refused as unconfirmed)
+                            if not abort_activation_use(activation, self.state_dir, self.run_id, self.run_path, cause=original):  # known failed, no run.json: only this same creation may retry
+                                original.add_note("the use ledger record could not be marked aborted (the ledger or the run directory could not be written or examined, or run.json may exist); it stays pending and a retry refuses activation-used as an unconfirmed creation (re-issue the activation)")
                         except BaseException as inner:  # noqa: BLE001 - nothing raised while marking may replace the creation's own error
                             # not journaled: a journal line before run.json would be a retained artifact that refuses the retry
                             original.add_note(f"marking the use ledger record aborted also failed ({type(inner).__name__}: {inner}); it stays pending and refuses as an unconfirmed creation")
@@ -581,8 +582,10 @@ class Store:
                 if not last or (last.get("detail") or {}).get("policy_digest") != policy_digest:
                     self.journal(None, "policy-drift", {"bound_digest": run.policy_digest, "policy_digest": policy_digest, "consequence": "advancing refuses policy-drift; cleanup proceeds under the recorded binding"})
             if not created and environment == "live":
-                unconfirmed = confirm_activation_use(run.activation, self.state_dir, self.run_id)  # settles a creation that died between run.json and the ledger confirmation
-                if unconfirmed:
+                unconfirmed = confirm_activation_use(run.activation, self.state_dir, self.run_id, report_success=True)  # settles a creation that died between run.json and the ledger confirmation
+                if unconfirmed and unconfirmed.get("confirmed"):
+                    self._journal_confirmed()
+                elif unconfirmed:
                     self._journal_unconfirmed(unconfirmed)
             if not created and environment == "live" and activation is not None:
                 if not isinstance(activation, Activation):
@@ -594,18 +597,41 @@ class Store:
                     raise Refused(f"run {self.run_id} was created under activation {run.activation.get('id')!r}; refusing activation {activation.id!r} (digest {activation.digest[:12]})", code="activation-mismatch")
             return run
 
+    @staticmethod
+    def _unconfirmed_key(detail: dict) -> tuple:
+        """The stable part of a confirmation failure: its type and errno (the refusal code of a
+        ``Refused``) and, for an ``OSError`` without an errno, its ``strerror``."""
+        errno = detail.get("errno")
+        return (detail.get("type"), errno, detail.get("strerror") if errno is None else None)
+
+    def _unconfirmed_since_confirmation(self) -> tuple[list[dict], set[tuple]]:
+        """The ``activation-use-unconfirmed`` lines since the last ``activation-use-confirmed``."""
+        lines: list[dict] = []
+        for entry in self.read_journal():
+            if entry.get("event") == "activation-use-confirmed":
+                lines = []
+            elif entry.get("event") == "activation-use-unconfirmed":
+                lines.append(entry)
+        return lines, {self._unconfirmed_key(e.get("detail") or {}) for e in lines}
+
     def _journal_unconfirmed(self, error: dict) -> None:
         """The ledger record of this run's creation could not be marked ``committed``: it stays
         ``pending``, so deleting the run directory now would leave an unconfirmed creation that
         refuses every later creation from the document (``activation-used``), never one that
-        creates the run again. Journaled once per distinct ``(type, errno)``, the stable part of the
-        error (its message names a random temporary file, so it differs on every attempt); every
-        later open retries."""
-        key = (error.get("type"), error.get("errno"))  # errno, or the refusal code of a Refused
-        last = next((e for e in reversed(self.read_journal()) if e.get("event") == "activation-use-unconfirmed"), None)
-        detail = (last or {}).get("detail") or {}
-        if last is None or (detail.get("type"), detail.get("errno")) != key:
-            self.journal(None, "activation-use-unconfirmed", {"error": error.get("message"), "type": key[0], "errno": key[1], "consequence": "the use ledger record stays pending; every later open retries the confirmation; until then a deleted run directory refuses as an unconfirmed creation"})
+        creates the run again. Journaled once per distinct :meth:`_unconfirmed_key` since the last
+        successful confirmation (the message names a random temporary file, so it differs on every
+        attempt; alternating causes add no line once each is on record); every later open retries."""
+        key = self._unconfirmed_key(error)
+        _, seen = self._unconfirmed_since_confirmation()
+        if key not in seen:
+            self.journal(None, "activation-use-unconfirmed", {"error": error.get("message"), "type": key[0], "errno": key[1], "strerror": error.get("strerror"), "consequence": "the use ledger record stays pending; every later open retries the confirmation; until then a deleted run directory refuses as an unconfirmed creation"})
+
+    def _journal_confirmed(self) -> None:
+        """A later open confirmed the record. Journaled (``activation-use-confirmed``) when an
+        unconfirmed line is on record, which also resets the set :meth:`_journal_unconfirmed` dedupes on."""
+        lines, _ = self._unconfirmed_since_confirmation()
+        if lines:
+            self.journal(None, "activation-use-confirmed", {"consequence": "the use ledger record is committed; the earlier activation-use-unconfirmed lines are settled"})
 
     # -- stories -------------------------------------------------------------------------
     def story_path(self, story: str) -> Path:

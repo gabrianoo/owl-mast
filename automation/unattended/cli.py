@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import stat
 import subprocess
 import sys
 import traceback
@@ -124,7 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
     rr.add_argument("story"); rr.add_argument("--authorization", required=True); rr.add_argument("--receipt", required=True, help="JSON receipt of the retained owner task with its runId (and provider/model/options; optional worktree/branch)"); rr.add_argument("--task-evidence", required=True, help=evidence_help); rr.add_argument("--reason", required=True); rr.add_argument("--provenance", required=True, help="who observed the terminal evidence and how (e.g. original coordinator task_status snapshot, user-supplied)")
     rs = sub.add_parser("resume"); rs.add_argument("story")
     rb = sub.add_parser("rebase-revisions", help="explicitly accept changed GitHub revisions after human verification"); rb.add_argument("story"); rb.add_argument("--reason", required=True)
-    cc = sub.add_parser("clear-clock-regression", help=f"owner action by convention, journaled: clear a recorded clock-regression stop under the presented, current activation and a clearance naming exactly that stop (--clearance). Owner-only is a trusted-machine convention, not a control: every clearance field is readable by the unattended loop, so the tool cannot tell who wrote it; it refuses a clearance inside --state-dir, inside any git work tree (the repository's, the tool's, a delegated task's worktree) or where git cannot tell (clearance-invalid), comparing paths without regard to case. Refuses while the clock is more than {CLOCK_REGRESSION_TOLERANCE_MINUTES} minutes (the tolerance) behind the run's high-water mark and judges the wall clock on that mark; at most once per run; an activation-expired stop is never cleared")
+    cc = sub.add_parser("clear-clock-regression", help=f"owner action by convention, journaled: clear a recorded clock-regression stop under the presented, current activation and a clearance naming exactly that stop (--clearance). Owner-only is a trusted-machine convention, not a control: every clearance field is readable by the unattended loop, so the tool cannot tell who wrote it; it refuses a clearance inside --state-dir, inside any git work tree (the repository's, the tool's, a delegated task's worktree), under any directory with a .git entry (a stale or dangling gitfile included) or where git cannot tell (clearance-invalid), comparing paths without regard to case. Refuses while the clock is more than {CLOCK_REGRESSION_TOLERANCE_MINUTES} minutes (the tolerance) behind the run's high-water mark and judges the wall clock on that mark: time a forward-skewed clock ran ahead is spent, never refunded, so a forward skew larger than the remaining wall-clock budget ends the run and leaves nothing to clear; at most once per run; an activation-expired stop, or a stop past the activation's expires_at, is never cleared")
     cc.add_argument("--clearance", required=True, help="TOML file with exactly run_id, activation_id, approver, stop_observed_at and reason (see docs/unattended-execution.md), kept outside --state-dir and outside every git work tree")
     st = sub.add_parser("status", help="run report of an existing run; a locked state write by default (records an observed expiry or clock regression durably)")
     st.add_argument("--read-only", action="store_true", help="monitoring form: the run is opened and reported without the store lock and without creating or writing anything; a would-be stop is reported as would_stop, never recorded")
@@ -142,16 +144,26 @@ class WorkTreeUnknown(Exception):
 def _git_env() -> dict[str, str]:
     """The environment git runs in for the work-tree rule: no inherited ``GIT_*`` variable (``GIT_DIR``,
     ``GIT_WORK_TREE``, ``GIT_CEILING_DIRECTORIES``... could make git answer "not a git repository" inside a
-    work tree) and the C locale, so the one message that allows is never translated."""
+    work tree), discovery across file systems (otherwise git stops at a mount point, such as a tmpfs
+    ``/tmp`` or a drvfs ``/mnt/c``, and never sees a checkout above it) and the C locale, so the one
+    message that allows is never translated."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    env.update(LC_ALL="C", LANGUAGE="")
+    env.update(LC_ALL="C", LANGUAGE="", GIT_DISCOVERY_ACROSS_FILESYSTEM="1")
     return env
 
 
+# The one git answer that means "outside every work tree": the plain discovery failure, after git walked
+# every parent directory. ``not a git repository: <path>`` (a ``.git`` gitfile pointing at a gitdir that is
+# gone, e.g. a pruned delegated worktree: git stops walking there) and ``Stopping at filesystem boundary``
+# are not that answer.
+NOT_A_WORK_TREE_RE = re.compile(r"fatal: not a git repository \(or any of the parent directories\)(?:: \.git)?")
+
+
 def _work_tree(path) -> str | None:
-    """The git work tree containing ``path``; ``None`` only when git answers that it is not inside
-    one (exit 128 with "not a git repository"). Any other outcome (git missing, a timeout, another
-    exit code or message, an empty answer) raises :class:`WorkTreeUnknown`: a rule that depends on
+    """The git work tree containing ``path``; ``None`` only when git answers, exit 128 and nothing
+    but :data:`NOT_A_WORK_TREE_RE` on stderr, that no parent directory is inside one. Any other
+    outcome (git missing, a timeout, another exit code or message, a dangling gitfile, a stop at a
+    file-system boundary, an empty answer) raises :class:`WorkTreeUnknown`: a rule that depends on
     git never passes because git failed."""
     try:
         out = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=30, env=_git_env())
@@ -159,9 +171,25 @@ def _work_tree(path) -> str | None:
         raise WorkTreeUnknown(f"git could not be run on {path}: {type(exc).__name__}: {exc}") from exc
     if out.returncode == 0 and out.stdout.strip():
         return out.stdout.strip()
-    if out.returncode == 128 and "not a git repository" in out.stderr:
+    if out.returncode == 128 and NOT_A_WORK_TREE_RE.fullmatch((out.stderr or "").strip()):
         return None
     raise WorkTreeUnknown(f"git rev-parse on {path} exited {out.returncode}: {(out.stderr or out.stdout).strip()[:300]}")
+
+
+def _git_entry_above(directory: Path) -> Path | None:
+    """The first ``.git`` entry (a directory, a gitfile, dangling or not, or anything else) in
+    ``directory`` or any of its ancestors, independent of what git makes of it. A path that cannot be
+    examined raises :class:`WorkTreeUnknown`."""
+    for ancestor in (directory, *directory.parents):
+        entry = ancestor / ".git"
+        try:
+            os.lstat(entry)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError as exc:
+            raise WorkTreeUnknown(f"cannot examine {entry}: {type(exc).__name__}: {exc}") from exc
+        return entry
+    return None
 
 
 def _clearance_forbidden(args) -> dict[str, str | None]:
@@ -171,8 +199,16 @@ def _clearance_forbidden(args) -> dict[str, str | None]:
     cannot answer for any of them the clear refuses ``clearance-invalid`` (cannot determine the work
     tree): the rule never passes because git failed."""
     clearance = Path(os.path.realpath(args.clearance))
-    if not clearance.is_file():  # a mistyped path is reported as what it is, before git is asked about a directory that may not exist
-        raise Refused(f"cannot read clearance {args.clearance}: no such file", code="clearance-invalid", path=str(clearance))
+    try:  # a mistyped path is reported as what it is, before git is asked about a directory that may not exist
+        mode = os.stat(clearance).st_mode
+    except FileNotFoundError:
+        raise Refused(f"cannot read clearance {args.clearance}: no such file", code="clearance-invalid", path=str(clearance)) from None
+    except PermissionError as exc:
+        raise Refused(f"cannot read clearance {args.clearance}: permission denied ({exc.strerror}; a directory on the path is not searchable, or the file is not readable)", code="clearance-invalid", path=str(clearance)) from None
+    except OSError as exc:
+        raise Refused(f"cannot read clearance {args.clearance}: {type(exc).__name__}: {exc}", code="clearance-invalid", path=str(clearance)) from None
+    if not stat.S_ISREG(mode):
+        raise Refused(f"cannot read clearance {args.clearance}: not a regular file (it is a {_file_kind(mode)})", code="clearance-invalid", path=str(clearance))
     # the named places first, so a refusal says the most specific one; the clearance's own work tree covers every other
     places = {"--repo-root": Path(args.repo_root), "the tool's own location": Path(__file__).resolve().parent, "the clearance's own directory": clearance.parent}
     roots: dict[str, str | None] = {"--state-dir": args.state_dir}
@@ -182,7 +218,24 @@ def _clearance_forbidden(args) -> dict[str, str | None]:
             roots[labels[name]] = _work_tree(where)
         except WorkTreeUnknown as exc:
             raise Refused(f"clear-clock-regression: cannot determine the work tree of {name} ({where}): {exc}; a clearance is refused inside any git work tree, so when git cannot answer nothing is cleared (fix git, e.g. safe.directory, or keep the clearance where git answers)", code="clearance-invalid", path=str(clearance), unknown=name) from exc
+    if roots[labels["the clearance's own directory"]] is not None:
+        return roots  # inside a work tree git reports: load_clearance refuses it with that label
+    # git's answer is not the whole rule: any ``.git`` entry above the clearance (a stale gitfile, a checkout git
+    # would not report) is refused too, whatever git makes of it
+    try:
+        entry = _git_entry_above(clearance.parent)
+    except WorkTreeUnknown as exc:
+        raise Refused(f"clear-clock-regression: cannot determine whether {clearance.parent} lies inside a git work tree: {exc}; nothing is cleared", code="clearance-invalid", path=str(clearance), unknown="the clearance's own directory") from exc
+    if entry is not None:
+        raise Refused(f"clearance {args.clearance} lies under {entry.parent}, which has a .git entry ({entry}); a clearance is kept outside every git work tree, a stale or dangling one included (owner-only is a trusted-machine convention, not authentication)", code="clearance-invalid", path=str(clearance), inside="a directory with a .git entry")
     return roots
+
+
+def _file_kind(mode: int) -> str:
+    for test, name in ((stat.S_ISDIR, "directory"), (stat.S_ISFIFO, "FIFO"), (stat.S_ISSOCK, "socket"), (stat.S_ISCHR, "character device"), (stat.S_ISBLK, "block device")):
+        if test(mode):
+            return name
+    return "special file"
 
 
 REPORT_KEYS = ("activation", "approved", "run_id", "policy_digest", "bound_digest", "run_exists", "current", "can_create", "stop", "stops", "problems", "creation_problems", "used", "ledger_root", "expect")

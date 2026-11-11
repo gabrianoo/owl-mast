@@ -629,11 +629,22 @@ class Coordinator:
 
     def _clearable_clock_stop(self) -> bool:
         """A recorded ``clock-regression`` stop the owner can still clear: live, not cancelled, the
-        run's one clear not spent. Under it ``resume`` defers and ``bind-receipt`` refuses a work
-        bind instead of abandoning intents or binding for cleanup (unless another durable cause
-        applies, see :meth:`_durable_run_stop`), so a clear restores a healthy run intact."""
+        run's one clear not spent, and still inside the recorded approval window, judged on the
+        later of this observation and the run's high-water mark (a clear needs a current activation,
+        so past ``expires_at`` no clear can succeed). Under it ``resume`` defers and ``bind-receipt``
+        refuses a work bind instead of abandoning intents or binding for cleanup (unless another
+        durable cause applies, see :meth:`_durable_run_stop`), so a clear restores a healthy run
+        intact. Past the window the stop has the durable consequences at once."""
         stop = self.run.activation_stop
-        return self.environment == "live" and stop is not None and stop.get("code") == "clock-regression" and not self.run.cancelled and not self._clear_spent()
+        if not (self.environment == "live" and stop is not None and stop.get("code") == "clock-regression" and not self.run.cancelled):
+            return False
+        problems: list[str] = []
+        now, expires = _parse_time(self._at(), "now", problems), _parse_time((self.run.activation or {}).get("expires_at"), "expires_at", problems)
+        mark = self.run.last_observed_at or (self.run.activation or {}).get("validated_at")
+        high_water = _parse_time(mark, "high-water mark", problems) if mark is not None else now
+        if problems or now is None or expires is None or high_water is None or max(now, high_water) > expires:
+            return False  # past the recorded window (or unreadable): no clear can succeed, the stop is durable
+        return not self._clear_spent()
 
     def _stop_message(self, code: str) -> str:
         if code == "run-cancelled":
@@ -1445,12 +1456,20 @@ class Coordinator:
         with self.operation():
             self.require_activation("reconcile-retained-execution", advancing=False)
             self._reload_run()  # binding validated and the latest cancellation/budgets read under the lock; never saved from a stale object
-            stop = self._durable_run_stop(skip_clearable=True)  # like resume and bind-receipt: a clock stop the owner can still clear is not a stopped run
+            stop = self._durable_run_stop(skip_clearable=True)  # like resume and bind-receipt: a clock stop the owner can still clear is not a stopped run for a pending repair
             if not stop and self._clearable_clock_stop():
                 recorded = self.run.activation_stop
-                raise Refused(f"reconcile-retained-execution: {STOP_REASONS['clock-regression']} (recorded {recorded['observed_at']}: {recorded['message']}); the owner can still clear it, so the run is not stopped and nothing was reconciled: clear the stop (clear-clock-regression), after which the repair binds for work through bind-receipt, or cancel the run", code="clock-regression", stop=recorded)
+                pending = self.store.load_story(story)
+                auth = pending.authorization(str(authorization)) if pending is not None else None
+                revoked = auth is not None and (auth.get("status") == "revoked" or (auth.get("status") == "consumed" and (auth.get("reconciliation") or {}).get("previous_status") == "revoked"))
+                if revoked:
+                    # a revoked authorization binds for cleanup only, before and after a clear (and after it the run is no longer
+                    # stopped, so the reconciliation would refuse run-not-stopped): it is reconciled under the recorded stop
+                    stop = "clock-regression"
+                else:
+                    raise Refused(f"reconcile-retained-execution: {STOP_REASONS['clock-regression']} (recorded {recorded['observed_at']}: {recorded['message']}); the owner can still clear it, so the run is not stopped and nothing was reconciled: clear the stop or cancel the run (clear-clock-regression, after which a pending repair binds for work through bind-receipt; or cancel-run); a revoked authorization is reconciled under the stop", code="clock-regression", stop=recorded)
             if not stop:
-                raise Refused("reconcile-retained-execution is cleanup for a stopped run only (cancelled, past its wall clock or under a recorded activation stop); an active run binds a receipt through bind-receipt, and a missing --activation does not make it a stopped run", code="run-not-stopped")
+                raise Refused("reconcile-retained-execution is cleanup for a stopped run only (cancelled, past its wall clock, under policy drift or under a recorded activation stop; under a clock-regression stop the owner can still clear, only a revoked authorization); an active run binds a receipt through bind-receipt, and a missing --activation does not make it a stopped run", code="run-not-stopped")
             state = self._story(story)
             if not reason or not provenance:
                 raise Refused("reconcile-retained-execution needs --reason and --provenance (who observed the terminal evidence, and how)", code="provenance-missing")
@@ -2143,7 +2162,7 @@ class Coordinator:
             if not isinstance(where, str) or not where.strip():
                 raise Refused("clear-clock-regression: the clearance names no source path, so where it was kept cannot be checked; load it with load_clearance (nothing is cleared)", code="clearance-invalid")
             if is_inside(where, self.store.state_dir):  # by real path and without regard to case (a case-insensitive mount)
-                raise Refused(f"clear-clock-regression: the clearance {where} lies inside the state directory {self.store.state_dir}, where the unattended loop works; keep it outside the state directory and outside every git work tree (the CLI refuses those) (owner-only is a trusted-machine convention, not authentication)", code="clearance-invalid")
+                raise Refused(f"clear-clock-regression: the clearance {where} lies inside, or inside a case variant of, the state directory {self.store.state_dir} (compared without regard to case), where the unattended loop works; keep it outside the state directory and outside every git work tree (the CLI refuses those) (owner-only is a trusted-machine convention, not authentication)", code="clearance-invalid")
             expected = {"run_id": self.store.run_id, "activation_id": self.run.activation["id"], "approver": self.run.activation["approver"], "stop_observed_at": stop["observed_at"]}
             wrong = [f"{key} {clearance.get(key)!r} is not {value!r}" for key, value in expected.items() if clearance.get(key) != value]
             if wrong or not str(clearance.get("reason") or "").strip():
@@ -2167,12 +2186,21 @@ class Coordinator:
             self.run.last_observed_at = high_water_text
             try:
                 self.store.save_run(self.run)
-            except BaseException:
+            except BaseException as exc:
                 # save_run may fail after run.json was replaced (the directory fsync): the object follows what is on disk
                 try:
                     self._reload_run()
                 except BaseException:  # noqa: BLE001 - the save's own error is the one raised
                     self.run.activation_stop, self.run.last_observed_at = previous
+                    raise exc from None
+                if isinstance(exc, Exception) and self.run.activation_stop is None:
+                    # the clear took effect on disk: say so (a coded refusal, never "the tool crashed, nothing was decided")
+                    journaled = True
+                    try:
+                        self.store.journal(None, "activation-stop-cleared", {**detail, "save_uncertain": f"{type(exc).__name__}: {exc}"})
+                    except Exception:  # noqa: BLE001 - the clear is on disk either way; the clear-started line names it
+                        journaled = False
+                    raise Refused(f"clear-clock-regression: the clear took effect (run.json records no stop), but saving it reported {type(exc).__name__}: {exc}; the stop is cleared and the run's one clear is spent{'' if journaled else ' (the confirming journal line could not be written; the clear-started line names the stop)'}; check the disk before continuing", code="clear-save-uncertain", journaled=journaled, cleared=cleared) from exc
                 raise
             seq = self.store.journal(None, "activation-stop-cleared", detail)
             return {**detail, "journal_seq": seq, "run": self.run.__dict__}
