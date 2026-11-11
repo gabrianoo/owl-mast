@@ -34,7 +34,7 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .activation import Activation, _parse_time, confirm_activation_use, record_activation_use, refresh_activation, validate_binding, validate_high_water, validate_stop_record
+from .activation import Activation, _parse_time, abort_activation_use, confirm_activation_use, record_activation_use, refresh_activation, validate_binding, validate_high_water, validate_stop_record
 from .errors import Refused
 
 # A run id names a directory under the state dir and a marker value: one path segment, no
@@ -517,7 +517,10 @@ class Store:
         record only after ``Activation.creation_problems`` of the fresh document is empty for exactly
         this run id, policy and moment (current, and with a window that still covers the wall-clock
         budget). The use of the document is recorded in the use ledger first (``record_activation_use``,
-        confirmed once ``run.json`` exists): one activation creates exactly one run. With
+        ``pending``; ``committed`` once ``run.json`` exists; ``aborted`` when ``save_run`` raised with
+        no ``run.json``, so only that same creation may be retried): one activation creates exactly
+        one run. A confirmation that cannot be written is journaled (``activation-use-unconfirmed``)
+        and retried by every later open; the record stays ``pending`` until then. With
         ``create=False`` (every caller but an admitting one) a run that does not exist is refused
         ``run-not-found`` and nothing is written: a report or a cleanup command never starts a run
         or spends an approval. ``started_at`` is that same validated moment. Retained
@@ -554,9 +557,16 @@ class Store:
                     record_activation_use(activation, self.state_dir, self.run_id, now)  # one document, one run: refused (activation-used) before anything of this run is written; pending until run.json exists
                 targets = {name: asdict(getattr(policy, name)) for name in ("implementer", "reviewer")} if policy is not None else None
                 run = RunState(self.run_id, repo, policy_digest, now or utcnow(), environment=environment, activation=binding, instance=uuid.uuid4().hex[:16], targets=targets)
-                self.save_run(run)
+                try:
+                    self.save_run(run)
+                except BaseException:
+                    if binding is not None:
+                        abort_activation_use(activation, self.state_dir, self.run_id, self.run_path)  # known failed, no run.json: only this same creation may retry; a failure to mark leaves it pending (refused as unconfirmed)
+                    raise
+                unconfirmed = confirm_activation_use(binding, self.state_dir, self.run_id)  # run.json exists: the document has now created its one run
                 self.journal(None, "run-started", {"repo": repo, "policy_digest": policy_digest, "environment": environment, "activation": run.activation, "instance": run.instance})
-                confirm_activation_use(binding, self.state_dir, self.run_id)  # run.json exists: the document has now created its one run
+                if unconfirmed:
+                    self._journal_unconfirmed(unconfirmed)
             elif run.repo != repo:
                 raise Refused(f"run {self.run_id} is bound to {run.repo}; refusing {repo}", code="run-binding-mismatch")
             elif run.environment != environment:
@@ -567,7 +577,9 @@ class Store:
                 if not last or (last.get("detail") or {}).get("policy_digest") != policy_digest:
                     self.journal(None, "policy-drift", {"bound_digest": run.policy_digest, "policy_digest": policy_digest, "consequence": "advancing refuses policy-drift; cleanup proceeds under the recorded binding"})
             if not created and environment == "live":
-                confirm_activation_use(run.activation, self.state_dir, self.run_id)  # settles a creation that died between run.json and the ledger confirmation
+                unconfirmed = confirm_activation_use(run.activation, self.state_dir, self.run_id)  # settles a creation that died between run.json and the ledger confirmation
+                if unconfirmed:
+                    self._journal_unconfirmed(unconfirmed)
             if not created and environment == "live" and activation is not None:
                 if not isinstance(activation, Activation):
                     raise Refused(f"run {self.run_id}: an activation is presented as the loaded document, not as a dictionary", code="activation-invalid")
@@ -577,6 +589,15 @@ class Store:
                 if activation is not None and not activation.matches(run.activation):
                     raise Refused(f"run {self.run_id} was created under activation {run.activation.get('id')!r}; refusing activation {activation.id!r} (digest {activation.digest[:12]})", code="activation-mismatch")
             return run
+
+    def _journal_unconfirmed(self, error: str) -> None:
+        """The ledger record of this run's creation could not be marked ``committed``: it stays
+        ``pending``, so deleting the run directory now would leave an unconfirmed creation that
+        refuses every later creation from the document (``activation-used``), never one that
+        creates the run again. Journaled once per distinct error; every later open retries."""
+        last = next((e for e in reversed(self.read_journal()) if e.get("event") == "activation-use-unconfirmed"), None)
+        if last is None or (last.get("detail") or {}).get("error") != error:
+            self.journal(None, "activation-use-unconfirmed", {"error": error, "consequence": "the use ledger record stays pending; every later open retries the confirmation; until then a deleted run directory refuses as an unconfirmed creation"})
 
     # -- stories -------------------------------------------------------------------------
     def story_path(self, story: str) -> Path:

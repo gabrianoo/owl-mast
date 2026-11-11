@@ -14,14 +14,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import traceback
 from datetime import timedelta
 from pathlib import Path
 
-from .activation import Activation, activation_use, load_activation, load_clearance, parse_utc
+from .activation import Activation, ledger_report, load_activation, load_clearance, parse_utc
 from .backlog import Snapshot, load_tasks_index, take_snapshot, verify_mapping
-from .coordinator import Coordinator
+from .coordinator import CLOCK_REGRESSION_TOLERANCE_MINUTES, Coordinator
 from .eligibility import plan
 from .errors import UnattendedError
 from .github import GhCliTransport
@@ -93,7 +94,8 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--out", default=None)
     sub.add_parser("check-permissions", help="probe the minimum GitHub permissions")
     sub.add_parser("probe", help="run the policy environment probes")
-    sub.add_parser("check-activation", help="read-only: load --activation and report, for --run-id under --policy and --state-dir, whether it can create that run now (can_create) or, when the run already exists, whether it is still that run's current activation (current); touches no state, no GitHub. Without --run-id it reports the policy digest and is current for nothing")
+    ck = sub.add_parser("check-activation", help="read-only: load --activation and report, for --run-id under --policy and --state-dir, whether it can create that run now (can_create) or, when the run already exists, whether it is still that run's current activation (current); also the use ledger root (one per user account and machine) and this document's record; touches no state, no GitHub. Without --run-id it reports the policy digest and is current for nothing")
+    ck.add_argument("--expect", choices=["create", "advance"], default=None, help="exit 0 only for this answer: create = can_create (a fresh run may be reserved now), advance = current (the existing run may advance under this document); exit 2 otherwise. Without it, exit 0 means current")
     pw = sub.add_parser("probe-write", help="bounded live write probe on an engineering-automation issue")
     pw.add_argument("--issue", type=int, required=True)
 
@@ -103,7 +105,8 @@ def build_parser() -> argparse.ArgumentParser:
     bd = sub.add_parser("bind-receipt", help="bind the delegated task receipt to the exact authorization its task was launched for (implementation and review receipts need --worktree/--branch: the task's own checkout; a reviewer in the implementer's worktree is refused)")
     bd.add_argument("story"); bd.add_argument("--receipt", required=True); bd.add_argument("--worktree", default=None); bd.add_argument("--branch", default=None)
     bd.add_argument("--authorization", default=None, help="id of the authorization the task was launched for (from reserve / authorize-review / authorize-repair); must match the story's unresolved authorization")
-    bd.add_argument("--for-cleanup", action="store_true", help="bind the receipt for cleanup only (slot spent, task owned, phase unchanged, no work authorized; exits 3 with cleanup-requested): the way to record a launched task when the activation file is lost for good on a run that is not stopped")
+    bd.add_argument("--for-cleanup", action="store_true", help="bind the receipt for cleanup only (slot spent, task owned, phase unchanged, no work authorized; exits 3 with cleanup-requested): the way to record a launched task when the activation file is lost for good on a run that is not stopped; needs --reason (journaled) and is refused while the run's current activation is presented (cleanup-not-needed)")
+    bd.add_argument("--reason", default=None, help="why the receipt is bound for cleanup only (required with --for-cleanup, journaled)")
     rt = sub.add_parser("record-task-terminal", help="release the active task with its terminal evidence; changes nothing else"); rt.add_argument("story"); rt.add_argument("--task-evidence", required=True, help=evidence_help)
     no_launch_help = 'JSON {"authorization": "<id>", "reason": "..."}: the coordinator attests that no task was launched for exactly that unresolved authorization'
     nl = sub.add_parser("record-no-launch", help="resolve an unresolved authorization by attesting that no task was launched for it; changes nothing else"); nl.add_argument("story"); nl.add_argument("--no-launch", required=True, help=no_launch_help)
@@ -120,14 +123,29 @@ def build_parser() -> argparse.ArgumentParser:
     rr.add_argument("story"); rr.add_argument("--authorization", required=True); rr.add_argument("--receipt", required=True, help="JSON receipt of the retained owner task with its runId (and provider/model/options; optional worktree/branch)"); rr.add_argument("--task-evidence", required=True, help=evidence_help); rr.add_argument("--reason", required=True); rr.add_argument("--provenance", required=True, help="who observed the terminal evidence and how (e.g. original coordinator task_status snapshot, user-supplied)")
     rs = sub.add_parser("resume"); rs.add_argument("story")
     rb = sub.add_parser("rebase-revisions", help="explicitly accept changed GitHub revisions after human verification"); rb.add_argument("story"); rb.add_argument("--reason", required=True)
-    cc = sub.add_parser("clear-clock-regression", help="owner action, journaled: clear a recorded clock-regression stop under the presented, current activation AND an owner-written clearance naming exactly that stop (--clearance; the unattended loop is never given one); refuses while the clock is still behind the run's high-water mark, at most once per run, an activation-expired stop is never cleared")
-    cc.add_argument("--clearance", required=True, help="TOML file with exactly run_id, activation_id, approver, stop_observed_at and reason (see docs/unattended-execution.md)")
+    cc = sub.add_parser("clear-clock-regression", help="owner action by convention, journaled: clear a recorded clock-regression stop under the presented, current activation and a clearance naming exactly that stop (--clearance). Owner-only is a trusted-machine convention, not a control: every clearance field is readable by the unattended loop, so the tool cannot tell who wrote it; it refuses a clearance inside --state-dir or the repository work tree. Refuses while the clock is more than {CLOCK_REGRESSION_TOLERANCE_MINUTES} minutes (the tolerance) behind the run's high-water mark and judges the wall clock on that mark; at most once per run; an activation-expired stop is never cleared")
+    cc.add_argument("--clearance", required=True, help="TOML file with exactly run_id, activation_id, approver, stop_observed_at and reason (see docs/unattended-execution.md), kept outside --state-dir and the repository work tree")
     st = sub.add_parser("status", help="run report of an existing run; a locked state write by default (records an observed expiry or clock regression durably)")
     st.add_argument("--read-only", action="store_true", help="monitoring form: the run is opened and reported without the store lock and without creating or writing anything; a would-be stop is reported as would_stop, never recorded")
     dc = sub.add_parser("dismiss-claim", help="owner action: post a journaled dismissal of a stray or forged claim marker (by comment id) so it no longer blocks admission under this identity; never dismisses this run's own claim nor a claim a run under this state directory still owns; needs --live, the --run-id of an existing run and (live transport) its current activation (--activation), which journals it")
     dc.add_argument("--issue", type=int, required=True); dc.add_argument("--comment-id", type=int, required=True); dc.add_argument("--reason", required=True)
     dc.add_argument("--force", action="store_true", help="dismiss a claim that no run under --state-dir proves finished (its coordinator may still be running elsewhere, however old the claim: a run past its wall clock still owns its story until its task finishes); --reason must attest that it is dead")
     return p
+
+
+def _work_tree(path) -> str | None:
+    """The git work tree containing ``path``, or ``None`` when it is not inside one."""
+    try:
+        out = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() or None if out.returncode == 0 else None
+
+
+def _clearance_forbidden(args) -> dict[str, str | None]:
+    """Where a clearance is never read from: the state directory and the repository work tree
+    (``--repo-root``'s, and the one this tool runs from), where the unattended loop works."""
+    return {"--state-dir": args.state_dir, "the repository work tree (--repo-root)": _work_tree(args.repo_root), "the work tree of this tool": _work_tree(Path(__file__).resolve().parent)}
 
 
 def _check_activation(args, policy, activation) -> tuple[dict, bool]:
@@ -137,16 +155,27 @@ def _check_activation(args, policy, activation) -> tuple[dict, bool]:
     ``--state-dir``, ``current`` (is this document that run's activation and still current for
     advancing: what every advancing operation checks). For a run that does not exist yet the two
     are the same. A run that exists is also not current once it is cancelled, past its wall
-    clock or under a recorded stop. A run record that does not load is reported, never read as
-    "no run"; without ``--run-id`` no run is looked up and the document is current for nothing."""
+    clock, under a recorded stop, or when the host clock reads more than the regression tolerance
+    behind the run's high-water mark (the next locked operation would record ``clock-regression``).
+    A run that does not exist but whose artifacts are retained cannot be created
+    (``run-metadata-missing``). A run record that does not load is reported, never read as "no
+    run"; without ``--run-id`` no run is looked up and the document is current for nothing."""
     now, run, problems = utcnow(), None, []
-    if args.run_id:
+    store = Store(Path(args.state_dir), args.run_id) if args.run_id else None
+    if store is not None:
         try:
-            run = Store(Path(args.state_dir), args.run_id).load_run()
+            run = store.load_run()
         except UnattendedError as exc:
             problems.append((exc.code, str(exc)))
     bound = run.policy_digest if run is not None else None
-    creation = activation.creation_problems(policy, args.run_id, now, state_dir=args.state_dir)
+    try:
+        creation = activation.creation_problems(policy, args.run_id, now, state_dir=args.state_dir)
+    except UnattendedError as exc:  # the ledger itself cannot be consulted (no account entry): a coded problem, never a crash
+        creation = [(exc.code, str(exc))]
+    if run is None and store is not None:
+        retained = store.retained_artifacts()
+        if retained:
+            creation.append(("run-metadata-missing", f"run {args.run_id} has no run.json under {args.state_dir} but {len(retained)} run artifact(s) are retained ({', '.join(retained[:4])}); reserve refuses to create a run around them"))
     if run is not None:
         creation.append(("activation-used", f"run {args.run_id} already exists under {args.state_dir}; a run is created once"))
         problems += activation.problems(policy, args.run_id, now, bound_digest=bound)
@@ -154,16 +183,27 @@ def _check_activation(args, policy, activation) -> tuple[dict, bool]:
             problems.append(("activation-mismatch", f"run {args.run_id} was created under activation {(run.activation or {}).get('id')!r}, not this document ({activation.id}, digest {activation.digest[:12]})"))
         if run.activation_stop is not None:
             problems.append((run.activation_stop["code"], f"the run carries a recorded stop: {run.activation_stop['message']}"))
+        elif run.environment == "live" and isinstance(run.activation, dict):
+            mark = run.last_observed_at or run.activation.get("validated_at")
+            try:
+                behind = parse_utc(mark) - timedelta(minutes=CLOCK_REGRESSION_TOLERANCE_MINUTES) > parse_utc(now)
+            except (TypeError, ValueError):
+                behind = False  # a malformed mark is refused by load_run itself
+            if behind:
+                problems.append(("clock-regression", f"the host clock reads {now}, more than {CLOCK_REGRESSION_TOLERANCE_MINUTES} minutes behind the run's latest observation {mark}; the next locked operation records a durable clock-regression stop (wait for the clock to catch up)"))
         if run.cancelled:
             problems.append(("run-cancelled", f"run {args.run_id} is cancelled ({run.stop_reason}); it advances nothing"))
         elif parse_utc(now) - parse_utc(run.started_at) > timedelta(minutes=policy.max_wall_clock_minutes):
             problems.append(("wall-clock-exceeded", f"run {args.run_id} started at {run.started_at} and is past its wall-clock budget of {policy.max_wall_clock_minutes} minutes; it advances nothing"))
     elif not problems:
         problems = list(creation)
+    ledger = ledger_report(activation.digest, activation.path)
     report = {"activation": activation.binding(), "approved": activation.approved, "run_id": args.run_id, "policy_digest": policy.digest, "bound_digest": bound, "run_exists": run is not None,
               "current": not problems, "can_create": run is None and not problems and not creation, "stop": activation.stop_code(problems), "stops": Activation.stop_codes(problems), "problems": [m for _, m in problems],
-              "creation_problems": [m for _, m in creation], "used": activation_use(activation.digest, activation.path)}
-    return report, not problems
+              "creation_problems": [m for _, m in creation], "used": ledger["record"], "ledger_root": ledger["root"], "expect": getattr(args, "expect", None)}
+    expect = getattr(args, "expect", None)
+    go = report["can_create"] if expect == "create" else report["current"]  # without --expect: current (the earlier contract)
+    return report, go
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -226,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
                 coordinator.require_activation("reserve")  # before any GitHub read on a live transport, under the lock
             state = coordinator.reserve(args.story, _snapshot(args, transport, policy), args.baseline)
         elif args.command == "bind-receipt":
-            state = coordinator.bind_receipt(args.story, _load_json_arg(args.receipt), args.worktree, args.branch, authorization=args.authorization, for_cleanup=bool(args.for_cleanup))
+            state = coordinator.bind_receipt(args.story, _load_json_arg(args.receipt), args.worktree, args.branch, authorization=args.authorization, for_cleanup=bool(args.for_cleanup), reason=args.reason)
         elif args.command == "record-task-terminal":
             state = coordinator.record_task_terminal(args.story, _load_json_arg(args.task_evidence))
         elif args.command == "record-no-launch":
@@ -257,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "rebase-revisions":
             state = coordinator.rebase_revisions(args.story, args.reason)
         elif args.command == "clear-clock-regression":
-            _json(coordinator.clear_clock_regression(load_clearance(Path(args.clearance))))
+            _json(coordinator.clear_clock_regression(load_clearance(Path(args.clearance), refuse_inside=_clearance_forbidden(args))))
             return 0
         elif args.command == "status":
             _json(coordinator.status(read_only=bool(args.read_only)))

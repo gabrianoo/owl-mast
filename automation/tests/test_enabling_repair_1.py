@@ -59,7 +59,9 @@ class R1MissingRunMetadataTests(unittest.TestCase):
             self.assertFalse(store.run_path.exists())
             self.assertEqual({p: p.read_bytes() for p in store.root.rglob("*") if p.is_file()}, {p: b for p, b in before.items() if p != store.run_path})
             self.assertEqual(h.h.fake.calls, NO_CALLS)
-            args = ["--policy", str(POLICY(h)), "--activation", str(h.path), "--state-dir", str(h.h.state_dir), "--run-id", "run-1", "status"]
+            # The admitting command, because only it applies the creation rules (PR #114 round 3: a report on a run
+            # that does not exist refuses run-not-found / run-metadata-missing whatever the document's window).
+            args = ["--policy", str(POLICY(h)), "--activation", str(h.path), "--state-dir", str(h.h.state_dir), "--run-id", "run-1", "--live", "reserve", "OM-01.02", "--baseline", "base"]
             # The CLI decides on an injected observation, never the host clock: inside the window the
             # retained artifacts are the refusal; past it the expired observation is, and still nothing is written.
             with controlled_cli_clock(h.clock):

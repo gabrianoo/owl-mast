@@ -56,8 +56,8 @@ def run_cli(*argv) -> tuple[int, dict]:
     return code, json.loads(buf.getvalue())
 
 
-def arm_failure_after_claim(h: Harness, reads_after_post: int, failure=None, hide_ours: bool = False):
-    """Fail (or hide our own claim in) the N-th comment read after our claim comment lands."""
+def arm_failure_after_claim(h: Harness, reads_after_post: int, failure=None, hide_ours: bool = False, run: str = "run-1"):
+    """Fail (or hide our own claim, the one of ``run``, in) the N-th comment read after our claim comment lands."""
     original_list, original_post = h.fake.list_comments, h.fake.post_comment
     state = {"posted": False, "reads": 0}
 
@@ -75,7 +75,7 @@ def arm_failure_after_claim(h: Harness, reads_after_post: int, failure=None, hid
                 if failure is not None:
                     raise failure
             if state["reads"] >= reads_after_post and hide_ours:
-                return [c for c in comments if not (c.author == "machine" and (c.marker or {}).get("kind") == "claim" and (c.marker or {}).get("run") == "run-1")]
+                return [c for c in comments if not (c.author == "machine" and (c.marker or {}).get("kind") == "claim" and (c.marker or {}).get("run") == run)]
         return comments
 
     h.fake.list_comments, h.fake.post_comment = listing, post

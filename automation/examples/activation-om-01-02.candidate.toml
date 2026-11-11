@@ -10,12 +10,15 @@
 # commit an approved activation), sets approved = true, the exact run id, the canonical digest of the
 # policy in use (see binding.policy_digest below) and a window of at most 24 hours that still covers the 240-minute wall-clock
 # budget at run start, replaces both evidence placeholders with the published GitHub comment or review
-# URLs (two different comments), then verifies it with ("current": true is the go signal; without
-# --run-id the command only reports the policy digest and is current for nothing)
-#   python3 -m automation.unattended --policy automation/examples/first-run-om-01-02.toml --activation <copy> --run-id <run> check-activation
-# One activation creates exactly one live run: creation records the document digest in the per-machine
-# use ledger (~/.local/state/owl-mast/activation-ledger/) and a second creation from the same content,
-# under any file name or state directory, refuses (activation-used). A re-issued document is a new one.
+# URLs (two different comment or review ids; a review URL is under pull/), then verifies it with (exit 0 with
+# --expect create is the go signal for reserve on a fresh run id; without --run-id the command only
+# reports the policy digest and is current for nothing)
+#   python3 -m automation.unattended --policy automation/examples/first-run-om-01-02.toml --activation <copy> --run-id <run> check-activation --expect create
+# One activation creates exactly one live run per user account and machine: creation records the document
+# digest in the use ledger of the account running the tool (~/.local/state/owl-mast/activation-ledger/,
+# printed by check-activation as ledger_root) and a second creation from the same content, under any file
+# name or state directory, refuses (activation-used); so does a creation whose record is still pending
+# (unconfirmed). A re-issued document is a new one.
 # Trust model: this is an engineering approval by the trusted coordinator/owner on the trusted
 # machine under the 2026-11-06 operating agreement. It is not a credential and is not signed.
 

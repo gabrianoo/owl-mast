@@ -15,6 +15,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
+from automation.tests import install_test_ledger
 from automation.tests.fake_transport import small_backlog
 from automation.tests.support import Harness, IMPLEMENTER, REVIEWER, REVIEW_BRANCH, REVIEW_WORKTREE, ROOT, ok_worktree, passing_runner, write_policy
 from automation.unattended import cli
@@ -73,6 +74,7 @@ class LiveHarness:
     """A Harness whose fake transport is marked live, plus a movable clock and an activation file."""
 
     def __init__(self, **over):
+        install_test_ledger()  # the ledger override holds however this module was loaded (automation/tests/__init__.py)
         self.h = Harness(small_backlog())
         self.h.fake.live = True
         self.clock = [T0]

@@ -56,18 +56,25 @@ CLEARANCE_KEYS = {"run_id", "activation_id", "approver", "stop_observed_at", "re
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{3,120}$")
 TIME_CODES = ("activation-expired", "activation-not-yet-valid")
 # An evidence reference is a published GitHub comment or review on the policy repository: an issue
-# or pull request comment (``#issuecomment-N``) or a pull request review (``#pullrequestreview-N``).
+# or pull request comment (``#issuecomment-N``) or a pull request review (``#pullrequestreview-N``,
+# only under ``pull/``: reviews exist only on pull requests).
 # Placeholders (``REPLACE…``, angle brackets) and anything else are not citations.
 # Only the shape is checked (the whole value, ASCII digits, the owner/repository compared without
 # regard to case, as GitHub does): the tool never fetches the comment, so what it says, who wrote
 # it and whether it is the smoke or the review stay the approver's statement.
-EVIDENCE_URL_RE = re.compile(r"https://github\.com/([^/\s#?]+/[^/\s#?]+)/(?:issues|pull)/[0-9]+#(?:issuecomment|pullrequestreview)-[0-9]+", re.ASCII)
+EVIDENCE_URL_RE = re.compile(r"https://github\.com/([^/\s#?]+/[^/\s#?]+)/(?:issues/[0-9]+#issuecomment|pull/[0-9]+#(?:issuecomment|pullrequestreview))-([0-9]+)", re.ASCII)
 PLACEHOLDER_RE = re.compile(r"^\s*REPLACE|[<>]")
-# The use ledger: one record per activation **digest** in one per-machine directory, written when
-# a live run is created from the document. It is keyed on the content, not on the file name, so a
-# copy, a symlink, a hard link or another spelling of the path is the same approval, and it lives
-# outside every state directory and work tree, so it survives the run directory.
+# The use ledger: one record per activation **digest** in one directory per user account and machine
+# (the home directory of the account running the tool), written when a live run is created from the
+# document. It is keyed on the content, not on the file name, so a copy, a symlink, a hard link or
+# another spelling of the path is the same approval, and it lives outside every state directory and
+# work tree, so it survives the run directory. Another account, another WSL distribution or another
+# host starts with an empty ledger: the one-run rule holds per account and machine (trusted-machine
+# convention, ``check-activation`` and ``status`` print the ledger root).
 USE_LEDGER_DIR = (".local", "state", "owl-mast", "activation-ledger")  # under the home directory of the coordinator's user
+# Ledger record states: ``pending`` (written before run.json; a crash or a deleted run directory leaves it
+# ambiguous), ``committed`` (run.json exists), ``aborted`` (the creation failed and run.json was absent).
+LEDGER_STATES = ("pending", "committed", "aborted")
 
 
 class ActivationError(Refused):
@@ -194,10 +201,13 @@ class Activation:
             if PLACEHOLDER_RE.search(value):
                 out.append(("activation-invalid", f"evidence.{key} {value!r} is a placeholder, not a citation of the published {key.replace('_', ' ')}"))
             elif not match or match.group(1).lower() != policy.repo_slug.lower():
-                out.append(("activation-invalid", f"evidence.{key} {value!r} is not a GitHub comment or review URL on {policy.repo_slug} (https://github.com/{policy.repo_slug}/(issues|pull)/<n>#issuecomment-<id> or #pullrequestreview-<id>)"))
-        cited = [self.evidence.get(key, "").rpartition("#")[2] for key in EVIDENCE_KEYS]  # ``issuecomment-<id>`` / ``pullrequestreview-<id>``: the comment itself, whatever issue or pull request path the URL spells
-        if not out and len(set(cited)) != len(cited):
-            out.append(("activation-invalid", f"evidence.{EVIDENCE_KEYS[0]} and evidence.{EVIDENCE_KEYS[1]} cite the same comment ({cited[0]}); the lifecycle smoke and the fresh review are two publications"))
+                out.append(("activation-invalid", f"evidence.{key} {value!r} is not a GitHub comment or review URL on {policy.repo_slug} (https://github.com/{policy.repo_slug}/(issues|pull)/<n>#issuecomment-<id>, or pull/<n>#pullrequestreview-<id>: reviews exist only on pull requests)"))
+        if not out:
+            # the numeric id is the publication, whatever kind or issue/pull path the URL spells and however
+            # many leading zeros it carries: ``issuecomment-05`` and ``pullrequestreview-5`` cite one id twice
+            cited = [int(EVIDENCE_URL_RE.fullmatch(self.evidence[key]).group(2)) for key in EVIDENCE_KEYS]
+            if len(set(cited)) != len(cited):
+                out.append(("activation-invalid", f"evidence.{EVIDENCE_KEYS[0]} and evidence.{EVIDENCE_KEYS[1]} cite the same comment or review id ({cited[0]}); the lifecycle smoke and the fresh review are two publications"))
         return out
 
     def creation_problems(self, policy: Policy, run_id: str | None, now: str, state_dir: str | os.PathLike | None = None) -> list[tuple[str, str]]:
@@ -211,10 +221,8 @@ class Activation:
         out = self.problems(policy, run_id, now)
         out.extend(self.evidence_problems(policy))
         used = activation_use(self.digest, self.path)
-        if used is not None and used.get("unreadable"):
-            out.append(("activation-used", f"the use ledger record of this document ({ledger_path(self.digest, self.path)}) exists but cannot be read; a damaged record is a use, never the absence of one (inspect or restore that file; re-issuing the activation creates a new record)"))
-        elif used is not None and not _same_pending_creation(used, state_dir, run_id):
-            out.append(("activation-used", f"this document already created live run {used.get('run_id')!r} under {used.get('state_dir')!r} at {used.get('created_at')} (use ledger {ledger_path(self.digest, self.path)}); one activation creates exactly one run, and a new run needs a newly issued activation (any change to the document, such as a later window, is a new document)"))
+        if used is not None and not _retryable_creation(used, state_dir, run_id):
+            out.append(("activation-used", use_refusal(used, ledger_path(self.digest, self.path))))
         problems: list[str] = []
         expires, at = _parse_time(self.expires_at, "expires_at", problems), _parse_time(now, "now", problems)
         if policy.max_wall_clock_minutes >= MAX_WINDOW_MINUTES:
@@ -361,11 +369,17 @@ def refresh_activation(activation: Activation | None, operation: str) -> Activat
 
 
 def ledger_root(source_path: str) -> Path:
-    """The per-machine directory of the use ledger. One fixed place, not configurable by a flag
-    or an environment variable (the unattended loop could set either): the home directory comes
-    from the account database, not from ``$HOME``. The test suite replaces this function;
-    ``source_path`` (the activation file) is unused here."""
-    return Path(pwd.getpwuid(os.getuid()).pw_dir).joinpath(*USE_LEDGER_DIR)
+    """The directory of the use ledger, one per user account and machine. One fixed place, not
+    configurable by a flag or an environment variable (the unattended loop could set either): the
+    home directory comes from the account database, not from ``$HOME``. A uid without an account
+    entry (a container, an NSS outage) has no ledger and refuses ``activation-ledger-unwritable``.
+    The test suite replaces this function; ``source_path`` (the activation file) is unused here."""
+    uid = os.getuid()
+    try:
+        home = pwd.getpwuid(uid).pw_dir
+    except KeyError as exc:
+        raise Refused(f"the use ledger has no home: uid {uid} has no entry in the account database (a container uid or an NSS outage); no live run is created and no use can be checked without the ledger", code="activation-ledger-unwritable", uid=uid) from exc
+    return Path(home).joinpath(*USE_LEDGER_DIR)
 
 
 def ledger_path(digest: str, source_path: str) -> Path:
@@ -386,10 +400,30 @@ def activation_use(digest: str, source_path: str) -> dict | None:
     return used if isinstance(used, dict) else {"unreadable": True}
 
 
-def _same_pending_creation(used: dict, state_dir, run_id) -> bool:
-    """Whether the use on record is the interrupted creation of exactly this run: still
-    ``pending`` (its ``run.json`` was never confirmed) under the same state directory and run id."""
-    return state_dir is not None and used.get("state") == "pending" and used.get("run_id") == run_id and used.get("state_dir") == os.path.realpath(state_dir)
+def _same_run(used: dict, state_dir, run_id) -> bool:
+    return state_dir is not None and used.get("run_id") == run_id and used.get("state_dir") == os.path.realpath(state_dir)
+
+
+def _retryable_creation(used: dict, state_dir, run_id) -> bool:
+    """Whether the use on record is a creation of exactly this run that is known to have failed:
+    ``aborted`` (``save_run`` raised and ``run.json`` was absent) under the same state directory
+    (compared by realpath) and run id. Only that creation may be retried. A ``pending`` record is
+    never retryable: it is what a process that died between the ledger and ``run.json``, or a run
+    directory deleted after a creation whose confirmation failed, leaves behind, and the two cannot
+    be told apart."""
+    return used.get("state") == "aborted" and _same_run(used, state_dir, run_id)
+
+
+def use_refusal(used: dict, path) -> str:
+    """Why a use on record refuses another creation, in the words of its state."""
+    if used.get("unreadable"):
+        return f"the use ledger record of this document ({path}) exists but cannot be read; a damaged record is a use, never the absence of one (inspect or restore that file; re-issuing the activation creates a new record)"
+    run, where, at = used.get("run_id"), used.get("state_dir"), used.get("created_at")
+    if used.get("state") == "pending":
+        return f"this document's creation of live run {run!r} under {where!r} at {at} is unconfirmed (use ledger {path} is still pending: the process died between the ledger record and run.json, or the run directory was deleted after a creation whose confirmation failed); whether that run was created cannot be told, so this document creates nothing more: re-issue the activation"
+    if used.get("state") == "aborted":
+        return f"this document's creation of live run {run!r} under {where!r} failed at {at} before its run.json was written (use ledger {path}: aborted); only that same creation may be retried (--run-id {run} --state-dir {where}); any other run needs a newly issued activation"
+    return f"this document already created live run {run!r} under {where!r} at {at} (use ledger {path}); one activation creates exactly one run, and a new run needs a newly issued activation (any change to the document, such as a later window, is a new document)"
 
 
 def _fsync_dir(path: Path) -> None:
@@ -431,9 +465,12 @@ def record_activation_use(activation: Activation, state_dir: str | os.PathLike, 
     is written crash-safely (:func:`_write_ledger`); this tool never removes it.
 
     It is written ``pending`` and confirmed (:func:`confirm_activation_use`) once ``run.json``
-    exists. If creation fails or the process dies in between, the document is not burned: the
-    same creation (same state directory, same run id, no ``run.json``) finds its own pending
-    record and proceeds. Like the activation itself this is a trusted-machine control, not
+    exists. A creation whose ``save_run`` raised while ``run.json`` was absent is marked ``aborted``
+    (:func:`abort_activation_use`): only that same creation (same state directory, same run id)
+    may be retried, and the retry sets the record back to ``pending``. A ``pending`` record without
+    ``run.json`` is ambiguous (the process died in between, or the run directory was deleted
+    after a confirmation that failed) and refuses ``activation-used``: the document is burned and
+    is re-issued. Like the activation itself this is a trusted-machine control, not
     authentication: whoever can write to the machine can remove a record."""
     path = ledger_path(activation.digest, activation.path)
     record = {"activation_id": activation.id, "digest": activation.digest, "source": os.path.realpath(activation.path), "state_dir": os.path.realpath(state_dir), "run_id": run_id, "created_at": now, "state": "pending"}
@@ -445,41 +482,84 @@ def record_activation_use(activation: Activation, state_dir: str | os.PathLike, 
         _write_ledger(path, record, replace=False)
     except FileExistsError:
         used = activation_use(activation.digest, activation.path) or {"unreadable": True}
-        if _same_pending_creation(used, state_dir, run_id):
-            return used  # the interrupted creation of this same run: retried, not refused
-        if used.get("unreadable"):
-            raise Refused(f"run {run_id}: the use ledger record of activation {activation.id} ({path}) exists but cannot be read; a damaged record is a use, never the absence of one (inspect or restore that file; re-issuing the activation creates a new record)", code="activation-used", used=used, ledger=str(path)) from None
-        raise Refused(f"run {run_id}: activation {activation.id} was already used to create run {used.get('run_id')!r} under {used.get('state_dir')!r} at {used.get('created_at')}; one activation creates exactly one live run (ledger {path}); a new run needs a newly issued activation", code="activation-used", used=used, ledger=str(path)) from None
+        if not _retryable_creation(used, state_dir, run_id):
+            raise Refused(f"run {run_id}: activation {activation.id}: " + use_refusal(used, path), code="activation-used", used=used, ledger=str(path)) from None
+        # the failed creation of this same run, retried: pending again until its run.json exists
+        record = {**used, "state": "pending", "retried_at": now}
+        try:
+            _write_ledger(path, record, replace=True)
+        except OSError as exc:
+            raise Refused(f"run {run_id}: cannot mark the retried creation of activation {activation.id} pending in the use ledger ({path}): {exc}; no run is created without the record", code="activation-ledger-unwritable", ledger=str(path)) from exc
+        return record
     except OSError as exc:
         raise Refused(f"run {run_id}: cannot record the use of activation {activation.id} in the use ledger ({path}): {exc}; no run is created without the record (the document itself is valid; make {path.parent} writable)", code="activation-ledger-unwritable", ledger=str(path)) from exc
     return record
 
 
-def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, run_id: str) -> None:
-    """Mark the pending use of a run's activation as ``committed`` once its ``run.json`` exists:
-    from then on the document creates nothing again, even after the run directory is deleted.
-    Called after creation and on every later open of the run (so a crash between ``run.json`` and
-    this write is settled by the next open). A missing record (a run created before the ledger
-    existed) and a record of another run are left alone; a write failure is retried by the next open."""
+def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, run_id: str) -> str | None:
+    """Mark the use of a run's activation as ``committed`` once its ``run.json`` exists: from then
+    on the document creates nothing again, even after the run directory is deleted. Called after
+    creation and on every later open of the run, so a ``pending`` (crash between ``run.json`` and
+    this write) or ``aborted`` record of this run is settled by the next open. A missing record (a
+    run created before the ledger existed), an unreadable one and a record of another run are left
+    alone. Returns ``None`` when nothing is left to confirm, or why the confirmation could not be
+    written (the record stays as it is; the caller journals ``activation-use-unconfirmed``)."""
     if not isinstance(binding, dict) or not isinstance(binding.get("digest"), str) or not isinstance(binding.get("path"), str):
-        return
-    used = activation_use(binding["digest"], binding["path"])
-    if used is None or not _same_pending_creation(used, state_dir, run_id):
-        return
+        return None
     try:
+        used = activation_use(binding["digest"], binding["path"])
+        if used is None or used.get("state") not in ("pending", "aborted") or not _same_run(used, state_dir, run_id):
+            return None
         _write_ledger(ledger_path(binding["digest"], binding["path"]), {**used, "state": "committed"}, replace=True)
-    except OSError:
-        pass
+    except (OSError, Refused) as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return None
 
 
-def load_clearance(path: Path) -> dict:
+def abort_activation_use(activation: Activation, state_dir: str | os.PathLike, run_id: str, run_path: Path) -> bool:
+    """After ``save_run`` raised: mark this run's ``pending`` record ``aborted`` when ``run.json``
+    does not exist, so the same creation may be retried. Returns whether the record was marked; a
+    failure leaves it ``pending`` (refused as unconfirmed), never raises over the original error."""
+    if run_path.exists():
+        return False
+    try:
+        path = ledger_path(activation.digest, activation.path)
+        used = activation_use(activation.digest, activation.path)
+        if used is None or used.get("state") != "pending" or not _same_run(used, state_dir, run_id):
+            return False
+        _write_ledger(path, {**used, "state": "aborted"}, replace=True)
+    except (OSError, Refused):
+        return False
+    return True
+
+
+def ledger_report(digest: str, source_path: str) -> dict:
+    """What ``check-activation`` and ``status`` print about the ledger: its root and the record."""
+    try:
+        return {"root": str(ledger_root(source_path)), "record": activation_use(digest, source_path)}
+    except Refused as exc:
+        return {"root": None, "record": None, "error": exc.code, "message": str(exc)}
+
+
+def load_clearance(path: Path, refuse_inside: dict[str, str | os.PathLike] | None = None) -> dict:
     """The owner's clearance of one recorded ``clock-regression`` stop, for
     ``clear-clock-regression --clearance``: a TOML file with exactly :data:`CLEARANCE_KEYS` as
     non-empty strings (the run id, the id and approver of the activation the run was created
-    under, the ``observed_at`` of the stop being cleared, and the reason). The unattended loop
-    is never given this file; it names one stop, so it cannot be written in advance or reused.
-    Returned with its ``digest`` and ``path`` for the journal. Anything else refuses
-    ``clearance-invalid``."""
+    under, the ``observed_at`` of the stop being cleared, and the reason). Returned with its
+    ``digest`` and ``path`` for the journal. Anything else refuses ``clearance-invalid``.
+
+    Owner-only is a **convention** on the trusted machine, not a control: every field is readable
+    by the unattended loop (``run.json``, ``status``), so a process on this machine can write a
+    valid clearance. What the tool enforces is where it is read from: a clearance whose real path
+    lies inside one of ``refuse_inside`` (the state directory, the repository work tree) refuses
+    ``clearance-invalid``, so one is never picked up from where the loop works."""
+    real = Path(os.path.realpath(path))
+    for label, root in (refuse_inside or {}).items():
+        if root is None:
+            continue
+        base = Path(os.path.realpath(root))
+        if real == base or real.is_relative_to(base):
+            raise Refused(f"clearance {path} lies inside {label} ({base}); a clearance is the owner's document and is kept outside the state directory and the repository work tree, where the unattended loop works (owner-only is a trusted-machine convention, not authentication)", code="clearance-invalid", path=str(real), inside=label)
     try:
         text = path.read_bytes()
         raw = tomllib.loads(text.decode("utf-8"))

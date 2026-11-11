@@ -200,7 +200,7 @@ class ClearClockRegressionOwnerTests(LiveCase):
 
 
 class UseLedgerTests(LiveCase):
-    """The use ledger is keyed on the document digest in one per-machine directory, is crash-safe
+    """The use ledger is keyed on the document digest in one directory per user account and machine, is crash-safe
     and does not burn an approval whose creation failed (reopened #108 thread on state.py:418;
     #114 threads on activation.py and state.py:421)."""
 
@@ -238,7 +238,7 @@ class UseLedgerTests(LiveCase):
             with self.assertRaises(OSError):
                 self.h.coordinator()
         self.assertIsNone(self.store.load_run())
-        self.assertEqual(activation_use(self.h.activation.digest, self.h.activation.path)["state"], "pending")
+        self.assertEqual(activation_use(self.h.activation.digest, self.h.activation.path)["state"], "aborted")  # PR #114 round 3: a known failure is aborted, not pending
         refuses(self, lambda: self.create(self.other(), self.h.activation), "activation-used")  # pending for another state directory is still a use
         refuses(self, lambda: self.create(self.other("runs-3", "run-live"), self.h.activation), "activation-used")
         self.assertEqual(self.h.coordinator().run.run_id, "run-live")  # the same creation, retried: not refused
@@ -444,15 +444,19 @@ class DeferredResumeTests(LiveCase):
         self.assertEqual((code, out["error"]["code"], out["error"]["deferred"]), (3, "activation-required", True))
         self.assertEqual(calls, [])
 
-    def test_a_resume_with_nothing_to_defer_still_succeeds_without_the_file(self):
+    def test_a_resume_that_only_skips_the_revision_check_still_refuses_without_the_file(self):
+        # PR #114 round 3 (thread je): updated from "still succeeds": a skipped revision check is a deferred step too
         claimed(self.h)
         bare = self.h.coordinator(activation=None)
         self.h.h.fake.calls = []
-        self.assertEqual(bare.resume(S, ok_worktree).phase, "claimed")
+        exc = refuses(self, lambda: bare.resume(S, ok_worktree), "activation-required")
+        self.assertEqual((exc.detail["deferred"], exc.detail["ops"]), (True, ["revisions"]))
+        self.assertEqual(self.store.load_story(S).phase, "claimed")
         self.assertEqual(self.h.h.fake.calls, [])
         self.assertNotIn("reconciliation-deferred", self.events())
-        bare.resume(S, ok_worktree)
+        refuses(self, lambda: bare.resume(S, ok_worktree), "activation-required")
         self.assertEqual(self.events().count("resume-revisions-unverified"), 1)  # on record, once: this resume verified no revisions
+        self.assertEqual(self.h.coordinator().resume(S, ok_worktree).phase, "claimed")  # with the file the revision check runs and the resume completes
 
     def test_an_unsettled_claim_race_is_deferred_not_settled_without_the_file(self):
         c = self.h.coordinator()
@@ -513,7 +517,7 @@ class CleanupBindTests(LiveCase):
         bare = self.h.coordinator(activation=None)
         refuses(self, lambda: bare.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree), "activation-required")
         self.assertIsNone(self.store.load_story(S).active_task)
-        exc = refuses(self, lambda: bare.bind_receipt(S, REVIEWER, worktree_check=ok_worktree, for_cleanup=True), "cleanup-requested")
+        exc = refuses(self, lambda: bare.bind_receipt(S, REVIEWER, worktree_check=ok_worktree, for_cleanup=True, reason="activation file lost"), "cleanup-requested")
         self.assertTrue(exc.detail["bound_for_cleanup"])
         state = self.store.load_story(S)
         self.assertEqual((state.phase, state.active_task["taskId"], state.active_task["cleanup_only"]), ("review-authorized", REVIEWER["taskId"], "cleanup-requested"))
@@ -524,7 +528,7 @@ class CleanupBindTests(LiveCase):
     def test_cli_for_cleanup(self):
         review_authorized(self.h)
         with controlled_cli_clock(self.h.clock), no_gh_calls():
-            code, out = run_cli(cli_args(self.h, "bind-receipt", S, "--receipt", json.dumps(REVIEWER), "--for-cleanup", activation=False))
+            code, out = run_cli(cli_args(self.h, "bind-receipt", S, "--receipt", json.dumps(REVIEWER), "--for-cleanup", "--reason", "activation file lost", activation=False))
         self.assertEqual((code, out["error"]["code"], out["error"]["bound_for_cleanup"]), (3, "cleanup-requested", True))
 
 
