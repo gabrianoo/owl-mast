@@ -95,7 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("check-permissions", help="probe the minimum GitHub permissions")
     sub.add_parser("probe", help="run the policy environment probes")
     ck = sub.add_parser("check-activation", help="read-only: load --activation and report, for --run-id under --policy and --state-dir, whether it can create that run now (can_create) or, when the run already exists, whether it is still that run's current activation (current); also the use ledger root (one per user account and machine) and this document's record; touches no state, no GitHub. Without --run-id it reports the policy digest and is current for nothing")
-    ck.add_argument("--expect", choices=["create", "advance"], default=None, help="exit 0 only for this answer: create = can_create (a fresh run may be reserved now), advance = current (the existing run may advance under this document); exit 2 otherwise. Without it, exit 0 means current")
+    ck.add_argument("--expect", choices=["create", "advance"], default=None, help="exit 0 only for this answer: create = can_create (a fresh run may be reserved now), advance = the run exists and is current (it may advance under this document); exit 2 otherwise. Without it, exit 0 means current")
     pw = sub.add_parser("probe-write", help="bounded live write probe on an engineering-automation issue")
     pw.add_argument("--issue", type=int, required=True)
 
@@ -123,7 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
     rr.add_argument("story"); rr.add_argument("--authorization", required=True); rr.add_argument("--receipt", required=True, help="JSON receipt of the retained owner task with its runId (and provider/model/options; optional worktree/branch)"); rr.add_argument("--task-evidence", required=True, help=evidence_help); rr.add_argument("--reason", required=True); rr.add_argument("--provenance", required=True, help="who observed the terminal evidence and how (e.g. original coordinator task_status snapshot, user-supplied)")
     rs = sub.add_parser("resume"); rs.add_argument("story")
     rb = sub.add_parser("rebase-revisions", help="explicitly accept changed GitHub revisions after human verification"); rb.add_argument("story"); rb.add_argument("--reason", required=True)
-    cc = sub.add_parser("clear-clock-regression", help="owner action by convention, journaled: clear a recorded clock-regression stop under the presented, current activation and a clearance naming exactly that stop (--clearance). Owner-only is a trusted-machine convention, not a control: every clearance field is readable by the unattended loop, so the tool cannot tell who wrote it; it refuses a clearance inside --state-dir or the repository work tree. Refuses while the clock is more than {CLOCK_REGRESSION_TOLERANCE_MINUTES} minutes (the tolerance) behind the run's high-water mark and judges the wall clock on that mark; at most once per run; an activation-expired stop is never cleared")
+    cc = sub.add_parser("clear-clock-regression", help=f"owner action by convention, journaled: clear a recorded clock-regression stop under the presented, current activation and a clearance naming exactly that stop (--clearance). Owner-only is a trusted-machine convention, not a control: every clearance field is readable by the unattended loop, so the tool cannot tell who wrote it; it refuses a clearance inside --state-dir or the repository work tree. Refuses while the clock is more than {CLOCK_REGRESSION_TOLERANCE_MINUTES} minutes (the tolerance) behind the run's high-water mark and judges the wall clock on that mark; at most once per run; an activation-expired stop is never cleared")
     cc.add_argument("--clearance", required=True, help="TOML file with exactly run_id, activation_id, approver, stop_observed_at and reason (see docs/unattended-execution.md), kept outside --state-dir and the repository work tree")
     st = sub.add_parser("status", help="run report of an existing run; a locked state write by default (records an observed expiry or clock regression durably)")
     st.add_argument("--read-only", action="store_true", help="monitoring form: the run is opened and reported without the store lock and without creating or writing anything; a would-be stop is reported as would_stop, never recorded")
@@ -161,9 +161,10 @@ def _check_activation(args, policy, activation) -> tuple[dict, bool]:
     (``run-metadata-missing``). A run record that does not load is reported, never read as "no
     run"; without ``--run-id`` no run is looked up and the document is current for nothing."""
     now, run, problems = utcnow(), None, []
-    store = Store(Path(args.state_dir), args.run_id) if args.run_id else None
-    if store is not None:
+    store = None
+    if args.run_id:
         try:
+            store = Store(Path(args.state_dir), args.run_id)
             run = store.load_run()
         except UnattendedError as exc:
             problems.append((exc.code, str(exc)))
@@ -187,8 +188,9 @@ def _check_activation(args, policy, activation) -> tuple[dict, bool]:
             mark = run.last_observed_at or run.activation.get("validated_at")
             try:
                 behind = parse_utc(mark) - timedelta(minutes=CLOCK_REGRESSION_TOLERANCE_MINUTES) > parse_utc(now)
-            except (TypeError, ValueError):
-                behind = False  # a malformed mark is refused by load_run itself
+            except (TypeError, ValueError, OverflowError) as exc:  # fail closed: an unreadable mark is never "not behind"
+                behind = False
+                problems.append(("run-state-invalid", f"the run's high-water mark {mark!r} cannot be compared with the clock ({exc}); the clock-regression check cannot be made"))
             if behind:
                 problems.append(("clock-regression", f"the host clock reads {now}, more than {CLOCK_REGRESSION_TOLERANCE_MINUTES} minutes behind the run's latest observation {mark}; the next locked operation records a durable clock-regression stop (wait for the clock to catch up)"))
         if run.cancelled:
@@ -202,7 +204,12 @@ def _check_activation(args, policy, activation) -> tuple[dict, bool]:
               "current": not problems, "can_create": run is None and not problems and not creation, "stop": activation.stop_code(problems), "stops": Activation.stop_codes(problems), "problems": [m for _, m in problems],
               "creation_problems": [m for _, m in creation], "used": ledger["record"], "ledger_root": ledger["root"], "expect": getattr(args, "expect", None)}
     expect = getattr(args, "expect", None)
-    go = report["can_create"] if expect == "create" else report["current"]  # without --expect: current (the earlier contract)
+    if expect == "create":
+        go = report["can_create"]
+    elif expect == "advance":
+        go = report["run_exists"] and report["current"]  # advancing needs a run to advance
+    else:
+        go = report["current"]  # without --expect: current (the earlier contract)
     return report, go
 
 

@@ -1260,6 +1260,8 @@ class Coordinator:
             self._reload_run()
             if not isinstance(receipt, dict):
                 raise ReceiptInvalid(f"bind-receipt: the receipt must be a JSON object, not {type(receipt).__name__}")
+            if reason is not None and not for_cleanup:
+                raise Refused("bind-receipt --reason is the cause of a --for-cleanup bind and is journaled only with it; without --for-cleanup it would be dropped, so it is refused (nothing was bound)", code="reason-without-for-cleanup")
             if for_cleanup and not str(reason or "").strip():
                 raise Refused("bind-receipt --for-cleanup needs --reason: binding for cleanup only spends the story slot and ends the story's work, so the cause is journaled with it (for example: the activation file is lost for good)", code="reason-required")
             state = self._story(story)
@@ -2093,7 +2095,9 @@ class Coordinator:
             if self._clear_spent():
                 raise Refused(f"run {self.store.run_id} already had its one clock-regression clear; a clock that regresses again is not trusted for this run: cancel it and start a new one under a new activation", code="clock-clear-exhausted", stop=stop)
             where = clearance.get("path")
-            if isinstance(where, str) and Path(os.path.realpath(where)).is_relative_to(Path(os.path.realpath(self.store.state_dir))):
+            if not isinstance(where, str) or not where.strip():
+                raise Refused("clear-clock-regression: the clearance names no source path, so where it was kept cannot be checked; load it with load_clearance (nothing is cleared)", code="clearance-invalid")
+            if Path(os.path.realpath(where)).is_relative_to(Path(os.path.realpath(self.store.state_dir))):
                 raise Refused(f"clear-clock-regression: the clearance {where} lies inside the state directory {self.store.state_dir}, where the unattended loop works; keep it outside the state directory and the work tree (owner-only is a trusted-machine convention, not authentication)", code="clearance-invalid")
             expected = {"run_id": self.store.run_id, "activation_id": self.run.activation["id"], "approver": self.run.activation["approver"], "stop_observed_at": stop["observed_at"]}
             wrong = [f"{key} {clearance.get(key)!r} is not {value!r}" for key, value in expected.items() if clearance.get(key) != value]
@@ -2112,7 +2116,7 @@ class Coordinator:
             detail = {"cleared": cleared, "clearance": clearance, "reason": str(clearance["reason"]), "observed_at": self._at(), "high_water": high_water_text, "activation": self.activation.id}
             # write-ahead: the clear is started on record (naming the stop) before the stop is gone, and confirmed after; a
             # save that fails leaves a started line for the stop still recorded, which a retry may use (see ``_clear_spent``)
-            self.store.journal(None, "activation-stop-clear-started", {"stop_observed_at": stop["observed_at"], "clearance_digest": clearance.get("digest"), "observed_at": self._at(), "activation": self.activation.id})
+            self.store.journal(None, "activation-stop-clear-started", {**detail, "stop_observed_at": stop["observed_at"]})  # the whole decision (reason, clearance, high-water mark) is on record even if the confirming line is lost
             self.run.activation_stop = None
             self.run.last_observed_at = high_water_text
             self.store.save_run(self.run)

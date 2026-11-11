@@ -555,9 +555,9 @@ class Store:
                     policy_digest = policy.digest  # a new live run binds the canonical digest (the raw-bytes digest is recognized only on runs that already carry it)
                     binding = validate_binding(activation.binding(validated_at=now), self.run_id, repo, policy_digest)
                     record_activation_use(activation, self.state_dir, self.run_id, now)  # one document, one run: refused (activation-used) before anything of this run is written; pending until run.json exists
-                targets = {name: asdict(getattr(policy, name)) for name in ("implementer", "reviewer")} if policy is not None else None
-                run = RunState(self.run_id, repo, policy_digest, now or utcnow(), environment=environment, activation=binding, instance=uuid.uuid4().hex[:16], targets=targets)
-                try:
+                try:  # from the ledger record on: any failure before run.json exists marks the creation aborted
+                    targets = {name: asdict(getattr(policy, name)) for name in ("implementer", "reviewer")} if policy is not None else None
+                    run = RunState(self.run_id, repo, policy_digest, now or utcnow(), environment=environment, activation=binding, instance=uuid.uuid4().hex[:16], targets=targets)
                     self.save_run(run)
                 except BaseException:
                     if binding is not None:

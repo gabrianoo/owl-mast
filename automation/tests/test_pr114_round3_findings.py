@@ -479,7 +479,7 @@ class CheckActivationExpectTests(LiveCase):
 
     def test_expect_tells_may_create_from_may_advance(self):
         self.assertEqual(self.check("--expect", "create")[0], 0)
-        self.assertEqual(self.check("--expect", "advance")[0], 0)  # a run that does not exist: the two are the same
+        self.assertEqual(self.check("--expect", "advance")[0], 2)  # a run that does not exist cannot advance
         claimed(self.h)
         self.assertEqual(self.check("--expect", "create")[0], 2)  # the run exists: this document creates nothing more
         self.assertEqual(self.check("--expect", "advance")[0], 0)
@@ -568,6 +568,202 @@ class TestLedgerOverrideTests(unittest.TestCase):
                 self.assertEqual(ledger_path(h.activation.digest, h.activation.path).parent, h.path.resolve().parent / ".activation-ledger")
             finally:
                 h.close()
+
+
+# -- coordinator follow-up review of round 3 --------------------------------------------------------------------------
+class FollowUpCliTests(LiveCase):
+    """check-activation and help details found by the follow-up review."""
+
+    def test_the_clear_help_renders_the_tolerance(self):
+        from automation.unattended.cli import build_parser
+
+        text = " ".join(build_parser().format_help().split())
+        self.assertIn("more than 5 minutes (the tolerance)", text)
+        self.assertNotIn("{CLOCK_REGRESSION_TOLERANCE_MINUTES}", text)
+
+    def test_expect_advance_needs_an_existing_run(self):
+        with controlled_cli_clock(self.h.clock), no_gh_calls():
+            code, out = run_cli(cli_args(self.h, "check-activation", "--expect", "advance"))
+        self.assertEqual((code, out["run_exists"], out["current"]), (2, False, True))
+
+    def test_a_malformed_run_id_is_a_reported_problem(self):
+        with controlled_cli_clock(self.h.clock), no_gh_calls():
+            code, out = run_cli(["--policy", str(POLICY(self.h)), "--state-dir", str(self.h.h.state_dir), "--run-id", "Bad Run", "--activation", str(self.h.path), "check-activation"])
+        self.assertEqual(code, 2)
+        self.assertIn("run-id-invalid", out["stops"])
+        self.assertFalse(out["current"])
+
+    def test_an_unreadable_high_water_mark_fails_closed(self):
+        claimed(self.h)
+        from automation.unattended import cli as cli_module
+
+        real = cli_module.parse_utc
+        mark = self.store.load_run().last_observed_at or self.store.load_run().activation["validated_at"]
+
+        seen = []
+
+        def broken(value):  # the mark is compared first; started_at (the same instant here) parses normally afterwards
+            if value == mark and not seen:
+                seen.append(value)
+                raise ValueError("unreadable mark")
+            return real(value)
+
+        with mock.patch.object(cli_module, "parse_utc", broken):
+            with controlled_cli_clock(self.h.clock), no_gh_calls():
+                code, out = run_cli(cli_args(self.h, "check-activation", "--expect", "advance"))
+        self.assertEqual((code, out["current"]), (2, False))
+        self.assertIn("run-state-invalid", out["stops"])
+
+
+class FollowUpClearTests(LiveCase):
+    def setUp(self):
+        super().setUp()
+        self.c = claimed(self.h)
+        regress(self, self.h, self.c)
+        self.h.clock[0] = "2026-11-07T11:58:00Z"
+
+    def test_the_clear_started_line_carries_the_whole_decision(self):
+        original = Store.journal
+
+        def lose_cleared(store, story, event, detail=None):
+            if event == "activation-stop-cleared":
+                raise OSError(28, "No space left on device")
+            return original(store, story, event, detail)
+
+        with mock.patch.object(Store, "journal", lose_cleared):
+            with self.assertRaises(OSError):
+                self.c.clear_clock_regression(clearance(self.h))
+        started = [e for e in self.store.read_journal() if e["event"] == "activation-stop-clear-started"][-1]["detail"]
+        self.assertEqual((started["reason"], started["high_water"], started["clearance"]["run_id"]), ("clock resynced; verified by the owner", "2026-11-07T12:00:00Z", "run-live"))
+
+    def test_a_clearance_without_a_source_path_is_refused(self):
+        document = {k: v for k, v in clearance(self.h).items() if k != "path"}
+        refuses(self, lambda: self.c.clear_clock_regression(document), "clearance-invalid")
+        self.assertEqual(self.store.load_run().activation_stop["code"], "clock-regression")
+
+    def test_a_clearance_under_the_tool_s_own_work_tree_is_refused(self):
+        import tempfile
+
+        from automation.unattended import cli as cli_module
+
+        unrelated = Path(self.h.h.tmpdir.name) / "unrelated"
+        unrelated.mkdir()
+        subprocess.run(["git", "init", "-q", str(unrelated)], check=True)
+        own = Path(tempfile.mkdtemp(prefix=".round3-clearance-", dir=Path(cli_module.__file__).resolve().parents[2]))
+        try:
+            inside = write_clearance(own / "clearance.toml", self.h)
+            with controlled_cli_clock(self.h.clock), no_gh_calls():
+                code, out = run_cli(cli_args(self.h, "--repo-root", str(unrelated), "clear-clock-regression", "--clearance", str(inside)))
+            self.assertEqual((code, out["error"]["code"], out["error"]["inside"]), (3, "clearance-invalid", "the work tree of this tool"))
+        finally:
+            shutil.rmtree(own)
+
+    def test_load_clearance_reads_the_path_it_checked(self):
+        target = write_clearance(Path(self.h.h.tmpdir.name) / "owner" / "real.toml", self.h)
+        link = Path(self.h.h.tmpdir.name) / "link.toml"
+        link.symlink_to(target)
+        read = []
+        original = Path.read_bytes
+        with mock.patch.object(Path, "read_bytes", lambda self: read.append(self) or original(self)):
+            load_clearance(link, refuse_inside={"--state-dir": self.h.h.state_dir})
+        self.assertEqual(read, [target.resolve()])
+
+
+class FollowUpBindTests(LiveCase):
+    def test_a_reason_without_for_cleanup_is_refused(self):
+        c = review_authorized(self.h)
+        refuses(self, lambda: c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree, reason="why"), "reason-without-for-cleanup")
+        self.assertIsNone(self.store.load_story(S).active_task)
+
+    def test_a_revoked_authorization_binds_for_cleanup_under_a_clearable_stop(self):
+        c = review_authorized(self.h)
+        refuses(self, lambda: c.cancel(S, "owner stop"), "authorization-unresolved")  # revokes the review authorization
+        regress(self, self.h, c)
+        exc = refuses(self, lambda: c.bind_receipt(S, REVIEWER, worktree_check=ok_worktree), "authorization-revoked")
+        self.assertTrue(exc.detail["bound_for_cleanup"])
+
+
+class FollowUpClearableOverBudgetTests(LiveCase):
+    """A clearable stop whose high-water mark is past the wall clock is a durable stop (guards
+    ``_elapsed(on_high_water=True)`` in ``_durable_run_stop``)."""
+
+    OVER = LONG_WINDOW
+
+    def over_budget_on_the_mark(self, c):
+        self.h.clock[0] = "2026-11-07T14:02:00Z"
+        c.status()
+        self.h.clock[0] = "2026-11-07T12:00:00Z"
+        refuses(self, lambda: c.rebase_revisions(S, "x"), "clock-regression")
+        self.h.clock[0] = "2026-11-07T13:58:00Z"  # 238 minutes on this clock, 242 on the mark
+
+    def test_resume_abandons(self):
+        c = ClearableClockStopTests.pending_proposal(self)
+        self.over_budget_on_the_mark(c)
+        c.resume(S, ok_worktree)
+        self.assertIn("resume-advancing-abandoned", self.events())
+
+    def test_a_work_bind_binds_for_cleanup(self):
+        c = review_authorized(self.h)
+        self.over_budget_on_the_mark(c)
+        exc = refuses(self, lambda: c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree), "clock-regression")
+        self.assertTrue(exc.detail["bound_for_cleanup"])
+
+
+class FollowUpLedgerTests(LiveCase):
+    def test_save_run_failing_after_run_json_exists_is_not_aborted(self):
+        real = state_module.fsync_directory
+
+        def fail_after_replace(path):
+            if (Path(path) / "run.json").exists():
+                raise OSError(5, "Input/output error")
+            return real(path)
+
+        with mock.patch.object(state_module, "fsync_directory", fail_after_replace):
+            with self.assertRaises(OSError):
+                self.h.coordinator()
+        self.assertEqual(record(self.h)["state"], "pending")
+        shutil.rmtree(self.store.root)
+        exc = refuses(self, lambda: self.h.coordinator(), "activation-used")
+        self.assertIn("unconfirmed", str(exc))
+
+    def test_a_reopen_journals_a_failing_confirmation_once_per_error(self):
+        self.h.coordinator()
+        path = ledger_path(self.h.activation.digest, self.h.activation.path)
+        path.write_text(json.dumps({**json.loads(path.read_text(encoding="utf-8")), "state": "pending"}), encoding="utf-8")  # LABELLED MUTATION
+        for error in ("No space left on device", "No space left on device", "Input/output error"):
+            with mock.patch.object(activation_module, "_write_ledger", side_effect=OSError(28, error)):
+                self.h.coordinator(activation=None)
+        lines = [e["detail"]["error"] for e in self.store.read_journal() if e["event"] == "activation-use-unconfirmed"]
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(record(self.h)["state"], "pending")
+
+    def test_an_interrupted_save_marks_the_record_aborted_and_the_same_creation_retries(self):
+        with mock.patch.object(Store, "save_run", side_effect=KeyboardInterrupt()):
+            with self.assertRaises(KeyboardInterrupt):
+                self.h.coordinator()
+        self.assertEqual(record(self.h)["state"], "aborted")
+        self.assertEqual(self.h.coordinator().run.run_id, "run-live")
+
+    def test_a_failure_building_the_run_record_marks_it_aborted(self):
+        with mock.patch.object(state_module, "RunState", side_effect=TypeError("broken record")):
+            with self.assertRaises(TypeError):
+                self.h.coordinator()
+        self.assertEqual(record(self.h)["state"], "aborted")
+
+    def test_an_unknown_ledger_state_is_a_use_with_its_own_message(self):
+        record_activation_use(self.h.activation, self.h.h.state_dir, "run-live", T0)
+        path = ledger_path(self.h.activation.digest, self.h.activation.path)
+        path.write_text(json.dumps({**json.loads(path.read_text(encoding="utf-8")), "state": "weird"}), encoding="utf-8")  # LABELLED MUTATION
+        exc = refuses(self, lambda: self.h.coordinator(), "activation-used")
+        self.assertIn("unknown state 'weird'", str(exc))
+        self.assertNotIn("already created", str(exc))
+
+
+class FollowUpDocsTests(unittest.TestCase):
+    def test_the_clock_bullet_matches_the_clearable_stop(self):
+        docs = (Path(__file__).resolve().parents[2] / "docs" / "unattended-execution.md").read_text(encoding="utf-8")
+        self.assertNotIn("after that the run never advances again", docs)
+        self.assertNotIn("is cleared only by the owner", docs)
 
 
 if __name__ == "__main__":

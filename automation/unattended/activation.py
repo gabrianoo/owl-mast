@@ -416,6 +416,8 @@ def _retryable_creation(used: dict, state_dir, run_id) -> bool:
 
 def use_refusal(used: dict, path) -> str:
     """Why a use on record refuses another creation, in the words of its state."""
+    if not used.get("unreadable") and used.get("state") not in LEDGER_STATES:  # fail closed like a damaged record: a use, never "already created"
+        return f"the use ledger record of this document ({path}) has the unknown state {used.get('state')!r} (expected one of {list(LEDGER_STATES)}); a record that cannot be interpreted is a use, never the absence of one (inspect or restore that file; re-issuing the activation creates a new record)"
     if used.get("unreadable"):
         return f"the use ledger record of this document ({path}) exists but cannot be read; a damaged record is a use, never the absence of one (inspect or restore that file; re-issuing the activation creates a new record)"
     run, where, at = used.get("run_id"), used.get("state_dir"), used.get("created_at")
@@ -561,7 +563,7 @@ def load_clearance(path: Path, refuse_inside: dict[str, str | os.PathLike] | Non
         if real == base or real.is_relative_to(base):
             raise Refused(f"clearance {path} lies inside {label} ({base}); a clearance is the owner's document and is kept outside the state directory and the repository work tree, where the unattended loop works (owner-only is a trusted-machine convention, not authentication)", code="clearance-invalid", path=str(real), inside=label)
     try:
-        text = path.read_bytes()
+        text = real.read_bytes()  # the resolved path that was checked, never the name again (a symlink swapped in between is not read)
         raw = tomllib.loads(text.decode("utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise Refused(f"cannot read clearance {path}: {exc}", code="clearance-invalid") from exc
