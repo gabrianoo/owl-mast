@@ -2,7 +2,7 @@
 title: 'PR #114 round 5: resolve review 5861377408'
 type: 'bugfix'
 created: '2026-11-11'
-status: 'in-progress'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: 'f5ab25a9aad6aca24df0ed82438a7a0bef0b897f'
@@ -67,7 +67,7 @@ Thread ids are `PRRT_kwDOVjxExc62Pk…` suffixes. The full text is in `gh api re
 - [x] `coordinator.py` + tests -- clearable only inside the recorded window; reconcile of a revoked repair under a clearable stop; OW docs and help; a clear that took effect is reported as such; memo and fallback tests -- OR, OM, OW, Ol, P5, QD
 - [x] `state.py` + tests -- abort note, state-dir mismatch journaled, dedupe set -- Og, Pi, PE
 - [x] `docs/unattended-execution.md` -- PJ and the wording of the behaviour changes
-- [ ] GitHub -- reply to and resolve all 21 threads; refresh the PR body
+- [x] GitHub -- reply to and resolve all 21 threads; refresh the PR body
 
 **Acceptance Criteria:**
 - Given the full suite on Python 3.14 (local) and 3.12 (CI), when run, then it passes, and reverting any fix fails at least one named test.
@@ -97,9 +97,35 @@ Thread ids are `PRRT_kwDOVjxExc62Pk…` suffixes. The full text is in `gh api re
   - **P5** → `ClearSpentMemoInvalidationTests`.
 - Not done here, by the Code Map's instruction (commit locally, do not push or touch GitHub): the replies, thread resolution and PR body refresh. The GitHub task stays open for the parent.
 
+- Review pass 1: patches in `87c0e43`, nothing deferred. 685 tests OK on Python 3.14.4 and 3.12.14. git discovery runs with `GIT_DISCOVERY_ACROSS_FILESYSTEM=1` so a clearance on another mount (`/tmp` tmpfs, `/mnt/c` drvfs) is judged, not refused for the boundary.
+
 ## Spec Change Log
 
 ## Review Triage Log
+
+Pass 1 (blind B1–B15, edge E1–E4, verification-gap V1–V2) on 0cfeb51:
+
+| # | Finding | Verdict | Evidence / route |
+|---|---------|---------|------------------|
+| B1 | clearable rule and the clear judge the window on different clocks | medium | `_clearable_clock_stop` uses `max(now, hw)`, the clear uses `now`; resume abandons work a clear would save; patch (one rule) |
+| B2/E2 | `_same_run` casefold loosens an identity check on case-sensitive file systems | medium | `/x/State` ≠ `/x/state` on ext4; patch (exact or `samefile`) |
+| E1 | NUL in a recorded `state_dir` crashes the open | low | `realpath` raises `ValueError`, not caught; patch |
+| B3 | docs contradict the code (state-dir mismatch, `NotADirectoryError`) | low | patch |
+| B4 | errno-less `OSError` key falls back to `str(exc)` with a temp path | low | dedupe defeated again; patch |
+| B5 | malformed `state_dir` reported as a moved directory; misnamed helper | low | patch |
+| B6 | readability never checked; wording wrong | low | `os.stat` does not check `R_OK`; patch |
+| B7 | empty `attempts` passes validation | low | patch |
+| B8 | `BaseException` after the replace skips the coded refusal | low | interrupt during a clear; adds handling for a rare path; rejected |
+| V2 | the `journaled=False` branch is untested | medium | pre-verified; patch (test) |
+| B9/V1 | inclusive window edge and the `.git` lstat failure untested | medium | pre-verified (V1); patch (tests) |
+| B10 | reconcile answers `clock-regression` for an unknown story/authorization | low | load before validate; patch |
+| B11 | docs/help tests check wording | low | OW is docs-only by decision; rejected |
+| B12 | abandonment test asserts conditionally | low | patch |
+| B13 | spec paths, suffix, status | — | fix edits this build's spec; rejected by rule |
+| B14 | mutation script is outside the repo | low | kept outside by design; the thread map names each test; rejected |
+| B15 | zero-id check duplicates the loop | low | cosmetic refactor; rejected |
+| E3 | a git `warning:` line refuses every clear | low | fails closed but blocks the owner; patch (ignore warnings) |
+| E4 | test `finally` can raise AttributeError | low | patch |
 
 ## Verification
 
