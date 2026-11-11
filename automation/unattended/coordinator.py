@@ -1459,9 +1459,11 @@ class Coordinator:
             stop = self._durable_run_stop(skip_clearable=True)  # like resume and bind-receipt: a clock stop the owner can still clear is not a stopped run for a pending repair
             if not stop and self._clearable_clock_stop():
                 recorded = self.run.activation_stop
-                pending = self.store.load_story(story)
-                auth = pending.authorization(str(authorization)) if pending is not None else None
-                revoked = auth is not None and (auth.get("status") == "revoked" or (auth.get("status") == "consumed" and (auth.get("reconciliation") or {}).get("previous_status") == "revoked"))
+                story_state = self._story(story)  # an unknown story or authorization is refused as it is without a stop
+                auth = story_state.authorization(str(authorization))
+                if auth is None:
+                    raise Refused(f"{story} has no authorization {authorization}", code="authorization-mismatch", given=str(authorization))
+                revoked = (auth.get("status") == "revoked" or (auth.get("status") == "consumed" and (auth.get("reconciliation") or {}).get("previous_status") == "revoked"))
                 if revoked:
                     # a revoked authorization binds for cleanup only, before and after a clear (and after it the run is no longer
                     # stopped, so the reconciliation would refuse run-not-stopped): it is reconciled under the recorded stop
@@ -2172,6 +2174,9 @@ class Coordinator:
             if candidate is not None:  # still behind the high-water mark (or, by now, past the window): this observation would record a stop itself
                 raise Refused(f"clear-clock-regression: {candidate['message']}; the clock has not caught up with what this run already observed, nothing is cleared (wait until it reads {_utc_text(high_water - timedelta(minutes=CLOCK_REGRESSION_TOLERANCE_MINUTES))} or later)", code=candidate["code"], stop=stop, high_water=_utc_text(high_water))
             judged_at = max(now, high_water)  # the wall clock is judged on the high-water mark: a clock still within the tolerance behind it never buys more time
+            if judged_at > _parse_time(self.run.activation["expires_at"], "expires_at", []):
+                # the one rule of _clearable_clock_stop: past the recorded window (judged on the high-water mark) the stop is durable
+                raise Refused(f"clear-clock-regression: the run's high-water mark {_utc_text(judged_at)} is after the recorded expires_at {self.run.activation['expires_at']}; the approval window is over, the stop is durable and nothing is cleared", code="activation-expired", stop=stop, high_water=_utc_text(judged_at))
             elapsed = judged_at - _parse_time(self.run.started_at, "started_at", [])
             if elapsed > timedelta(minutes=self.policy.max_wall_clock_minutes):
                 raise Refused(f"clear-clock-regression: wall clock budget of {self.policy.max_wall_clock_minutes} minutes exceeded ({int(elapsed.total_seconds() // 60)} minutes from {self.run.started_at} to the high-water mark {_utc_text(judged_at)}); the run is over whatever the stop says, nothing is cleared", code="wall-clock-exceeded")

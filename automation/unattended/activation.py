@@ -416,21 +416,39 @@ def activation_use(digest: str, source_path: str) -> dict | None:
         return {"unreadable": True}
     if not isinstance(used, dict):
         return {"unreadable": True}
-    if "attempts" in used and not (isinstance(used["attempts"], list) and all(isinstance(a, dict) for a in used["attempts"])):
-        return {"unreadable": True}  # only this tool writes the history: anything but a list of records is a damaged record, a use
+    if "attempts" in used and not (isinstance(used["attempts"], list) and used["attempts"] and all(isinstance(a, dict) and "at" in a for a in used["attempts"])):
+        return {"unreadable": True}  # only this tool writes the history: anything but a non-empty list of attempt records is a damaged record, a use
+    if not isinstance(used.get("state_dir"), str):
+        return {"unreadable": True}  # every record names its state directory: without one it cannot be matched to a run
     return used
 
 
+def _same_state_dir(recorded, state_dir) -> bool:
+    """Whether the recorded state directory is ``state_dir``: the same real path, or, when both
+    exist, the same directory (``os.path.samefile``, which also matches another spelling of it on a
+    case-insensitive mount). Never by case-folding: on a case-sensitive file system ``State`` and
+    ``state`` are two directories. A value that is not a path (not a string, an embedded NUL) is
+    never the same directory, and never an error."""
+    if state_dir is None or not isinstance(recorded, str):
+        return False
+    try:
+        mine = os.path.realpath(state_dir)
+        if recorded == mine:
+            return True
+        return os.path.exists(recorded) and os.path.exists(mine) and os.path.samefile(recorded, mine)
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def _same_run(used: dict, state_dir, run_id) -> bool:
-    """Whether the record names this run: the same run id under the same state directory, compared by
-    real path and without regard to case (:func:`_fold`), like every containment check (the state
-    directory may sit on a case-insensitive mount)."""
-    return state_dir is not None and used.get("run_id") == run_id and isinstance(used.get("state_dir"), str) and _fold(used["state_dir"]) == _fold(state_dir)
+    """Whether the record names this run: the same run id under the same state directory
+    (:func:`_same_state_dir`)."""
+    return state_dir is not None and used.get("run_id") == run_id and _same_state_dir(used.get("state_dir"), state_dir)
 
 
-def _same_document_other_dir(used: dict, state_dir, run_id) -> bool:
-    """The record names this run id under another state directory (another mount path, a moved or
-    copied directory): this run cannot confirm it."""
+def _same_run_id_other_state_dir(used: dict, state_dir, run_id) -> bool:
+    """The record names this run id under another state directory (a moved or copied directory):
+    this run cannot confirm it."""
     return state_dir is not None and used.get("run_id") == run_id and not _same_run(used, state_dir, run_id)
 
 
@@ -548,7 +566,7 @@ def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, r
     ``activation-use-unconfirmed`` once per ``(type, errno)``, the refusal code standing in for the errno of a ``Refused``: the message carries the random name
     of the temporary file and differs on every attempt; an ``OSError`` without an errno is told apart
     by its ``strerror``). An unconfirmed record of this run id under a state directory that is not
-    this one (another mount path, a moved directory) is reported as ``state-dir-mismatch``: it cannot
+    this one (a moved or copied directory; another spelling of the same directory is the same one) is reported as ``state-dir-mismatch``: it cannot
     be confirmed from here, and it is not silently left pending. With ``report_success`` a record that
     this call marked ``committed`` returns ``{"confirmed": True}``."""
     if not isinstance(binding, dict) or not isinstance(binding.get("digest"), str) or not isinstance(binding.get("path"), str):
@@ -557,7 +575,7 @@ def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, r
         used = activation_use(binding["digest"], binding["path"])
         if used is None or used.get("state") not in ("pending", "aborted"):
             return None
-        if _same_document_other_dir(used, state_dir, run_id):
+        if _same_run_id_other_state_dir(used, state_dir, run_id):
             return {"type": "state-dir-mismatch", "errno": None, "strerror": None, "message": f"the use ledger record of run {run_id} names the state directory {used.get('state_dir')!r}, not {os.path.realpath(state_dir)!r}; it stays {used.get('state')} (open the run through the directory it was created under to confirm it)"}
         if not _same_run(used, state_dir, run_id):
             return None
@@ -565,7 +583,7 @@ def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, r
     except (OSError, Refused) as exc:
         # errno identifies an OSError; a Refused is identified by its code (two different refusals are two lines)
         errno = exc.code if isinstance(exc, Refused) else getattr(exc, "errno", None)
-        strerror = (getattr(exc, "strerror", None) or str(exc)) if isinstance(exc, OSError) and errno is None else None
+        strerror = getattr(exc, "strerror", None) if isinstance(exc, OSError) and errno is None else None  # never str(exc): it names a random temporary file
         return {"type": type(exc).__name__, "errno": errno, "strerror": strerror, "message": f"{type(exc).__name__}: {exc}"}
     return {"confirmed": True} if report_success else None
 

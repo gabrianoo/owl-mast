@@ -78,6 +78,23 @@ class DanglingGitfileTests(ClearanceLocationCase):
             with self.assertRaises(cli_module.WorkTreeUnknown):
                 cli_module._work_tree(self.outside.parent)
 
+    def test_a_warning_before_the_plain_answer_still_allows(self):
+        warned = completed(128, stderr="warning: unable to access '/home/x/.config/git/config': Permission denied\nfatal: not a git repository (or any of the parent directories): .git\n")
+        with mock.patch.object(cli_module.subprocess, "run", return_value=warned):
+            self.assertIsNone(cli_module._work_tree(self.outside.parent))
+
+    def test_an_ancestor_git_entry_that_cannot_be_examined_refuses(self):
+        original = os.lstat
+
+        def lstat(path, *args, **kwargs):
+            if os.path.basename(os.fspath(path)) == ".git":
+                raise PermissionError(13, "Permission denied", os.fspath(path))
+            return original(path, *args, **kwargs)
+
+        with mock.patch.object(cli_module.os, "lstat", lstat):
+            error = self.assert_refused(self.clear(self.outside))
+        self.assertIn("cannot determine whether", error["message"])
+
     def test_git_walks_across_file_systems(self):
         self.assertEqual(cli_module._git_env()["GIT_DISCOVERY_ACROSS_FILESYSTEM"], "1")
         with mock.patch.object(cli_module.subprocess, "run", return_value=completed(128, stderr="fatal: not a git repository (or any of the parent directories): .git\n")) as run:
@@ -145,6 +162,17 @@ class ClearancePathKindTests(ClearanceLocationCase):
         self.assertIn("permission denied", message)
         self.assertNotIn("no such file", message)
 
+    @unittest.skipIf(AS_ROOT, "root reads through mode 000")
+    def test_an_unreadable_regular_file_is_permission_denied(self):
+        inside = write_clearance(self.tmp / "owner" / "unreadable.toml", self.h)
+        inside.chmod(0)
+        try:
+            message = self.assert_refused(self.clear(inside))["message"]
+        finally:
+            inside.chmod(0o600)
+        self.assertIn("permission denied", message)
+        self.assertIn("not readable", message)
+
 
 # -- QS: os.stat, not Path.exists() -------------------------------------------------------------------------------------
 def exists_as_on_python_313(self, *args, **kwargs):
@@ -197,22 +225,65 @@ class UnreadableRunDirectoryTests(LiveCase):
 
 
 # -- Pf, Pi: the state directory of a ledger record ------------------------------------------------------------------
-class StateDirFoldTests(LiveCase):
-    """The recorded state directory is compared without regard to case (thread Pf)."""
+class StateDirIdentityTests(LiveCase):
+    """The recorded state directory is the same real path, or the same directory by samefile; never a
+    case-folded spelling, which on a case-sensitive file system is another directory (thread Pf)."""
 
-    def test_a_case_variant_of_the_state_directory_is_the_same_run(self):
-        variant = Path(self.h.h.state_dir).parent / Path(self.h.h.state_dir).name.upper()
-        used = {"run_id": "run-live", "state_dir": os.path.realpath(self.h.h.state_dir), "state": "aborted"}
-        self.assertTrue(_same_run(used, variant, "run-live"))
-        self.assertTrue(_retryable_creation(used, variant, "run-live"))
-        self.assertFalse(_same_run({**used, "state_dir": 7}, variant, "run-live"))
-        self.assertFalse(_same_run(used, Path(self.h.h.tmpdir.name) / "elsewhere", "run-live"))
+    def used(self, state_dir) -> dict:
+        return {"run_id": "run-live", "state_dir": state_dir, "state": "aborted"}
 
-    def test_a_reopen_confirms_a_record_spelled_in_another_case(self):
+    def test_a_case_variant_on_a_case_sensitive_file_system_is_another_directory(self):
+        here = Path(os.path.realpath(self.h.h.tmpdir.name))
+        lower, upper = here / "state", here / "State"
+        lower.mkdir()
+        upper.mkdir()
+        if os.path.samefile(lower, upper):
+            self.skipTest("case-insensitive file system")
+        self.assertFalse(_same_run(self.used(str(lower)), upper, "run-live"))
+        self.assertFalse(_same_run(self.used(str(upper)), lower, "run-live"))
+        self.assertFalse(_retryable_creation(self.used(str(lower)), upper, "run-live"))
+        self.assertFalse(_same_run(self.used(str(here / "STATE-missing")), here / "state-missing", "run-live"))  # neither exists: compared exactly
+
+    def test_another_spelling_of_the_same_directory_is_the_same_run(self):
+        real = Path(os.path.realpath(self.h.h.state_dir))
+        real.mkdir(parents=True, exist_ok=True)
+        link = Path(self.h.h.tmpdir.name) / "state-link"
+        link.symlink_to(real, target_is_directory=True)
+        self.assertTrue(_same_run(self.used(str(real)), link, "run-live"))  # realpath of the presented spelling
+        self.assertTrue(_same_run(self.used(str(link)), real, "run-live"))  # a recorded spelling of the same directory: samefile
+        self.assertTrue(_retryable_creation(self.used(str(link)), real, "run-live"))
+
+    def test_a_value_that_is_not_a_path_never_matches_and_never_raises(self):
+        for recorded in (7, None, "bad\0path"):
+            self.assertFalse(_same_run(self.used(recorded), self.h.h.state_dir, "run-live"), recorded)
+        self.assertFalse(_same_run(self.used(str(self.h.h.state_dir)), "bad\0path", "run-live"))
+
+    def test_a_reopen_journals_a_record_spelled_in_another_case_as_another_directory(self):
         self.h.coordinator()
-        set_ledger(self.h, state="pending", state_dir=os.path.realpath(self.h.h.state_dir).upper())
+        upper = os.path.realpath(self.h.h.state_dir).upper()
+        if os.path.exists(upper):
+            self.skipTest("case-insensitive file system")
+        set_ledger(self.h, state="pending", state_dir=upper)
         self.h.coordinator(activation=None)
-        self.assertEqual(record(self.h)["state"], "committed")
+        self.assertEqual(record(self.h)["state"], "pending")
+        self.assertIn("state-dir-mismatch", [e["detail"]["type"] for e in self.store.read_journal() if e["event"] == "activation-use-unconfirmed"])
+
+    def test_a_reopen_with_a_nul_in_the_recorded_state_dir_still_opens(self):
+        self.h.coordinator()
+        set_ledger(self.h, state="pending", state_dir="bad\0path")
+        self.assertEqual(self.h.coordinator(activation=None).status()["run"]["run_id"], "run-live")
+
+
+class StateDirMissingIsUnreadableTests(LiveCase):
+    """A record without a string state directory is unreadable, not a state-dir mismatch."""
+
+    def test_a_missing_or_non_string_state_dir_is_an_unreadable_record(self):
+        self.h.coordinator()
+        for bad in (None, 7, ["x"]):
+            set_ledger(self.h, state="pending", state_dir=bad)
+            self.assertEqual(activation_use(self.h.activation.digest, self.h.activation.path), {"unreadable": True}, bad)
+            self.h.coordinator(activation=None)
+        self.assertNotIn("activation-use-unconfirmed", self.events())
 
 
 class StateDirMismatchJournaledTests(LiveCase):
@@ -257,9 +328,16 @@ class UnconfirmedDedupeSetTests(LiveCase):
     def test_errno_less_os_errors_are_told_apart_by_strerror(self):
         self.h.coordinator()
         set_ledger(self.h, state="pending")
-        for exc in (OSError("ledger volume detached"), OSError("ledger volume detached"), OSError("quota exceeded")):
+        for exc in (OSError(None, "ledger volume detached"), OSError(None, "ledger volume detached"), OSError(None, "quota exceeded")):
             self.reopen_failing(exc)
         self.assertEqual(self.unconfirmed(), [("OSError", None, "ledger volume detached"), ("OSError", None, "quota exceeded")])
+
+    def test_an_errno_less_error_without_strerror_keys_on_its_class_alone(self):
+        self.h.coordinator()
+        set_ledger(self.h, state="pending")
+        for name in ("aaaa", "bbbb"):  # the message names a random temporary file: never part of the key
+            self.reopen_failing(OSError(f"cannot replace .tmp-{name}.json"))
+        self.assertEqual(self.unconfirmed(), [("OSError", None, None)])
 
     def test_a_successful_confirmation_resets_the_set(self):
         self.h.coordinator()
@@ -288,7 +366,7 @@ class AttemptHistoryValidationTests(LiveCase):
 
     def test_attempts_that_are_not_a_list_of_records_refuse_as_unreadable(self):
         self.abort_once()
-        for bad in ("abc", {"at": T0}, 7, [T0], [{"at": T0}, "x"]):
+        for bad in ("abc", {"at": T0}, 7, [T0], [{"at": T0}, "x"], [], [{"pid": 1}]):
             set_ledger(self.h, attempts=bad)
             self.assertEqual(activation_use(self.h.activation.digest, self.h.activation.path), {"unreadable": True}, bad)
             exc = refuses(self, lambda: self.h.coordinator(), "activation-used")
@@ -408,10 +486,9 @@ class ClearableOnlyInsideTheWindowTests(LiveCase):
         with c.operation():
             c._reload_run()
             self.assertFalse(c._clearable_clock_stop())
-        try:
-            c.resume(S, ok_worktree)
-        except Refused as exc:
-            self.assertFalse(exc.detail.get("deferred"), exc)
+        state = c.resume(S, ok_worktree)  # not deferred: the stop is durable, the pending proposal is abandoned (nothing posted)
+        self.assertEqual(state.phase, "review-approved")
+        self.assertIn("resume-advancing-abandoned", self.events())
         self.assertEqual([i.status for i in self.store.load_story(S).pending_advancing_intents()], [])
 
     def test_a_late_receipt_binds_for_cleanup_once_the_recorded_window_is_over(self):
@@ -421,6 +498,33 @@ class ClearableOnlyInsideTheWindowTests(LiveCase):
         self.h.clock[0] = "2026-11-07T12:40:00Z"
         exc = refuses(self, lambda: c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree), "clock-regression")
         self.assertTrue(exc.detail["bound_for_cleanup"])
+
+    def set_expiry(self, at: str) -> None:
+        raw = json.loads(self.store.run_path.read_text(encoding="utf-8"))
+        raw["activation"]["expires_at"] = at  # LABELLED MUTATION: an older run whose window ends before its wall clock
+        self.store.run_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    def test_the_clear_refuses_by_the_same_rule(self):
+        c = claimed(self.h)
+        regress(self, self.h, c)  # high-water mark 12:00
+        self.set_expiry("2026-11-07T11:58:00Z")
+        self.h.clock[0] = "2026-11-07T11:56:00Z"  # within the tolerance of the mark, before expires_at on its own
+        with c.operation():
+            c._reload_run()
+            self.assertFalse(c._clearable_clock_stop())
+        refuses(self, lambda: c.clear_clock_regression(clearance(self.h)), "activation-expired")
+        self.assertEqual(stop_of(self.store)["code"], "clock-regression")  # nothing cleared
+        self.assertNotIn("activation-stop-clear-started", self.events())
+
+    def test_a_mark_exactly_at_expires_at_is_still_clearable_and_the_clear_succeeds(self):
+        c = claimed(self.h)
+        regress(self, self.h, c)
+        self.set_expiry("2026-11-07T12:00:00Z")
+        self.h.clock[0] = "2026-11-07T11:58:00Z"
+        with c.operation():
+            c._reload_run()
+            self.assertTrue(c._clearable_clock_stop())
+        self.assertIsNone(c.clear_clock_regression(clearance(self.h))["run"]["activation_stop"])
 
     def test_the_high_water_mark_past_the_window_counts_too(self):
         c = claimed(self.h)
@@ -475,6 +579,15 @@ class ReconcileRevokedUnderClearableStopTests(LiveCase):
         self.assertIn("clear the stop or cancel the run", str(exc))
         self.assertEqual(self.store.load_story(S).authorization(auth["id"])["status"], "pending")
 
+    def test_an_unknown_authorization_under_a_clearable_stop_is_refused_as_without_a_stop(self):
+        c, auth = self.repair()
+        regress(self, self.h, c)
+        receipt, evidence = self.evidence()
+        refuses(self, lambda: c.reconcile_retained_execution(S, "run-live:OM-01.02:99", receipt, evidence, "r", "p"), "authorization-mismatch")
+        with self.assertRaises(Refused) as ctx:
+            c.reconcile_retained_execution("OM-99.99", auth["id"], receipt, evidence, "r", "p")
+        self.assertNotEqual(ctx.exception.code, "clock-regression")
+
     def test_the_docs_no_longer_contradict_the_rule(self):
         text = DOCS.read_text(encoding="utf-8")
         self.assertIn("a **revoked** authorization is reconciled", text)
@@ -509,6 +622,24 @@ class ClearSaveUncertainTests(LiveCase):
         self.assertIn("Input/output error", cleared[0]["save_uncertain"])
         refuses(self, lambda: c.clear_clock_regression(clearance(self.h)), "no-stop-recorded")
 
+    def test_a_clear_whose_confirming_line_also_fails_says_so(self):
+        c = claimed(self.h)
+        regress(self, self.h, c)
+        self.h.clock[0] = "2026-11-07T11:58:00Z"
+        original = Store.journal
+
+        def lose_cleared(store, story, event, detail=None):
+            if event == "activation-stop-cleared":
+                raise OSError(28, "No space left on device")
+            return original(store, story, event, detail)
+
+        with mock.patch.object(state_module, "fsync_directory", side_effect=OSError(5, "Input/output error")), mock.patch.object(Store, "journal", lose_cleared):
+            exc = refuses(self, lambda: c.clear_clock_regression(clearance(self.h)), "clear-save-uncertain")
+        self.assertIs(exc.detail["journaled"], False)
+        self.assertIsNone(json.loads(self.store.run_path.read_text(encoding="utf-8"))["activation_stop"])
+        self.assertNotIn("activation-stop-cleared", self.events())
+        refuses(self, lambda: c.clear_clock_regression(clearance(self.h)), "no-stop-recorded")
+
     def test_the_cli_exits_3_not_4(self):
         c = claimed(self.h)
         regress(self, self.h, c)
@@ -538,7 +669,7 @@ class FailedReloadRestoresTests(LiveCase):
                 with self.assertRaises(OSError) as ctx:
                     c.clear_clock_regression(clearance(self.h))
         finally:
-            del c._reload_run
+            c.__dict__.pop("_reload_run", None)
         self.assertEqual(ctx.exception.errno, 28)  # the save's own error
         self.assertEqual((c.run.activation_stop, c.run.last_observed_at), (stop, mark))
         with c.operation():

@@ -171,7 +171,8 @@ def _work_tree(path) -> str | None:
         raise WorkTreeUnknown(f"git could not be run on {path}: {type(exc).__name__}: {exc}") from exc
     if out.returncode == 0 and out.stdout.strip():
         return out.stdout.strip()
-    if out.returncode == 128 and NOT_A_WORK_TREE_RE.fullmatch((out.stderr or "").strip()):
+    fatal = "\n".join(line for line in (out.stderr or "").strip().splitlines() if not line.startswith("warning:"))  # a warning (an unreadable config file) is not the answer
+    if out.returncode == 128 and NOT_A_WORK_TREE_RE.fullmatch(fatal.strip()):
         return None
     raise WorkTreeUnknown(f"git rev-parse on {path} exited {out.returncode}: {(out.stderr or out.stdout).strip()[:300]}")
 
@@ -204,11 +205,13 @@ def _clearance_forbidden(args) -> dict[str, str | None]:
     except FileNotFoundError:
         raise Refused(f"cannot read clearance {args.clearance}: no such file", code="clearance-invalid", path=str(clearance)) from None
     except PermissionError as exc:
-        raise Refused(f"cannot read clearance {args.clearance}: permission denied ({exc.strerror}; a directory on the path is not searchable, or the file is not readable)", code="clearance-invalid", path=str(clearance)) from None
+        raise Refused(f"cannot read clearance {args.clearance}: permission denied ({exc.strerror}; a directory on the path is not searchable)", code="clearance-invalid", path=str(clearance)) from None
     except OSError as exc:
         raise Refused(f"cannot read clearance {args.clearance}: {type(exc).__name__}: {exc}", code="clearance-invalid", path=str(clearance)) from None
     if not stat.S_ISREG(mode):
         raise Refused(f"cannot read clearance {args.clearance}: not a regular file (it is a {_file_kind(mode)})", code="clearance-invalid", path=str(clearance))
+    if not os.access(clearance, os.R_OK):
+        raise Refused(f"cannot read clearance {args.clearance}: permission denied (the file is not readable by this account)", code="clearance-invalid", path=str(clearance))
     # the named places first, so a refusal says the most specific one; the clearance's own work tree covers every other
     places = {"--repo-root": Path(args.repo_root), "the tool's own location": Path(__file__).resolve().parent, "the clearance's own directory": clearance.parent}
     roots: dict[str, str | None] = {"--state-dir": args.state_dir}
