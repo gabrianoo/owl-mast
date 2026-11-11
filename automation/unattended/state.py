@@ -139,6 +139,22 @@ def atomic_write_text(path: Path, text: str) -> None:
     fsync_directory(path.parent)
 
 
+
+def abort_note(reason: str, run_id: str, state_dir) -> str:
+    """The note a failed creation carries when its use ledger record was not marked ``aborted``,
+    worded for the reason ``abort_activation_use`` returned: each cause needs its own advice, and
+    only an unmarked ``pending`` record of this run is burned."""
+    where = f"--run-id {run_id} --state-dir {os.path.realpath(state_dir)}"
+    notes = {
+        "run-json-exists": f"run.json exists: reopen the same run ({where}), the next open confirms the record; do not re-issue the activation",
+        "no-record": "the use ledger holds no record of this creation (it was removed); nothing was marked, and a retry writes a new record",
+        "unreadable": "the use ledger record of this document cannot be read or is not a valid record; it was left as it is, and a damaged record is a use: a retry refuses activation-used (inspect or restore that file, or re-issue the activation)",
+        "not-pending": "the use ledger record is no longer pending (another process changed it); it was left as it is, and a retry is judged on its state (check-activation reports it)",
+        "not-this-run": "the use ledger record names another run or state directory; it was left as it is, and this document creates nothing more (a retry refuses activation-used)",
+        "ledger-error": "the use ledger record could not be marked aborted (the ledger could not be written, or the run directory could not be examined); it stays pending and a retry refuses activation-used as an unconfirmed creation (re-issue the activation)",
+    }
+    return notes.get(reason, f"the use ledger record was not marked aborted ({reason!r}); a retry may refuse activation-used")
+
 class StoreBusy(Refused):
     code = "store-busy"
 
@@ -562,15 +578,16 @@ class Store:
                 except BaseException as original:
                     if binding is not None:
                         try:
-                            if not abort_activation_use(activation, self.state_dir, self.run_id, self.run_path, cause=original):  # known failed, no run.json: only this same creation may retry
-                                original.add_note("the use ledger record could not be marked aborted (the ledger or the run directory could not be written or examined, or run.json may exist); it stays pending and a retry refuses activation-used as an unconfirmed creation (re-issue the activation)")
+                            reason = abort_activation_use(activation, self.state_dir, self.run_id, self.run_path, cause=original)  # known failed, no run.json: only this same creation may retry
+                            if reason != "aborted":
+                                original.add_note(abort_note(reason, self.run_id, self.state_dir))
                         except BaseException as inner:  # noqa: BLE001 - nothing raised while marking may replace the creation's own error
                             # not journaled: a journal line before run.json would be a retained artifact that refuses the retry
                             original.add_note(f"marking the use ledger record aborted also failed ({type(inner).__name__}: {inner}); it stays pending and refuses as an unconfirmed creation")
                     raise
-                unconfirmed = confirm_activation_use(binding, self.state_dir, self.run_id)  # run.json exists: the document has now created its one run
+                outcome, unconfirmed = confirm_activation_use(binding, self.state_dir, self.run_id)  # run.json exists: the document has now created its one run
                 self.journal(None, "run-started", {"repo": repo, "policy_digest": policy_digest, "environment": environment, "activation": run.activation, "instance": run.instance})
-                if unconfirmed:
+                if outcome == "error":  # only an error is journaled here: a creation that committed its record has nothing unconfirmed on record
                     self._journal_unconfirmed(unconfirmed)
             elif run.repo != repo:
                 raise Refused(f"run {self.run_id} is bound to {run.repo}; refusing {repo}", code="run-binding-mismatch")
@@ -582,10 +599,10 @@ class Store:
                 if not last or (last.get("detail") or {}).get("policy_digest") != policy_digest:
                     self.journal(None, "policy-drift", {"bound_digest": run.policy_digest, "policy_digest": policy_digest, "consequence": "advancing refuses policy-drift; cleanup proceeds under the recorded binding"})
             if not created and environment == "live":
-                unconfirmed = confirm_activation_use(run.activation, self.state_dir, self.run_id, report_success=True)  # settles a creation that died between run.json and the ledger confirmation
-                if unconfirmed and unconfirmed.get("confirmed"):
+                outcome, unconfirmed = confirm_activation_use(run.activation, self.state_dir, self.run_id)  # settles a creation that died between run.json and the ledger confirmation
+                if outcome == "committed":
                     self._journal_confirmed()
-                elif unconfirmed:
+                elif outcome == "error":
                     self._journal_unconfirmed(unconfirmed)
             if not created and environment == "live" and activation is not None:
                 if not isinstance(activation, Activation):
@@ -605,13 +622,29 @@ class Store:
         return (detail.get("type"), errno, detail.get("strerror") if errno is None else None)
 
     def _unconfirmed_since_confirmation(self) -> tuple[list[dict], set[tuple]]:
-        """The ``activation-use-unconfirmed`` lines since the last ``activation-use-confirmed``."""
+        """The ``activation-use-unconfirmed`` lines since the last ``activation-use-confirmed``, in
+        journal order. Every open of a live run asks, so the journal is scanned backwards and the
+        scan stops at the first ``activation-use-confirmed`` line; only lines that contain
+        ``"activation-use-`` are parsed (a torn or foreign line is skipped). A permanent condition
+        (a moved state directory, an unwritable ledger) therefore costs one read of the file, which
+        :meth:`journal` already pays to count its lines, not a parse of every line."""
+        if not self.journal_path.exists():
+            return [], set()
         lines: list[dict] = []
-        for entry in self.read_journal():
+        for raw in reversed(self.journal_path.read_text(encoding="utf-8").splitlines()):
+            if '"activation-use-' not in raw:
+                continue
+            try:
+                entry = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict):
+                continue
             if entry.get("event") == "activation-use-confirmed":
-                lines = []
-            elif entry.get("event") == "activation-use-unconfirmed":
+                break
+            if entry.get("event") == "activation-use-unconfirmed":
                 lines.append(entry)
+        lines.reverse()
         return lines, {self._unconfirmed_key(e.get("detail") or {}) for e in lines}
 
     def _journal_unconfirmed(self, error: dict) -> None:

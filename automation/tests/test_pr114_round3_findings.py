@@ -113,7 +113,7 @@ class AbortedCreationTests(LiveCase):
 
     def test_a_retry_that_dies_again_is_pending_and_refuses(self):
         self.fail_creation()
-        with mock.patch.object(Store, "save_run", side_effect=SystemExit("killed")), mock.patch.object(state_module, "abort_activation_use", return_value=False):  # the process dies inside the retry
+        with mock.patch.object(Store, "save_run", side_effect=SystemExit("killed")), mock.patch.object(state_module, "abort_activation_use", return_value="ledger-error"):  # the process dies inside the retry
             with self.assertRaises(SystemExit):
                 self.h.coordinator()
         self.assertEqual(record(self.h)["state"], "pending")  # the retry set it pending again before run.json

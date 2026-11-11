@@ -221,7 +221,8 @@ class UnconfirmedStableKeyTests(LiveCase):
         path = ledger_path(self.h.activation.digest, self.h.activation.path)
         path.write_text(json.dumps({**json.loads(path.read_text(encoding="utf-8")), "state": "pending"}), encoding="utf-8")  # LABELLED MUTATION
         with mock.patch.object(activation_module, "_write_ledger", side_effect=OSError(28, "No space left on device")):
-            answer = activation_module.confirm_activation_use(self.store.load_run().activation, self.h.h.state_dir, "run-live")
+            outcome, answer = activation_module.confirm_activation_use(self.store.load_run().activation, self.h.h.state_dir, "run-live")
+        self.assertEqual(outcome, "error")  # adapted in round 6 (JX): a tagged result
         self.assertEqual((answer["type"], answer["errno"]), ("OSError", 28))
         self.assertIn("No space left", answer["message"])
 
@@ -247,7 +248,7 @@ class AbortHandlerNeverMasksTests(LiveCase):
         record_activation_use(self.h.activation, self.h.h.state_dir, "run-live", T0)
         # adapted in round 5 (QS): the run path is examined with os.stat, no longer Path.exists()
         with mock.patch.object(activation_module.os, "stat", side_effect=PermissionError(13, "Permission denied")):
-            self.assertFalse(abort_activation_use(self.h.activation, self.h.h.state_dir, "run-live", self.store.run_path))
+            self.assertEqual(abort_activation_use(self.h.activation, self.h.h.state_dir, "run-live", self.store.run_path), "ledger-error")  # adapted in round 6 (Iy): a reason, not a bool
         self.assertEqual(record(self.h)["state"], "pending")
 
 
@@ -261,7 +262,7 @@ class RetryAttemptHistoryTests(LiveCase):
             with self.assertRaises(OSError):
                 self.h.coordinator()
         self.h.clock[0] = "2026-11-07T10:05:00Z"
-        with mock.patch.object(Store, "save_run", side_effect=SystemExit("killed")), mock.patch.object(state_module, "abort_activation_use", return_value=False):
+        with mock.patch.object(Store, "save_run", side_effect=SystemExit("killed")), mock.patch.object(state_module, "abort_activation_use", return_value="ledger-error"):
             with self.assertRaises(SystemExit):
                 self.h.coordinator()
         used = record(self.h)
@@ -403,7 +404,8 @@ class FailedClearRestoresTheStopTests(LiveCase):
             raise OSError(5, "Input/output error")
 
         with mock.patch.object(state_module, "fsync_directory", fail_after_replace):
-            refuses(self, lambda: c.clear_clock_regression(clearance(self.h)), "clear-save-uncertain")  # adapted in round 5 (Ol): a clear that took effect is reported as such, not as a crash
+            result = c.clear_clock_regression(clearance(self.h))  # adapted in round 6 (I0, owner decision): a clear that took effect returns the normal result plus save_uncertain
+        self.assertIn("Input/output error", result["save_uncertain"])
         self.assertIsNone(stop_of(self.store))  # run.json was replaced before the fsync failed
         self.assertEqual((c.run.activation_stop, c.run.last_observed_at), (None, self.store.load_run().last_observed_at))
 

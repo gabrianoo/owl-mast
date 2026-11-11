@@ -196,7 +196,7 @@ class UnreadableRunDirectoryTests(LiveCase):
         root.chmod(0)
         try:
             with mock.patch.object(Path, "exists", exists_as_on_python_313):
-                self.assertFalse(abort_activation_use(self.h.activation, self.h.h.state_dir, "run-live", self.store.run_path))
+                self.assertEqual(abort_activation_use(self.h.activation, self.h.h.state_dir, "run-live", self.store.run_path), "ledger-error")  # adapted in round 6 (Iy): a reason, not a bool
         finally:
             root.chmod(0o700)
         self.assertEqual(record(self.h)["state"], "pending")
@@ -220,7 +220,7 @@ class UnreadableRunDirectoryTests(LiveCase):
 
     def test_a_missing_run_json_is_still_marked_aborted(self):
         record_activation_use(self.h.activation, self.h.h.state_dir, "run-live", T0)
-        self.assertTrue(abort_activation_use(self.h.activation, self.h.h.state_dir, "run-live", self.store.run_path, cause=OSError(28, "No space left on device")))
+        self.assertEqual(abort_activation_use(self.h.activation, self.h.h.state_dir, "run-live", self.store.run_path, cause=OSError(28, "No space left on device")), "aborted")  # adapted in round 6 (Iy)
         self.assertEqual(record(self.h)["state"], "aborted")
 
 
@@ -281,9 +281,12 @@ class StateDirMissingIsUnreadableTests(LiveCase):
         self.h.coordinator()
         for bad in (None, 7, ["x"]):
             set_ledger(self.h, state="pending", state_dir=bad)
-            self.assertEqual(activation_use(self.h.activation.digest, self.h.activation.path), {"unreadable": True}, bad)
+            used = activation_use(self.h.activation.digest, self.h.activation.path)
+            self.assertIs(used["unreadable"], True, bad)
+            self.assertIn("state_dir", used["why"], bad)  # adapted in round 6 (I-): the field is named
             self.h.coordinator(activation=None)
-        self.assertNotIn("activation-use-unconfirmed", self.events())
+        # adapted in round 6 (I7): an unreadable record of this run is journaled once, never a state-dir mismatch
+        self.assertEqual([e["detail"]["type"] for e in self.store.read_journal() if e["event"] == "activation-use-unconfirmed"], ["ledger-unreadable"])
 
 
 class StateDirMismatchJournaledTests(LiveCase):
@@ -368,9 +371,10 @@ class AttemptHistoryValidationTests(LiveCase):
         self.abort_once()
         for bad in ("abc", {"at": T0}, 7, [T0], [{"at": T0}, "x"], [], [{"pid": 1}]):
             set_ledger(self.h, attempts=bad)
-            self.assertEqual(activation_use(self.h.activation.digest, self.h.activation.path), {"unreadable": True}, bad)
+            used = activation_use(self.h.activation.digest, self.h.activation.path)
+            self.assertIs(used["unreadable"], True, bad)
             exc = refuses(self, lambda: self.h.coordinator(), "activation-used")
-            self.assertIn("cannot be read", str(exc))
+            self.assertIn("attempts is not a non-empty list", str(exc))  # adapted in round 6 (I-): the field is named, not "cannot be read"
         self.assertFalse(self.store.run_path.exists())
 
     def test_the_history_keeps_the_first_and_the_latest_ten(self):
@@ -449,7 +453,7 @@ class AbortFalseNoteTests(LiveCase):
     """When the record cannot be marked aborted the creation's error says what that means (thread Og)."""
 
     def test_a_record_that_was_not_marked_adds_a_note(self):
-        with mock.patch.object(Store, "save_run", side_effect=OSError(28, "No space left on device")), mock.patch.object(state_module, "abort_activation_use", return_value=False):
+        with mock.patch.object(Store, "save_run", side_effect=OSError(28, "No space left on device")), mock.patch.object(state_module, "abort_activation_use", return_value="ledger-error"):  # adapted in round 6 (Iy): a reason
             with self.assertRaises(OSError) as ctx:
                 self.h.coordinator()
         notes = getattr(ctx.exception, "__notes__", [])
@@ -607,15 +611,16 @@ class ForwardSkewDocumentedTests(unittest.TestCase):
 
 # -- Ol, QD: a clear whose save reported an error --------------------------------------------------------------------------
 class ClearSaveUncertainTests(LiveCase):
-    """A clear that took effect on disk is reported and journaled as such (thread Ol)."""
+    """A clear that took effect on disk is reported and journaled as such (thread Ol). Adapted in round 6
+    (I0, owner decision): the normal clear result plus ``save_uncertain``, exit 0; no refusal."""
 
     def test_a_clear_that_took_effect_is_journaled_and_coded(self):
         c = claimed(self.h)
         regress(self, self.h, c)
         self.h.clock[0] = "2026-11-07T11:58:00Z"
         with mock.patch.object(state_module, "fsync_directory", side_effect=OSError(5, "Input/output error")):
-            exc = refuses(self, lambda: c.clear_clock_regression(clearance(self.h)), "clear-save-uncertain")
-        self.assertIn("took effect", str(exc))
+            result = c.clear_clock_regression(clearance(self.h))
+        self.assertIn("took effect", result["save_uncertain"])
         self.assertIsNone(stop_of(self.store))
         cleared = [e["detail"] for e in self.store.read_journal() if e["event"] == "activation-stop-cleared"]
         self.assertEqual(len(cleared), 1)
@@ -634,20 +639,22 @@ class ClearSaveUncertainTests(LiveCase):
             return original(store, story, event, detail)
 
         with mock.patch.object(state_module, "fsync_directory", side_effect=OSError(5, "Input/output error")), mock.patch.object(Store, "journal", lose_cleared):
-            exc = refuses(self, lambda: c.clear_clock_regression(clearance(self.h)), "clear-save-uncertain")
-        self.assertIs(exc.detail["journaled"], False)
+            result = c.clear_clock_regression(clearance(self.h))
+        self.assertIsNone(result["journal_seq"])
+        self.assertIn("could not be written", result["save_uncertain"])
         self.assertIsNone(json.loads(self.store.run_path.read_text(encoding="utf-8"))["activation_stop"])
         self.assertNotIn("activation-stop-cleared", self.events())
         refuses(self, lambda: c.clear_clock_regression(clearance(self.h)), "no-stop-recorded")
 
-    def test_the_cli_exits_3_not_4(self):
+    def test_the_cli_exits_0_with_save_uncertain(self):
         c = claimed(self.h)
         regress(self, self.h, c)
         self.h.clock[0] = "2026-11-07T11:58:00Z"
         path = write_clearance(Path(self.h.h.tmpdir.name) / "owner" / "clearance.toml", self.h)
         with controlled_cli_clock(self.h.clock), no_gh_calls(), mock.patch.object(state_module, "fsync_directory", side_effect=OSError(5, "Input/output error")):
             code, out = run_cli(cli_args(self.h, "clear-clock-regression", "--clearance", str(path)))
-        self.assertEqual((code, out["error"]["code"]), (3, "clear-save-uncertain"))
+        self.assertEqual(code, 0, out)
+        self.assertIn("Input/output error", out["save_uncertain"])
 
 
 class FailedReloadRestoresTests(LiveCase):

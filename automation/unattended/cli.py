@@ -126,9 +126,9 @@ def build_parser() -> argparse.ArgumentParser:
     rr.add_argument("story"); rr.add_argument("--authorization", required=True); rr.add_argument("--receipt", required=True, help="JSON receipt of the retained owner task with its runId (and provider/model/options; optional worktree/branch)"); rr.add_argument("--task-evidence", required=True, help=evidence_help); rr.add_argument("--reason", required=True); rr.add_argument("--provenance", required=True, help="who observed the terminal evidence and how (e.g. original coordinator task_status snapshot, user-supplied)")
     rs = sub.add_parser("resume"); rs.add_argument("story")
     rb = sub.add_parser("rebase-revisions", help="explicitly accept changed GitHub revisions after human verification"); rb.add_argument("story"); rb.add_argument("--reason", required=True)
-    cc = sub.add_parser("clear-clock-regression", help=f"owner action by convention, journaled: clear a recorded clock-regression stop under the presented, current activation and a clearance naming exactly that stop (--clearance). Owner-only is a trusted-machine convention, not a control: every clearance field is readable by the unattended loop, so the tool cannot tell who wrote it; it refuses a clearance inside --state-dir, inside any git work tree (the repository's, the tool's, a delegated task's worktree), under any directory with a .git entry (a stale or dangling gitfile included) or where git cannot tell (clearance-invalid), comparing paths without regard to case. Refuses while the clock is more than {CLOCK_REGRESSION_TOLERANCE_MINUTES} minutes (the tolerance) behind the run's high-water mark and judges the wall clock on that mark: time a forward-skewed clock ran ahead is spent, never refunded, so a forward skew larger than the remaining wall-clock budget ends the run and leaves nothing to clear; at most once per run; an activation-expired stop, or a stop past the activation's expires_at, is never cleared")
+    cc = sub.add_parser("clear-clock-regression", help=f"owner action by convention, journaled: clear a recorded clock-regression stop under the presented, current activation and a clearance naming exactly that stop (--clearance). Owner-only is a trusted-machine convention, not a control: every clearance field is readable by the unattended loop, so the tool cannot tell who wrote it; it refuses a clearance inside --state-dir, inside any git work tree (the repository's, the tool's, a delegated task's worktree), under any directory with a .git entry (a stale or dangling gitfile included) or where git cannot tell (clearance-invalid), comparing paths without regard to case. Refuses while the clock is more than {CLOCK_REGRESSION_TOLERANCE_MINUTES} minutes (the tolerance) behind the run's high-water mark and judges the wall clock on that mark: time a forward-skewed clock ran ahead is spent, never refunded, so a forward skew larger than the remaining wall-clock budget ends the run and leaves nothing to clear; at most once per run; an activation-expired stop, or a stop past the activation's expires_at, is never cleared. A save that reports an error after run.json was replaced is the clear it is: exit 0 with save_uncertain; status reports activation.clock_stop (clearable, and why not)")
     cc.add_argument("--clearance", required=True, help="TOML file with exactly run_id, activation_id, approver, stop_observed_at and reason (see docs/unattended-execution.md), kept outside --state-dir and outside every git work tree")
-    st = sub.add_parser("status", help="run report of an existing run; a locked state write by default (records an observed expiry or clock regression durably)")
+    st = sub.add_parser("status", help="run report of an existing run; a locked state write by default (records an observed expiry or clock regression durably); under a recorded clock-regression stop it reports activation.clock_stop: clearable, clear_spent, high_water, expires_at and the reason when it is not clearable")
     st.add_argument("--read-only", action="store_true", help="monitoring form: the run is opened and reported without the store lock and without creating or writing anything; a would-be stop is reported as would_stop, never recorded")
     dc = sub.add_parser("dismiss-claim", help="owner action: post a journaled dismissal of a stray or forged claim marker (by comment id) so it no longer blocks admission under this identity; never dismisses this run's own claim nor a claim a run under this state directory still owns; needs --live, the --run-id of an existing run and (live transport) its current activation (--activation), which journals it")
     dc.add_argument("--issue", type=int, required=True); dc.add_argument("--comment-id", type=int, required=True); dc.add_argument("--reason", required=True)
@@ -156,6 +156,7 @@ def _git_env() -> dict[str, str]:
 # every parent directory. ``not a git repository: <path>`` (a ``.git`` gitfile pointing at a gitdir that is
 # gone, e.g. a pruned delegated worktree: git stops walking there) and ``Stopping at filesystem boundary``
 # are not that answer.
+GIT_TIMEOUT_SECONDS = 30
 NOT_A_WORK_TREE_RE = re.compile(r"fatal: not a git repository \(or any of the parent directories\)(?:: \.git)?")
 
 
@@ -166,7 +167,10 @@ def _work_tree(path) -> str | None:
     file-system boundary, an empty answer) raises :class:`WorkTreeUnknown`: a rule that depends on
     git never passes because git failed."""
     try:
-        out = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=30, env=_git_env())
+        out = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS, env=_git_env())
+    except subprocess.TimeoutExpired as exc:
+        # git walks every ancestor of ``path`` across mounts (GIT_DISCOVERY_ACROSS_FILESYSTEM=1): a mount that hangs is the usual cause
+        raise WorkTreeUnknown(f"git did not answer within {GIT_TIMEOUT_SECONDS} s while examining {path} and its parent directories; a hung mount above it (a network share, autofs, a stale drvfs mount) is the likely cause: check them, or keep the clearance under a directory whose ancestors all answer") from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise WorkTreeUnknown(f"git could not be run on {path}: {type(exc).__name__}: {exc}") from exc
     if out.returncode == 0 and out.stdout.strip():
@@ -180,7 +184,10 @@ def _work_tree(path) -> str | None:
 def _git_entry_above(directory: Path) -> Path | None:
     """The first ``.git`` entry (a directory, a gitfile, dangling or not, or anything else) in
     ``directory`` or any of its ancestors, independent of what git makes of it. A path that cannot be
-    examined raises :class:`WorkTreeUnknown`."""
+    examined raises :class:`WorkTreeUnknown`. It needs no timeout of its own: it runs only after git
+    answered for ``directory`` (``_work_tree``, under :data:`GIT_TIMEOUT_SECONDS`), and git had walked
+    these same ancestors successfully to give that answer, so a hung mount among them has already
+    refused."""
     for ancestor in (directory, *directory.parents):
         entry = ancestor / ".git"
         try:

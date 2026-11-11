@@ -646,6 +646,47 @@ class Coordinator:
             return False  # past the recorded window (or unreadable): no clear can succeed, the stop is durable
         return not self._clear_spent()
 
+    def _high_water_text(self) -> str | None:
+        """The run's high-water mark: the latest recorded observation, else the validated creation moment."""
+        return self.run.last_observed_at or (self.run.activation or {}).get("validated_at")
+
+    def _at_least_high_water(self, at: str) -> str:
+        """``at``, or the run's high-water mark when the clock reads earlier: a record written while the
+        clock is behind (a clearable clock-regression stop) is never stamped before what the run already
+        observed."""
+        mark = self._high_water_text()
+        if mark is None:
+            return at
+        problems: list[str] = []
+        now, high_water = _parse_time(at, "now", problems), _parse_time(mark, "high-water mark", problems)
+        if problems or now is None or high_water is None:
+            return at
+        return _utc_text(max(now, high_water))
+
+    def _clock_stop_report(self) -> dict | None:
+        """For ``status``: whether a recorded ``clock-regression`` stop can still be cleared, and why not.
+        ``clearable`` is :meth:`_clearable_clock_stop` and the wall clock judged on the high-water mark
+        (a clear refuses past it, and the stop then has the cleanup-only consequences); ``reason`` is
+        ``None`` while it is clearable."""
+        stop = self.run.activation_stop
+        if self.environment != "live" or stop is None or stop.get("code") != "clock-regression":
+            return None
+        spent = self._clear_spent()
+        clearable = self._clearable_clock_stop()
+        expires_at = (self.run.activation or {}).get("expires_at")
+        high_water = self._high_water_text()
+        reason = None
+        if self.run.cancelled:
+            reason = f"the run is cancelled ({self.run.stop_reason}): the stop is history"
+        elif spent:
+            reason = "the run's one clear is spent (clock-clear-exhausted): cancel the run"
+        elif not clearable:
+            reason = f"the later of the clock and the high-water mark {high_water} is past the recorded expires_at {expires_at}: no clear can succeed"
+        elif self._elapsed(on_high_water=True) > timedelta(minutes=self.policy.max_wall_clock_minutes):
+            clearable = False
+            reason = f"the wall-clock budget of {self.policy.max_wall_clock_minutes} minutes is spent, judged on the high-water mark: the run is over"
+        return {"clearable": clearable, "clear_spent": spent, "high_water": high_water, "expires_at": expires_at, "reason": reason}
+
     def _stop_message(self, code: str) -> str:
         if code == "run-cancelled":
             return f"run is cancelled ({self.run.stop_reason})"
@@ -1457,17 +1498,20 @@ class Coordinator:
             self.require_activation("reconcile-retained-execution", advancing=False)
             self._reload_run()  # binding validated and the latest cancellation/budgets read under the lock; never saved from a stale object
             stop = self._durable_run_stop(skip_clearable=True)  # like resume and bind-receipt: a clock stop the owner can still clear is not a stopped run for a pending repair
+            under_clock_stop = False  # reconciled under a clearable clock-regression stop: the clock is behind the run's high-water mark
             if not stop and self._clearable_clock_stop():
                 recorded = self.run.activation_stop
                 story_state = self._story(story)  # an unknown story or authorization is refused as it is without a stop
                 auth = story_state.authorization(str(authorization))
                 if auth is None:
                     raise Refused(f"{story} has no authorization {authorization}", code="authorization-mismatch", given=str(authorization))
-                revoked = (auth.get("status") == "revoked" or (auth.get("status") == "consumed" and (auth.get("reconciliation") or {}).get("previous_status") == "revoked"))
-                if revoked:
+                revoked = auth.get("status") == "revoked"
+                reconciled = auth.get("status") == "consumed" and bool(auth.get("reconciliation"))  # already reconciled, from a revoked or a pending authorization: a repeat is answered (identical evidence is idempotent, anything else conflicts below)
+                if revoked or reconciled:
                     # a revoked authorization binds for cleanup only, before and after a clear (and after it the run is no longer
                     # stopped, so the reconciliation would refuse run-not-stopped): it is reconciled under the recorded stop
                     stop = "clock-regression"
+                    under_clock_stop = True
                 else:
                     raise Refused(f"reconcile-retained-execution: {STOP_REASONS['clock-regression']} (recorded {recorded['observed_at']}: {recorded['message']}); the owner can still clear it, so the run is not stopped and nothing was reconciled: clear the stop or cancel the run (clear-clock-regression, after which a pending repair binds for work through bind-receipt; or cancel-run); a revoked authorization is reconciled under the stop", code="clock-regression", stop=recorded)
             if not stop:
@@ -1560,16 +1604,20 @@ class Coordinator:
                     raise Refused(f"authorization {auth['id']} was reconciled with different evidence; identical evidence is idempotent, this is conflicting: {presented} vs {recorded}", code="conflicting-evidence", authorization=auth["id"], recorded=recorded, presented=presented)
                 self.store.journal(story, "retained-execution-already-reconciled", {"authorization": auth["id"], "task": owner, "run": run_id})
                 return state
+            observed_at = self.now()
+            stamp = self._at_least_high_water(observed_at) if under_clock_stop else observed_at  # never before events already recorded for the run
             safe_auth = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in auth["id"])
-            backup = self.store.story_path(story).with_name(f"{story}.json.bak-{self.now().replace(':', '')}-{safe_auth}")
+            backup = self.store.story_path(story).with_name(f"{story}.json.bak-{stamp.replace(':', '')}-{safe_auth}")
             if backup.exists():
                 raise Refused(f"backup {backup.name} already exists; refusing to overwrite an earlier audit copy (retry a moment later)", code="backup-exists", backup=backup.name)
             backup.write_text(self.store.story_path(story).read_text(encoding="utf-8"), encoding="utf-8")
-            auth.update({"status": "consumed", "task_id": owner, "run_id": run_id, "bound_at": self.now(), "cleanup_only": "retained-execution-reconciled",
-                         "reconciliation": {"reason": reason, "provenance": provenance, "evidence_shape": evidence["shape"], "status": evidence["status"], "at": self.now(), "previous_status": "revoked" if auth.get("revoked_at") else "pending",
-                                            "dispatch": {"runId": str(dispatch["runId"]), "messageId": dispatch.get("messageId")}, "startedAt": str(started), "completedAt": str(completed) if completed else None}})
+            reconciliation = {"reason": reason, "provenance": provenance, "evidence_shape": evidence["shape"], "status": evidence["status"], "at": stamp, "previous_status": "revoked" if auth.get("revoked_at") else "pending",
+                              "dispatch": {"runId": str(dispatch["runId"]), "messageId": dispatch.get("messageId")}, "startedAt": str(started), "completedAt": str(completed) if completed else None}
+            if under_clock_stop:
+                reconciliation["observed_at"] = observed_at  # what the regressed clock read; ``at`` is the later of it and the high-water mark
+            auth.update({"status": "consumed", "task_id": owner, "run_id": run_id, "bound_at": stamp, "cleanup_only": "retained-execution-reconciled", "reconciliation": reconciliation})
             state.implementer_receipts.append({**normalized, "authorization": auth["id"], "reconciled": True})
-            state.task_history.append({"taskId": owner, "runId": run_id, "role": "implementer", "status": evidence["status"], "at": self.now(), "operation": "reconcile-retained-execution", "authorization": auth["id"], "evidence_shape": evidence["shape"], "provenance": provenance})
+            state.task_history.append({"taskId": owner, "runId": run_id, "role": "implementer", "status": evidence["status"], "at": stamp, "operation": "reconcile-retained-execution", "authorization": auth["id"], "evidence_shape": evidence["shape"], "provenance": provenance})
             self.store.save_story(state)
             self._counts()
             self.store.save_run(self.run)
@@ -2142,8 +2190,11 @@ class Coordinator:
         lowered; the wall-clock budget is judged on the later of the two, so a clock still within the
         tolerance behind never buys time. A run is cleared at most once (``clock-clear-exhausted``):
         the clear is journaled ``activation-stop-clear-started`` (naming the stop) before ``run.json``
-        is saved and ``activation-stop-cleared`` after; a save that fails leaves the stop and may be
-        retried, and the clear is spent once a ``cleared`` line exists or a ``clear-started`` line
+        is saved and ``activation-stop-cleared`` after; a save that fails before ``run.json`` is replaced
+        leaves the stop and may be retried; a save that reports an error after the replace (the stop is
+        gone on disk) is the clear it is: the normal result plus ``save_uncertain``, journaled with it;
+        an interrupt (``KeyboardInterrupt``, ``SystemExit``) after the replace writes a best-effort
+        ``activation-stop-cleared`` line with ``interrupted`` and propagates; the clear is spent once a ``cleared`` line exists or a ``clear-started`` line
         names a stop other than the one recorded now. An ``activation-expired`` stop is never cleared
         (expiry is the owner's window, not a clock artefact); budgets, approvals and obligations are
         untouched."""
@@ -2198,15 +2249,24 @@ class Coordinator:
                 except BaseException:  # noqa: BLE001 - the save's own error is the one raised
                     self.run.activation_stop, self.run.last_observed_at = previous
                     raise exc from None
-                if isinstance(exc, Exception) and self.run.activation_stop is None:
-                    # the clear took effect on disk: say so (a coded refusal, never "the tool crashed, nothing was decided")
-                    journaled = True
+                if self.run.activation_stop is not None:
+                    raise  # run.json was not replaced: the stop is still recorded and the same clear may be retried
+                # the clear took effect on disk (run.json records no stop): it is reported as the clear it is
+                if not isinstance(exc, Exception):
+                    # an interrupt (Ctrl-C, SystemExit) after the replace: confirm the clear on record, best effort, and let it propagate
                     try:
-                        self.store.journal(None, "activation-stop-cleared", {**detail, "save_uncertain": f"{type(exc).__name__}: {exc}"})
-                    except Exception:  # noqa: BLE001 - the clear is on disk either way; the clear-started line names it
-                        journaled = False
-                    raise Refused(f"clear-clock-regression: the clear took effect (run.json records no stop), but saving it reported {type(exc).__name__}: {exc}; the stop is cleared and the run's one clear is spent{'' if journaled else ' (the confirming journal line could not be written; the clear-started line names the stop)'}; check the disk before continuing", code="clear-save-uncertain", journaled=journaled, cleared=cleared) from exc
-                raise
+                        self.store.journal(None, "activation-stop-cleared", {**detail, "interrupted": f"{type(exc).__name__}: {exc}"})
+                    except Exception:  # noqa: BLE001 - the interrupt is what propagates; the clear-started line names the stop
+                        pass
+                    raise
+                uncertain = f"{type(exc).__name__}: {exc}"
+                try:
+                    seq = self.store.journal(None, "activation-stop-cleared", {**detail, "save_uncertain": uncertain})
+                except Exception:  # noqa: BLE001 - the clear is on disk either way; the clear-started line names it
+                    seq = None
+                return {**detail, "journal_seq": seq, "run": self.run.__dict__,
+                        "save_uncertain": f"the clear took effect (run.json records no stop) and the run's one clear is spent, but saving it reported {uncertain}"
+                                          + ("" if seq is not None else "; the confirming journal line could not be written (the clear-started line names the stop)") + "; check the disk before continuing"}
             seq = self.store.journal(None, "activation-stop-cleared", detail)
             return {**detail, "journal_seq": seq, "run": self.run.__dict__}
 
@@ -2240,6 +2300,9 @@ class Coordinator:
                       "stop": self._run_stop(), "policy_drift": {"bound_digest": self.run.policy_digest, "policy_digest": self.policy.digest} if self._policy_drift() else None,
                       "other_runs_with_active_stories": self.store.other_runs_with_active_stories(), "activation": {"recorded": self.run.activation, "recorded_stop": self.run.activation_stop, "presented": self.activation.binding() if self.activation else None, "stop": self._activation_stop(), "problems": [m for _, m in self._activation_problems()] if self.environment == "live" else []}, "agreement": OPERATING_AGREEMENT, "gaps": list(LIVE_EXECUTION_GAPS)}
             if self.environment == "live":
+                clock_stop = self._clock_stop_report()
+                if clock_stop is not None:
+                    report["activation"]["clock_stop"] = clock_stop  # whether the recorded clock stop can still be cleared (clearable, clear_spent, high_water, expires_at, reason)
                 document = self.run.activation if isinstance(self.run.activation, dict) else (self.activation.binding() if self.activation else None)
                 report["activation"]["ledger"] = ledger_report(document["digest"], document["path"]) if document else None  # the use ledger is per user account and machine: its root, and this document's record (pending / committed / aborted)
             if read_only:
