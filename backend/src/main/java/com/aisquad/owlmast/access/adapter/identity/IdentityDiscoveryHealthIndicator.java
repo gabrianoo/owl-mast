@@ -3,9 +3,7 @@ package com.aisquad.owlmast.access.adapter.identity;
 import com.aisquad.owlmast.platform.diagnostics.SafeFailure;
 import java.time.Duration;
 import java.util.Map;
-import lombok.AccessLevel;
 import lombok.NonNull;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.health.contributor.Health;
 import org.springframework.boot.health.contributor.ReactiveHealthIndicator;
@@ -17,20 +15,46 @@ import reactor.core.publisher.Mono;
  * Readiness contribution proving the configured issuer is reachable and is the issuer it claims to
  * be: its discovery document must publish exactly the configured {@code issuer}. The installation
  * therefore cannot be "ready" with a missing or mismatched identity provider, bundled or external.
+ *
+ * <p>The issuer is compared as an exact string (OpenID Connect Discovery 1.0 section 4.3): tokens
+ * carry the published value in {@code iss}, so an issuer that differs only by a trailing slash
+ * would pass a lenient readiness check and then fail every token validation.
+ *
+ * <p>The outcome, UP or DOWN, is cached for {@link #CACHE_TTL}: however often the readiness
+ * endpoint is evaluated, the identity provider receives at most one discovery request per interval,
+ * and concurrent evaluations share one request. The interval is shorter than the readiness probe
+ * period, so every kubelet probe still observes a current result.
  */
 @Slf4j
-@RequiredArgsConstructor(access = AccessLevel.PACKAGE)
 final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator {
 
   static final Duration TIMEOUT = Duration.ofSeconds(3);
   private static final ParameterizedTypeReference<Map<String, Object>> DOCUMENT =
       new ParameterizedTypeReference<>() {};
 
+  static final Duration CACHE_TTL = Duration.ofSeconds(5);
+
   private final WebClient client;
   private final IdentityProperties properties;
+  private final Mono<Health> cached;
+
+  IdentityDiscoveryHealthIndicator(WebClient client, IdentityProperties properties) {
+    this(client, properties, CACHE_TTL);
+  }
+
+  IdentityDiscoveryHealthIndicator(
+      WebClient client, IdentityProperties properties, Duration cacheTtl) {
+    this.client = client;
+    this.properties = properties;
+    this.cached = Mono.defer(this::discover).cache(cacheTtl);
+  }
 
   @Override
   public @NonNull Mono<Health> health() {
+    return cached;
+  }
+
+  private Mono<Health> discover() {
     return client
         .get()
         .uri(properties.discoveryUri())
@@ -54,7 +78,7 @@ final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator 
     if (!(issuer instanceof String published)) {
       return down("discovery document has no issuer");
     }
-    if (!IdentityProperties.stripTrailingSlash(published).equals(properties.issuerUri())) {
+    if (!published.equals(properties.issuerUri())) {
       return down("published issuer differs from the configured issuer");
     }
     return Health.up().withDetail("issuer", properties.issuerUri()).build();

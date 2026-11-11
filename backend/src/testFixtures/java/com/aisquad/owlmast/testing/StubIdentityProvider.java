@@ -1,6 +1,9 @@
 package com.aisquad.owlmast.testing;
 
 import java.net.URI;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.UnaryOperator;
+import reactor.core.publisher.Mono;
 import reactor.netty.DisposableServer;
 import reactor.netty.http.server.HttpServer;
 
@@ -13,34 +16,23 @@ public final class StubIdentityProvider implements AutoCloseable {
 
   private final DisposableServer server;
   private final String realm;
-  private final String publishedIssuer;
+  private final UnaryOperator<String> published;
+  private final AtomicInteger discoveryRequests;
 
-  private StubIdentityProvider(DisposableServer server, String realm, String publishedIssuer) {
+  private StubIdentityProvider(
+      DisposableServer server,
+      String realm,
+      UnaryOperator<String> published,
+      AtomicInteger discoveryRequests) {
     this.server = server;
     this.realm = realm;
-    this.publishedIssuer = publishedIssuer;
+    this.published = published;
+    this.discoveryRequests = discoveryRequests;
   }
 
   /** Starts a provider whose discovery document publishes its own issuer URL (the happy path). */
   public static StubIdentityProvider start(String realm) {
-    return start(realm, null);
-  }
-
-  /**
-   * Starts a provider whose discovery endpoint answers {@code status} (200 or 204) with no body: a
-   * reachable endpoint that never publishes an issuer, which must not satisfy readiness.
-   */
-  public static StubIdentityProvider startEmpty(String realm, int status) {
-    DisposableServer server =
-        HttpServer.create()
-            .port(0)
-            .route(routes ->
-                routes.get(
-                    "/realms/" + realm + "/.well-known/openid-configuration",
-                    (request, response) ->
-                        response.status(status).header("Content-Type", "application/json").send()))
-            .bindNow();
-    return new StubIdentityProvider(server, realm, null);
+    return start(realm, UnaryOperator.identity());
   }
 
   /**
@@ -48,29 +40,67 @@ public final class StubIdentityProvider implements AutoCloseable {
    * mismatched issuer is refused. {@code null} publishes the real URL.
    */
   public static StubIdentityProvider start(String realm, String publishedIssuer) {
-    DisposableServer[] holder = new DisposableServer[1];
-    String[] issuer = new String[1];
-    holder[0] =
+    return start(realm, own -> publishedIssuer != null ? publishedIssuer : own);
+  }
+
+  /**
+   * Starts a provider that publishes its own URL with a terminating slash, as some providers do.
+   * The discovery document is still served below the slash-less URL.
+   */
+  public static StubIdentityProvider startPublishingTrailingSlash(String realm) {
+    return start(realm, own -> own + "/");
+  }
+
+  /**
+   * Starts a provider whose discovery endpoint answers {@code status} (200 or 204) with no body: a
+   * reachable endpoint that never publishes an issuer, which must not satisfy readiness.
+   */
+  public static StubIdentityProvider startEmpty(String realm, int status) {
+    AtomicInteger requests = new AtomicInteger();
+    DisposableServer server =
         HttpServer.create()
             .port(0)
             .route(routes ->
                 routes.get(
                     "/realms/" + realm + "/.well-known/openid-configuration",
-                    (request, response) ->
-                        response
-                            .header("Content-Type", "application/json")
-                            .sendString(
-                                reactor.core.publisher.Mono.just(
-                                    "{\"issuer\":\""
-                                        + (publishedIssuer != null ? publishedIssuer : issuer[0])
-                                        + "\",\"authorization_endpoint\":\""
-                                        + issuer[0]
-                                        + "/protocol/openid-connect/auth\"}"))))
+                    (request, response) -> {
+                      requests.incrementAndGet();
+                      return response
+                          .status(status)
+                          .header("Content-Type", "application/json")
+                          .send();
+                    }))
             .bindNow();
-    issuer[0] = "http://localhost:" + holder[0].port() + "/realms/" + realm;
-    return new StubIdentityProvider(holder[0], realm, publishedIssuer);
+    return new StubIdentityProvider(server, realm, UnaryOperator.identity(), requests);
   }
 
+  private static StubIdentityProvider start(String realm, UnaryOperator<String> published) {
+    AtomicInteger requests = new AtomicInteger();
+    String[] own = new String[1];
+    DisposableServer server =
+        HttpServer.create()
+            .port(0)
+            .route(routes ->
+                routes.get(
+                    "/realms/" + realm + "/.well-known/openid-configuration",
+                    (request, response) -> {
+                      requests.incrementAndGet();
+                      return response
+                          .header("Content-Type", "application/json")
+                          .sendString(
+                              Mono.just(
+                                  "{\"issuer\":\""
+                                      + published.apply(own[0])
+                                      + "\",\"authorization_endpoint\":\""
+                                      + own[0]
+                                      + "/protocol/openid-connect/auth\"}"));
+                    }))
+            .bindNow();
+    own[0] = "http://localhost:" + server.port() + "/realms/" + realm;
+    return new StubIdentityProvider(server, realm, published, requests);
+  }
+
+  /** The provider's own URL, without a terminating slash. */
   public String issuerUri() {
     return "http://localhost:" + server.port() + "/realms/" + realm;
   }
@@ -79,8 +109,14 @@ public final class StubIdentityProvider implements AutoCloseable {
     return URI.create(issuerUri() + "/.well-known/openid-configuration");
   }
 
+  /** The issuer the discovery document publishes. */
   public String publishedIssuer() {
-    return publishedIssuer != null ? publishedIssuer : issuerUri();
+    return published.apply(issuerUri());
+  }
+
+  /** How many discovery requests this provider has answered. */
+  public int discoveryRequests() {
+    return discoveryRequests.get();
   }
 
   @Override

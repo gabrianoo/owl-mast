@@ -30,6 +30,9 @@ backend:
     limits:
       cpu: "1"
       memory: 1Gi
+  # JVM memory and tuning flags only: -XX:+Flag, -XX:-Flag, -XX:Name=value, -Xms/-Xmx/-Xmn/-Xss. System
+  # properties (-D...), agents (-javaagent, -agentlib, -agentpath), argument files (@file) and the -XX
+  # file/hook options are refused: they would override the validated issuer and database configuration.
   javaToolOptions: "-XX:MaxRAMPercentage=75"
   probes:
     startup:
@@ -44,6 +47,9 @@ backend:
       path: /actuator/health/readiness
       periodSeconds: 10
       failureThreshold: 3
+      # Longer than the backend's 3 s identity-discovery timeout, so a slow issuer is reported by the
+      # readiness indicator's own reason instead of a kubelet probe timeout (the Kubernetes default is 1 s).
+      timeoutSeconds: 5
   # Additional plain environment variables (name/value). Never put credentials here. Names that would
   # override the validated configuration (OWLMAST_*, SPRING_*, MANAGEMENT_*, SERVER_*, JVM option
   # variables) are refused by the schema.
@@ -82,19 +88,23 @@ frontend:
 
 # Routing contract between the independent artifacts. Public origins stay an OM-02.01 gate; the
 # Ingress is disabled by default and never created without an explicit host. The prefixes are pinned to
-# what the artifacts serve (no rewrite is rendered): apiPathPrefix is /api or below /api/,
-# actuatorPathPrefix is /actuator or below /actuator/, frontendPathPrefix is /.
+# what the artifacts serve (no rewrite is rendered): apiPathPrefix is exactly /api (the frontend shell
+# calls the backend below it), actuatorPathPrefix is /actuator or below /actuator/, frontendPathPrefix is /.
 routing:
   apiPathPrefix: /api
   actuatorPathPrefix: /actuator
   frontendPathPrefix: /
+  # The actuator serves the kubelet probes inside the cluster and is NOT routed by default. Set true only
+  # to publish actuatorPathPrefix through the Ingress or HTTPRoute on purpose: it is unauthenticated.
+  exposeActuator: false
   ingress:
     enabled: false
     className: ""
     # Lowercase DNS name (optional leading '*.'), no scheme, port or path.
     host: ""
     annotations: {}
-    # [{hosts: [<host>], secretName: <tls secret>}]; when set, one entry must cover `host`.
+    # [{hosts: [<host>], secretName: <tls secret>}]; when set, one entry must cover `host`. secretName is
+    # required: an entry without it makes the controller serve its default certificate.
     tls: []
   # Gateway API (stable gateway.networking.k8s.io/v1 HTTPRoute) as the first-class routing option. The
   # operator supplies the Gateway (GatewayClass, controller, listeners, TLS) and the Gateway API CRDs;
@@ -108,7 +118,11 @@ routing:
     #  - name: shared-gateway
     #    namespace: gateway-system
     #    sectionName: https
+    # Hostnames the route answers on. Required when enabled: a route without hostnames attaches to every
+    # hostname of the referenced listener(s). DNS names only (the Gateway API forbids IP addresses).
     hostnames: []
+    # Explicit acknowledgement for an empty hostnames list (a Gateway dedicated to this installation).
+    allowAllListenerHostnames: false
     annotations: {}
 
 # Application database. `bundled: true` deploys the PostgreSQL/VectorChord instance below;
@@ -122,9 +136,10 @@ database:
   external:
     host: ""
     port: 5432
-    # require | verify-ca | verify-full (applied to R2DBC and JDBC URLs). verify-* needs a CA trust the
-    # chart does not mount yet. disable | allow | prefer can fall back to plaintext and are refused
-    # unless allowInsecureTransport is true.
+    # require (applied to R2DBC and JDBC URLs): encrypts the connection but does not authenticate the
+    # server. verify-ca | verify-full are refused at render until the chart mounts a CA trust (deferred).
+    # disable | allow | prefer can fall back to plaintext and are refused unless allowInsecureTransport
+    # is true.
     sslMode: require
     allowInsecureTransport: false
 
@@ -199,6 +214,11 @@ identity:
       pullPolicy: IfNotPresent
     # Existing Secret with keys `username` and `password` for the temporary bootstrap admin.
     bootstrapExistingSecret: owl-mast-keycloak-bootstrap
+    # The bootstrap admin is injected into the Keycloak pod while enabled. After creating a permanent
+    # admin and deleting the temporary one (docs/installation.md), set enabled=false: the pod then no
+    # longer references the Secret, which can be deleted.
+    bootstrapAdmin:
+      enabled: true
     # Import a minimal synthetic realm named `identity.realm` on start (fixture only).
     importRealm: true
     # Required with importRealm=false: acknowledges that an operator creates the realm `identity.realm`
@@ -206,6 +226,7 @@ identity:
     realmManagedByOperator: false
     # Trust X-Forwarded-* / Forwarded headers ("xforwarded" | "forwarded"). Leave empty unless a trusted
     # proxy that overwrites these headers is the only path to Keycloak (the OM-02.01 public-origin gate).
+    # Rendering then requires networkPolicy.enabled=true and networkPolicy.keycloak.extraFrom naming the proxy.
     proxyHeaders: ""
     database:
       name: keycloak

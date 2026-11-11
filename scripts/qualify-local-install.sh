@@ -367,6 +367,18 @@ preflight() { # preflight <step...>: every resource the selected steps consume o
 }
 
 # -- secrets (values never leave the cluster or an in-memory pipe) ----------------------------------
+create_labelled_secret() { # create_labelled_secret <namespace> <name> <owner> <kubectl create secret generic args...>
+  # One API call creates the Secret WITH its ownership label: the object is built client-side (--dry-run=client,
+  # nothing reaches the server), labelled in memory and created with `create`, which never overwrites. A separate
+  # `label` call could fail or be interrupted after the create and leave an unlabelled Secret that every later
+  # run refuses as foreign. The value exists only in the pipe.
+  local ns="$1" name="$2" owner="$3" err; shift 3
+  if ! err="$(k -n "$ns" create secret generic "$name" "$@" --dry-run=client -o json \
+        | python3 -c 'import json,sys; s=json.load(sys.stdin); s["metadata"].setdefault("labels",{})[sys.argv[1]]=sys.argv[2]; print(json.dumps(s))' "$RUN_LABEL_KEY" "$owner" \
+        | k -n "$ns" create -f - 2>&1 >/dev/null)"; then
+    refuse "secret $ns/$name could not be created with its ownership label (nothing unlabelled was left behind): ${err%%$'\n'*}"
+  fi
+}
 ensure_secret() { # ensure_secret <namespace> <name> <username> [owner]: random password, created only if absent and owned if present
   local ns="$1" name="$2" user="$3" owner="${4:-$RUN_ID}" state
   state="$(resource_state "$ns" secret "$name" "$owner")"
@@ -376,12 +388,11 @@ ensure_secret() { # ensure_secret <namespace> <name> <username> [owner]: random 
     *) refuse "secret $ns/$name: $state" ;;
   esac
   local password; password="$(openssl rand -base64 30 | tr -d '/+=' | cut -c1-32)"
-  k -n "$ns" create secret generic "$name" --from-literal=username="$user" --from-literal=password="$password" >/dev/null
-  k -n "$ns" label secret "$name" "$RUN_LABEL_KEY=$owner" >/dev/null  # newly created: labelled once with its explicit identity, never --overwrite
+  create_labelled_secret "$ns" "$name" "$owner" --from-literal=username="$user" --from-literal=password="$password"  # created with its explicit identity in one call
   log "secret $ns/$name created (synthetic, value not recorded)"
 }
 replicate_secret() { # replicate_secret <src-ns> <src-name> <dst-ns> <dst-name>: same values, owned source only, piped in memory only
-  local src_ns="$1" src="$2" dst_ns="$3" dst="$4" state
+  local src_ns="$1" src="$2" dst_ns="$3" dst="$4" state err
   state="$(resource_state "$src_ns" secret "$src")"
   [ "$state" = owned ] || refuse "secret $src_ns/$src cannot be replicated: $state"
   state="$(resource_state "$dst_ns" secret "$dst")"
@@ -390,17 +401,20 @@ replicate_secret() { # replicate_secret <src-ns> <src-name> <dst-ns> <dst-name>:
     absent) ;;
     *) refuse "secret $dst_ns/$dst: $state" ;;
   esac
-  k -n "$src_ns" get secret "$src" -o json \
-    | python3 -c 'import json,sys; s=json.load(sys.stdin); print(json.dumps({"apiVersion":"v1","kind":"Secret","type":s["type"],"metadata":{"name":sys.argv[1],"namespace":sys.argv[2],"labels":{sys.argv[3]:sys.argv[4]}},"data":s["data"]}))' "$dst" "$dst_ns" "$RUN_LABEL_KEY" "$RUN_ID" \
-    | k apply -f - >/dev/null 2>&1
+  # `create`, never `apply`: a Secret that appeared after the absence check above is not overwritten, the call
+  # fails and the step refuses. The failure is reported (first line of the client's error, never the object).
+  if ! err="$(k -n "$src_ns" get secret "$src" -o json \
+        | python3 -c 'import json,sys; s=json.load(sys.stdin); print(json.dumps({"apiVersion":"v1","kind":"Secret","type":s["type"],"metadata":{"name":sys.argv[1],"namespace":sys.argv[2],"labels":{sys.argv[3]:sys.argv[4]}},"data":s["data"]}))' "$dst" "$dst_ns" "$RUN_LABEL_KEY" "$RUN_ID" \
+        | k create -f - 2>&1 >/dev/null)"; then
+    refuse "secret $dst_ns/$dst could not be replicated from $src_ns/$src (an existing Secret is never overwritten): ${err%%$'\n'*}"
+  fi
   log "secret $dst_ns/$dst replicated from $src_ns/$src (synthetic, value not recorded)"
 }
 ensure_broken_secret() { # a Secret with the username key only (the failure path); created only if absent, labelled once
   local state; state="$(resource_state "$NS" secret owl-mast-db-broken)"
   case "$state" in
     owned) log "secret $NS/owl-mast-db-broken exists and is owned by this run (kept)"; return ;;
-    absent) k -n "$NS" create secret generic owl-mast-db-broken --from-literal=username=owlmast_app >/dev/null
-            k -n "$NS" label secret owl-mast-db-broken "$RUN_LABEL" >/dev/null
+    absent) create_labelled_secret "$NS" owl-mast-db-broken "$RUN_ID" --from-literal=username=owlmast_app
             log "secret $NS/owl-mast-db-broken created (username only, no password key)" ;;
     *) refuse "secret $NS/owl-mast-db-broken: $state" ;;
   esac

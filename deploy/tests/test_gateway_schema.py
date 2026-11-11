@@ -25,12 +25,12 @@ CHART = REPO / "deploy" / "helm" / "owl-mast"
 FIXTURES = REPO / "deploy" / "tests" / "fixtures" / "gateway-api"
 HELM = os.environ.get("OWLMAST_HELM") or shutil.which("helm")
 SCHEMA = json.loads((FIXTURES / "httproute-v1.4.0-openapi-v1.json").read_text())
-GATEWAY_ON = ["routing.gateway.enabled=true", "routing.gateway.parentRefs[0].name=shared-gw"]
+GATEWAY_ON = ["routing.gateway.enabled=true", "routing.gateway.parentRefs[0].name=shared-gw", "routing.gateway.hostnames[0]=owl.example.internal"]
 
 
-def helm_template(*sets):
+def helm_template(*sets, extra=()):
     # The capability the chart requires before it renders an HTTPRoute (absent in a bare helm template).
-    args = [HELM, "template", "t", str(CHART), "--api-versions", "gateway.networking.k8s.io/v1/HTTPRoute"]
+    args = [HELM, "template", "t", str(CHART), "--api-versions", "gateway.networking.k8s.io/v1/HTTPRoute", *extra]
     for s in sets:
         args += ["--set", s]
     return subprocess.run(args, capture_output=True, text=True, check=False)
@@ -69,7 +69,8 @@ class GatewaySchemaTests(unittest.TestCase):
                           "frontend.enabled=true", "frontend.image.tag=0.0.1-shell"],
             GATEWAY_ON + ["routing.gateway.parentRefs[0].sectionName=http", "routing.gateway.parentRefs[1].name=shared-gw", "routing.gateway.parentRefs[1].sectionName=https"],
             GATEWAY_ON + ["routing.gateway.parentRefs[1].name=other-gw", "routing.gateway.parentRefs[1].namespace=other-ns"],
-            GATEWAY_ON + ["routing.apiPathPrefix=/api/v1", "routing.actuatorPathPrefix=/actuator/health.x", "routing.gateway.hostnames[0]=a-b.c123"],
+            GATEWAY_ON + ["routing.exposeActuator=true", "routing.actuatorPathPrefix=/actuator/health.x", "routing.gateway.hostnames[0]=a-b.c123"],
+            ["routing.gateway.enabled=true", "routing.gateway.parentRefs[0].name=shared-gw", "routing.gateway.allowAllListenerHostnames=true"],
         )
         for sets in cases:
             for route in routes(*sets):
@@ -131,7 +132,48 @@ class GatewaySchemaTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, sets); self.assertIn(expected, result.stderr, sets)
         # the same parent on different listeners, and different parents, stay legal
         self.assertEqual(len(routes(*GATEWAY_ON, "routing.gateway.parentRefs[0].sectionName=http", "routing.gateway.parentRefs[1].name=shared-gw", "routing.gateway.parentRefs[1].sectionName=https")[0]["spec"]["parentRefs"]), 2)
-        self.assertEqual(routes(*GATEWAY_ON, "routing.apiPathPrefix=/api/v1.0~x")[0]["spec"]["rules"][0]["matches"][0]["path"]["value"], "/api/v1.0~x")
+        self.assertEqual(routes(*GATEWAY_ON, "routing.exposeActuator=true", "routing.actuatorPathPrefix=/actuator/v1.0~x")[0]["spec"]["rules"][0]["matches"][1]["path"]["value"], "/actuator/v1.0~x")
+
+    def test_template_layer_refuses_on_its_own_when_the_values_schema_is_skipped(self):
+        """109/4543776485: every invalid input already failed values.schema.json, so the template's own checks never
+        ran in a test. With --skip-schema-validation the template is the only layer, and it must still refuse."""
+        skip = ("--skip-schema-validation",)
+        for sets, expected in (
+            (GATEWAY_ON + ["routing.gateway.parentRefs[0].namespace=Bad_NS"], "is not a valid namespace name"),
+            (GATEWAY_ON + ["routing.gateway.parentRefs[0].namespace=" + "n" * 64], "is not a valid namespace name"),
+            (GATEWAY_ON + ["routing.gateway.parentRefs[0].sectionName=HTTPS"], "is not a valid listener section name"),
+            (GATEWAY_ON + ["routing.gateway.parentRefs[0].port=70000"], "is outside 1-65535"),
+            (GATEWAY_ON + ["routing.gateway.parentRefs[0].port=0"], "is outside 1-65535"),  # was dropped silently by `if $ref.port`
+            (GATEWAY_ON + ["routing.gateway.parentRefs[0].port=-1"], "is outside 1-65535"),
+            (GATEWAY_ON + ["routing.gateway.hostnames[0]=https://owl.example.internal"], "is not a valid HTTPRoute hostname"),
+            (GATEWAY_ON + ["routing.gateway.hostnames[0]=" + "a" * 254], "is not a valid HTTPRoute hostname"),
+            (GATEWAY_ON + ["routing.gateway.hostnames[0]=10.0.0.1"], "is an IP address"),
+            (GATEWAY_ON + [f"routing.gateway.parentRefs[{i}].name=gw-{i}" for i in range(1, 33)], "at most 32"),
+            (GATEWAY_ON + [f"routing.gateway.hostnames[{i}]=h{i}.example" for i in range(17)], "at most 16"),
+            (["routing.gateway.enabled=true", "routing.gateway.hostnames[0]=owl.example"], "requires at least one routing.gateway.parentRefs entry"),
+            (["routing.gateway.enabled=true", "routing.gateway.parentRefs[0].namespace=x", "routing.gateway.hostnames[0]=owl.example"], "needs a name"),
+        ):
+            result = helm_template(*sets, extra=skip)
+            self.assertNotEqual(result.returncode, 0, sets); self.assertIn(expected, result.stderr, sets)
+            self.assertNotIn("schema", result.stderr.lower(), sets)  # the refusal is the template's
+            # and the schema layer refuses the same input by itself
+            self.assertNotEqual(helm_template(*sets).returncode, 0, sets)
+        # port 0 is refused by the schema too, not rendered as "no port"
+        self.assertIn("schema", helm_template(*GATEWAY_ON, "routing.gateway.parentRefs[0].port=0").stderr.lower())
+        self.assertEqual(routes(*GATEWAY_ON, "routing.gateway.parentRefs[0].port=1")[0]["spec"]["parentRefs"][0]["port"], 1)
+
+    def test_gateway_annotations_are_a_string_map(self):
+        """116/4543777568: the string-map fix for routing.gateway.annotations had no test on the Gateway side."""
+        args = [HELM, "template", "t", str(CHART), "--api-versions", "gateway.networking.k8s.io/v1/HTTPRoute"]
+        for s in GATEWAY_ON:
+            args += ["--set", s]
+        for bad in ('{"a":1}', '{"a":true}', '{"a":{"b":"c"}}', '["a"]'):
+            result = subprocess.run(args + ["--set-json", f"routing.gateway.annotations={bad}"], capture_output=True, text=True, check=False)
+            self.assertNotEqual(result.returncode, 0, bad); self.assertIn("schema", result.stderr.lower(), bad)
+        route = routes(*GATEWAY_ON, "routing.gateway.annotations.example\\.com/x=y", "routing.gateway.annotations.other=z")[0]
+        self.assertEqual(route["metadata"]["annotations"], {"example.com/x": "y", "other": "z"})
+        self.assertEqual(upstream_errors(route), [])
+        self.assertNotIn("annotations", routes(*GATEWAY_ON)[0]["metadata"])
 
 
 if __name__ == "__main__":

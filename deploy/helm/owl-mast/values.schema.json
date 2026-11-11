@@ -42,8 +42,22 @@
       "properties": {
         "path": {"type": "string", "pattern": "^/"},
         "periodSeconds": {"type": "integer", "minimum": 1},
-        "failureThreshold": {"type": "integer", "minimum": 1}
+        "failureThreshold": {"type": "integer", "minimum": 1},
+        "timeoutSeconds": {"type": "integer", "minimum": 1}
       }
+    },
+    "servicePort": {"type": "integer", "minimum": 1, "maximum": 65535},
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "port"],
+      "properties": {"type": {"type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"]}, "port": {"$ref": "#/$defs/servicePort"}}
+    },
+    "databaseName": {
+      "type": "string",
+      "pattern": "^[a-z_][a-z0-9_]*$",
+      "maxLength": 63,
+      "description": "PostgreSQL identifiers are truncated to 63 bytes (NAMEDATALEN-1); a longer name would create a database the URLs never find."
     },
     "execProbe": {
       "type": "object",
@@ -62,7 +76,8 @@
     "ingressHost": {
       "type": "string",
       "maxLength": 253,
-      "pattern": "^$|^(\\*\\.)?[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+      "pattern": "^$|^(\\*\\.)?[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$",
+      "description": "Lowercase DNS name, each label at most 63 characters, optional leading wildcard label."
     },
     "annotations": {"type": "object", "additionalProperties": {"type": "string"}},
     "labels": {
@@ -103,10 +118,15 @@
       "properties": {
         "image": {"$ref": "#/$defs/image"},
         "replicas": {"type": "integer", "minimum": 0, "maximum": 1, "description": "Single instance accepted for the POC (AD-14)."},
-        "containerPort": {"type": "integer"},
-        "service": {"type": "object", "required": ["type", "port"]},
+        "containerPort": {"$ref": "#/$defs/servicePort"},
+        "service": {"$ref": "#/$defs/service"},
         "resources": {"$ref": "#/$defs/resources"},
-        "javaToolOptions": {"type": "string"},
+        "javaToolOptions": {
+          "type": "string",
+          "pattern": "^\\s*(-(XX:[+-][A-Za-z0-9]+|XX:[A-Za-z0-9]+=[A-Za-z0-9.%]+|Xm[sxn][0-9]+[kKmMgG]?|Xss[0-9]+[kKmMgG]?)(\\s+|$))*$",
+          "not": {"pattern": "-XX:(VMOptionsFile|Flags|OnError|OnOutOfMemoryError)="},
+          "description": "JVM memory and tuning flags only (-XX:+Flag, -XX:-Flag, -XX:Name=value, -Xms/-Xmx/-Xmn/-Xss). System properties (-D), agents, argument files and -XX file/hook options are refused: they would override the chart-validated configuration."
+        },
         "probes": {
           "type": "object",
           "additionalProperties": false,
@@ -152,8 +172,8 @@
         "enabled": {"type": "boolean"},
         "image": {"$ref": "#/$defs/image"},
         "replicas": {"type": "integer", "minimum": 0},
-        "containerPort": {"type": "integer"},
-        "service": {"type": "object", "required": ["type", "port"]},
+        "containerPort": {"$ref": "#/$defs/servicePort"},
+        "service": {"$ref": "#/$defs/service"},
         "resources": {"$ref": "#/$defs/resources"},
         "probes": {
           "type": "object",
@@ -171,6 +191,7 @@
         "apiPathPrefix": {"type": "string", "pattern": "^/", "maxLength": 1024},
         "actuatorPathPrefix": {"type": "string", "pattern": "^/", "maxLength": 1024},
         "frontendPathPrefix": {"type": "string", "pattern": "^/", "maxLength": 1024},
+        "exposeActuator": {"type": "boolean"},
         "ingress": {
           "type": "object",
           "additionalProperties": false,
@@ -185,7 +206,7 @@
               "items": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["hosts"],
+                "required": ["hosts", "secretName"],
                 "properties": {
                   "hosts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/ingressHost"}},
                   "secretName": {"$ref": "#/$defs/secretName"}
@@ -227,9 +248,11 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 253,
-                "pattern": "^(\\*\\.)?[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+                "pattern": "^(\\*\\.)?[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+                "not": {"pattern": "^[0-9]+(\\.[0-9]+){3}$"}
               }
             },
+            "allowAllListenerHostnames": {"type": "boolean"},
             "annotations": {"$ref": "#/$defs/annotations"}
           }
         }
@@ -241,7 +264,7 @@
       "required": ["bundled", "name", "existingSecret", "external"],
       "properties": {
         "bundled": {"type": "boolean"},
-        "name": {"type": "string", "pattern": "^[a-z_][a-z0-9_]*$"},
+        "name": {"$ref": "#/$defs/databaseName"},
         "existingSecret": {"$ref": "#/$defs/secretName"},
         "external": {"$ref": "#/$defs/externalPostgres"}
       }
@@ -254,7 +277,7 @@
         "image": {"$ref": "#/$defs/pinnedImage"},
         "adminExistingSecret": {"$ref": "#/$defs/secretName"},
         "provisionKeycloakDatabase": {"type": "boolean"},
-        "service": {"type": "object", "required": ["port"]},
+        "service": {"type": "object", "additionalProperties": false, "required": ["port"], "properties": {"port": {"$ref": "#/$defs/servicePort"}}},
         "resources": {"$ref": "#/$defs/resources"},
         "persistence": {
           "type": "object",
@@ -304,22 +327,33 @@
         "keycloak": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["image", "bootstrapExistingSecret", "importRealm", "database", "service", "resources", "probes"],
+          "required": ["image", "bootstrapExistingSecret", "bootstrapAdmin", "importRealm", "database", "service", "resources", "probes"],
           "properties": {
             "image": {"$ref": "#/$defs/pinnedImage"},
             "bootstrapExistingSecret": {"$ref": "#/$defs/secretName"},
+            "bootstrapAdmin": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["enabled"],
+              "properties": {"enabled": {"type": "boolean"}}
+            },
             "importRealm": {"type": "boolean"},
             "database": {
               "type": "object",
               "additionalProperties": false,
               "required": ["name", "existingSecret", "external"],
               "properties": {
-                "name": {"type": "string", "pattern": "^[a-z_][a-z0-9_]*$"},
+                "name": {"$ref": "#/$defs/databaseName"},
                 "existingSecret": {"$ref": "#/$defs/secretName"},
                 "external": {"$ref": "#/$defs/externalPostgres"}
               }
             },
-            "service": {"type": "object", "required": ["port", "managementPort"]},
+            "service": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["port", "managementPort"],
+              "properties": {"port": {"$ref": "#/$defs/servicePort"}, "managementPort": {"$ref": "#/$defs/servicePort"}}
+            },
             "resources": {"$ref": "#/$defs/resources"},
             "probes": {
               "type": "object",

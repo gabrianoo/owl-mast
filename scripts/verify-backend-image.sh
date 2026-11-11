@@ -7,7 +7,11 @@
 #   - `docker build` succeeds (the Temurin tarball checksum is verified inside the build);
 #   - the image runs as UID/GID 10001, the identity the chart's backend Deployment enforces;
 #   - the JVM is the qualified Temurin 27.0.1 and starts on a read-only root with /tmp as tmpfs;
-#   - the application jar is present at /app/owl-mast.jar and is a Spring Boot executable archive.
+#   - the application jar is present at /app/owl-mast.jar and is a Spring Boot executable archive;
+#   - the APPLICATION starts on that read-only root as the chart runs it (UID/GID, no capabilities, no new
+#     privileges, /tmp the only writable path): the image's own entrypoint launches Spring Boot, which gets as
+#     far as binding the configuration and stops only on the deliberately missing identity issuer. A broken
+#     launcher, a class-loading failure or a write outside /tmp fails here instead of on the next Kind run.
 # Usage: scripts/verify-backend-image.sh   (builds the bootJar first unless OWLMAST_SKIP_BOOTJAR=1)
 set -euo pipefail
 
@@ -53,6 +57,22 @@ check "qualified JVM (Temurin 27.0.1) starts on a read-only root" grep -q 'Temur
 check "application jar present at /app/owl-mast.jar" run --entrypoint test "$IMAGE" -f /app/owl-mast.jar
 check "application jar is a Spring Boot executable archive" bash -c "docker run --rm --network none --entrypoint sh '$IMAGE' -c 'cd /tmp && jar tf /app/owl-mast.jar 2>/dev/null || unzip -l /app/owl-mast.jar' | grep 'BOOT-INF/lib/' >/dev/null"
 check "entrypoint runs the application jar" bash -c "[ \"\$(docker image inspect -f '{{json .Config.Entrypoint}}' '$IMAGE')\" = '[\"java\",\"-jar\",\"/app/owl-mast.jar\"]' ]"
+
+# The application itself, started by the image's own entrypoint exactly as the chart's pod runs it. No issuer is
+# configured and there is no network, so a healthy image reaches Spring Boot's configuration binding and exits
+# with the IdentityProperties message; any other ending is a failure of the image, not of the configuration.
+echo "== start the application on the read-only root (expected to stop on the missing identity issuer)"
+smoke_name="owlmast-backend-smoke-$$"
+smoke_rc=0
+smoke_log="$(timeout 180 docker run --name "$smoke_name" --network none --read-only --tmpfs /tmp:rw,size=64m \
+  --user "$chart_uid:$chart_gid" --cap-drop ALL --security-opt no-new-privileges \
+  -e JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=75 "$IMAGE" 2>&1)" || smoke_rc=$?
+docker rm -f "$smoke_name" >/dev/null 2>&1 || true
+check "the application process ended by itself (no hang, exit code $smoke_rc)" test "$smoke_rc" -ne 0 -a "$smoke_rc" -ne 124
+check "Spring Boot started from the image entrypoint" grep -q 'Starting OwlMastApplication' <<<"$smoke_log"
+check "startup stopped on the missing identity issuer, i.e. it reached configuration binding" grep -q 'owlmast.identity.issuer-uri is required' <<<"$smoke_log"
+check "no filesystem, launcher or class-loading failure on the read-only root" bash -c '! grep -Eqi "Read-only file system|Permission denied|AccessDeniedException|ClassNotFoundException|NoClassDefFoundError|Unable to access jarfile|no main manifest attribute|UnsatisfiedLinkError" <<<"$1"' _ "$smoke_log"
+if [ "$failures" -ne 0 ]; then echo "---- application output (last 40 lines)"; tail -n 40 <<<"$smoke_log"; fi
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures backend image check(s) failed"

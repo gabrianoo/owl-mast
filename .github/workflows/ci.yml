@@ -30,7 +30,7 @@ jobs:
         run: docker version
       - name: Build with all gates (formatting, Error Prone, ArchUnit, unit + integration suites)
         run: ./gradlew build --console=plain
-      - name: Backend runtime image (bootJar name, docker build, UID 10001, qualified JDK, read-only root)
+      - name: Backend runtime image (bootJar name, docker build, UID 10001, qualified JDK, application start on a read-only root)
         run: scripts/verify-backend-image.sh
       - name: Test reports
         if: always()

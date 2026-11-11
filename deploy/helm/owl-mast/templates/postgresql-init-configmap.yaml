@@ -12,7 +12,9 @@ data:
   # database only if absent, grants are re-applied. Before anything is created it refuses a Keycloak
   # principal that is the provisioning superuser or the application principal, an existing role with
   # elevated attributes or role memberships, an existing database owned by another role, and a database
-  # name shared with the application. Mounted OUTSIDE
+  # name shared with the application. `--preflight` runs exactly those refusals and creates nothing: the
+  # first-initialisation script calls it before it creates the application role and database, so a Keycloak
+  # collision never leaves a half-initialised volume. Mounted OUTSIDE
   # /docker-entrypoint-initdb.d (the image's entrypoint auto-executes every *.sh there) at
   # /owl-mast/provision-keycloak.sh and invoked explicitly: by the init script when Keycloak is the
   # bundled consumer, and by the pre-upgrade provisioning Job when Keycloak is enabled on an already
@@ -51,6 +53,10 @@ data:
     SQL
     )"
     [ -z "$owner" ] || [ "$owner" = "$OWLMAST_KEYCLOAK_USERNAME" ] || refuse "the existing database $OWLMAST_KEYCLOAK_DATABASE is owned by $owner, not $OWLMAST_KEYCLOAK_USERNAME"
+    if [ "${1:-}" = "--preflight" ]; then
+      echo "owl-mast: Keycloak provisioning preflight passed; nothing created"
+      exit 0
+    fi
     psql -v ON_ERROR_STOP=1 --host "${PGHOST:-/var/run/postgresql}" --username "$POSTGRES_USER" --dbname postgres \
       --set=kc_db="$OWLMAST_KEYCLOAK_DATABASE" --set=kc_user="$OWLMAST_KEYCLOAK_USERNAME" --set=kc_password="$OWLMAST_KEYCLOAK_PASSWORD" <<'SQL'
     SELECT format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION', :'kc_user', :'kc_password')
@@ -58,16 +64,19 @@ data:
     SELECT format('CREATE DATABASE %I OWNER %I', :'kc_db', :'kc_user')
       WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'kc_db') \gexec
     REVOKE ALL ON DATABASE :"kc_db" FROM PUBLIC;
+    REVOKE ALL ON DATABASE template1 FROM PUBLIC;
     GRANT CONNECT, TEMPORARY ON DATABASE :"kc_db" TO :"kc_user";
     SQL
   # Runs on first initialisation of the data directory (docker-entrypoint-initdb.d), as the
   # provisioning superuser. Separate databases and login principals with restricted grants (AC3):
   # runtime principals are NOSUPERUSER NOCREATEDB NOCREATEROLE and may connect only to their own
-  # database. VectorChord is installed by the provisioning identity so the app never needs superuser.
+  # database (PUBLIC loses CONNECT on the application database, postgres and template1; template0 accepts
+  # no connections). VectorChord is installed by the provisioning identity so the app never needs superuser.
   # Every statement is idempotent, so a first initialisation that failed midway can be completed by
   # running the script again in the pod (docs/installation.md); a second run creates nothing. A
   # principal collision, a privileged or member role, or an existing database owned by another role is
-  # refused before anything is created.
+  # refused before anything is created, for the application AND (through the helper's --preflight) for
+  # Keycloak.
   10-owl-mast-databases.sh: |
     #!/bin/bash
     set -euo pipefail
@@ -89,6 +98,10 @@ data:
     SQL
     )"
     [ -z "$owner" ] || [ "$owner" = "$OWLMAST_APP_USERNAME" ] || refuse "the existing database $OWLMAST_APP_DATABASE is owned by $owner, not $OWLMAST_APP_USERNAME"
+    if [ -n "${OWLMAST_KEYCLOAK_USERNAME:-}" ]; then
+      # Every Keycloak refusal runs now, before the application role and database are created.
+      bash /owl-mast/provision-keycloak.sh --preflight
+    fi
     psql -v ON_ERROR_STOP=1 --host "${PGHOST:-/var/run/postgresql}" --username "$POSTGRES_USER" --dbname postgres \
       --set=app_db="$OWLMAST_APP_DATABASE" --set=app_user="$OWLMAST_APP_USERNAME" --set=app_password="$OWLMAST_APP_PASSWORD" <<'SQL'
     SELECT format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION', :'app_user', :'app_password')
@@ -97,6 +110,7 @@ data:
       WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'app_db') \gexec
     REVOKE ALL ON DATABASE :"app_db" FROM PUBLIC;
     REVOKE ALL ON DATABASE postgres FROM PUBLIC;
+    REVOKE ALL ON DATABASE template1 FROM PUBLIC;
     GRANT CONNECT, TEMPORARY ON DATABASE :"app_db" TO :"app_user";
     \connect :"app_db"
     CREATE EXTENSION IF NOT EXISTS vchord CASCADE;

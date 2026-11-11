@@ -37,9 +37,11 @@ spec:
         - path:
             type: PathPrefix
             value: {{ .Values.routing.apiPathPrefix }}
+        {{- if .Values.routing.exposeActuator }}
         - path:
             type: PathPrefix
             value: {{ .Values.routing.actuatorPathPrefix }}
+        {{- end }}
       backendRefs:
         - name: {{ include "owl-mast.backend.fullname" . }}
           port: {{ .Values.backend.service.port }}

@@ -45,14 +45,22 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{/*
 Suffixed resource name, at most 63 characters: the fullname is shortened BEFORE the suffix is appended, so a
-long release name or fullnameOverride never renders a name the API server rejects. Usage:
-include "owl-mast.suffixedName" (list . "postgresql-data")
+long release name or fullnameOverride never renders a name the API server rejects. A shortened base carries a
+6-character hash of the release name and the whole fullname, so two releases whose fullnames share the kept
+prefix never render the same name (a hook's before-hook-creation policy deletes by name, without an ownership
+check). Names that fit are unchanged. Usage: include "owl-mast.suffixedName" (list . "postgresql-data")
 */}}
 {{- define "owl-mast.suffixedName" -}}
 {{- $root := index . 0 -}}
 {{- $suffix := index . 1 -}}
-{{- $base := include "owl-mast.fullname" $root | trunc (int (sub 62 (len $suffix))) | trimSuffix "-" -}}
-{{- printf "%s-%s" $base $suffix -}}
+{{- $full := include "owl-mast.fullname" $root -}}
+{{- $budget := int (sub 62 (len $suffix)) -}}
+{{- if le (len $full) $budget -}}
+{{- printf "%s-%s" $full $suffix -}}
+{{- else -}}
+{{- $hash := printf "%s/%s" $root.Release.Name $full | sha256sum | trunc 6 -}}
+{{- printf "%s-%s-%s" ($full | trunc (int (sub $budget 7)) | trimSuffix "-") $hash $suffix -}}
+{{- end -}}
 {{- end -}}
 
 {{- define "owl-mast.postgresql.fullname" -}}{{ include "owl-mast.suffixedName" (list . "postgresql") }}{{- end -}}
@@ -102,6 +110,14 @@ Rendering stops with the offending value named; nothing is installed partially.
 */}}
 {{- define "owl-mast.validate" -}}
 {{- $v := .Values -}}
+{{- if and (not $v.backend.image.tag) (not $v.backend.image.digest) -}}
+{{- fail "backend.image.tag or backend.image.digest is required: without either the image reference renders as \"<repository>:\" and the pod fails at pull time" -}}
+{{- end -}}
+{{- /* JVM memory and -XX tuning flags only: a system property, agent or argument file here would override the validated configuration */ -}}
+{{- $jvm := $v.backend.javaToolOptions | default "" -}}
+{{- if or (not (regexMatch "^\\s*(-(XX:[+-][A-Za-z0-9]+|XX:[A-Za-z0-9]+=[A-Za-z0-9.%]+|Xm[sxn][0-9]+[kKmMgG]?|Xss[0-9]+[kKmMgG]?)(\\s+|$))*$" $jvm)) (regexMatch "-XX:(VMOptionsFile|Flags|OnError|OnOutOfMemoryError)=" $jvm) -}}
+{{- fail (printf "backend.javaToolOptions %q is refused: only JVM memory and tuning flags are accepted (-XX:+Flag, -XX:-Flag, -XX:Name=value, -Xms/-Xmx/-Xmn/-Xss). System properties (-D), agents (-javaagent, -agentlib, -agentpath), argument files (@file), -XX:VMOptionsFile, -XX:Flags and -XX:On* hooks would override the chart-validated issuer and database configuration" $jvm) -}}
+{{- end -}}
 {{- if not $v.database.existingSecret -}}
 {{- fail "database.existingSecret is required: an existing Secret with keys username and password for the application principal" -}}
 {{- end -}}
@@ -116,8 +132,8 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- include "owl-mast.validateSslMode" (list "database.external" $v.database.external) -}}
 {{- end -}}
 {{- if $v.identity.bundled -}}
-{{- if not $v.identity.keycloak.bootstrapExistingSecret -}}
-{{- fail "identity.keycloak.bootstrapExistingSecret is required when identity.bundled=true" -}}
+{{- if and $v.identity.keycloak.bootstrapAdmin.enabled (not $v.identity.keycloak.bootstrapExistingSecret) -}}
+{{- fail "identity.keycloak.bootstrapExistingSecret is required when identity.bundled=true and identity.keycloak.bootstrapAdmin.enabled=true" -}}
 {{- end -}}
 {{- if not $v.identity.keycloak.database.existingSecret -}}
 {{- fail "identity.keycloak.database.existingSecret is required when identity.bundled=true" -}}
@@ -141,20 +157,31 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- if and (not $v.identity.keycloak.importRealm) (not $v.identity.keycloak.realmManagedByOperator) -}}
 {{- fail (printf "identity.keycloak.importRealm=false leaves the bundled Keycloak without the realm %q, so the backend never becomes ready; create the realm yourself and acknowledge it with identity.keycloak.realmManagedByOperator=true" $v.identity.realm) -}}
 {{- end -}}
+{{- /* trusted forwarding headers only where a named proxy is the sole admitted path besides the backend */ -}}
+{{- if $v.identity.keycloak.proxyHeaders -}}
+{{- if not $v.networkPolicy.enabled -}}
+{{- fail (printf "identity.keycloak.proxyHeaders=%s needs networkPolicy.enabled=true: without the Keycloak NetworkPolicy any pod can reach :8080 and send forged X-Forwarded-*/Forwarded headers" $v.identity.keycloak.proxyHeaders) -}}
+{{- end -}}
+{{- if not (dig "keycloak" "extraFrom" list $v.networkPolicy) -}}
+{{- fail (printf "identity.keycloak.proxyHeaders=%s needs networkPolicy.keycloak.extraFrom to name the trusted proxy: with no entry the policy admits only the backend, whose direct requests are not proxied" $v.identity.keycloak.proxyHeaders) -}}
+{{- end -}}
+{{- end -}}
 {{- else -}}
 {{- $issuer := $v.identity.external.issuerUri -}}
 {{- if not $issuer -}}
 {{- fail "identity.bundled=false requires identity.external.issuerUri: disabling the bundled Keycloak never disables authentication" -}}
 {{- end -}}
-{{- /* authority: a DNS name of RFC 1123 labels (an IPv4 address included) with an optional numeric port */ -}}
-{{- $authority := "[A-Za-z0-9]([-A-Za-z0-9]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([-A-Za-z0-9]*[A-Za-z0-9])?)*(:[0-9]{1,5})?" -}}
-{{- if regexMatch (printf "^https://%s(/[^?#@\\s]*)?$" $authority) $issuer -}}
-{{- else if regexMatch (printf "^http://%s(/[^?#@\\s]*)?$" $authority) $issuer -}}
+{{- /* authority: a DNS name of RFC 1123 labels (an IPv4 address included) with an optional port 1-65535 */ -}}
+{{- $authority := "[A-Za-z0-9]([-A-Za-z0-9]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([-A-Za-z0-9]*[A-Za-z0-9])?)*(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?" -}}
+{{- /* path: RFC 3986 pchar segments without '@' (what java.net.URI in the backend accepts), percent escapes complete */ -}}
+{{- $path := "(/([-A-Za-z0-9._~!$&'()*+,;=:]|%[0-9A-Fa-f]{2})*)*" -}}
+{{- if regexMatch (printf "^https://%s%s$" $authority $path) $issuer -}}
+{{- else if regexMatch (printf "^http://%s%s$" $authority $path) $issuer -}}
 {{- if not $v.identity.external.allowInsecureIssuer -}}
 {{- fail (printf "identity.external.issuerUri %q uses plaintext http: discovery and signing keys could be substituted in transit. Use https://, or set identity.external.allowInsecureIssuer=true to accept plaintext explicitly (disposable local fixtures only)" $issuer) -}}
 {{- end -}}
 {{- else -}}
-{{- fail (printf "identity.external.issuerUri %q must be an absolute https:// URL with a host and no query, fragment or user info" $issuer) -}}
+{{- fail (printf "identity.external.issuerUri %q must be an absolute https:// URL with a host, an optional port 1-65535, valid path characters and no query, fragment or user info" $issuer) -}}
 {{- end -}}
 {{- end -}}
 {{- /* AC3: every principal has its own Secret */ -}}
@@ -162,7 +189,9 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- if $v.database.bundled -}}{{- $secrets = append $secrets (list "postgresql.adminExistingSecret" $v.postgresql.adminExistingSecret) -}}{{- end -}}
 {{- if $v.identity.bundled -}}
 {{- $secrets = append $secrets (list "identity.keycloak.database.existingSecret" $v.identity.keycloak.database.existingSecret) -}}
+{{- if $v.identity.keycloak.bootstrapAdmin.enabled -}}
 {{- $secrets = append $secrets (list "identity.keycloak.bootstrapExistingSecret" $v.identity.keycloak.bootstrapExistingSecret) -}}
+{{- end -}}
 {{- end -}}
 {{- range $i, $a := $secrets -}}
 {{- range $j, $b := $secrets -}}
@@ -176,6 +205,9 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- fail "postgresql.provisionKeycloakDatabase=true applies only to a bundled PostgreSQL with a bundled Keycloak (database.bundled=true and identity.bundled=true)" -}}
 {{- end -}}
 {{- if .Release.IsInstall -}}
+{{- if $v.postgresql.persistence.existingClaim -}}
+{{- fail (printf "postgresql.provisionKeycloakDatabase=true is refused on install: the pre-upgrade hook needs the release's existing PostgreSQL. This install reuses the claim %q, whose initialised volume never reruns the first-initialisation script: if it was initialised with identity.bundled=false, install first, then provision Keycloak's database in the PostgreSQL pod (kubectl exec deploy/<release>-postgresql -- bash /owl-mast/provision-keycloak.sh; docs/installation.md), or install with the identity mode the volume was initialised with and enable the bundle with this value on helm upgrade" $v.postgresql.persistence.existingClaim) -}}
+{{- end -}}
 {{- fail "postgresql.provisionKeycloakDatabase=true is refused on install: a fresh install provisions Keycloak's database at first initialisation, and the pre-upgrade hook needs the release's existing PostgreSQL (use it on helm upgrade; helm template needs --is-upgrade)" -}}
 {{- end -}}
 {{- end -}}
@@ -200,8 +232,9 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- include "owl-mast.validatePathPrefix" . -}}
 {{- end -}}
 {{- /* D2: the prefixes are pinned to what the artifacts serve (no rewrite is rendered), which also makes them disjoint */ -}}
-{{- if not (regexMatch "^/api(/.*)?$" $v.routing.apiPathPrefix) -}}
-{{- fail (printf "routing.apiPathPrefix %q is not served by the backend: it must be /api or a path below /api/ (the chart renders no rewrite)" $v.routing.apiPathPrefix) -}}
+{{- /* exactly /api: the same value is handed to the frontend shell, which calls <prefix>/compatibility, and the backend serves only /api/... */ -}}
+{{- if ne $v.routing.apiPathPrefix "/api" -}}
+{{- fail (printf "routing.apiPathPrefix %q is not served by the backend: it must be exactly /api (the chart renders no rewrite, and the frontend shell calls the backend below this prefix)" $v.routing.apiPathPrefix) -}}
 {{- end -}}
 {{- if not (regexMatch "^/actuator(/.*)?$" $v.routing.actuatorPathPrefix) -}}
 {{- fail (printf "routing.actuatorPathPrefix %q is not served by the backend: it must be /actuator or a path below /actuator/ (the chart renders no rewrite)" $v.routing.actuatorPathPrefix) -}}
@@ -218,26 +251,32 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- if not (has $ext.sslMode (list "disable" "allow" "prefer" "require" "verify-ca" "verify-full")) -}}
 {{- fail (printf "%s.sslMode must be one of disable, allow, prefer, require, verify-ca, verify-full" $path) -}}
 {{- end -}}
+{{- if has $ext.sslMode (list "verify-ca" "verify-full") -}}
+{{- fail (printf "%s.sslMode=%s is refused: it needs a CA trust the chart does not mount yet (deferred, see docs/installation.md), so the backend and Keycloak would render and then fail every database connection. Use require, which encrypts the connection but does not authenticate the server" $path $ext.sslMode) -}}
+{{- end -}}
 {{- if and (has $ext.sslMode (list "disable" "allow" "prefer")) (not $ext.allowInsecureTransport) -}}
-{{- fail (printf "%s.sslMode=%s can send database credentials in plaintext: use require (or verify-ca/verify-full), or set %s.allowInsecureTransport=true to accept plaintext explicitly" $path $ext.sslMode $path) -}}
+{{- fail (printf "%s.sslMode=%s can send database credentials in plaintext: use require, or set %s.allowInsecureTransport=true to accept plaintext explicitly" $path $ext.sslMode $path) -}}
 {{- end -}}
 {{- end -}}
 
 {{/* Ingress host and TLS: the host is a lowercase DNS name (optional leading '*.'), and a TLS block must cover it. */}}
 {{- define "owl-mast.validateIngress" -}}
 {{- $in := .Values.routing.ingress -}}
-{{- $hostPattern := "^(\\*\\.)?[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" -}}
+{{- $hostPattern := "^(\\*\\.)?[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$" -}}
 {{- if not $in.host -}}
 {{- fail "routing.ingress.enabled=true requires routing.ingress.host" -}}
 {{- end -}}
 {{- if or (gt (len $in.host) 253) (not (regexMatch $hostPattern $in.host)) -}}
-{{- fail (printf "routing.ingress.host %q is not a valid Ingress host: lowercase DNS name, optional leading wildcard label '*.', no scheme, port or path" $in.host) -}}
+{{- fail (printf "routing.ingress.host %q is not a valid Ingress host: lowercase DNS name with labels of at most 63 characters, optional leading wildcard label '*.', no scheme, port or path" $in.host) -}}
 {{- end -}}
 {{- if $in.tls -}}
 {{- $covered := false -}}
 {{- range $i, $t := $in.tls -}}
 {{- if not $t.hosts -}}
 {{- fail (printf "routing.ingress.tls[%d].hosts must list the host it secures" $i) -}}
+{{- end -}}
+{{- if not $t.secretName -}}
+{{- fail (printf "routing.ingress.tls[%d].secretName is required: a TLS entry without a Secret makes the controller serve its default certificate" $i) -}}
 {{- end -}}
 {{- range $t.hosts -}}
 {{- if or (gt (len .) 253) (not (regexMatch $hostPattern .)) -}}
@@ -288,13 +327,14 @@ by the operator's Gateway.
 {{- fail (printf "routing.gateway.parentRefs[%d].sectionName %q is not a valid listener section name (lowercase RFC 1123 subdomain, at most 253 characters)" $i $ref.sectionName) -}}
 {{- end -}}
 {{- end -}}
-{{- if $ref.port -}}
+{{- if hasKey $ref "port" -}}
 {{- if or (lt (int $ref.port) 1) (gt (int $ref.port) 65535) -}}
 {{- fail (printf "routing.gateway.parentRefs[%d].port %v is outside 1-65535" $i $ref.port) -}}
 {{- end -}}
 {{- end -}}
 {{- /* CEL: references to the same parent must all carry a sectionName, and those must be unique */ -}}
-{{- $parent := printf "%s/%s" (default "" $ref.namespace) $ref.name -}}
+{{- /* an omitted namespace is the route's own (the release namespace): both spellings name the same Gateway */ -}}
+{{- $parent := printf "%s/%s" (default $.Release.Namespace $ref.namespace) $ref.name -}}
 {{- $section := default "" $ref.sectionName -}}
 {{- if hasKey $seen $parent -}}
 {{- $prev := index $seen $parent -}}
@@ -309,12 +349,18 @@ by the operator's Gateway.
 {{- $_ := set $seen $parent $section -}}
 {{- end -}}
 {{- end -}}
+{{- if and (not $gw.hostnames) (not $gw.allowAllListenerHostnames) -}}
+{{- fail "routing.gateway.hostnames is empty: an HTTPRoute without hostnames attaches to every hostname of the referenced listener(s), including other tenants' on a shared Gateway. List the hostnames, or set routing.gateway.allowAllListenerHostnames=true to accept every listener hostname explicitly" -}}
+{{- end -}}
 {{- if gt (len $gw.hostnames) 16 -}}
 {{- fail (printf "routing.gateway.hostnames has %d entries; HTTPRoute allows at most 16" (len $gw.hostnames)) -}}
 {{- end -}}
 {{- range $i, $host := $gw.hostnames -}}
 {{- if or (eq $host "") (gt (len $host) 253) (not (regexMatch "^(\\*\\.)?[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $host)) -}}
 {{- fail (printf "routing.gateway.hostnames[%d] %q is not a valid HTTPRoute hostname: lowercase DNS name, optional leading wildcard label '*.', no scheme, port or path, at most 253 characters" $i $host) -}}
+{{- end -}}
+{{- if regexMatch "^[0-9]+(\\.[0-9]+){3}$" $host -}}
+{{- fail (printf "routing.gateway.hostnames[%d] %q is an IP address: the Gateway API Hostname type forbids IP addresses, and no conformant controller matches one" $i $host) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

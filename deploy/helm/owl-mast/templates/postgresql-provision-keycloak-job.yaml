@@ -8,7 +8,9 @@
 # Idempotent: nothing existing is dropped or recreated. Refused on install (owl-mast.validate): a fresh
 # install provisions at first initialisation. Bounded: the script fails at once when the PostgreSQL
 # Service does not resolve, its readiness wait is short, and activeDeadlineSeconds keeps the whole Job
-# below Helm's default 5m timeout; there is no retry (backoffLimit 0).
+# below Helm's default 5m timeout; there is no retry (backoffLimit 0). Both hook objects are deleted once
+# the hook succeeded (hook-succeeded), so no Job pod spec referencing the admin and Keycloak database Secrets
+# outlives the upgrade or an uninstall; a failed Job stays for diagnosis until the next attempt replaces it.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -19,7 +21,7 @@ metadata:
   annotations:
     helm.sh/hook: pre-upgrade
     helm.sh/hook-weight: "-5"
-    helm.sh/hook-delete-policy: before-hook-creation
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 data:
   provision-keycloak.sh: {{ (include (print $.Template.BasePath "/postgresql-init-configmap.yaml") . | fromYaml).data | dig "provision-keycloak.sh" "" | quote }}
 ---
@@ -33,7 +35,7 @@ metadata:
   annotations:
     helm.sh/hook: pre-upgrade
     helm.sh/hook-weight: "0"
-    helm.sh/hook-delete-policy: before-hook-creation
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 spec:
   backoffLimit: 0
   activeDeadlineSeconds: 240

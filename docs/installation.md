@@ -3,16 +3,31 @@
 Owl Mast installs from the repository-owned Helm chart `deploy/helm/owl-mast` (version 0.2.0; see [Upgrading a release installed from chart 0.1.0](#upgrading-a-release-installed-from-chart-010)). The
 chart packages the backend image and two **independently optional** bundles: PostgreSQL 18 with
 VectorChord, and Keycloak. Disabling a bundle means supplying a compatible existing service; it never
-removes the dependency. There is no value that disables authentication. Qualified on 2026-11-07 for
-GitHub issue #21 on a disposable local Kind target; the frontend shell artifact and its smoke check
-are delivered by OM-01.04, browser realm/client/session policy by OM-02.01.
+removes the dependency. There is no value that disables authentication. Chart 0.1.0 was qualified on
+2026-11-07 for GitHub issue #21 on a disposable local Kind target. **The Kind qualification of chart 0.2.0 is
+pending**: 0.2.0 is verified by the render, negative and Docker-backed checks listed below, not yet by a rerun
+of `scripts/qualify-local-install.sh` (see [Qualification status](#qualification-status)). The frontend shell
+artifact and its smoke check are delivered by OM-01.04, browser realm/client/session policy by OM-02.01.
+
+## Qualification status
+
+| What | Chart 0.1.0 | Chart 0.2.0 |
+| --- | --- | --- |
+| Render, lint, negative validation (`scripts/verify-install-package.sh`) | passed | passed (CI `package-checks`) |
+| PostgreSQL initialisation, provisioning and probe commands against the pinned image (Docker) | passed | passed (CI `package-checks`) |
+| Keycloak on a read-only root against the pinned image (Docker) | not applicable | passed (CI `package-checks`) |
+| Backend image: UID, JDK, application start on a read-only root | not checked | passed (CI `build`) |
+| NetworkPolicy enforcement on a disposable kindnet cluster | not applicable | one run on 2026-11-09, before the changes of 2026-11-11 |
+| Owner-run Kind qualification (`scripts/qualify-local-install.sh all`): four combinations, persistence, first-enable, failure paths | passed 2026-11-07 | **pending** |
+| Gateway API: HTTPRoute accepted by an API server with the CRDs (server-side CEL) | not run | **not run** (manifest validation only) |
+| Gateway API: controller and data plane | not run | not run |
 
 ## Pins
 
 | Component | Pin | Where | Source / qualification |
 | --- | --- | --- | --- |
 | Chart | `owl-mast` 0.2.0, `appVersion` 0.1.0 | `deploy/helm/owl-mast/Chart.yaml` | This repository; package hash is produced by `helm package` from the release commit |
-| Backend image | `owl-mast/backend:0.1.0`, built by `backend/Dockerfile` from the `bootJar` and referenced by tag; set `backend.image.digest` to the registry manifest digest once the image is published (a local image id from `docker build` is not a manifest digest and is not accepted by Kubernetes as one); until then the release NOTES warn that a mutable tag decides what runs. `scripts/verify-backend-image.sh` (CI `build` job) checks the jar name against the Gradle version, builds the image and proves UID/GID 10001 (the chart's `runAsUser`), the qualified JVM on a read-only root and the boot jar | `backend/Dockerfile`, `backend.image.*` | Base `ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c`; Temurin 27.0.1+1 Linux x64 tarball sha256 `30cb129f…` (same JDK as [toolchain-qualification.md](toolchain-qualification.md)), verified during the build |
+| Backend image | `owl-mast/backend:0.1.0`, built by `backend/Dockerfile` from the `bootJar` and referenced by tag; set `backend.image.digest` to the registry manifest digest once the image is published (a local image id from `docker build` is not a manifest digest and is not accepted by Kubernetes as one); until then the release NOTES warn that a mutable tag decides what runs. An empty tag and digest together fail rendering. `scripts/verify-backend-image.sh` (CI `build` job) checks the jar name against the Gradle version, builds the image and proves UID/GID 10001 (the chart's `runAsUser`), the qualified JVM on a read-only root, the boot jar, and that the application itself starts from the image entrypoint on that read-only root (as UID/GID 10001, no capabilities, `/tmp` the only writable path) up to configuration binding, where it stops on the deliberately missing issuer. It does not prove a complete start against a database and an issuer; that is the Kind qualification | `backend/Dockerfile`, `backend.image.*` | Base `ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c`; Temurin 27.0.1+1 Linux x64 tarball sha256 `30cb129f…` (same JDK as [toolchain-qualification.md](toolchain-qualification.md)), verified during the build |
 | PostgreSQL / VectorChord | `tensorchord/vchord-postgres:pg18-v1.1.1@sha256:700ff05ebdc7e4afd4dd8442e0684293046c3833677fec326550000a04cf8a91` (PostgreSQL 18.3, VectorChord 1.1.1, pgvector 0.8.2) | `postgresql.image` | Accepted OM-01.01 pin, reused unchanged |
 | Keycloak | `quay.io/keycloak/keycloak:26.8.2@sha256:3879c623248408de29a5303178b5816c77e8dfef3890c361f8c0bbeaa979ba3b` | `identity.keycloak.image` | Release 26.8.2 (2026-11-05); PostgreSQL 18 is a supported database. Kubernetes 1.36 is **not** an upstream-certified Keycloak platform: startup, database schema creation, readiness and discovery were proven on the local target below, nothing more |
 | Kubernetes | `>=1.31`; qualified on Kind 0.33.0 `kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed` | `Chart.yaml` `kubeVersion`, `deploy/local-kind/` | Kind release notes; kubectl 1.36.1 |
@@ -29,7 +44,7 @@ chart never creates or templates credential values; a missing Secret or key leav
 | `database.existingSecret` | `owl-mast-db` | Backend application principal (`owlmast_app` by convention); also consumed by the bundled PostgreSQL initialisation |
 | `postgresql.adminExistingSecret` | `owl-mast-postgres-admin` | Bundled PostgreSQL provisioning superuser only (initialisation, extensions); no runtime component uses it |
 | `identity.keycloak.database.existingSecret` | `owl-mast-keycloak-db` | Keycloak's own database principal (`keycloak_app`); referenced only when `identity.bundled=true` (by Keycloak, by the bundled PostgreSQL initialisation and by the provisioning Job) |
-| `identity.keycloak.bootstrapExistingSecret` | `owl-mast-keycloak-bootstrap` | Keycloak temporary bootstrap admin; referenced only when `identity.bundled=true` |
+| `identity.keycloak.bootstrapExistingSecret` | `owl-mast-keycloak-bootstrap` | Keycloak temporary bootstrap admin; referenced only when `identity.bundled=true` and `identity.keycloak.bootstrapAdmin.enabled=true` |
 
 With `identity.bundled=false` an install needs only `database.existingSecret` (and `postgresql.adminExistingSecret`
 when the database is bundled); no Keycloak credential or database is provisioned.
@@ -39,6 +54,14 @@ use name the same Secret. The usernames inside the Secrets are only visible at r
 PostgreSQL scripts refuse, before creating anything, an application or Keycloak username equal to the
 provisioning superuser's, a Keycloak username equal to the application's, and an existing role of that name
 with elevated attributes (superuser, createrole, createdb, replication, bypassrls).
+
+The bootstrap admin is temporary. Keycloak creates it from `KC_BOOTSTRAP_ADMIN_USERNAME`/`_PASSWORD` when the
+master realm has no admin, and the chart injects those variables for as long as
+`identity.keycloak.bootstrapAdmin.enabled` is `true` (the default). To retire it: sign in with it, create a
+permanent admin, delete the temporary user, then `helm upgrade` with
+`identity.keycloak.bootstrapAdmin.enabled=false`. The Keycloak pod then no longer references the Secret (a render
+test asserts that nothing does) and the Secret can be deleted. The release NOTES repeat this while the admin is
+injected. Proving the switch-off on a cluster is part of the pending Kind qualification.
 
 ## Combinations
 
@@ -58,8 +81,20 @@ host is a DNS name or IPv4 address with an optional numeric port, and with no qu
 backend refuses a query, fragment or user info as well, naming `owlmast.identity.issuer-uri`); a plaintext `http://` issuer renders only with
 `identity.external.allowInsecureIssuer=true`, for disposable local fixtures. `database.external.sslMode` and
 `identity.keycloak.database.external.sslMode` default to `require`; `disable`, `allow` and `prefer` can fall back
-to plaintext and render only with the matching `allowInsecureTransport=true`. `verify-ca`/`verify-full` are
-accepted but need a CA trust the chart does not mount yet. External hosts are bare DNS names (RFC 1123 labels
+to plaintext and render only with the matching `allowInsecureTransport=true`. `require` encrypts the connection
+but does not authenticate the server. `verify-ca`/`verify-full`, which would, are **refused at render**: the chart
+mounts no CA trust yet (deferred), so they would render and then fail every database connection of the backend
+and Keycloak. The issuer's port must be 1–65535 and its path may use only RFC 3986 path characters and complete
+`%XX` escapes, which is what the backend's URI parser accepts; the backend checks the port range as well. The
+backend also refuses a plaintext `http://` issuer by itself unless `owlmast.identity.allow-insecure-issuer` is
+true, which the chart sets (`OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER`) only for the cluster-local bundled Keycloak
+or for `identity.external.allowInsecureIssuer=true`, so the rule holds on every deployment path. The issuer is
+used verbatim: a trailing slash is part of it. `backend.javaToolOptions` accepts JVM memory and tuning flags only
+(`-XX:+Flag`, `-XX:-Flag`, `-XX:Name=value`, `-Xms`/`-Xmx`/`-Xmn`/`-Xss`); system properties (`-D…`), agents,
+argument files and the `-XX` file and hook options are refused, because a JVM system property outranks the
+validated environment. Service and container ports are integers 1–65535, Service types are `ClusterIP`,
+`NodePort` or `LoadBalancer`, and database names are at most 63 characters (PostgreSQL truncates longer
+identifiers). External hosts are bare DNS names (RFC 1123 labels
 separated by single dots, optional trailing dot) or IPv4 addresses (no port, path or query: they are spliced
 into the JDBC/R2DBC URLs). `backend.extraEnv` refuses
 names that would override the validated configuration (`OWLMAST_*`, `SPRING_*`, `MANAGEMENT_*`, `SERVER_*`,
@@ -67,12 +102,16 @@ the Spring Boot launcher's `LOADER_*`, the JVM option variables, `CLASSPATH`, `L
 as well as credential-like names; `commonLabels` refuses keys under `app.kubernetes.io/` and `helm.sh/`, which
 the selectors own, and values that are not valid Kubernetes label values (at most 63 characters, alphanumeric
 at both ends). Generated names stay within 63 characters for any
-release name or `fullnameOverride`: the base is shortened before each suffix is appended. An external PostgreSQL must be version 18 with
+release name or `fullnameOverride`: the base is shortened before each suffix is appended, and a shortened base
+carries a 6-character hash of the release name and full name, so two long-named releases in one namespace never
+render the same name (names that fit are unchanged). An external PostgreSQL must be version 18 with
 `CREATE EXTENSION vchord CASCADE` available to the provisioning identity; the backend migration only
 verifies the extension is present. An external issuer must publish an OpenID Connect discovery
-document whose `issuer` equals the configured value; the backend's readiness group includes that
-check (`identityDiscovery`) together with the schema baseline, so a misconfigured or unreachable
-identity provider keeps the backend unready while liveness stays up.
+document whose `issuer` equals the configured value exactly (OpenID Connect Discovery 4.3; a difference of
+one trailing slash is a mismatch, because tokens carry the published value); the backend's readiness group
+includes that check (`identityDiscovery`) together with the schema baseline, so a misconfigured or unreachable
+identity provider keeps the backend unready while liveness stays up. The discovery outcome is cached for 5 s, so
+the identity provider receives at most one discovery request per 5 s however often readiness is evaluated.
 
 ## Upgrading a release installed from chart 0.1.0
 
@@ -87,7 +126,17 @@ against the release's values before `helm upgrade`:
 | `KC_PROXY_HEADERS` is no longer set on the bundled Keycloak (was `xforwarded`) | Behind a trusted proxy that is the only path to Keycloak: `identity.keycloak.proxyHeaders=xforwarded` |
 | `networkPolicy.enabled=true` renders ingress-only NetworkPolicies for the bundled PostgreSQL and Keycloak | Other clients of those services: `networkPolicy.{postgresql,keycloak}.extraFrom`, or `networkPolicy.enabled=false` |
 | `postgresql.provisionKeycloakDatabase=true` is refused on install | Use it only on `helm upgrade` (`helm template --is-upgrade`) |
-| `routing.apiPathPrefix`, `routing.actuatorPathPrefix`, `routing.frontendPathPrefix` are pinned to `/api[/...]`, `/actuator[/...]`, `/` | Remove other prefixes; the chart renders no rewrite |
+| `routing.apiPathPrefix` is exactly `/api`; `routing.actuatorPathPrefix` is `/actuator[/...]`; `routing.frontendPathPrefix` is `/` | Remove other prefixes; the chart renders no rewrite |
+| The actuator is no longer routed by the Ingress or HTTPRoute | Only to publish it on purpose: `routing.exposeActuator=true` |
+| An HTTPRoute needs `routing.gateway.hostnames` (DNS names, no IP addresses) | List the hostnames, or acknowledge every listener hostname with `routing.gateway.allowAllListenerHostnames=true` |
+| Every `routing.ingress.tls` entry needs `secretName`; host labels are at most 63 characters | Name the TLS Secret |
+| `sslMode=verify-ca` and `verify-full` are refused | Use `require` until the CA trust mount ships |
+| `backend.javaToolOptions` accepts JVM memory and tuning flags only | Move application settings out of JVM options |
+| `identity.keycloak.proxyHeaders` needs `networkPolicy.enabled=true` and a `networkPolicy.keycloak.extraFrom` entry for the proxy | Name the proxy's pods or namespace |
+| The backend Deployment uses the `Recreate` strategy (single instance) | Expect the backend to be down for the length of its restart on every rollout |
+| The bundled PostgreSQL pod is recreated once by this upgrade (probe commands, `fsGroupChangePolicy`, script-only checksum) | Plan the database restart; later chart bumps no longer recreate it |
+| The backend refuses a plaintext issuer unless told otherwise; the issuer is compared exactly | Nothing for chart installs (the chart sets the flag for the bundled Keycloak and for `allowInsecureIssuer=true`); remove or add a trailing slash so the value equals the published issuer |
+| Service and container ports must be integers 1–65535; database names at most 63 characters; `backend.image.tag` or `digest` required | Correct the values |
 | The HTTPRoute requires the `gateway.networking.k8s.io/v1/HTTPRoute` capability | Install the Gateway API CRDs (`helm template --api-versions gateway.networking.k8s.io/v1/HTTPRoute`) |
 | `identity.keycloak.importRealm=false` requires an acknowledgement | `identity.keycloak.realmManagedByOperator=true` |
 | Distinct Secrets per principal, distinct Keycloak database name on a shared server, reserved `commonLabels` keys and invalid label values, overriding `backend.extraEnv` names are refused | Give each principal its own Secret; rename the colliding values |
@@ -96,7 +145,8 @@ against the release's values before `helm upgrade`:
 
 The bundled instance initialises once from `postgresql-init-configmap.yaml`: databases `owlmast`
 and `keycloak`, login roles `owlmast_app` and `keycloak_app` (`NOSUPERUSER NOCREATEDB NOCREATEROLE
-NOINHERIT`), `REVOKE ALL … FROM PUBLIC` on both databases and on `postgres`, `CONNECT, TEMPORARY`
+NOINHERIT`), `REVOKE ALL … FROM PUBLIC` on both databases, on `postgres` and on `template1` (`template0` accepts
+no connections), `CONNECT, TEMPORARY`
 granted only to each owner, and `vchord CASCADE` installed in `owlmast` by the provisioning
 identity. Verified on the local target: each runtime principal is not a superuser and is refused
 (`permission denied for database`) when connecting to the other database; a `vchordrq` index on
@@ -105,10 +155,36 @@ synthetic vectors is created by `owlmast_app` and used by the planner (`Index Sc
 separation; the init script is the reference. With Keycloak bundled on a shared server (the bundled instance,
 or the same external host and port) `identity.keycloak.database.name` must differ from `database.name`. The
 comparison is textual (case and a trailing dot are ignored): aliases of one server, such as an IP address and a
-DNS name, are not detected.
+DNS name, are not detected. On a shared **external** server the chart checks only that the two Secrets and the
+two database names differ. It cannot read the usernames inside the Secrets at render time and runs no script on
+an external server, so two Secrets carrying the same username would give Keycloak and the application one
+principal; the release NOTES print a warning for this combination, and the separation is the operator's to
+reproduce. A volume initialised by an earlier chart keeps `PUBLIC` `CONNECT` on `template1` until the init
+script is run again in the pod (the command below) or the first-enable hook runs.
+
+The bundled PostgreSQL has no TLS: the application and Keycloak connect to it with `sslmode=disable`, so
+credentials and data cross the pod network unencrypted. Isolation relies on the NetworkPolicy and on the cluster
+network; where the pod network is not trusted, use an external PostgreSQL with `sslMode=require`. The release
+NOTES state this for every bundled-database install.
+
+`database.name`, `identity.keycloak.database.name` and the usernames and passwords in the principals' Secrets are
+fixed at first initialisation: the scripts run once, on an empty data directory, and a later change of these
+values creates nothing. The pods then keep failing authentication or name a database that does not exist. To
+change one on an initialised volume, apply it in PostgreSQL first, as the provisioning superuser
+(`kubectl exec deploy/<release>-postgresql -- psql -U "$POSTGRES_USER" -d postgres`), then change the value or
+Secret and upgrade:
+
+- password: `ALTER ROLE <username> PASSWORD '<new password>';`
+- username: `ALTER ROLE <old> RENAME TO <new>;` followed by the password statement (a rename clears an MD5 password);
+- database name: stop the backend (or Keycloak), then `ALTER DATABASE <old> RENAME TO <new>;`.
+
+The chart does not detect such a change at render time (that needs a read of the live objects, which
+`helm template` cannot test); it is a documented operator procedure.
 
 Every statement of the init script is idempotent (`CREATE ROLE`/`CREATE DATABASE` only when absent, grants
-re-applied, `CREATE EXTENSION IF NOT EXISTS`). It refuses, before creating anything, an existing role with
+re-applied, `CREATE EXTENSION IF NOT EXISTS`). Every refusal runs first, for the application and, through
+`provision-keycloak.sh --preflight`, for Keycloak, so a Keycloak collision no longer stops the script after the
+application role and database were created. It refuses, before creating anything, an existing role with
 elevated attributes or any role membership and an existing database owned by a role other than the expected
 principal (for example `database.name` equal to the admin username, whose database the image's entrypoint
 creates). The entrypoint runs it only on an empty data directory, so if a first initialisation stops midway
@@ -131,8 +207,9 @@ the backend became ready through both policies, API-server proxy reads of the ba
 succeeded, a pod outside the release got no response from PostgreSQL :5432 and was blocked on Keycloak :8080, a
 pod carrying the backend's labels reached both, and the first-enable upgrade's provisioning hook created
 Keycloak's role and database through the PostgreSQL policy. That run also caught, and the Docker test now
-reproduces, an init-container failure on a real emptyDir. The owner-run Kind qualification
-(`scripts/qualify-local-install.sh`) has not yet been rerun with these policies.
+reproduces, an init-container failure on a real emptyDir. That run predates the changes of 2026-11-11, and
+the owner-run Kind qualification (`scripts/qualify-local-install.sh`) has not been rerun with chart 0.2.0: the
+qualification of chart 0.2.0 is pending ([Qualification status](#qualification-status)).
 
 ## Enabling the identity bundle later on an initialised bundled PostgreSQL
 
@@ -153,8 +230,22 @@ unless both bundles are enabled, is refused on install (a fresh install provisio
 `helm template` needs `--is-upgrade` to render the hook), and should be left `false` afterwards. The hook is
 bounded below Helm's default 5m timeout: it fails at once when the release's PostgreSQL Service does not
 resolve (for example an upgrade that switches `database.bundled` on together with it), waits at most 20 ×
-(3 s + 5 s) for `pg_isready`, and the Job has `activeDeadlineSeconds: 240` and no retry (`backoffLimit: 0`). Disabling the
-identity bundle later keeps the existing Keycloak database and principal untouched.
+(3 s + 5 s) for `pg_isready`, and the Job has `activeDeadlineSeconds: 240` and no retry (`backoffLimit: 0`). The hook
+Job and its ConfigMap carry the delete policy `before-hook-creation,hook-succeeded`: both are removed as soon as
+the hook succeeds, so nothing referencing the admin and Keycloak database Secrets outlives the upgrade or an
+uninstall. A failed Job stays for diagnosis; the next attempt replaces it, and `kubectl delete job,configmap -l
+app.kubernetes.io/instance=<release>,app.kubernetes.io/component=postgresql-provisioning` removes it by hand.
+Disabling the identity bundle later keeps the existing Keycloak database and principal untouched.
+
+The hook cannot serve a **reinstall** that reuses a retained claim (`postgresql.persistence.existingClaim`): it is
+a pre-upgrade hook, and on an initialised volume the first-initialisation script does not run. If that volume
+was initialised with `identity.bundled=false` and the reinstall enables the identity bundle, nothing has
+provisioned Keycloak's database. Either install with `identity.bundled=true` and then provision it in the
+PostgreSQL pod, which already carries the helper and Keycloak's credentials
+(`kubectl exec deploy/<release>-postgresql -- bash /owl-mast/provision-keycloak.sh`; idempotent), or reinstall
+with the identity mode the volume was initialised with and enable the bundle afterwards with the `helm upgrade`
+above. Until the database exists the PostgreSQL pod is alive but not Ready (its readiness probe covers every
+database the chart provisions), which names the missing step instead of leaving Keycloak to crash-loop.
 
 Initialisation layout: only `10-owl-mast-databases.sh` is placed in `/docker-entrypoint-initdb.d`
 (the image's entrypoint auto-executes every `*.sh` there); the provisioning helper is mounted at
@@ -168,11 +259,24 @@ initialisations and the first-enable/retry transition against the pinned image i
 
 | Component | Startup | Liveness | Readiness | Default requests / limits |
 | --- | --- | --- | --- | --- |
-| Backend | `GET /actuator/health/liveness` (≤ 3 min) | same | `GET /actuator/health/readiness` (readinessState, schemaBaseline, identityDiscovery) | 250m/512Mi – 1/1Gi |
-| PostgreSQL | `pg_isready` | `pg_isready` | `select 1` against the application database (initialisation complete) | 250m/512Mi – 1/1Gi |
+| Backend | `GET /actuator/health/liveness` (≤ 3 min) | same | `GET /actuator/health/readiness` (readinessState, schemaBaseline, identityDiscovery), `timeoutSeconds: 5` | 250m/512Mi – 1/1Gi |
+| PostgreSQL | `pg_isready` on the Unix socket | `pg_isready` on the Unix socket | over TCP, `select 1` against the application database and, with the identity bundle, Keycloak's database | 250m/512Mi – 1/1Gi |
 | Keycloak | `/health/started` on 9000 (≤ 5 min) | `/health/live` | `/health/ready` | 500m/768Mi – 1/1536Mi |
 
 The frontend (when enabled) has `GET /` liveness and readiness probes.
+
+The backend's readiness probe allows 5 s, more than the 3 s the identity-discovery check waits for the issuer, so
+a slow issuer is reported by the check's own reason and not as a kubelet probe timeout (the Kubernetes default
+is 1 s); `backend.probes.<probe>.timeoutSeconds` changes it, and a render test keeps it above the Java constant.
+PostgreSQL's startup and liveness probes use the Unix socket because the image's entrypoint runs its
+first-initialisation server on the socket only: a TCP probe failed for that whole phase and the kubelet could
+kill a slow initialisation midway. Readiness stays on TCP, so the initialisation server is never Ready. The
+Docker suite holds a container in that phase and runs the rendered probe commands in it.
+
+The backend is a single instance (`backend.replicas` at most 1, AD-14) and its Deployment uses the `Recreate`
+strategy: a rollout stops the old pod before it starts the new one, so two backends never run against one
+database, at the cost of the backend being down while it restarts. The actuator serves these probes inside the
+cluster and is not routed externally (see routing below).
 
 The backend may restart once on a cold install because it starts before the database accepts
 connections; Flyway fails fast, the kubelet restarts the container and the second start succeeds.
@@ -187,7 +291,9 @@ volumes at the rendered paths: `deploy/tests/test_keycloak_readonly.py` runs the
 Keycloak against a disposable PostgreSQL with the seed volume shaped like a kubelet emptyDir (root-owned, group fsGroup, mode 2777; management `/health/ready` 200, discovery issuer as rendered), and
 `scripts/verify-frontend-artifact.sh` reads the frontend's UID/GID from the chart. PostgreSQL keeps a writable root. `KC_PROXY_HEADERS` is not
 set: the cluster-local Keycloak has no proxy in front of it, and `identity.keycloak.proxyHeaders`
-(`xforwarded`|`forwarded`) is for a trusted proxy that is the only path to it. With
+(`xforwarded`|`forwarded`) is for a trusted proxy that is the only path to it: rendering it requires
+`networkPolicy.enabled=true` and a `networkPolicy.keycloak.extraFrom` entry naming the proxy, because without the
+policy any pod could send forged forwarding headers and without the entry the policy admits no proxy at all. With
 `identity.keycloak.importRealm=false` the issuer realm exists only if an operator creates it, so rendering
 requires the acknowledgement `identity.keycloak.realmManagedByOperator=true`.
 
@@ -196,7 +302,15 @@ requires the acknowledgement `identity.keycloak.realmManagedByOperator=true`.
 The bundled PostgreSQL is a single-replica `Recreate` Deployment mounting one explicit
 `PersistentVolumeClaim` (`<release>-postgresql-data`, default 10Gi, `ReadWriteOnce`). The claim
 carries `helm.sh/resource-policy: keep`, so `helm uninstall` leaves it (and its data) in place and
-`helm upgrade` never recreates it. Reinstall with
+`helm upgrade` never recreates it. `postgresql.persistence.storageClass`, `accessModes` and a smaller `size`
+are immutable on the existing claim: Kubernetes rejects such a change, and `helm upgrade` then fails at the
+claim after earlier objects were already applied (roll back with `helm rollback`). Keep these three values as
+installed; to grow the volume, raise `size` only where the StorageClass allows expansion. The chart does not
+compare them with the live claim at render time: an empty `storageClass` is recorded on the claim as the
+cluster's default class name, so a textual comparison would refuse every unchanged upgrade. The pod sets
+`fsGroupChangePolicy: OnRootMismatch`, so volume ownership is fixed once and not by a recursive walk of the data
+directory on every start, and the pod's `checksum/init` annotation hashes the init scripts only, so a chart
+version bump or a `commonLabels` edit does not recreate the database pod. Reinstall with
 `--set postgresql.persistence.existingClaim=<release>-postgresql-data` to continue with the same
 data; the chart never adopts an arbitrary claim without that explicit selection. Choose a
 StorageClass whose reclaim policy is `Retain` for the PersistentVolume as well; the local
@@ -228,10 +342,15 @@ scripts/check-api-compatibility.py --backend-url https://<public-origin>   # exi
 
 This story proves the image contract and the browser → backend path locally and in CI; deploying
 the frontend image onto the Kind target remains a live qualification step. `routing.*` defines the path
-contract: `/api` and `/actuator` route to the backend, `/` to the frontend. The chart renders no rewrite, so the
-prefixes are pinned to what the artifacts serve: `routing.apiPathPrefix` is `/api` or a path below `/api/`,
-`routing.actuatorPathPrefix` is `/actuator` or below `/actuator/`, `routing.frontendPathPrefix` is `/`; anything
-else fails rendering (which also keeps the three prefixes disjoint). No exposure is rendered by
+contract: `/api` routes to the backend, `/` to the frontend. The chart renders no rewrite, so the
+prefixes are pinned to what the artifacts serve: `routing.apiPathPrefix` is exactly `/api` (the shell receives
+this value and calls `/api/compatibility`, the path the backend serves; a sub-path such as `/api/v1` would give
+404 on every call), `routing.actuatorPathPrefix` is `/actuator` or below `/actuator/`,
+`routing.frontendPathPrefix` is `/`; anything else fails rendering (which also keeps the three prefixes
+disjoint). The actuator is **not routed** by default: health, liveness and readiness serve the kubelet inside
+the cluster, are unauthenticated, and readiness makes an outbound call to the identity provider (cached for
+5 s). `routing.exposeActuator` (default `false`) adds the `routing.actuatorPathPrefix` rule to the Ingress or
+HTTPRoute on purpose. No exposure is rendered by
 default. Two mutually exclusive mechanisms exist; enabling both is refused as ambiguous:
 
 - **Gateway API (first-class):** `routing.gateway.enabled=true` renders one stable
@@ -239,7 +358,12 @@ default. Two mutually exclusive mechanisms exist; enabling both is refused as am
   `gateway.networking.k8s.io/v1/HTTPRoute` is served (otherwise rendering fails naming it; for `helm template`
   pass `--api-versions gateway.networking.k8s.io/v1/HTTPRoute`), attached to the operator-supplied parent Gateway(s)
   (`routing.gateway.parentRefs[].name`, optional `namespace`, `sectionName`, `port`; at least one entry
-  is required), with optional `hostnames`. Prerequisites the operator provides and qualifies: the
+  is required), and with `hostnames`. `routing.gateway.hostnames` is required: a route without hostnames
+  attaches to every hostname of the referenced listener(s), including other tenants' hostnames on a shared
+  Gateway; `routing.gateway.allowAllListenerHostnames` (default `false`) acknowledges that explicitly for a
+  Gateway dedicated to this installation. IP addresses are refused as hostnames (the Gateway API Hostname type
+  forbids them, although its pattern does not), and an omitted parent `namespace` counts as the release
+  namespace when repeated parents are compared. Prerequisites the operator provides and qualifies: the
   Gateway API CRDs (standard channel, `v1` HTTPRoute), a GatewayClass and controller, the Gateway with
   its listeners and any TLS. The chart validates the exposed inputs against the stable HTTPRoute `v1`
   contract (hostnames as lowercase DNS names with an optional leading `*.` wildcard, at most 16 and 253
@@ -249,14 +373,19 @@ default. Two mutually exclusive mechanisms exist; enabling both is refused as am
   coercing values. Rendered routes are validated offline in the deploy test suite against the pinned
   upstream schema (`deploy/tests/fixtures/gateway-api/`, Gateway API v1.4.0 standard CRD, origin and SHA256
   recorded) for the ordinary schema constraints; the CRD's CEL rules are enforced by the chart for the
-  inputs it exposes. This is manifest validation, not controller acceptance: listener permission, hostname
+  inputs it exposes, in the values schema and again in the templates (the suite runs the invalid inputs with
+  `--skip-schema-validation` so the template layer is exercised by itself). The chart's copy of the CEL rules
+  has not been compared with a real API server that has the CRDs installed: that server-side acceptance check
+  is not run anywhere yet (deferred, see [Qualification status](#qualification-status)). This is manifest
+  validation, not controller acceptance: listener permission, hostname
   intersection and route status are decided by the operator's Gateway, and no Gateway controller runs on
   the qualification target (the API group is absent there), so manifest support is distinct from
   controller/runtime qualification.
 - **Ingress (compatibility):** `routing.ingress.enabled=true` requires an explicit host: a lowercase DNS name
-  with an optional leading `*.`, no scheme, port or path. `routing.ingress.tls` entries are typed (`hosts`,
-  `secretName`) and, when present, one must cover the host (exactly, or by a one-label wildcard), so the
-  controller never silently serves its default certificate; annotations are string-valued. The Kubernetes
+  with an optional leading `*.`, labels of at most 63 characters, no scheme, port or path. `routing.ingress.tls`
+  entries are typed and need both `hosts` and `secretName`; when present, one must cover the host (exactly, or
+  by a one-label wildcard). An entry without `secretName`, or a TLS block that does not cover the host, would
+  make the controller serve its default certificate, so both fail rendering; annotations are string-valued. The Kubernetes
   Ingress API is frozen (GA, no removal planned) while the project recommends Gateway API; the retirement
   of the ingress-nginx controller is a separate fact and does not remove the API.
 
@@ -272,7 +401,7 @@ scripts/verify-install-package.sh
 
 # backend image from the built jar
 ./gradlew :backend:bootJar && docker build -t owl-mast/backend:0.1.0 -f backend/Dockerfile backend
-scripts/verify-backend-image.sh   # jar name vs version, docker build, UID 10001, qualified JDK, read-only root
+scripts/verify-backend-image.sh   # jar name vs version, docker build, UID 10001, qualified JDK, application start on a read-only root
 
 # install (secrets must exist first; see examples/)
 helm upgrade --install owl-mast deploy/helm/owl-mast -n owl-mast -f deploy/helm/owl-mast/examples/bundled-bundled.yaml --wait
@@ -306,7 +435,9 @@ drives the real kubectl against a loopback discovery server to prove these outco
 immediately before, by name. It then prepares the run-owned StorageClass, namespaces and quotas (6 CPU / 12Gi /
 40Gi combined), generates synthetic secrets into the cluster only, deploys synthetic external
 PostgreSQL/Keycloak fixtures (plaintext by design: every such install passes `identity.external.allowInsecureIssuer=true`
-and the matching `allowInsecureTransport=true` explicitly), installs all four combinations sequentially, proves pod replacement,
+and the matching `allowInsecureTransport=true` explicitly; each Secret is created together with its ownership label in
+one `create` call, and a replicated Secret is written with `create`, never `apply`, so an interrupted run leaves no
+unlabelled Secret and an existing Secret is never overwritten), installs all four combinations sequentially, proves pod replacement,
 uninstall retention, reinstall with the existing claim and upgrade, and exercises the failure paths
 (Secret missing a key, non-existent realm). The backend image identity is read from the one Running,
 non-terminating backend pod, and an empty `imageID` fails the check. AC3 checks fail the step even when the

@@ -210,6 +210,111 @@ class PostgresInitTests(unittest.TestCase):
         finally:
             pg.close()
 
+    def probe(self, pg, name, **env):
+        """The chart's rendered PostgreSQL probe command, executed in the disposable container as the kubelet would."""
+        container = chart_postgres_deployment()["spec"]["template"]["spec"]["containers"][0]
+        command = container[name]["exec"]["command"]
+        return subprocess.run(["docker", "exec", *[f"-e{k}={v}" for k, v in env.items()], pg.name, *command], capture_output=True, text=True)
+
+    def test_runtime_principals_cannot_connect_to_template1_or_postgres(self):
+        """109/4543776411: 'connect only to their own database' includes template1, which keeps PUBLIC CONNECT by default."""
+        pg = DisposablePostgres(render_scripts(), keycloak=True)
+        try:
+            pg.wait_ready()
+            for prefix in ("OWLMAST_APP", "OWLMAST_KEYCLOAK"):
+                for db in ("template1", "postgres"):
+                    denied = pg.sql(prefix, db, "select 1")
+                    self.assertNotEqual(denied.returncode, 0, (prefix, db)); self.assertIn(f'permission denied for database "{db}"', denied.stderr, (prefix, db))
+            # the provisioning identity still creates databases from the template
+            self.assertEqual(pg.sql("ADMIN", "postgres", "create database scratch").returncode, 0)
+        finally:
+            pg.close()
+
+    def test_first_enable_closes_template1_on_a_volume_initialised_before_the_revoke(self):
+        """A volume initialised by an older chart: the provisioning helper (the first-enable hook) applies the revoke too."""
+        pg = DisposablePostgres(render_scripts("identity.bundled=false", "identity.external.issuerUri=https://idp.example/realms/owl-mast"), keycloak=False)
+        try:
+            pg.wait_ready()
+            self.assertEqual(pg.sql("ADMIN", "postgres", "grant connect on database template1 to public; select 1").returncode, 0)  # the older state
+            self.assertEqual(pg.sql("OWLMAST_APP", "template1", "select 1").returncode, 0)
+            self.assertEqual(pg.provision_keycloak().returncode, 0)
+            for prefix in ("OWLMAST_APP", "OWLMAST_KEYCLOAK"):
+                self.assertIn('permission denied for database "template1"', pg.sql(prefix, "template1", "select 1").stderr, prefix)
+        finally:
+            pg.close()
+
+    def test_keycloak_collision_is_refused_before_the_application_role_and_database_exist(self):
+        """116 review body (init-configmap:104): the Keycloak owner/role refusals ran only after the application role,
+        database and extension had been created, leaving a half-initialised volume behind a 'nothing created' message."""
+        for overrides, message in (({"OWLMAST_KEYCLOAK_DATABASE": "postgres"}, "the existing database postgres is owned by owlmast_admin, not keycloak_app"),
+                                   ({"OWLMAST_KEYCLOAK_DATABASE": "owlmast_admin"}, "the existing database owlmast_admin is owned by owlmast_admin, not keycloak_app"),
+                                   ({"OWLMAST_KEYCLOAK_DATABASE": "owlmast"}, "the Keycloak database name equals the application database name")):
+            pg = DisposablePostgres(render_scripts(), keycloak=True, env_overrides=overrides)
+            try:
+                code, logs = pg.wait_exit()
+                self.assertNotEqual(code, "0", overrides)
+                self.assertIn(message, logs, overrides)
+                ours = logs.split("running /docker-entrypoint-initdb.d/10-owl-mast-databases.sh", 1)[1]
+                for statement in ("CREATE ROLE", "CREATE DATABASE", "CREATE EXTENSION", "REVOKE", "GRANT"):
+                    self.assertNotIn(statement, ours, (overrides, statement))
+            finally:
+                pg.close()
+
+    def test_probes_during_socket_only_first_initialisation(self):
+        """109/4543776343, at runtime: an extra init script holds the entrypoint in its initialisation phase, when the
+        temporary server listens on the Unix socket only. The rendered startup and liveness probes pass there (the
+        former TCP probes fail, which is what let the kubelet kill a slow initialisation); readiness stays false."""
+        scripts = dict(render_scripts("identity.bundled=false", "identity.external.issuerUri=https://idp.example/realms/owl-mast"))
+        scripts["05-hold.sh"] = "#!/bin/bash\necho owl-mast-test: holding initialisation\nwhile [ ! -e /tmp/release ]; do sleep 0.2; done\n"
+        layout = {"/docker-entrypoint-initdb.d": ["05-hold.sh", "10-owl-mast-databases.sh"], "/owl-mast": ["provision-keycloak.sh"]}
+        pg = DisposablePostgres(scripts, keycloak=False, layout=layout)
+        try:
+            deadline = time.time() + 120
+            while "holding initialisation" not in pg.logs():
+                self.assertLess(time.time(), deadline, pg.logs()[-2000:]); time.sleep(0.5)
+            self.assertEqual(self.probe(pg, "startupProbe").returncode, 0)
+            self.assertEqual(self.probe(pg, "livenessProbe").returncode, 0)
+            tcp = subprocess.run(["docker", "exec", pg.name, "sh", "-c", 'pg_isready -U "$POSTGRES_USER" -d postgres -h 127.0.0.1'], capture_output=True, text=True)
+            self.assertNotEqual(tcp.returncode, 0, "the initialisation server must not listen on TCP; the old probe would have passed")
+            self.assertNotEqual(self.probe(pg, "readinessProbe").returncode, 0)  # not Ready while initialising
+            subprocess.run(["docker", "exec", pg.name, "touch", "/tmp/release"], check=True)
+            pg.wait_ready()
+            for name in ("startupProbe", "livenessProbe", "readinessProbe"):
+                self.assertEqual(self.probe(pg, name).returncode, 0, name)
+        finally:
+            pg.close()
+
+    def test_preflight_creates_nothing_and_the_full_run_still_provisions(self):
+        pg = DisposablePostgres(render_scripts("identity.bundled=false", "identity.external.issuerUri=https://idp.example/realms/owl-mast"), keycloak=False)
+        try:
+            pg.wait_ready()
+            env = [f"-e{k}={v}" for k, v in {**pg.keycloak_env, "POSTGRES_USER": pg.env["POSTGRES_USER"], "PGPASSWORD": pg.env["POSTGRES_PASSWORD"]}.items()]
+            r = subprocess.run(["docker", "exec", *env, pg.name, "bash", "/owl-mast/provision-keycloak.sh", "--preflight"], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr); self.assertIn("preflight passed; nothing created", r.stdout)
+            self.assertEqual(pg.sql("ADMIN", "postgres", "select (select count(*) from pg_roles where rolname='keycloak_app') + (select count(*) from pg_database where datname='keycloak')").stdout.strip(), "0")
+            self.assertEqual(pg.provision_keycloak().returncode, 0)
+            self.assertEqual(pg.sql("OWLMAST_KEYCLOAK", "keycloak", "select current_database()").stdout.strip(), "keycloak")
+        finally:
+            pg.close()
+
+    def test_rendered_probes_run_in_the_image_and_readiness_covers_keycloaks_database(self):
+        """109/4543776343: the probe commands as rendered. Startup and liveness answer on the Unix socket (the only
+        listener during first initialisation); readiness needs TCP and every provisioned database."""
+        pg = DisposablePostgres(render_scripts("identity.bundled=false", "identity.external.issuerUri=https://idp.example/realms/owl-mast"), keycloak=False)
+        try:
+            pg.wait_ready()
+            for name in ("startupProbe", "livenessProbe", "readinessProbe"):
+                r = self.probe(pg, name)
+                self.assertEqual(r.returncode, 0, (name, r.stdout, r.stderr))
+            # the identity bundle enabled on this volume without provisioning: PostgreSQL is not Ready until Keycloak's database exists
+            missing = self.probe(pg, "readinessProbe", OWLMAST_KEYCLOAK_DATABASE="keycloak")
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertEqual(self.probe(pg, "livenessProbe", OWLMAST_KEYCLOAK_DATABASE="keycloak").returncode, 0)  # alive, only not ready
+            self.assertEqual(pg.provision_keycloak().returncode, 0)
+            self.assertEqual(self.probe(pg, "readinessProbe", OWLMAST_KEYCLOAK_DATABASE="keycloak").returncode, 0)
+        finally:
+            pg.close()
+
     def test_external_fixture_manifest_layout_initialises_a_fresh_volume_with_both_principals(self):
         """N1: the fixture Deployment's actual mounts of the ConfigMap the qualification script renders for it,
         with the fixture's four credentials, on a fresh volume: init completes on the first start and the

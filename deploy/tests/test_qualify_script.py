@@ -150,9 +150,12 @@ if [[ "$args" == *" exec "* ]]; then
   db="$(sed -E "s/.* -d '([^']+)'.*/\1/" <<<"$args")"
   if [ "${STUB_EXEC_MODE:-}" = ac3 ]; then
     # Every AC3 observation of check_shared_postgres succeeds; only the CONNECT attempts follow STUB_AC3_CONNECT
-    # (denied: the intended denial for the other database; allowed: the principal connects everywhere).
+    # (denied: the intended denial for the other database; allowed: both principals connect everywhere;
+    # keycloak-allowed / app-allowed: only that principal crosses over, the other one is still denied).
     if [[ "$args" == *"select current_database()"* ]]; then
-      if [ "${STUB_AC3_CONNECT:-denied}" = denied ] && { { [[ "$args" == *OWLMAST_APP_PASSWORD* ]] && [ "$db" = keycloak ]; } || { [[ "$args" == *OWLMAST_KEYCLOAK_PASSWORD* ]] && [ "$db" = owlmast ]; }; }; then
+      mode="${STUB_AC3_CONNECT:-denied}"; app_denied=0; kc_denied=0
+      case "$mode" in denied) app_denied=1; kc_denied=1 ;; keycloak-allowed) app_denied=1 ;; app-allowed) kc_denied=1 ;; esac
+      if { [ "$app_denied" = 1 ] && [[ "$args" == *OWLMAST_APP_PASSWORD* ]] && [ "$db" = keycloak ]; } || { [ "$kc_denied" = 1 ] && [[ "$args" == *OWLMAST_KEYCLOAK_PASSWORD* ]] && [ "$db" = owlmast ]; }; then
         printf 'FATAL:  permission denied for database "%s"\nDETAIL:  User does not have CONNECT privilege.\ncommand terminated with exit code 2\n' "$db"; exit 2
       fi
       printf '%s\n' "$db"; exit 0
@@ -168,12 +171,24 @@ if [[ "$args" == *" exec "* ]]; then
     denied-control-broken) if [ "$db" = "keycloak" ]; then printf 'FATAL:  permission denied for database "keycloak"\nDETAIL:  User does not have CONNECT privilege.\n'; exit 2; fi; echo "Unable to connect to the server"; exit 1 ;;
   esac
 fi
-if [[ "$args" == *" create secret generic "* ]]; then  # the stub world learns what the script created, labelled by the following label call
-  name="$(sed -E 's/.* create secret generic ([^ ]+).*/\1/' <<<"$args")"; printf 'secret %s %s owned\n' "$ns" "$name" >> "$STUB_WORLD"; echo "secret/$name created"; exit 0
+if [[ "$args" == *" create secret generic "* ]]; then
+  name="$(sed -E 's/.* create secret generic ([^ ]+).*/\1/' <<<"$args")"
+  if [[ "$args" == *"--dry-run=client"* ]]; then  # built client-side only: nothing reaches the stub world
+    printf '{"apiVersion":"v1","kind":"Secret","type":"Opaque","metadata":{"name":"%s"},"data":{"username":"dXNlcg==","password":"%s"}}\n' "$name" "$STUB_SENTINEL"; exit 0
+  fi
+  # a bare create leaves an object WITHOUT the ownership label (what a later run refuses as foreign)
+  printf 'secret %s %s foreign:unlabelled\n' "$ns" "$name" >> "$STUB_WORLD"; echo "secret/$name created"; exit 0
 fi
-if [[ "$args" == *" apply -f -"* ]]; then  # a replicated Secret arrives on stdin; it is consumed, never stored
-  dst="$(python3 -c 'import json,sys; o=json.load(sys.stdin); print(o["metadata"]["namespace"], o["metadata"]["name"])' 2>/dev/null || echo "- -")"
-  printf 'secret %s owned\n' "$dst" >> "$STUB_WORLD"; echo "stub: applied"; exit 0
+if [[ "$args" == *" create -f -"* ]]; then  # a Secret arrives on stdin; the world records it with the label it carries, never its data
+  dst="$(STUB_NS="$ns" python3 -c 'import json,os,sys
+o=json.load(sys.stdin); m=o["metadata"]; owner=(m.get("labels") or {}).get("owlmast.aisquad.com/run")
+ns=m.get("namespace") or os.environ["STUB_NS"]
+state="owned" if owner==os.environ["STUB_RUN_ID"] else ("foreign:"+owner if owner else "foreign:unlabelled")
+print("secret", ns, m["name"], state)' 2>/dev/null || echo "secret - - foreign:unparsed")"
+  if awk -v l="$dst" 'BEGIN{split(l,a," ")} $1=="secret" && $2==a[2] && $3==a[3] {found=1} END{exit !found}' "$STUB_WORLD"; then
+    echo "Error from server (AlreadyExists): error when creating \"STDIN\": secrets already exists" >&2; exit 1  # create never overwrites
+  fi
+  printf '%s\n' "$dst" >> "$STUB_WORLD"; echo "stub: created"; exit 0
 fi
 if [[ "$args" == *" apply "* ]]; then [[ "$args" == *" -f -"* ]] && cat >/dev/null; echo "stub: applied"; exit 0; fi
 echo "stub ok"
@@ -257,12 +272,16 @@ class PreflightTests(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             calls = h.calls.read_text().splitlines()
             created = [c for c in calls if " create secret generic " in c]
-            labelled = [c for c in calls if " label secret " in c]
             self.assertEqual(len(created), 6)  # eight synthetic Secrets minus the two that already exist and are owned
-            self.assertEqual(len(labelled), 6)
-            self.assertTrue(all("--overwrite" not in c for c in labelled))
-            self.assertTrue(all(any(name in c for c in created) for name in [c.split(" label secret ")[1].split()[0] for c in labelled]), "only newly created Secrets are labelled")
-            self.assertEqual(sum(" apply -f -" in c for c in calls), 2)  # the two replications, piped
+            # 109/4543776459: each Secret is built client-side and created WITH its label in one call; no separate label call exists
+            self.assertTrue(all("--dry-run=client" in c and "-o json" in c for c in created), created)
+            self.assertEqual([c for c in calls if " label " in c and " secret" in c], [])
+            # 109/4543776464: six labelled creations plus the two replications, all `create` (never `apply`, which overwrites)
+            self.assertEqual(sum(" create -f -" in c for c in calls), 8)
+            self.assertEqual(sum(" apply -f -" in c for c in calls), 0)  # no Secret is ever written with apply
+            world = h.world.read_text().splitlines()
+            self.assertEqual([l for l in world if l.startswith("secret ") and not l.endswith(" owned")], [], "every created Secret carries this run's label")
+            self.assertEqual(len([l for l in world if l.startswith("secret ")]), 2 + 8)
             self.assertIn("owned by this run (kept)", r.stdout)
             self.assertNotIn(SENTINEL, r.stdout + r.stderr + h.evidence_text())
             inventory = (h.evidence / "runtime" / "secrets-inventory.txt").read_text()
@@ -504,7 +523,7 @@ class SecretValueSentinelTests(unittest.TestCase):
     def test_failure_during_replication_persists_no_value(self):
         h = Harness(BASE_WORLD)
         try:
-            r = h.run("prepare", STUB_FAIL_ON=" apply -f -")
+            r = h.run("prepare", STUB_FAIL_ON=" create -f -")
             self.assertNotEqual(r.returncode, 0)
             self.assertNotIn(SENTINEL, r.stdout + r.stderr + h.evidence_text())
         finally:
@@ -566,6 +585,75 @@ class EvidenceEvaluatorTests(unittest.TestCase):
 
 class ReviewFindingsTests(unittest.TestCase):
     """PR #109 post-merge review (5827094734) findings on the qualification script."""
+
+    def test_second_connect_denial_failure_is_not_swallowed_either(self):
+        """116/4543777563: only the keycloak principal can reach the other database, so the FIRST check passes and the
+        second one (keycloak -> owlmast) is the first failure; its `|| return 1` must stop the function."""
+        h = Harness(BASE_WORLD)
+        try:
+            r = h.source("check_shared_postgres owl-mast-test owl-mast-postgresql && echo PASSED || echo CAUGHT", STUB_EXEC_MODE="ac3", STUB_AC3_CONNECT="keycloak-allowed")
+            self.assertEqual(r.stdout.strip().splitlines()[-1], "CAUGHT", r.stdout + r.stderr)
+            self.assertIn("ok   ac3-owl-mast-test-app-cannot-connect-keycloak-db", r.stdout)  # the first check passed
+            self.assertIn("FAIL ac3-owl-mast-test-keycloak-cannot-connect-owlmast-db: the principal connected to owlmast", r.stdout)
+            self.assertNotIn("ac3-owl-mast-test-extensions", r.stdout)  # nothing after the failed check ran
+            self.assertNotIn("PASSED", r.stdout)
+        finally:
+            h.close()
+        # the mirror image: only the application principal crosses over, so the first check is the failure
+        h = Harness(BASE_WORLD)
+        try:
+            r = h.source("check_shared_postgres owl-mast-test owl-mast-postgresql && echo PASSED || echo CAUGHT", STUB_EXEC_MODE="ac3", STUB_AC3_CONNECT="app-allowed")
+            self.assertEqual(r.stdout.strip().splitlines()[-1], "CAUGHT", r.stdout + r.stderr)
+            self.assertIn("FAIL ac3-owl-mast-test-app-cannot-connect-keycloak-db", r.stdout)
+            self.assertNotIn("keycloak-cannot-connect-owlmast-db", r.stdout)
+        finally:
+            h.close()
+
+    def test_secret_creation_is_atomic_and_never_leaves_an_unlabelled_object(self):
+        """109/4543776459: a failed or interrupted creation leaves nothing behind, so a rerun is not refused as foreign."""
+        for step, name in (("ensure_secret owl-mast-test owl-mast-db owlmast_app", "owl-mast-db"), ("ensure_broken_secret", "owl-mast-db-broken")):
+            h = Harness(BASE_WORLD)
+            try:
+                r = h.source(f"{step}; echo CONTINUED", STUB_FAIL_ON=" create -f -")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr); self.assertNotIn("CONTINUED", r.stdout)
+                self.assertIn(f"REFUSED: secret owl-mast-test/{name} could not be created with its ownership label", r.stdout)
+                self.assertNotIn(f"secret owl-mast-test {name}", h.world.read_text())  # nothing exists, labelled or not
+                self.assertNotIn(SENTINEL, r.stdout + r.stderr + h.evidence_text())
+                rerun = h.source(f"{step}; echo CONTINUED")  # the next run starts clean and owns what it creates
+                self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr); self.assertIn("CONTINUED", rerun.stdout)
+                self.assertIn(f"secret owl-mast-test {name} owned", h.world.read_text())
+                self.assertEqual([c for c in h.calls.read_text().splitlines() if " label " in c], [])
+            finally:
+                h.close()
+
+    def test_replication_never_overwrites_and_reports_its_failure(self):
+        """109/4543776464: the destination appears between the absence check and the write, or the write fails."""
+        source = "secret owl-mast-test owl-mast-db owned\n"
+        h = Harness(BASE_WORLD + source)
+        try:
+            r = h.source("replicate_secret owl-mast-test owl-mast-db owl-mast-test-external owl-mast-db; echo CONTINUED", STUB_FAIL_ON=" create -f -")
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr); self.assertNotIn("CONTINUED", r.stdout)
+            self.assertIn("REFUSED: secret owl-mast-test-external/owl-mast-db could not be replicated from owl-mast-test/owl-mast-db", r.stdout)
+            self.assertIn("stub: injected failure", r.stdout)  # the client's error is reported, not discarded
+            self.assertNotIn("replicated from", r.stdout.replace("could not be replicated from", ""))
+            calls = h.calls.read_text()
+            self.assertNotIn(" apply ", calls)
+            self.assertNotIn(SENTINEL, r.stdout + r.stderr + h.evidence_text())
+        finally:
+            h.close()
+        # the racing object: absent at the check (the stub answers the check from a world that does not list it yet),
+        # present at the write. `create` fails with AlreadyExists and the foreign object is untouched.
+        h = Harness(BASE_WORLD + source)
+        try:
+            race = ("resource_state() { if [ \"$3\" = owl-mast-db ] && [ \"$1\" = owl-mast-test-external ]; then "
+                    "printf 'secret owl-mast-test-external owl-mast-db foreign:someone-else\\n' >> \"$STUB_WORLD\"; echo absent; else echo owned; fi; }")
+            r = h.source(f"{race}; replicate_secret owl-mast-test owl-mast-db owl-mast-test-external owl-mast-db; echo CONTINUED")
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("could not be replicated", r.stdout); self.assertIn("AlreadyExists", r.stdout)
+            self.assertIn("secret owl-mast-test-external owl-mast-db foreign:someone-else", h.world.read_text())
+            self.assertNotIn("secret owl-mast-test-external owl-mast-db owned", h.world.read_text())
+        finally:
+            h.close()
 
     def test_connect_denial_failure_is_not_swallowed_when_called_under_or(self):
         """4513680539: first-enable calls check_shared_postgres under `||`, which disables set -e in its body."""

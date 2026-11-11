@@ -22,6 +22,11 @@ spec:
         {{- end }}
       annotations:
         owlmast.aisquad.com/database-mode: {{ ternary "bundled" "external" .Values.database.bundled | quote }}
+        {{- if .Values.identity.keycloak.importRealm }}
+        # The realm file only (not the ConfigMap's labels): a changed identity.realm restarts Keycloak, which
+        # imports the new realm at start; a chart version bump alone does not.
+        checksum/realm: {{ (include (print $.Template.BasePath "/keycloak-realm-configmap.yaml") . | fromYaml).data | toJson | sha256sum }}
+        {{- end }}
     spec:
       securityContext:
         runAsNonRoot: true
@@ -88,6 +93,8 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.identity.keycloak.database.existingSecret }}
                   key: password
+            {{- if .Values.identity.keycloak.bootstrapAdmin.enabled }}
+            # Temporary: switch identity.keycloak.bootstrapAdmin.enabled off once a permanent admin exists.
             - name: KC_BOOTSTRAP_ADMIN_USERNAME
               valueFrom:
                 secretKeyRef:
@@ -98,6 +105,7 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.identity.keycloak.bootstrapExistingSecret }}
                   key: password
+            {{- end }}
             # Cluster-local issuer; public origins and TLS termination are an OM-02.01 gate.
             - name: KC_HOSTNAME
               value: {{ printf "http://%s:%v" (include "owl-mast.keycloak.fullname" .) .Values.identity.keycloak.service.port | quote }}

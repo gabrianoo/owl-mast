@@ -14,6 +14,27 @@ manifest digest once the image is published.
 WARNING: the frontend image {{ include "owl-mast.image" .Values.frontend.image }} is referenced by a mutable tag;
 set frontend.image.digest for an immutable install.
 {{- end }}
+{{- if .Values.database.bundled }}
+
+NOTE: the bundled PostgreSQL has no TLS: the application and Keycloak connect with sslmode=disable, so
+credentials and data cross the pod network unencrypted. Isolation relies on the NetworkPolicy
+({{ ternary "rendered" "DISABLED by networkPolicy.enabled=false" .Values.networkPolicy.enabled }}) and on the cluster network; use an external PostgreSQL with sslMode=require where the
+pod network is not trusted.
+{{- end }}
+{{- if and .Values.identity.bundled (not .Values.database.bundled) (eq (lower .Values.database.external.host | trimSuffix ".") (lower .Values.identity.keycloak.database.external.host | trimSuffix ".")) (eq (int .Values.database.external.port) (int .Values.identity.keycloak.database.external.port)) }}
+
+WARNING: Keycloak and the application share the external PostgreSQL {{ .Values.database.external.host }}:{{ .Values.database.external.port }}.
+The chart checks that their Secrets and database names differ, but it cannot read the usernames inside
+the Secrets and runs no script on an external server: make sure {{ .Values.database.existingSecret }} and
+{{ .Values.identity.keycloak.database.existingSecret }} hold different, unprivileged principals, each able to connect only to
+its own database (AC3; the bundled init script is the reference).
+{{- end }}
+{{- if and .Values.identity.bundled .Values.identity.keycloak.bootstrapAdmin.enabled }}
+
+NOTE: the temporary Keycloak bootstrap admin (Secret {{ .Values.identity.keycloak.bootstrapExistingSecret }}) is injected into the Keycloak
+pod. Create a permanent admin, delete the temporary one, then upgrade with
+identity.keycloak.bootstrapAdmin.enabled=false (docs/installation.md).
+{{- end }}
 {{- if and .Values.database.bundled (not .Values.postgresql.persistence.existingClaim) }}
 
 The PersistentVolumeClaim {{ include "owl-mast.postgresql.dataClaim" . }} is retained when this
