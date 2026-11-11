@@ -65,7 +65,72 @@ context: []
 
 ## Implementation Notes
 
-See the disposition table and verification record appended at the end of the cycle.
+- Scope note. The owner delegated the cycle in full, so the planning checkpoint was not held; this session is itself the implementation sub-agent, so no further sub-agent was started.
+- `main` (b9a1837) was merged into the branch as `6d77f7d` before the backend change: `main` had rewritten `IdentityDiscoveryHealthIndicator` (Lombok constructor, `@NonNull`), the class this cycle must change for the exact issuer comparison and the cache, so a conflict was certain. The merge itself was clean.
+- Fix commit: `c7578bb74145b63d213db349be632f33f642515e`.
+
+Disposition (comment id → outcome). PR #116 review 5865989182, 18 threads and one body finding:
+
+| Comment | Outcome | Where |
+|---|---|---|
+| 4543777441 javaToolOptions | fixed | schema allowlist and `owl-mast.validate` |
+| 4543777452 apiPathPrefix | fixed | exactly `/api` |
+| 4543777463 TLS secretName | fixed | schema `required`, `validateIngress` |
+| 4543777472 verify-ca/verify-full | fixed, fail closed | `validateSslMode`; CA mount stays deferred |
+| 4543777479 read-only proof | fixed | `verify-backend-image.sh` starts the application |
+| 4543777484 hook delete policy | fixed | `before-hook-creation,hook-succeeded` |
+| 4543777495 chart 0.2.0 unqualified | deferred (owner) | docs mark it pending; rerun needs an authorized run |
+| 4543777500 shared external principal | fixed by documentation | AC3 section, NOTES warning |
+| 4543777509 issuer port and path | fixed | chart regex, `IdentityProperties` port range |
+| 4543777515 suffixedName collision | fixed | hash on truncation |
+| 4543777526 https in the backend | fixed | `owlmast.identity.allow-insecure-issuer` |
+| 4543777533 proxyHeaders | fixed | requires policy and proxy peer |
+| 4543777539 verification record | fixed | correction in the gh-109 spec; record below |
+| 4543777547 host label length | fixed | 63-character labels |
+| 4543777557 existingClaim reinstall | fixed | message, docs, readiness covers Keycloak's database |
+| 4543777563 second CONNECT denial | fixed | stub mode `keycloak-allowed` |
+| 4543777568 gateway annotations | fixed | positive and negative test |
+| 4543777575 NetworkPolicy external-bundled | fixed | test |
+| body: init refusals order | fixed | `provision-keycloak.sh --preflight` |
+
+PR #109 review 5865988027, 27 threads:
+
+| Comment | Outcome | Where |
+|---|---|---|
+| 4543776272 empty hostnames | fixed | `allowAllListenerHostnames` |
+| 4543776281 actuator routed | fixed | `routing.exposeActuator` |
+| 4543776285 uncached readiness | fixed | 5 s cache |
+| 4543776297 probe timeout | fixed | `timeoutSeconds: 5` |
+| 4543776309 issuer comparison | fixed | exact equality |
+| 4543776321 bundled PostgreSQL plaintext | fixed by documentation | NOTES, docs |
+| 4543776333 checksum/init | fixed | data only |
+| 4543776343 PostgreSQL probes | fixed | socket probes, readiness covers Keycloak |
+| 4543776353 bootstrap admin | fixed | `bootstrapAdmin.enabled`; cluster check in the Kind rerun |
+| 4543776357 duplicate parent | fixed | release namespace default |
+| 4543776362 IP hostnames | fixed | schema and template |
+| 4543776368 CEL against a real API server | deferred (owner) | needs a cluster with the CRDs |
+| 4543776376 hook delete policy | fixed | as 4543777484 |
+| 4543776391 backend strategy | fixed | `Recreate` |
+| 4543776402 fsGroupChangePolicy | fixed | PostgreSQL pod; the Job has no fsGroup volume |
+| 4543776411 template1 | fixed | revoke in both scripts |
+| 4543776419 empty image tag | fixed | render refusal |
+| 4543776426 service ports | fixed | schema |
+| 4543776430 database name length | fixed | schema |
+| 4543776435 changed name or credentials | fixed by documentation | re-provisioning procedure |
+| 4543776443 realm checksum | fixed | `checksum/realm` |
+| 4543776449 immutable PVC fields | documented; proposed guard rejected | false refusal with an empty `storageClass` |
+| 4543776459 create-then-label | fixed | `create_labelled_secret` |
+| 4543776464 replication apply | fixed | `create`, error reported |
+| 4543776471 Keycloak external values | fixed | test |
+| 4543776479 backendRef port | fixed | test |
+| 4543776485 template-layer checks | fixed | `--skip-schema-validation` tests, port 0 |
+
+Verification record for `c7578bb`, local, 2026-11-11:
+- `scripts/verify-install-package.sh` with the qualified Helm 4.3.1 and kubectl 1.36.1: 139 tests OK, none skipped (101 at `24dc0d0`). Per module: `test_chart_render` 60, `test_gateway_schema` 7, `test_discovery_client` 7, `test_postgresql_init` 19 (Docker), `test_keycloak_readonly` 1 (Docker), `test_qualify_script` 33, `test_verify_install_package` 6, `test_api_compatibility` 6.
+- `./gradlew build`: BUILD SUCCESSFUL; 54 unit tests and 27 integration tests, no failures, no skips (JUnit XML).
+- `scripts/verify-backend-image.sh`: all checks ok, including the application start on the read-only root.
+- CI for `c7578bb`: https://github.com/gabrianoo/owl-mast/actions/runs/43113497280 (six jobs; `package-checks` runs the Docker-backed suites).
+- Not run: the Kind qualification (cluster `owl-mast-om0102` untouched), and any server-side Gateway API check. Both are deferred.
 
 ## Spec Change Log
 
