@@ -2,7 +2,7 @@
 title: 'PR #114 round 3: resolve review 5851770529 and the two reopened threads'
 type: 'bugfix'
 created: '2026-11-11'
-status: 'in-progress'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '028b60cb8278f0b521261aa67176301e7202fcf0'
@@ -67,7 +67,7 @@ All work happens in the PR #114 worktree `/tmp/claude-1000/-mnt-c-Users-gabriano
 - [x] `activation.py` -- evidence shape and numeric-id comparison -- threads kp, kv
 - [x] `automation/tests/__init__.py`, `test_activation.py` -- ledger override robustness and cross-copy test -- thread jE
 - [x] `spec-gh-108-resolve-review-findings.md` -- supersession markers and the owner decision -- r4531696403
-- [ ] GitHub -- reply to and resolve all 21 threads; refresh the PR body
+- [x] GitHub -- reply to and resolve all 21 threads; refresh the PR body
 
 **Acceptance Criteria:**
 - Given the full suite, when run, then it passes, and reverting any fix listed above fails at least one named test.
@@ -94,11 +94,44 @@ All work happens in the PR #114 worktree `/tmp/claude-1000/-mnt-c-Users-gabriano
   - **kp, kv** `pullrequestreview` only under `pull/`; citations compared by `int` id → `EvidenceIdTests`.
   - **jE** `automation/tests/__init__.py` captures the production function once (a second load of the package cannot record the override as production) and `install_test_ledger()` is idempotent and called by every `LiveHarness`; cross-directory copy on one shared root → `TestLedgerOverrideTests`.
   - **r4531696403** `spec-gh-108-resolve-review-findings.md`: superseded markers on the ledger and clear notes and on the two ledger triage rows, the owner decision on the two limits recorded, `status: done` kept.
+- Review pass 1 patches landed in `4530c78` (579 tests OK); nothing deferred. GitHub replies and resolution follow the push.
 - Not done here, by the Code Map's instruction (commit locally, do not push or touch GitHub): the GitHub replies, thread resolution and the PR body refresh. The task stays open for the parent.
 
 ## Spec Change Log
 
 ## Review Triage Log
+
+Pass 1 (blind B1–B16, edge E1–E8, verification-gap V1–V6) on 87c5c69:
+
+| # | Finding | Verdict | Evidence / route |
+|---|---------|---------|------------------|
+| B1/E3/V-o1 | `clear-clock-regression` help is not an f-string | low | `cli.py:126` literal `{CLOCK_REGRESSION_TOLERANCE_MINUTES}`; patch |
+| B2/E2 | `--expect advance` exits 0 for a run that does not exist | medium | `_check_activation`: `current` is the creation answer when no run exists; patch (advance needs `run_exists`) |
+| B3/E6 | linked task worktrees are not refused | low | rule is a hygiene convention (decision A); the loop can write anywhere; fix adds `git worktree list` parsing; rejected |
+| B4 | coordinator placement check skipped without `path` | low | only `load_clearance` builds clearances, and it sets `path`; fix is one condition; patch (refuse a clearance without `path`) |
+| B5/E7 | `cleared` line lost after `save_run`: reason never journaled, exit 4 | medium | `coordinator.py` clear: the started line carries no reason/clearance; patch (full detail in `clear-started`) |
+| B6 | `_clear_spent` reads the journal outside the resume view | low | perf only, under a clock stop; fix adds caching plumbing; rejected |
+| B7 | `_journal_view` misses lines written through `store.journal` | false | only `_journal_once` writes the three deduplicated event names; the view is used for those names only |
+| B8 | check-activation high-water check fails open on a malformed mark | low | advisory report; direct correction; patch (report a problem) |
+| B9 | docs clock bullet contradicts the clearable-stop and convention text | low | `docs/unattended-execution.md:121`; patch |
+| B10 | unknown ledger `state` gets the "already created" message; `LEDGER_STATES` unused | low | `use_refusal` fallthrough; direct correction; patch |
+| B11 | `install_test_ledger` misses a reloaded module | low | no test reloads `activation`; adds guards; rejected |
+| B12 | `load_clearance` checks `realpath` but reads the original path | low | TOCTOU on a symlink; direct correction; patch (read `real`) |
+| B13 | `--reason` silently ignored without `--for-cleanup` | low | `bind_receipt`; direct correction; patch |
+| B14 | leading zeros accepted; cross-kind id collapse | false | owner design note: equal numeric ids are one citation whatever the kind; zeros compare as int |
+| B15 | spec carries session paths, elided verification query | — | fix edits this build's spec; rejected by rule |
+| B16 | test needs git, reads argparse internals | low | git is a hard dependency of the tool; rejected |
+| B17 | ordinary wall-clock check uses the raw clock | low | pre-existing, bounded by the 5-minute tolerance; not caused by this change; rejected |
+| E1 | malformed `--run-id` escapes check-activation's report | medium | `Store()` moved outside the `try` (`validate_run_id` in `Store.__init__`); patch |
+| E4/V-o2 | `_work_tree` failure skips the work-tree refusal | low | failing closed would refuse every clear outside a git checkout; rejected |
+| E5 | case-insensitive `/mnt/c` paths bypass containment | low | convention hygiene; fix adds normcase logic; rejected |
+| E8 | exception between ledger write and the `save_run` try | low | `RunState`/`asdict` construction; direct correction; patch (widen the try) |
+| V1 | wall clock on the high-water mark untested for resume/bind | medium | pre-verified; patch (test) |
+| V2 | revoked authorization under a clearable stop untested | medium | pre-verified; patch (test) |
+| V3 | `run.json`-exists guard in `abort_activation_use` untested | high | pre-verified; guards fix-first 1; patch (test) |
+| V4 | unconfirmed journaling on reopen / once per error untested | medium | pre-verified; patch (test) |
+| V5 | tool work-tree refusal untested | low | pre-verified; patch (test) |
+| V6 | `BaseException` abort path untested | low | pre-verified; trivial test; patch instead of defer |
 
 ## Design Notes
 
