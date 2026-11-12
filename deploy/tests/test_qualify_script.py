@@ -224,6 +224,14 @@ if [ "${STUB_RUNTIME:-}" = 1 ]; then
     if [ ! -e "$STUB_WORLD.retired" ]; then printf 'KC_BOOTSTRAP_ADMIN_USERNAME=%s-keycloak-bootstrap\nKC_BOOTSTRAP_ADMIN_PASSWORD=%s-keycloak-bootstrap\n' "$rel" "$rel"; fi
     exit 0
   fi
+  # The release's Deployments and running pods as JSON (retire_bootstrap_admin looks for the bootstrap Secret's name in every
+  # field that can carry one). STUB_RETIRE=volume: the environment is clean but a pod still mounts the Secret as a volume.
+  if [[ "$args" == *" get deploy,pods "* && "$args" == *"-o json"* ]]; then
+    rel="$(sed -E 's/.*app\.kubernetes\.io\/instance=([^ ,]+).*/\1/' <<<"$args")"
+    volume=""; [ "${STUB_RETIRE:-}" = volume ] && volume="{\"name\": \"bootstrap\", \"secret\": {\"secretName\": \"$rel-keycloak-bootstrap\"}}"
+    printf '{"apiVersion": "v1", "kind": "List", "items": [{"kind": "Deployment", "metadata": {"name": "%s-keycloak"}, "spec": {"template": {"spec": {"containers": [{"name": "keycloak", "env": [{"name": "KC_DB_PASSWORD", "valueFrom": {"secretKeyRef": {"name": "%s-keycloak-db", "key": "password"}}}]}], "volumes": [%s]}}}}]}\n' "$rel" "$rel" "$volume"
+    exit 0
+  fi
   if [[ "$args" == *" get pods "* && "$args" == *"READY:.status.containerStatuses[0].ready"* ]]; then printf 'NAME READY RESTARTS\npostgresql-abc12-xyz   true   0\n'; exit 0; fi
   if [[ "$args" == *" logs deploy/"* ]]; then printf 'identity bundle disabled; no Keycloak database or principal provisioned\nPostgreSQL init process complete; ready for start up.\n'; exit 0; fi
   if [[ "$args" == *" get pvc "* && "$args" == *"{.metadata.uid}"* ]]; then
@@ -262,6 +270,7 @@ if [[ "$args" == *" exec "* ]]; then
     printf 'owlmast_app|f|f|f\nkeycloak_app|f|f|f\nvchord=1.1.1\nvector=0.8.2\nt\n%b' "$STUB_FLYWAY_HISTORY"
     printf 'migrated-by|%s\n' "${STUB_MIGRATED_BY:-owlmast_app}"
     for table in audit.event audit.publication_intent jobs.work_item; do printf 'table-owner|%s|%s\n' "$table" "${STUB_TABLE_OWNER:-owlmast_app}"; done
+    [ -n "${STUB_EXTRA_TABLE:-}" ] && printf '%s\n' "$STUB_EXTRA_TABLE"
     printf '%s\n' "${STUB_DURABLE_WORK:-durable-work|SUCCEEDED|1|true|owl-mast-backend/owl-mast-backend-abc12-xyz/8d6c1f0e|-}"
     printf 'Index Scan using vectors_vchordrq on vectors\nCREATE INDEX vectors_vchordrq ON qualification.vectors USING vchordrq (embedding vector_l2_ops)\n'; exit 0
   fi
@@ -1147,6 +1156,18 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
         self.assertNotIn("qualification steps complete", r.stdout)
         self.assertNotIn("helm uninstall", r.calls)  # the failed fixture is left for diagnosis
 
+    def test_first_enable_fails_when_a_pod_still_mounts_the_bootstrap_secret(self):
+        """The environment alone is not the whole pod: a Secret volume (or envFrom, or an init container) would keep the reference."""
+        r = self.first_enable(STUB_RETIRE="volume")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL fe5: a Deployment or a running pod of the release still references the bootstrap Secret", r.stdout)
+        self.assertNotIn("ok   fe5-bootstrap-admin-retired", r.stdout)
+        self.assertIn('"secretName": "owl-mast-fe-keycloak-bootstrap"', r.evidence["fe5-secret-references"])
+        self.assertNotIn("KC_DB_PASSWORD", r.evidence["fe5-secret-references"])  # only the matching name fields are kept
+        r = self.first_enable()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("no reference", r.evidence["fe5-secret-references"])
+
     def test_the_retirement_needs_the_admin_to_be_injected_before_it(self):
         """A release that never injected the admin proves nothing about switching it off."""
         h = Harness(BASE_WORLD)
@@ -1174,10 +1195,39 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
         r = self.step("bundled-bundled", STUB_TABLE_OWNER="owlmast_admin")
         self.assertNotEqual(r.returncode, 0, r.stdout)
         self.assertIn("FAIL jobs.work_item is not owned by owlmast_app", r.stdout)
+        # a table added to either schema later is covered without naming it in the script
+        r = self.step("bundled-bundled", STUB_EXTRA_TABLE="table-owner|jobs.future_table|owlmast_admin")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL a jobs or audit table is not owned by owlmast_app: table-owner|jobs.future_table|owlmast_admin", r.stdout)
         r = self.step("bundled-bundled")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(f"ok   ac3-owl-mast-test-flyway-history (applied: {' '.join(MIGRATIONS)} )", r.stdout)
         self.assertIn("ok   ac3-owl-mast-test-migrated-by", r.stdout)
+
+    def test_a_checkout_without_migrations_cannot_pass_the_migration_check(self):
+        """An empty expectation (moved directory, wrong root) must not read as 'everything applied'."""
+        h = Harness(BASE_WORLD)
+        try:
+            r = h.source("expected_migrations() { :; }; check_shared_postgres owl-mast-test owl-mast-postgresql && echo PASSED || echo CAUGHT", STUB_EXEC_MODE="ac3")
+            self.assertEqual(r.stdout.strip().splitlines()[-1], "CAUGHT", r.stdout + r.stderr)
+            self.assertIn("FAIL flyway history: no migration found in this checkout", r.stdout)
+        finally:
+            h.close()
+
+    def test_every_combination_with_a_database_proves_durable_work_on_the_database_its_backend_uses(self):
+        """E01-R-01: the proof runs wherever a backend is installed, against the bundled or the external PostgreSQL it connects to."""
+        for step, namespace, deployment in (("bundled-bundled", "owl-mast-test", "owl-mast-postgresql"), ("bundled-external", "owl-mast-test", "owl-mast-postgresql"),
+                                            ("external-bundled", "owl-mast-test-external", "external-postgresql"), ("external-external", "owl-mast-test-external", "external-postgresql")):
+            with self.subTest(step):
+                r = self.step(step)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn(f"ok   {step}-durable-work (", r.stdout)
+                enqueue = [c for c in r.calls.splitlines() if "insert into audit.publication_intent" in c]
+                self.assertEqual(len(enqueue), 1, enqueue)
+                self.assertIn(f"-n {namespace} exec deploy/{deployment} ", enqueue[0])
+                r = self.step(step, STUB_DURABLE_WORK="durable-work|FAILED|0|false|owl-mast-backend/pod/1|x")
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn(f"FAIL {step}-durable-work", r.stdout)
 
     def test_the_installed_backend_must_finish_real_durable_work(self):
         """Retro R12: the scheduler had never been shown to run under the chart's restricted principal."""

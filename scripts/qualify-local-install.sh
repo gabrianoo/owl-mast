@@ -732,11 +732,13 @@ check_shared_postgres() { # check_shared_postgres <namespace> <deployment>  (AC3
   # Every migration the built backend carries must be applied, by the application principal (retro R12: the
   # earlier run only looked for V001, so it could not tell whether the jobs and audit migrations ever ran
   # under the chart's restricted role).
-  local migration
-  for migration in $(expected_migrations); do
+  local migration migrations
+  migrations="$(expected_migrations)"
+  [ -n "$migrations" ] || { log "FAIL flyway history: no migration found in this checkout ($ROOT/backend/src/main/resources/db/migration), so nothing can be required"; return 1; }
+  for migration in $migrations; do
     grep -q "^$migration|true\$" "$OUT/ac3-$ns-flyway-history.txt" || { log "FAIL flyway history: migration $migration is not applied"; return 1; }
   done
-  log "ok   ac3-$ns-flyway-history (applied: $(expected_migrations | tr '\n' ' '))"
+  log "ok   ac3-$ns-flyway-history (applied: $(tr '\n' ' ' <<<"$migrations"))"
   record "ac3-$ns-migrated-by" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "select distinct 'migrated-by|'||installed_by from flyway_schema_history; select 'table-owner|'||schemaname||'.'||tablename||'|'||tableowner from pg_tables where schemaname in ('jobs','audit') order by 1" || return 1
   [ "$(grep -c '^migrated-by|' "$OUT/ac3-$ns-migrated-by.txt")" -eq 1 ] && grep -qx 'migrated-by|owlmast_app' "$OUT/ac3-$ns-migrated-by.txt" \
     || { log "FAIL migrations were not all applied by the application principal owlmast_app"; return 1; }
@@ -744,6 +746,10 @@ check_shared_postgres() { # check_shared_postgres <namespace> <deployment>  (AC3
   for owned in jobs.work_item audit.publication_intent audit.event; do
     grep -qx "table-owner|$owned|owlmast_app" "$OUT/ac3-$ns-migrated-by.txt" || { log "FAIL $owned is not owned by owlmast_app"; return 1; }
   done
+  # ... and no other table of the two schemas, present or future, is owned by anyone else.
+  if grep '^table-owner|' "$OUT/ac3-$ns-migrated-by.txt" | grep -qv '|owlmast_app$'; then
+    log "FAIL a jobs or audit table is not owned by owlmast_app: $(grep '^table-owner|' "$OUT/ac3-$ns-migrated-by.txt" | grep -v '|owlmast_app$' | tr '\n' ' ')"; return 1
+  fi
   log "ok   ac3-$ns-migrated-by (every migration applied by owlmast_app; jobs and audit tables owned by it)"
   # VectorChord index usage on synthetic data with the application principal (AC3); re-entry appends, never drops.
   record "ac3-$ns-vchord-index" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "create schema if not exists qualification; create table if not exists qualification.vectors(id int primary key, embedding vector(3)); insert into qualification.vectors select g, array[g, g*2, g*3]::vector from generate_series(1,200) g on conflict do nothing; create index if not exists vectors_vchordrq on qualification.vectors using vchordrq (embedding vector_l2_ops) with (options = E'residual_quantization = true\\n[build.internal]\\nlists = []'); analyze qualification.vectors; set enable_seqscan = off; explain (costs off) select id from qualification.vectors order by embedding <-> '[3,6,9]' limit 3; select id from qualification.vectors order by embedding <-> '[3,6,9]' limit 3; select indexdef from pg_indexes where schemaname='qualification' and indexname='vectors_vchordrq'" || return 1
@@ -765,11 +771,14 @@ expected_migrations() {
 # check_durable_work <label> <namespace> <postgresql-deployment>: the backend that is running against this
 # database, as the chart deploys it (restricted application principal, in-process scheduler), claims and
 # finishes real durable work (retro R12, E01-R-01). A synthetic audit-publication intent and its
-# audit.publish work item are written as the application principal for the synthetic tenant `qualification`,
-# exactly the two rows AuditedMutations commits; the running backend must then discover the tenant, claim
-# the item under its lease, publish the intent into audit.event and mark the item SUCCEEDED. This exercises
-# the jobs and audit migrations, tenant discovery, the claim, the handler transaction (transaction_timeout,
-# PostgreSQL 17+) and the audit publisher on the installed release. Rows are synthetic and are kept.
+# audit.publish work item are written as the application principal for the synthetic tenant `qualification`:
+# the two rows AuditedMutations commits, except that the item gets an attempt limit of 5 where the real
+# enqueue stores none, so a backend that cannot publish ends the item FAILED and the check stops instead of
+# waiting out its timeout. The running backend must then discover the tenant, claim the item under its
+# lease, publish the intent into audit.event and mark the item SUCCEEDED. This exercises the jobs and audit
+# migrations, tenant discovery, the claim, the handler transaction (transaction_timeout, PostgreSQL 17+) and
+# the audit publisher on the installed release. The rows are synthetic and are kept: every run adds one
+# intent, one work item and one history row for the tenant `qualification` to the database it checked.
 DURABLE_WORK_TIMEOUT="${DURABLE_WORK_TIMEOUT:-120}"
 check_durable_work() {
   local label="$1" ns="$2" deploy="$3" corr deadline out
@@ -797,9 +806,10 @@ check_durable_work() {
 # is running. Control first: before the upgrade the Keycloak pod takes KC_BOOTSTRAP_ADMIN_* from the bootstrap
 # Secret. Then `helm upgrade --wait` with identity.keycloak.bootstrapAdmin.enabled=false and the Secret value
 # pointed at a name that does not exist: any remaining reference would leave the new pod in
-# CreateContainerConfigError and the upgrade would fail. Afterwards no container of the release names a
-# bootstrap variable or the Secret, Keycloak is ready with the same issuer, the backend is ready, and the
-# Keycloak role and database are the ones that existed before. What it does not do: create a permanent
+# CreateContainerConfigError and the upgrade would fail. Afterwards the Keycloak container has no bootstrap
+# variable, and neither Secret name occurs anywhere in the release's Deployments or in its pods as they run
+# (container and init-container environment, envFrom, volumes); Keycloak is ready with the same issuer, the
+# backend is ready, and the Keycloak role and database are the ones that existed before. What it does not do: create a permanent
 # administrator or delete the temporary user in Keycloak (operator steps in the admin console).
 retire_bootstrap_admin() {
   local prefix="$1" rel="$2" identity_before="$3"; shift 3
@@ -818,9 +828,15 @@ retire_bootstrap_admin() {
   if grep -qE "KC_BOOTSTRAP_ADMIN|=($secret|absent-keycloak-bootstrap-secret)\$" "$OUT/$prefix-keycloak-env-after.txt"; then
     log "FAIL $prefix: the Keycloak pod still takes a bootstrap admin variable or references the bootstrap Secret"; return 1
   fi
-  record "$prefix-secret-references" k get deploy -n "$NS" -l "app.kubernetes.io/instance=$rel" -o jsonpath='{range .items[*]}{range .spec.template.spec.containers[*].env[*]}{.valueFrom.secretKeyRef.name}{"\n"}{end}{end}' || return 1
-  if grep -qxE "$secret|absent-keycloak-bootstrap-secret" "$OUT/$prefix-secret-references.txt"; then
-    log "FAIL $prefix: a workload of the release still references the bootstrap Secret"; return 1
+  # Every place a workload can name a Secret, in the Deployments and in the pods as they run: only the
+  # matching name fields reach the evidence, never an object.
+  local objects references
+  objects="$(k get deploy,pods -n "$NS" -l "app.kubernetes.io/instance=$rel" -o json)" || { log "FAIL $prefix: the release's Deployments and pods could not be read"; return 1; }
+  references="$(grep -Eo "\"(name|secretName)\": *\"($secret|absent-keycloak-bootstrap-secret)\"" <<<"$objects" | sort | uniq -c || true)"
+  printf '$ kubectl get deploy,pods -l app.kubernetes.io/instance=%s -o json | grep <bootstrap Secret names>\n%s\n[%s object bytes read]\n' "$rel" "${references:-no reference}" "${#objects}" >"$OUT/$prefix-secret-references.txt"
+  [ "${#objects}" -gt 2 ] || { log "FAIL $prefix: the release's Deployments and pods read as empty"; return 1; }
+  if [ -n "$references" ]; then
+    log "FAIL $prefix: a Deployment or a running pod of the release still references the bootstrap Secret"; return 1
   fi
   record "$prefix-keycloak-ready" proxy_get "$NS" "$rel-keycloak:management" /health/ready || return 1
   record "$prefix-keycloak-discovery" proxy_get "$NS" "$rel-keycloak:http" /realms/owl-mast/.well-known/openid-configuration || return 1
@@ -830,7 +846,7 @@ retire_bootstrap_admin() {
   record_keycloak_identity "$prefix-keycloak-identity" "$NS" "$rel-postgresql" || return 1
   [ "$(keycloak_identity_of "$prefix-keycloak-identity")" = "$(keycloak_identity_of "$identity_before")" ] \
     || { log "FAIL $prefix: the Keycloak role or database changed across the retirement"; return 1; }
-  log "ok   $prefix-bootstrap-admin-retired (injected before; after bootstrapAdmin.enabled=false no bootstrap variable and no reference to the bootstrap Secret, Keycloak and backend ready, role and database unchanged: $(keycloak_identity_of "$prefix-keycloak-identity"))"
+  log "ok   $prefix-bootstrap-admin-retired (injected before; after bootstrapAdmin.enabled=false no bootstrap variable and no reference to the bootstrap Secret in the release's Deployments or running pods, Keycloak and backend ready, role and database unchanged: $(keycloak_identity_of "$prefix-keycloak-identity"))"
 }
 
 check_bundled_keycloak() {
@@ -905,6 +921,7 @@ step_bundled_external() {
   grep -q 'absent-keycloak' "$OUT/bundled-external-secret-references.txt" && { log "FAIL a Keycloak Secret is still referenced with the identity bundle disabled"; return 1; }
   log "ok   bundled-external-no-keycloak-credentials (only $(sort -u "$OUT/bundled-external-secret-references.txt" | grep -v '^\$' | grep -c .) distinct Secret references, none for Keycloak)"
   record bundled-external-issuer-env k get deploy "$RELEASE-backend" -n "$NS" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="OWLMAST_IDENTITY_ISSUER_URI")].value}'
+  check_durable_work bundled-external "$NS" "$RELEASE-postgresql"
   record bundled-external-uninstall h uninstall "$RELEASE" -n "$NS" --wait
 }
 
@@ -928,6 +945,7 @@ step_external_external() {
     --set database.external.host="external-postgresql.$EXT_NS.svc" --set database.external.sslMode=disable --set database.external.allowInsecureTransport=true \
     --set identity.bundled=false --set identity.external.allowInsecureIssuer=true --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast"
   record external-external-only-backend k get deploy,pvc,svc -n "$NS" -o name
+  check_durable_work external-external "$EXT_NS" external-postgresql
   record external-external-uninstall h uninstall "$RELEASE" -n "$NS" --wait
 }
 
