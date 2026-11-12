@@ -2,7 +2,8 @@
 # Negative diagnostics for OM-01.01 AC2 (backend), the OM-01.03 contract rules and OM-01.04 T4
 # (frontend): inject one violation per gate into a scratch copy and assert the gate fails with a
 # message naming the offending file or rule. The frontend gates need `frontend/node_modules` (run
-# `npm ci` in frontend first).
+# `npm ci` in frontend first); the script-lint gate needs python3 with venv and, unless OWLMAST_TOOLS_DIR
+# already holds them, network access for the pinned shellcheck and ruff.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -246,6 +247,34 @@ elif grep -qE 'INCOMPATIBLE.*1\.x.*2\.0' "$SCRATCH/compat.log"; then
   echo "ok   [api-compatibility]: incompatible pair detected naming both contracts"
 else
   echo "FAIL [api-compatibility]: unexpected diagnostic"; cat "$SCRATCH/compat.log"; failures=$((failures + 1))
+fi
+
+echo "== script lint gate (scripts/verify-script-lint.sh: shellcheck and ruff)"
+# A copy of what the lint reads, with one shell warning and one Python defect injected. The gate must fail and
+# name both; a rule set or a file selection that stopped finding anything would pass here otherwise.
+LINT="$SCRATCH/lint"
+rm -rf "$LINT"; mkdir -p "$LINT"
+(cd "$ROOT" && tar --exclude='**/node_modules' --exclude='**/build' -cf - scripts deploy automation ruff.toml frontend/docker-entrypoint.d) | tar -xf - -C "$LINT"
+cat >"$LINT/deploy/lint-violation.sh" <<'SH'
+#!/usr/bin/env bash
+unused_value=1
+cd /nonexistent
+SH
+cat >"$LINT/scripts/lint_violation.py" <<'PY'
+def answer():
+    return undefined_name
+PY
+if (cd "$LINT" && OWLMAST_TOOLS_DIR="${OWLMAST_TOOLS_DIR:-$SCRATCH/lint-tools}" scripts/verify-script-lint.sh >"$SCRATCH/lint.log" 2>&1); then
+  echo "FAIL [script-lint]: the lint gate passed although a shell and a Python defect were injected"
+  failures=$((failures + 1))
+elif grep -q 'deploy/lint-violation\.sh' "$SCRATCH/lint.log" && grep -qE 'SC2034.*unused_value' "$SCRATCH/lint.log" && grep -q 'SC2164' "$SCRATCH/lint.log" \
+    && grep -q 'scripts/lint_violation\.py' "$SCRATCH/lint.log" && grep -qE 'F821.*undefined_name' "$SCRATCH/lint.log" \
+    && grep -q 'FAIL \[shellcheck\]' "$SCRATCH/lint.log" && grep -q 'FAIL \[ruff\]' "$SCRATCH/lint.log"; then
+  echo "ok   [script-lint]: shellcheck named deploy/lint-violation.sh (SC2034, SC2164) and ruff named scripts/lint_violation.py (F821)"
+else
+  echo "FAIL [script-lint]: the lint gate failed but did not name the injected defects"
+  sed 's/^/      /' "$SCRATCH/lint.log" | tail -40
+  failures=$((failures + 1))
 fi
 
 if [ "$failures" -ne 0 ]; then

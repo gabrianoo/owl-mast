@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # Shell and Python lint gate (E01-R-11): the repository's own scripts and Python had no static check in CI.
-#   - shellcheck v0.11.0 over every tracked shell script (scripts/*.sh, the frontend image's entrypoint
-#     fragment), at severity `warning`: errors and warnings fail; `info` and `style` notes do not (the scripts
-#     use `A && B || C` and single-quoted psql/jsonpath text deliberately).
+#   - shellcheck v0.11.0 over every shell file of the repository itself (*.sh anywhere outside the excluded
+#     directories below, and the frontend image's entrypoint fragments), at severity `warning`: errors and
+#     warnings fail; `info` and `style` notes do not (the scripts use `A && B || C` and single-quoted
+#     psql/jsonpath text deliberately). Shell embedded in other files (the chart's ConfigMap scripts, the bash
+#     stubs inside the deploy tests) is not extracted and not linted here.
 #   - ruff (version pinned with hashes in scripts/lint-requirements.txt) over scripts/, deploy/ and automation/
 #     with the rule set in ruff.toml (syntax errors, pyflakes, bugbear).
-# The vendored BMAD tooling (.agents, .claude, _bmad) and the Gradle wrapper script are not ours and are not
-# linted. Tools: OWLMAST_SHELLCHECK / OWLMAST_RUFF name binaries to use as given; otherwise shellcheck is
+# The vendored BMAD tooling (.agents, .claude, .codex, _bmad, _bmad-output), dependency and build output
+# (node_modules, build, dist, .gradle) and the Gradle wrapper script (`gradlew`, no .sh suffix) are not ours
+# and are not linted. `scripts/verify-quality-gates.sh` injects one shell and one Python defect into a copy
+# and requires this script to fail naming each. Tools: OWLMAST_SHELLCHECK / OWLMAST_RUFF name binaries to use as given; otherwise shellcheck is
 # fetched (linux-x86_64 release archive, sha256 verified, re-extracted on every run) into OWLMAST_TOOLS_DIR
 # or a scratch directory, and ruff is taken from PATH when it is exactly the pinned version or installed
 # from the hashed requirements into a scratch virtual environment.
@@ -59,9 +63,13 @@ if [ -z "${OWLMAST_RUFF:-}" ]; then
 fi
 [ "$("$OWLMAST_RUFF" --version)" = "ruff $RUFF_VERSION" ] || { echo "verify-script-lint: $OWLMAST_RUFF is $("$OWLMAST_RUFF" --version), not ruff $RUFF_VERSION" >&2; exit 1; }
 
-# Every tracked shell script of the repository itself. A new script is picked up without editing this file.
-mapfile -t shell_files < <(git ls-files -- 'scripts/*.sh' 'frontend/docker-entrypoint.d/*' 'deploy/**/*.sh' 'backend/**/*.sh' | sort)
-[ "${#shell_files[@]}" -gt 0 ] || { echo "verify-script-lint: no shell scripts found (run inside the repository checkout)" >&2; exit 1; }
+# Every shell file of the repository itself, found by name so a new script anywhere is picked up without
+# editing this file (and without needing a git checkout).
+mapfile -t shell_files < <(
+  find . \( -name .git -o -name node_modules -o -name build -o -name dist -o -name .gradle -o -name .agents -o -name .claude \
+            -o -name .codex -o -name _bmad -o -name _bmad-output \) -prune \
+         -o -type f \( -name '*.sh' -o -path './frontend/docker-entrypoint.d/*' \) -print | sed 's|^\./||' | sort)
+[ "${#shell_files[@]}" -gt 0 ] || { echo "verify-script-lint: no shell scripts found under $ROOT" >&2; exit 1; }
 
 failures=0
 echo "== shellcheck $SHELLCHECK_VERSION (severity warning) over ${#shell_files[@]} file(s): ${shell_files[*]}"

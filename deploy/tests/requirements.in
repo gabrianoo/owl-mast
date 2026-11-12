@@ -1,5 +1,7 @@
 # Direct dependencies of the deploy test suite (scripts/verify-install-package.sh, CI package-checks).
 # Regenerate the pinned, hashed requirements.txt after changing a version:
 #   uv pip compile --universal --python-version 3.12 --generate-hashes deploy/tests/requirements.in -o deploy/tests/requirements.txt
+# The versions the suite was written and run against. jsonschema 4.19.2 is what validates the pinned Gateway API
+# schema today; move it deliberately, rerunning deploy/tests/test_gateway_schema.py.
 PyYAML==6.0.3
 jsonschema==4.19.2

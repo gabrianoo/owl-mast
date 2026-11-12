@@ -62,7 +62,10 @@ jobs:
       - name: Frontend dependencies (locked)
         run: npm ci
         working-directory: frontend
-      - name: Inject violations and assert each gate fails with its diagnostic (backend and frontend)
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Inject violations and assert each gate fails with its diagnostic (backend, frontend, script lint)
         run: scripts/verify-quality-gates.sh
 
   package-checks:

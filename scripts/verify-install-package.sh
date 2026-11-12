@@ -61,34 +61,26 @@ fi
 "$OWLMAST_HELM" version
 [ "${OWLMAST_VERIFY_TOOLS_ONLY:-}" = 1 ] && exit 0
 # The deploy tests need PyYAML and jsonschema (the Gateway API schema tests validate rendered HTTPRoutes
-# against the pinned upstream schema offline). Both are pinned, with their dependencies and hashes, in
-# deploy/tests/requirements.txt (generated from requirements.in). When the interpreter already has exactly
-# the two pinned versions nothing is installed; otherwise the pinned set is installed with hash checking, so
-# a floating range can no longer change what the suite runs against (E01-R-11).
+# against the pinned upstream schema offline). The whole set, with its transitive dependencies, is pinned
+# with hashes in deploy/tests/requirements.txt (generated from requirements.in) and installed with
+# --require-hashes into a virtual environment of its own, so the suite never runs against whatever the
+# interpreter happens to have and nothing is installed into it (E01-R-11). The environment is kept in
+# OWLMAST_TOOLS_DIR when that is set and reused while the requirements file is unchanged (its sha256 is
+# stamped into the environment); otherwise it is created in a scratch directory for this run.
 REQUIREMENTS="$ROOT/deploy/tests/requirements.txt"
-pins_installed() {
-  python3 - "$REQUIREMENTS" <<'PY'
-import re, sys
-from importlib import metadata
-wanted = {}
-for line in open(sys.argv[1], encoding="utf-8"):
-    match = re.match(r"^(pyyaml|jsonschema)==(\S+)", line.strip(), re.IGNORECASE)
-    if match:
-        wanted[match.group(1).lower()] = match.group(2)
-if set(wanted) != {"pyyaml", "jsonschema"}:
-    sys.exit("verify-install-package: deploy/tests/requirements.txt must pin PyYAML and jsonschema")
-for name, version in wanted.items():
-    try:
-        found = metadata.version(name)
-    except metadata.PackageNotFoundError:
-        sys.exit(1)
-    if found != version:
-        sys.exit(1)
-PY
-}
-if ! pins_installed; then
-  python3 -m pip install --quiet --disable-pip-version-check --require-hashes -r "$REQUIREMENTS"
-  pins_installed || { echo "verify-install-package: the pinned PyYAML/jsonschema of deploy/tests/requirements.txt are not the ones python3 imports" >&2; exit 1; }
+VENV_HOME="${OWLMAST_TOOLS_DIR:-}"
+if [ -z "$VENV_HOME" ]; then
+  VENV_HOME="$(mktemp -d "${TMPDIR:-/tmp}/owlmast-deploy-tests.XXXXXX")"
+  trap 'rm -rf "$VENV_HOME"' EXIT
 fi
+VENV="$VENV_HOME/deploy-tests-venv"
+requirements_sha="$(sha256sum "$REQUIREMENTS" | cut -d' ' -f1)"
+if [ ! -x "$VENV/bin/python" ] || [ "$(cat "$VENV/.requirements-sha256" 2>/dev/null)" != "$requirements_sha" ]; then
+  rm -rf "$VENV"
+  python3 -m venv "$VENV"
+  "$VENV/bin/python" -m pip install --quiet --disable-pip-version-check --require-hashes -r "$REQUIREMENTS"
+  printf '%s\n' "$requirements_sha" >"$VENV/.requirements-sha256"
+fi
+"$VENV/bin/python" -m pip list --format=freeze --disable-pip-version-check 2>/dev/null | grep -iE '^(pyyaml|jsonschema)=='
 cd "$ROOT"
-python3 -m unittest discover -s deploy/tests -t . -v
+"$VENV/bin/python" -m unittest discover -s deploy/tests -t . -v

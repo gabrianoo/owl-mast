@@ -68,12 +68,47 @@ class PinnedPythonDependenciesTest(unittest.TestCase):
     def test_the_linter_is_pinned_with_hashes(self):
         self.assertEqual(list(self.pins(REPO / "scripts" / "lint-requirements.txt")), ["ruff"])
 
+    INSTALL = re.compile(r"\b(?:pip[0-9.]*|pipx|uv(?:\s+pip)?)\s+install\b")
+
     def test_no_script_or_workflow_installs_an_unpinned_python_package(self):
+        found = 0
         for path in [*sorted((REPO / "scripts").glob("*.sh")), WORKFLOW]:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if "pip install" in line and not line.lstrip().startswith("#"):
+            # a command continued with a backslash is one command
+            text = re.sub(r"\\\n\s*", " ", path.read_text(encoding="utf-8"))
+            for line in text.splitlines():
+                if self.INSTALL.search(line) and not line.lstrip().startswith("#"):
+                    found += 1
                     self.assertIn("--require-hashes", line, f"{path.name}: {line.strip()}")
                     self.assertRegex(line, r"-r \S*requirements\.txt|-r \"\$REQUIREMENTS\"", f"{path.name}: {line.strip()}")
+        self.assertGreaterEqual(found, 2, "the deploy suite and the linter each install their pinned set")
+
+    def test_the_install_pattern_recognises_the_usual_spellings(self):
+        for line in ("python3 -m pip install x", "pip3 install x", "pip3.12 install x", "pipx install x", "uv pip install x", "uv install x"):
+            self.assertRegex(line, self.INSTALL, line)
+        self.assertNotRegex("helm upgrade --install owl-mast", self.INSTALL)
+
+
+class GradleWrapperDocumentTest(unittest.TestCase):
+    """Retro T1: the wrapper moved to another Gradle version while the README, the toolchain document and the wrapper jar
+    stayed behind. One version and one pair of checksums must be stated everywhere."""
+
+    def setUp(self):
+        properties = (REPO / "gradle" / "wrapper" / "gradle-wrapper.properties").read_text(encoding="utf-8")
+        self.version = re.search(r"distributions/gradle-([0-9.]+)-bin\.zip", properties).group(1)
+        self.distribution_sha = re.search(r"(?m)^distributionSha256Sum=([0-9a-f]{64})$", properties).group(1)
+        self.toolchain = (REPO / "docs" / "toolchain-qualification.md").read_text(encoding="utf-8")
+        self.pin_row = next(line for line in self.toolchain.splitlines() if line.startswith("| Gradle |"))
+
+    def test_the_readme_and_the_toolchain_document_name_the_wrapper_version(self):
+        self.assertIn(f"Gradle {self.version} with Kotlin DSL", (REPO / "README.md").read_text(encoding="utf-8"))
+        self.assertIn(f"{self.version} wrapper", self.pin_row)
+        self.assertIn(f"\nGradle {self.version}\n", self.toolchain, "the recorded `./gradlew --version` output")
+
+    def test_the_documented_checksums_are_the_ones_in_the_checkout(self):
+        import hashlib
+        jar_sha = hashlib.sha256((REPO / "gradle" / "wrapper" / "gradle-wrapper.jar").read_bytes()).hexdigest()
+        self.assertIn(f"`distributionSha256Sum` {self.distribution_sha}", self.pin_row)
+        self.assertIn(f"wrapper jar sha256 {jar_sha}", self.pin_row)
 
 
 if __name__ == "__main__":
