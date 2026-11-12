@@ -142,6 +142,73 @@ describe('Daily Work connection panel (AC3/AC4)', () => {
     }
   });
 
+  it('does not move focus on a denial after the person left the control (focus fell to the document)', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client } = clientReturning([
+        { kind: 'ok', value: compatible },
+        { kind: 'ok', value: { ...compatible, backendVersion: '0.2.0' } },
+        { kind: 'denied', status: 403 },
+      ]);
+      renderApp(client);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      const show = screen.getByRole('button', { name: 'Show 1 new update' });
+      await act(async () => {
+        show.focus();
+        // What a click on non-focusable page text does: focus leaves with no destination.
+        show.blur();
+        await Promise.resolve();
+      });
+      expect(document.body).toHaveFocus();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      const heading = screen.getByRole('heading', { level: 3, name: "This connection isn't available to this session" });
+      expect(heading).not.toHaveFocus();
+      expect(document.body).toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still repairs focus when the window lost focus while the control held it (the control stays the active element)', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client } = clientReturning([
+        { kind: 'ok', value: compatible },
+        { kind: 'ok', value: { ...compatible, backendVersion: '0.2.0' } },
+        { kind: 'denied', status: 403 },
+      ]);
+      renderApp(client);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      const show = screen.getByRole('button', { name: 'Show 1 new update' });
+      await act(async () => {
+        show.focus();
+        // What switching to another window does: a focusout with no destination, and the control
+        // remains document.activeElement.
+        show.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+        await Promise.resolve();
+      });
+      expect(show).toHaveFocus();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(screen.getByRole('heading', { level: 3, name: "This connection isn't available to this session" })).toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     ['a different major', { kind: 'ok', value: { ...compatible, apiContract: { major: 2, minor: 0 } } }, 'Incompatible frontend and backend'],
     ['no descriptor (404)', { kind: 'not-found' }, 'The backend did not publish a compatibility descriptor'],

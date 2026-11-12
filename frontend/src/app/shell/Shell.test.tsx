@@ -112,6 +112,31 @@ describe('workspace shell (AC2)', () => {
     expect(scope).toHaveFocus();
   });
 
+  it('leaves the compact menu open when Escape belongs to an open dialog, a handled key or a composition', async () => {
+    const user = userEvent.setup();
+    renderAt('/usage', false);
+    const toggle = screen.getByRole('button', { name: /Navigation.*Usage/ });
+    await user.click(toggle);
+    await user.click(screen.getByRole('button', { name: 'Change scope' }));
+    expect(screen.getByRole('dialog', { name: 'Choose an authorized project' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    const handled = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    handled.preventDefault();
+    const composing = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, isComposing: true });
+    act(() => {
+      document.body.dispatchEvent(handled);
+      document.body.dispatchEvent(composing);
+    });
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+
+    await user.keyboard('{Escape}');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  });
+
   it('closes the compact menu when the link of the page already shown is activated', async () => {
     const user = userEvent.setup();
     renderAt('/usage', false);

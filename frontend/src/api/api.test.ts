@@ -23,7 +23,9 @@ describe('runtime config', () => {
   it('normalises the API path prefix and falls back to /api', () => {
     expect(normalizeApiPathPrefix('/api')).toBe('/api');
     expect(normalizeApiPathPrefix('/owl/api/')).toBe('/owl/api');
-    expect(normalizeApiPathPrefix('/')).toBe('/');
+    // The root is where the shell is served; the image's start-up guard refuses it too.
+    expect(normalizeApiPathPrefix('/')).toBe('/api');
+    expect(joinPath(normalizeApiPathPrefix('/'), '/compatibility')).toBe('/api/compatibility');
     expect(normalizeApiPathPrefix('api')).toBe('/api');
     expect(normalizeApiPathPrefix('/api?x=1')).toBe('/api');
     expect(normalizeApiPathPrefix(42)).toBe('/api');

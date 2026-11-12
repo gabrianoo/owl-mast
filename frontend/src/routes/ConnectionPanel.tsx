@@ -100,11 +100,22 @@ export function ConnectionPanel({ pollIntervalMs = CONNECTION_POLL_MS }: { pollI
       lastFocusedRef.current = event.target instanceof Element ? event.target : null;
     };
     const onFocusOut = (event: FocusEvent) => {
-      // A focusout with no destination is kept: Chromium reports the removal of the focused control
-      // that way, while the control is still connected, and that is the case the repair below is for.
-      if (event.relatedTarget instanceof Node && !section.contains(event.relatedTarget)) {
-        lastFocusedRef.current = null;
+      if (event.relatedTarget instanceof Node) {
+        if (!section.contains(event.relatedTarget)) lastFocusedRef.current = null;
+        return;
       }
+      // No destination has two causes. The focused control is being removed (Chromium reports it this
+      // way while the control is still connected): kept, that is the case the repair below is for.
+      // Or the person left it, for example by clicking page text, so focus fell to the document:
+      // forgotten, or a later background change would move focus without a user action. The two are
+      // told apart once the event has finished: a control that was left is still in the document and
+      // no longer focused (a window that lost focus keeps it as the active element).
+      const left = event.target;
+      queueMicrotask(() => {
+        if (lastFocusedRef.current === left && left instanceof Element && left.isConnected && document.activeElement !== left) {
+          lastFocusedRef.current = null;
+        }
+      });
     };
     section.addEventListener('focusin', onFocusIn);
     section.addEventListener('focusout', onFocusOut);

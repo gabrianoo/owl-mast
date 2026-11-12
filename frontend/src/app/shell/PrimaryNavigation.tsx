@@ -24,10 +24,13 @@ export function PrimaryNavigation({ current }: { current: Destination | undefine
 
   // Escape dismisses the open compact menu wherever focus is. Focus returns to the control that
   // opened it only when it was inside the menu, so Escape never pulls focus from elsewhere.
+  // An Escape that belongs to something else is left alone: one already handled, one that ends an
+  // IME composition, and one pressed while a dialog is open (the dialog closes, the menu stays).
   useEffect(() => {
     if (!compact || !open) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
+      if (document.querySelector('dialog[open]') !== null) return;
       const focusInMenu = navRef.current?.contains(document.activeElement) ?? false;
       setOpenForPath(null);
       if (focusInMenu) toggleRef.current?.focus();

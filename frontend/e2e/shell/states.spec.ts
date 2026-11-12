@@ -81,6 +81,39 @@ test.describe('connection states: loading, compatible, incompatible, unsupported
     await expect(page.getByRole('heading', { level: 3, name: "This connection isn't available to this session" })).toBeFocused();
   });
 
+  test('a denial does not move focus once the person has left the control by clicking outside the main region', async ({ page }) => {
+    let answer: 'v1' | 'v2' | 'denied' = 'v1';
+    await page.route('**/api/compatibility', (route) =>
+      answer === 'denied'
+        ? route.fulfill({ status: 403, contentType: 'application/problem+json', body: JSON.stringify({ status: 403, title: 'Forbidden' }) })
+        : route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({ ...compatibleDescriptor, backendVersion: answer === 'v1' ? '0.1.0-SNAPSHOT' : '0.2.0' }),
+          }),
+    );
+    await page.clock.install();
+    await page.goto('/');
+    await expect(page.getByText('0.1.0-SNAPSHOT')).toBeVisible();
+    answer = 'v2';
+    await page.clock.runFor(31_000);
+    const show = page.getByRole('button', { name: 'Show 1 new update' });
+    await show.focus();
+    await expect(show).toBeFocused();
+    // The empty part of the header: not focusable and outside main (which is a focus target itself),
+    // so focus falls to the document with no destination element.
+    const header = page.locator('.app__header');
+    const box = await header.boundingBox();
+    await header.click({ position: { x: (box?.width ?? 0) - 4, y: 4 } });
+    expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+    answer = 'denied';
+    await page.clock.runFor(31_000);
+    const heading = page.getByRole('heading', { level: 3, name: "This connection isn't available to this session" });
+    await expect(heading).toBeVisible();
+    await expect(heading).not.toBeFocused();
+    expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+  });
+
   test('a backend rollback replaces the Compatible verdict without any user action', async ({ page }) => {
     let contract = { major: 1, minor: 0 };
     await page.route('**/api/compatibility', (route) =>

@@ -62,6 +62,22 @@ test.describe('keyboard flow, title/focus and return behaviour (AC2, UX-DR40)', 
     await expect(page).toHaveURL(/\/usage$/);
   });
 
+  test('Escape in the scope dialog closes the dialog only; the compact menu behind it stays open', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 700 });
+    await page.goto('/usage');
+    const toggle = page.getByRole('button', { name: /Navigation.*Usage/ });
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await page.getByRole('button', { name: 'Change scope' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Choose an authorized project' });
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await page.keyboard.press('Escape');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  });
+
   test('activating the link of the page already shown closes the compact menu', async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 700 });
     await page.goto('/usage');
