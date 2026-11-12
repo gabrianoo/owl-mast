@@ -63,6 +63,9 @@ def template_pod_run_labels():
 POD_RUN_LABELS = rendered_pod_run_labels() or template_pod_run_labels()
 UNLABELLED_COMPONENTS = sorted(c for c in COMPONENTS if not POD_RUN_LABELS[c])
 
+# The migrations of this checkout (V001__..., V002__...): what the backend built from it applies and what the script requires.
+MIGRATIONS = sorted(p.name[1:].split("__", 1)[0] for p in (REPO / "backend" / "src" / "main" / "resources" / "db" / "migration").glob("V*__*.sql"))
+
 MUTATING = re.compile(r"(^| )(create|apply|label|annotate|patch|delete|exec|rollout|upgrade|uninstall|install)( |$)")
 
 KUBECTL_STUB = r'''#!/usr/bin/env bash
@@ -213,6 +216,14 @@ if [ "${STUB_RUNTIME:-}" = 1 ]; then
     if [[ "$args" == *"openid-configuration"* ]]; then printf '{"issuer":"http://%s:8080/realms/owl-mast"}\n' "$svc"; else printf '{"status":"UP"}\n'; fi
     exit 0
   fi
+  # The Keycloak container environment as `NAME=<secret or empty>` lines (retire_bootstrap_admin). The helm stub marks the
+  # release retired when an upgrade sets bootstrapAdmin.enabled=false; STUB_RETIRE=kept leaves the variables in place.
+  if [[ "$args" == *" get deploy "*"-keycloak "* && "$args" == *"{.name}={.valueFrom.secretKeyRef.name}"* ]]; then
+    rel="$(sed -E 's/.* get deploy ([^ ]+)-keycloak .*/\1/' <<<"$args")"
+    printf 'KC_DB=\nKC_DB_USERNAME=%s-keycloak-db\nKC_DB_PASSWORD=%s-keycloak-db\n' "$rel" "$rel"
+    if [ ! -e "$STUB_WORLD.retired" ]; then printf 'KC_BOOTSTRAP_ADMIN_USERNAME=%s-keycloak-bootstrap\nKC_BOOTSTRAP_ADMIN_PASSWORD=%s-keycloak-bootstrap\n' "$rel" "$rel"; fi
+    exit 0
+  fi
   if [[ "$args" == *" get pods "* && "$args" == *"READY:.status.containerStatuses[0].ready"* ]]; then printf 'NAME READY RESTARTS\npostgresql-abc12-xyz   true   0\n'; exit 0; fi
   if [[ "$args" == *" logs deploy/"* ]]; then printf 'identity bundle disabled; no Keycloak database or principal provisioned\nPostgreSQL init process complete; ready for start up.\n'; exit 0; fi
   if [[ "$args" == *" get pvc "* && "$args" == *"{.metadata.uid}"* ]]; then
@@ -245,7 +256,14 @@ if [[ "$args" == *" exec "* ]]; then
       fi
       printf '%s\n' "$db"; exit 0
     fi
-    printf 'owlmast_app|f|f|f\nkeycloak_app|f|f|f\nvchord=1.1.1\nvector=0.8.2\nt\n001|true\nIndex Scan using vectors_vchordrq on vectors\nCREATE INDEX vectors_vchordrq ON qualification.vectors USING vchordrq (embedding vector_l2_ops)\n'; exit 0
+    # STUB_FLYWAY_HISTORY: the flyway_schema_history rows (default: every migration of this checkout, applied);
+    # STUB_MIGRATED_BY: who applied them; STUB_TABLE_OWNER: owner of the jobs and audit tables;
+    # STUB_DURABLE_WORK: the state of the synthetic audit.publish item as check_durable_work reads it.
+    printf 'owlmast_app|f|f|f\nkeycloak_app|f|f|f\nvchord=1.1.1\nvector=0.8.2\nt\n%b' "$STUB_FLYWAY_HISTORY"
+    printf 'migrated-by|%s\n' "${STUB_MIGRATED_BY:-owlmast_app}"
+    for table in audit.event audit.publication_intent jobs.work_item; do printf 'table-owner|%s|%s\n' "$table" "${STUB_TABLE_OWNER:-owlmast_app}"; done
+    printf '%s\n' "${STUB_DURABLE_WORK:-durable-work|SUCCEEDED|1|true|owl-mast-backend/owl-mast-backend-abc12-xyz/8d6c1f0e|-}"
+    printf 'Index Scan using vectors_vchordrq on vectors\nCREATE INDEX vectors_vchordrq ON qualification.vectors USING vchordrq (embedding vector_l2_ops)\n'; exit 0
   fi
   case "${STUB_EXEC_MODE:-denied}" in
     denied) if [ "$db" = "${STUB_DENIED_DB:-keycloak}" ]; then printf 'psql: error: connection to server at "127.0.0.1", port 5432 failed: FATAL:  permission denied for database "%s"\nDETAIL:  User does not have CONNECT privilege.\ncommand terminated with exit code 2\n' "$db"; exit 2; fi; printf '%s\n' "$db"; exit 0 ;;
@@ -355,6 +373,7 @@ if [[ "$args" == *" upgrade "* ]]; then
   else
     : > "$(hooks_file "$rel")"   # a revision whose render has no provisioning hook records none
   fi
+  if [[ "$args" == *"bootstrapAdmin.enabled=false"* ]] && [ "${STUB_RETIRE:-retired}" != kept ]; then : > "$STUB_WORLD.retired"; fi
   if grep -q "^release - $rel " "$STUB_WORLD"; then [ -e "$(rev_file "$rel")" ] || echo "$rel" >> "$(rev_file "$rel")"   # a release the world started with is at revision 1
   else printf 'release - %s owned\n' "$rel" >> "$STUB_WORLD"; fi
   echo "$rel" >> "$(rev_file "$rel")"
@@ -378,7 +397,8 @@ class Harness:
     def env(self, **extra):
         env = {"PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": os.environ.get("HOME", "/"), "KUBECONFIG": str(self.tmp / "kubeconfig"),
                "OWLMAST_HELM": str(self.bin / "helm"), "EVIDENCE_DIR": str(self.evidence), "STUB_WORLD": str(self.world), "STUB_CALLS": str(self.calls), "STUB_RUN_ID": RUN_ID, "STUB_SENTINEL": SENTINEL,
-               "BACKEND_IMAGE_TAG": "stub", "STUB_UNLABELLED_COMPONENTS": " ".join(UNLABELLED_COMPONENTS)}
+               "BACKEND_IMAGE_TAG": "stub", "STUB_UNLABELLED_COMPONENTS": " ".join(UNLABELLED_COMPONENTS),
+               "STUB_FLYWAY_HISTORY": "".join(f"{version}|true\\n" for version in MIGRATIONS), "DURABLE_WORK_TIMEOUT": "0"}
         env.update(extra)
         return env
 
@@ -398,7 +418,7 @@ class Harness:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
 
-BASE_WORLD = f"namespace - owl-mast-test owned\nnamespace - owl-mast-test-external owned\n"
+BASE_WORLD = "namespace - owl-mast-test owned\nnamespace - owl-mast-test-external owned\n"
 
 
 class PreflightTests(unittest.TestCase):
@@ -415,7 +435,7 @@ class PreflightTests(unittest.TestCase):
             h.close()
 
     def test_prepare_proceeds_only_with_owned_or_absent_resources_and_labels_only_new_objects(self):
-        h = Harness(BASE_WORLD + f"secret owl-mast-test owl-mast-db owned\nsecret owl-mast-test-external owl-mast-db owned\n")
+        h = Harness(BASE_WORLD + "secret owl-mast-test owl-mast-db owned\nsecret owl-mast-test-external owl-mast-db owned\n")
         try:
             r = h.run("prepare")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -1092,10 +1112,95 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
                      "ok   fe3-hook-run (hook Job/owl-mast-fe-postgresql-provision-keycloak events=pre-upgrade phase=Succeeded started_at=",
                      "ok   fe2-first-enable-provisioned (role and database absent before, present after the pre-upgrade hook: role=16385 database=16386 owner=16385)",
                      "ok   fe3-revision (revision 2 -> 3, deployed)", "ok   fe3-identity-unchanged", "ok   fe3-hook-removed", "ok   fe3-retry-no-op", "ok   fe3-keycloak-schema-intact",
+                     "ok   fe2-durable-work (the installed backend claimed the synthetic audit.publish item as the restricted principal",
+                     "ok   fe5-revision (revision 3 -> 4, deployed)",
+                     "ok   fe5-bootstrap-admin-retired (injected before; after bootstrapAdmin.enabled=false no bootstrap variable and no reference to the bootstrap Secret",
                      "qualification steps complete: first-enable"):
             self.assertIn(line, r.stdout)
         self.assertNotIn("FAIL", r.stdout)
         self.assertEqual(self.direct_hook_reads(r.calls), [])
+
+    def test_first_enable_retires_the_bootstrap_admin_and_proves_it_from_the_pod(self):
+        """E01-R-01: the switch-off of the Keycloak bootstrap admin was documented as part of the Kind qualification but no step ran it."""
+        r = self.first_enable()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = r.calls.splitlines()
+        retire = [c for c in calls if c.startswith("helm ") and "bootstrapAdmin.enabled=false" in c]
+        self.assertEqual(len(retire), 1, retire)
+        # the Secret value is pointed at a name that does not exist: a remaining reference would fail `helm upgrade --wait`
+        self.assertIn("identity.keycloak.bootstrapExistingSecret=absent-keycloak-bootstrap-secret", retire[0])
+        self.assertIn(" --wait ", retire[0])
+        self.assertIn("identity.bundled=true", retire[0])
+        self.assertNotIn("provisionKeycloakDatabase=true", retire[0])
+        # the retirement runs after the retry and before the fixture is uninstalled
+        order = [i for i, c in enumerate(calls) if c.startswith("helm ") and (" upgrade " in c or " uninstall " in c)]
+        self.assertEqual([("uninstall" if " uninstall " in calls[i] else "retire" if "bootstrapAdmin.enabled=false" in calls[i] else "upgrade") for i in order][-2:], ["retire", "uninstall"])
+        self.assertIn("KC_BOOTSTRAP_ADMIN_PASSWORD=owl-mast-fe-keycloak-bootstrap", r.evidence["fe5-keycloak-env-before"])
+        self.assertNotIn("KC_BOOTSTRAP_ADMIN", r.evidence["fe5-keycloak-env-after"])
+        self.assertIn("KC_DB_PASSWORD=owl-mast-fe-keycloak-db", r.evidence["fe5-keycloak-env-after"])
+
+    def test_first_enable_fails_when_the_bootstrap_admin_is_still_injected_after_the_retirement(self):
+        r = self.first_enable(STUB_RETIRE="kept")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL fe5: the Keycloak pod still takes a bootstrap admin variable or references the bootstrap Secret", r.stdout)
+        self.assertNotIn("ok   fe5-bootstrap-admin-retired", r.stdout)
+        self.assertNotIn("qualification steps complete", r.stdout)
+        self.assertNotIn("helm uninstall", r.calls)  # the failed fixture is left for diagnosis
+
+    def test_the_retirement_needs_the_admin_to_be_injected_before_it(self):
+        """A release that never injected the admin proves nothing about switching it off."""
+        h = Harness(BASE_WORLD)
+        try:
+            (h.tmp / "world.txt.retired").write_text("")
+            r = h.source("retire_bootstrap_admin fe5 owl-mast-fe fe3-identity-after --timeout 10m && echo PASSED || echo CAUGHT", **self.RUNTIME)
+            self.assertEqual(r.stdout.strip().splitlines()[-1], "CAUGHT", r.stdout + r.stderr)
+            self.assertIn("FAIL fe5: the bootstrap admin was not injected before the retirement", r.stdout)
+            self.assertNotIn("helm upgrade", h.calls.read_text())
+        finally:
+            h.close()
+
+    def test_every_migration_of_the_checkout_must_be_applied_by_the_application_principal(self):
+        """Retro R12: the script only looked for V001, so a database that never ran the jobs and audit migrations passed."""
+        self.assertGreaterEqual(len(MIGRATIONS), 5, MIGRATIONS)
+        r = self.step("bundled-bundled", STUB_FLYWAY_HISTORY="001|true\\n")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL flyway history: migration 002 is not applied", r.stdout)
+        r = self.step("bundled-bundled", STUB_FLYWAY_HISTORY="".join(f"{v}|true\\n" for v in MIGRATIONS[:-1]) + f"{MIGRATIONS[-1]}|false\\n")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn(f"FAIL flyway history: migration {MIGRATIONS[-1]} is not applied", r.stdout)
+        r = self.step("bundled-bundled", STUB_MIGRATED_BY="owlmast_admin")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL migrations were not all applied by the application principal owlmast_app", r.stdout)
+        r = self.step("bundled-bundled", STUB_TABLE_OWNER="owlmast_admin")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL jobs.work_item is not owned by owlmast_app", r.stdout)
+        r = self.step("bundled-bundled")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"ok   ac3-owl-mast-test-flyway-history (applied: {' '.join(MIGRATIONS)} )", r.stdout)
+        self.assertIn("ok   ac3-owl-mast-test-migrated-by", r.stdout)
+
+    def test_the_installed_backend_must_finish_real_durable_work(self):
+        """Retro R12: the scheduler had never been shown to run under the chart's restricted principal."""
+        r = self.step("bundled-bundled")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok   bundled-bundled-durable-work (", r.stdout)
+        enqueue = [c for c in r.calls.splitlines() if "insert into audit.publication_intent" in c]
+        self.assertEqual(len(enqueue), 1, enqueue)
+        # written as the application principal, for the synthetic tenant, as the publisher's own work type
+        self.assertIn("OWLMAST_APP_PASSWORD", enqueue[0])
+        self.assertIn("'qualification'", enqueue[0])
+        self.assertIn("'audit.publish'", enqueue[0])
+        for state, reason in (("durable-work|PENDING|0|false|-|-", "still pending at the deadline"),
+                              ("durable-work|FAILED|0|false|owl-mast-backend/pod/1|io.r2dbc.postgresql.ExceptionFactory$PostgresqlBadGrammarException", "terminal failure"),
+                              ("durable-work|SUCCEEDED|0|true|owl-mast-backend/pod/1|-", "succeeded without a history row"),
+                              ("durable-work|SUCCEEDED|1|true|-|-", "no lease owner: not claimed by the backend"),
+                              ("stub ok", "unreadable")):
+            with self.subTest(reason):
+                r = self.step("bundled-bundled", STUB_DURABLE_WORK=state)
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn("FAIL bundled-bundled-durable-work: the synthetic audit.publish item was not published within 0s", r.stdout)
+                self.assertNotIn("ok   bundled-bundled-durable-work (", r.stdout)
+                self.assertNotIn("provision-keycloak-upgrade", r.stdout)  # the step stopped there
 
     def test_first_enable_fails_when_the_role_is_missing_after_the_hook_or_recreated_by_the_retry(self):
         r = self.first_enable(STUB_KC_IDENTITY_1="")  # the Keycloak principal cannot log in after the first enable
