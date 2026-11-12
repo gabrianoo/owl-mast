@@ -347,12 +347,21 @@ class ApiCompatibilityCheckTest(unittest.TestCase):
         self.assertLessEqual(len(check._verdict_line("x " * 5000)), check.MAX_VERDICT_CHARS)
         self.assertEqual(check._verdict_line("a\nb\r\n c\u2028d\x1b[2K\x00\x9b\u202ee"), "a b c d?[2K???e")
         # A value nested deeper than repr()/str() can walk is still a verdict, not a traceback.
+        deep: object = []
+        for _ in range(100_000):
+            deep = [deep]
+        self.assertEqual(check._shown(deep), "<deeply nested value>")
+        self.assertEqual(check._one_line(deep), "unknown")
+        # End to end the depth a JSON parser accepts differs between Python versions: either the
+        # parser refuses the body or the value is refused, and both are one unverifiable line.
         nested = "[" * 50_000 + "]" * 50_000
         with serving(200, ('{"service":"owl-mast-backend","backendVersion":"1","apiContract":{"major":' + nested + ',"minor":0}}').encode()) as url:
-            self.assertIn("must be a non-negative integer", self.assert_unverifiable("--backend-url", url))
+            self.assertRegex(self.assert_unverifiable("--backend-url", url), "must be a non-negative integer|is not JSON")
         with serving(200, ('{"frontendVersion":' + nested + ',"supportedApiContract":{"major":1,"minMinor":0}}').encode()) as url:
             code, out, err = self.run_verdict("--frontend-url", url)
-            self.assertEqual((code, len(out.strip().splitlines())), (0, 1), err)
+            self.assertNotIn("Traceback", out + err)
+            self.assertEqual(len((out + err).strip().splitlines()), 1, out + err)
+            self.assertTrue((code, out[:11]) == (0, "COMPATIBLE:") or (code, err[:28]) == (1, "INCOMPATIBLE (unverifiable):"), out + err)
         # Remote versions and local paths cannot put a control sequence or a second line on stdout either.
         with serving(200, json.dumps({"frontendVersion": "1\x1b[31m\nCOMPATIBLE: forged", "supportedApiContract": {"major": 1, "minMinor": 0}}).encode()) as url:
             code, out, err = self.run_verdict("--frontend-url", url)
