@@ -13,6 +13,34 @@ interface CspWindow {
   owlmastCspViolations?: string[];
 }
 
+/** A Content-Security-Policy header as directive name -> sources, so a widened policy cannot pass as a substring. */
+function parseCsp(header: string): Record<string, string[]> {
+  const directives: Record<string, string[]> = {};
+  for (const part of header.split(';')) {
+    const [rawName, ...sources] = part.trim().split(/\s+/);
+    if (!rawName) continue;
+    const name = rawName.toLowerCase();
+    // A browser honours the first occurrence only; a repeated directive is a different policy.
+    expect(Object.hasOwn(directives, name), `directive ${name} appears twice`).toBe(false);
+    directives[name] = sources;
+  }
+  return directives;
+}
+
+/** The whole production policy (frontend/nginx/owlmast-headers.conf): any added source or dropped directive fails. */
+const PRODUCTION_CSP: Record<string, string[]> = {
+  'default-src': ["'self'"],
+  'script-src': ["'self'"],
+  'style-src': ["'self'", "'unsafe-inline'"],
+  'img-src': ["'self'", 'data:'],
+  'font-src': ["'self'"],
+  'connect-src': ["'self'"],
+  'base-uri': ["'self'"],
+  'form-action': ["'self'"],
+  'frame-ancestors': ["'none'"],
+  'object-src': ["'none'"],
+};
+
 /** Records CSP violations (event and console) and uncaught page errors. */
 async function watchPage(page: Page): Promise<{ problems: () => Promise<string[]> }> {
   const seen: string[] = [];
@@ -42,9 +70,13 @@ test.describe('built frontend image in Chromium (production CSP, nginx template,
     );
 
     const response = await page.goto('/');
-    const csp = response?.headers()['content-security-policy'] ?? '';
-    expect(csp).toContain("script-src 'self'");
-    expect(csp).toContain("connect-src 'self'");
+    const headers = (await response?.headersArray()) ?? [];
+    const policies = headers.filter((header) => header.name.toLowerCase() === 'content-security-policy');
+    // Exactly one policy header with exactly these directives: a second header, 'unsafe-inline',
+    // 'unsafe-eval', '*' or an extra origin in any directive is a different policy.
+    expect(policies).toHaveLength(1);
+    expect(parseCsp(policies[0]?.value ?? '')).toEqual(PRODUCTION_CSP);
+    expect(headers.filter((header) => header.name.toLowerCase() === 'content-security-policy-report-only')).toEqual([]);
 
     await expect(page.getByRole('heading', { level: 1, name: 'Daily Work' })).toBeVisible();
     const panel = page.getByRole('region', { name: 'Workspace connection' });
@@ -81,6 +113,33 @@ test.describe('built frontend image in Chromium (production CSP, nginx template,
     await expect(page.getByRole('heading', { level: 1, name: 'Preferences' })).toBeVisible();
     await expect(page.getByText(/Current: Dark/)).toBeVisible();
     expect(await watch.problems()).toEqual([]);
+  });
+
+  test('every answer the image gives carries the production policy, including the manifest and the misroute 404s', async ({ page }) => {
+    const shell = await (await page.request.get('/')).text();
+    const asset = /\/assets\/[^"]+\.js/.exec(shell)?.[0] ?? '';
+    expect(asset).not.toBe('');
+    const expected: [string, number, string][] = [
+      ['/', 200, 'no-store'],
+      ['/focus', 200, 'no-store'],
+      ['/owlmast-config.json', 200, 'no-store'],
+      ['/api-compatibility.json', 200, 'no-store'],
+      [prefix, 404, 'no-store'],
+      [`${prefix}/compatibility`, 404, 'no-store'],
+      [asset, 200, 'public, max-age=31536000, immutable'],
+      ['/assets/missing.js', 404, 'public, max-age=31536000, immutable'],
+    ];
+    for (const [path, status, cacheControl] of expected) {
+      const answer = await page.request.get(path);
+      const headers = answer.headers();
+      expect(answer.status(), path).toBe(status);
+      expect(parseCsp(headers['content-security-policy'] ?? ''), path).toEqual(PRODUCTION_CSP);
+      expect(headers['content-security-policy-report-only'], path).toBeUndefined();
+      expect(headers['x-content-type-options'], path).toBe('nosniff');
+      expect(headers['x-frame-options'], path).toBe('DENY');
+      expect(headers['referrer-policy'], path).toBe('same-origin');
+      expect(headers['cache-control'], path).toBe(cacheControl);
+    }
   });
 
   test('the image publishes the API contract this build supports', async ({ page }) => {

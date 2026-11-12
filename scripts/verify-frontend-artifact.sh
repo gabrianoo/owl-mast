@@ -53,6 +53,26 @@ check "unknown static asset is 404, not index.html" bash -c "[ \"\$(curl -s -o /
 check "config endpoint echoes the deployed API prefix" bash -c "[ \"\$(curl -fsS '$BASE/owlmast-config.json')\" = '{\"apiPathPrefix\":\"$PREFIX\"}' ]"
 check "config endpoint is JSON and not cached" bash -c "curl -fsSI '$BASE/owlmast-config.json' | grep -qi 'content-type: application/json' && curl -fsSI '$BASE/owlmast-config.json' | grep -qi 'cache-control: no-store'"
 check "security headers present" bash -c "curl -fsSI '$BASE/' | grep -qi 'content-security-policy' && curl -fsSI '$BASE/' | grep -qi 'x-content-type-options: nosniff'"
+# A location-level add_header replaces the server-level ones, so each location includes the shared
+# headers itself; a location that loses the include loses CSP, nosniff and X-Frame-Options, and a
+# misroute 404 that loses no-store can be kept by a cache as the "no descriptor" answer.
+has_headers() {
+  local headers
+  headers="$(curl -sS -o /dev/null -D - "$1" | tr -d '\r')" || return 1
+  local wanted
+  for wanted in "content-security-policy: default-src 'self'; script-src 'self'; " 'x-content-type-options: nosniff' 'x-frame-options: DENY' 'referrer-policy: same-origin' "${@:2}"; do
+    grep -qiF -- "$wanted" <<<"$headers" || { echo "      $1 lacks '$wanted'"; return 1; }
+  done
+  [ "$(grep -ci '^content-security-policy:' <<<"$headers")" = 1 ] || { echo "      $1 answers with more than one Content-Security-Policy"; return 1; }
+}
+HASHED_ASSET="$(curl -fsS "$BASE/" | grep -o '/assets/[^"]*\.js' | head -n1)"
+check "the shell references a hashed asset" test -n "$HASHED_ASSET"
+for path in / /focus /owlmast-config.json /api-compatibility.json "$PREFIX" "$PREFIX/compatibility" "$PREFIX/deeper/path" "$HASHED_ASSET" /assets/missing.js; do
+  case "$path" in
+    /assets/*) check "security headers on $path" has_headers "$BASE$path" ;;
+    *) check "security headers and no-store on $path" has_headers "$BASE$path" 'cache-control: no-store' ;;
+  esac
+done
 check "hashed assets served with immutable caching" bash -c "asset=\$(curl -fsS '$BASE/' | grep -o '/assets/[^\"]*\\.js' | head -n1); curl -fsSI \"$BASE\$asset\" | grep -qi 'immutable'"
 check "no JDK in the image" bash -c "! docker run --rm --entrypoint sh '$IMAGE' -c 'command -v java'"
 check "no backend jar in the image" bash -c "! docker run --rm --entrypoint sh '$IMAGE' -c 'find / -name \"*.jar\" 2>/dev/null | grep -q .'"
@@ -74,9 +94,11 @@ refuses_prefix() {
   fi
   grep -q 'OWLMAST_API_PATH_PREFIX' <<<"$out" || { echo "      no diagnostic for '$1': $out"; return 1; }
 }
-for bad in "/a'b" '/a$b' '/a"b' '/a b' '/a%2Fb' '/a;b' '//evil.example' '/a//b' '/a/../b' '/a/./b' '/a/..' 'api' '' '/' '//' '/assets' '/assets/x' '/owlmast-config.json' '/api-compatibility.json'; do
+for bad in "/a'b" '/a$b' '/a"b' '/a b' '/a%2Fb' '/a;b' '//evil.example' '/a//b' '/a/../b' '/a/./b' '/a/..' 'api' '' '/' '//' '/assets' '/assets/x' '/owlmast-config.json' '/api-compatibility.json' \
+  '/index.html' '/theme-boot.js' '/owl-mark.svg' '/index.html/' '/index.html/x' '/theme-boot.js/x'; do
   check "start-up refuses OWLMAST_API_PATH_PREFIX='$bad'" refuses_prefix "$bad"
 done
+check "a prefix that only shares a string prefix with an own path still starts (/assetsx, /index.htmlx, /api)" bash -c "for ok in /assetsx /index.htmlx /api /owl/index.html; do docker run --rm -e OWLMAST_API_PATH_PREFIX=\$ok '$IMAGE' nginx -t >/dev/null 2>&1 || { echo \"      refused \$ok\"; exit 1; }; done"
 check "a trailing slash is normalised before the template is rendered" bash -c "docker run --rm -e OWLMAST_API_PATH_PREFIX=/owl/api/ '$IMAGE' nginx -T 2>/dev/null | grep -qF '{\"apiPathPrefix\":\"/owl/api\"}'"
 
 # The chart runs the shell as UID/GID 101 on a read-only root with emptyDirs at /tmp and /etc/nginx/conf.d

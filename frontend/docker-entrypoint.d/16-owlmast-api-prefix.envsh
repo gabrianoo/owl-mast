@@ -10,7 +10,11 @@
 #   ^/[A-Za-z0-9._~/-]*$ with no empty, "." or ".." segment.
 # One trailing slash is dropped so the shell and the nginx locations see the same prefix. The root
 # and the image's own paths are refused: the template answers 404 at and below the prefix, which
-# must not shadow the shell or collide with a location the image already defines.
+# must not shadow the shell or collide with a location the image already defines. "Own paths" are
+# the two endpoints the template defines and everything that exists under the web root, at the
+# prefix itself or at any parent of it (/index.html, /theme-boot.js, /owl-mark.svg, /assets/...):
+# a 404 at /index.html would answer every app route with 404, because nginx redirects `index` and
+# the SPA fallback into that location.
 
 owlmast_api_prefix="${OWLMAST_API_PATH_PREFIX:-}"
 
@@ -37,4 +41,18 @@ case "$owlmast_api_prefix" in
     /assets | /assets/* | /owlmast-config.json | /api-compatibility.json)
         owlmast_refuse_api_prefix "it collides with a path this image serves itself" ;;
 esac
+# Every file and directory of the build output (the template's `root`), without a list to keep in
+# step with it. The loop walks the prefix and its parents, so a prefix below an existing directory
+# is refused whether or not that exact path exists today (the 404 location would shadow whatever a
+# later build puts there). A web root without the shell cannot be checked, so it is refused too.
+owlmast_web_root=/usr/share/nginx/html
+[ -f "$owlmast_web_root/index.html" ] || owlmast_refuse_api_prefix "the web root $owlmast_web_root has no index.html, so the image's own paths cannot be checked"
+owlmast_api_prefix_part="$owlmast_api_prefix"
+while [ -n "$owlmast_api_prefix_part" ]; do
+    if [ -e "$owlmast_web_root$owlmast_api_prefix_part" ]; then
+        owlmast_refuse_api_prefix "it collides with a path this image serves itself ($owlmast_api_prefix_part)"
+    fi
+    owlmast_api_prefix_part="${owlmast_api_prefix_part%/*}"
+done
+unset owlmast_web_root owlmast_api_prefix_part
 export OWLMAST_API_PATH_PREFIX="$owlmast_api_prefix"
