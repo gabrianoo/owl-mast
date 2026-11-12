@@ -1005,6 +1005,133 @@ class DurableWorkIT {
   }
 
   @Test
+  void aClaimStillCommittingWhenItsDispatchIsCancelledIsGivenBackOnceTheCommitLands() {
+    createNote(TENANT_A, Failure.NONE);
+    UUID itemId = db.workItems().get(0).id();
+    WorkProcessor single = singleItemProcessor();
+    db.installSlowClaimCommit(Duration.ofSeconds(2));
+    try {
+      Disposable wakeUp = single.processTenant(TENANT_A.tenant()).subscribe();
+      await()
+          .atMost(Duration.ofSeconds(10))
+          .pollInterval(Duration.ofMillis(25))
+          .untilAsserted(() ->
+              assertThat(db.commitsInFlight()).as("the claim is inside its COMMIT").isEqualTo(1));
+      assertThat(db.work(itemId).status())
+          .as("no other session sees the claim yet")
+          .isEqualTo("PENDING");
+      wakeUp.dispose();
+      single.quiesce().block(Duration.ofSeconds(10));
+      await()
+          .atMost(Duration.ofSeconds(10))
+          .pollInterval(Duration.ofMillis(25))
+          .untilAsserted(() -> assertThat(db.commitsInFlight()).isZero());
+    } finally {
+      db.removeSlowClaimCommit();
+    }
+
+    WorkRow givenBack = db.work(itemId);
+    assertThat(givenBack.status())
+        .as("the give-back waited for the claim's commit instead of finding nothing to give back")
+        .isEqualTo("PENDING");
+    assertThat(givenBack.attempts()).as("the handler never ran; no attempt is used").isZero();
+    assertThat(givenBack.reason()).isEqualTo("dispatch-cancelled");
+    assertThat(givenBack.leaseToken()).isNull();
+    assertThat(followUp.invocations()).isEmpty();
+
+    assertThat(processor.runOnce().block()).isEqualTo(1L);
+    assertThat(db.work(itemId).attempts()).isEqualTo(1);
+  }
+
+  @Test
+  void aShutdownDuringTheRollbackOfAFailedHandlerRecordsTheFailure() throws Exception {
+    UUID itemId =
+        transactions
+            .inTransaction(scope ->
+                enqueue.enqueue(
+                    EnqueueRequest.of(FollowUpHandler.TYPE, Map.of()).withMaxAttempts(1)))
+            .contextWrite(Scopes.bind(TENANT_A))
+            .block();
+    CompletableFuture<Void> deadlineFired = new CompletableFuture<>();
+    // The statement outlives the handler deadline, so the rollback queues behind it on the same
+    // connection until the server ends it (statement_timeout, 2.75 s into this 5 s lease).
+    followUp.behaveOnce(item ->
+        databaseClient
+            .sql("select pg_sleep(60)")
+            .fetch()
+            .rowsUpdated()
+            .then(Mono.<EffectOutcome>never())
+            .doOnCancel(() -> deadlineFired.complete(null)));
+    HeldWorkRepository watched = new HeldWorkRepository(repository, Call.FAIL);
+    WorkProcessor single =
+        new WorkProcessor(
+            transactions,
+            watched,
+            registry,
+            new TenantInternalOnlyDispatchAuthorization(),
+            new RetryPolicy(
+                policy.maxAttempts(),
+                policy.backoffBase(),
+                policy.backoffCap(),
+                Duration.ofSeconds(5),
+                1,
+                Duration.ofMillis(500)),
+            "rollback-shutdown-processor");
+
+    Disposable wakeUp = single.processTenant(TENANT_A.tenant()).subscribe();
+    deadlineFired.orTimeout(10, TimeUnit.SECONDS).join();
+    // The deadline cancels the handler and then fails the attempt on the same thread; this pause
+    // only lets that thread finish, and is far inside the two seconds the rollback still waits.
+    Thread.sleep(200);
+    assertThat(watched.entered())
+        .as("the transaction is still rolling back; the failure write has not started")
+        .isNotDone();
+    wakeUp.dispose();
+    watched.release();
+    single.quiesce().block(Duration.ofSeconds(10));
+
+    WorkRow failed = db.work(itemId);
+    assertThat(failed.status())
+        .as("the last attempt had already failed; the shutdown does not hand it back uncounted")
+        .isEqualTo("FAILED");
+    assertThat(failed.attempts()).as("the failed attempt counts").isEqualTo(1);
+    assertThat(failed.reason()).isEqualTo("handler-deadline-exceeded");
+    assertThat(failed.finishedAt()).isNotNull();
+    assertThat(failed.leaseToken()).isNull();
+  }
+
+  @Test
+  void aShutdownDuringTheFailureWriteOfAFailedCompletionRecordsTheFailure() {
+    createNote(TENANT_A, Failure.NONE);
+    UUID itemId = db.workItems().get(0).id();
+    // The handler succeeds and the completion write fails, so the attempt fails outside the
+    // handler: only the failure write itself marks the outcome as decided.
+    HeldWorkRepository heldFailure =
+        new HeldWorkRepository(new FailingCompletion(repository), Call.FAIL);
+    WorkProcessor single =
+        new WorkProcessor(
+            transactions,
+            heldFailure,
+            registry,
+            new TenantInternalOnlyDispatchAuthorization(),
+            singleItemPolicy(),
+            "failed-completion-processor");
+
+    Disposable wakeUp = single.processTenant(TENANT_A.tenant()).subscribe();
+    heldFailure.entered().orTimeout(10, TimeUnit.SECONDS).join();
+    wakeUp.dispose();
+    single.quiesce().block(Duration.ofSeconds(10));
+
+    WorkRow failed = db.work(itemId);
+    assertThat(failed.attempts())
+        .as("the attempt failed before the shutdown; it is not handed back uncounted")
+        .isEqualTo(1);
+    assertThat(failed.status()).isEqualTo("PENDING");
+    assertThat(failed.reason()).isEqualTo("IllegalStateException");
+    assertThat(failed.nextAttemptAt()).as("retried with backoff").isAfter(failed.updatedAt());
+  }
+
+  @Test
   void aBatchThatEndsNormallyGivesNothingBack() {
     createNote(TENANT_A, Failure.NONE);
     createNote(TENANT_A, Failure.NONE);
@@ -1684,6 +1811,18 @@ class DurableWorkIT {
                   .contextWrite(context -> Context.empty())
                   .doOnSuccess(claims -> committed.complete(null))
                   .thenMany(Flux.<Claim>never()));
+    }
+  }
+
+  /** Delegates everything, but every completion write fails before it reaches the database. */
+  private static final class FailingCompletion extends DelegatingWorkRepository {
+    private FailingCompletion(WorkRepository delegate) {
+      super(delegate);
+    }
+
+    @Override
+    public Mono<Boolean> complete(UUID id, UUID leaseToken, EffectOutcome outcome) {
+      return Mono.error(new IllegalStateException("fixture: the completion write failed"));
     }
   }
 

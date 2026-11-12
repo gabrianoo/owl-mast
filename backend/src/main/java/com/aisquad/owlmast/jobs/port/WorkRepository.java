@@ -70,8 +70,10 @@ public interface WorkRepository {
    * because its dispatch was cancelled (a graceful shutdown): back to PENDING and due immediately,
    * the attempt count restored, the reason recorded, the consecutive-release count unchanged. The
    * token alone identifies the claim, so this also works when the claimed row never reached the
-   * caller. Emits the number of items given back; zero when the lease is no longer current or the
-   * claim never committed.
+   * caller. A claim that is still committing is waited for (within the statement bound of the
+   * transaction), so the give-back never misses a commit that lands after it looked. Emits the
+   * number of items given back; zero when the lease is no longer current or the claim never
+   * committed.
    */
   Mono<Long> giveBack(UUID leaseToken, String safeReason);
 

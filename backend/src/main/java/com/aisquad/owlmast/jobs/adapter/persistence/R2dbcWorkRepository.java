@@ -57,6 +57,14 @@ class R2dbcWorkRepository implements WorkRepository {
    */
   static final String WALL_CLOCK = "clock_timestamp()";
 
+  /**
+   * Transaction-level advisory lock on the lease token. The claim takes it with the row and holds
+   * it until its transaction has ended (PostgreSQL releases locks only after a commit is visible);
+   * the give-back takes it first, so the two are serialised per token.
+   */
+  private static final String TOKEN_LOCK =
+      "pg_advisory_xact_lock(hashtextextended(cast(:token as text), 0))";
+
   private static final String LEASE_IS_CURRENT =
       " where id = :id and tenant_id = "
           + BOUND_TENANT
@@ -136,7 +144,12 @@ class R2dbcWorkRepository implements WorkRepository {
                 + DUE
                 + CLAIMABLE
                 + " and attempt_count < max_attempts order by next_attempt_at, created_at"
-                + " limit :limit for update skip locked)"
+                + " limit :limit for update skip locked),"
+                // Held until this transaction has ended, so a give-back by the same token waits
+                // for a commit that is still in flight instead of finding no row yet.
+                + " held as materialized (select "
+                + TOKEN_LOCK
+                + ")"
                 + " update jobs.work_item w set status = 'RUNNING',"
                 + " attempt_count = w.attempt_count + 1, lease_owner = :owner,"
                 + " lease_token = :token,"
@@ -146,7 +159,7 @@ class R2dbcWorkRepository implements WorkRepository {
                 + " + make_interval(secs => :leaseSeconds),"
                 + " updated_at = "
                 + WALL_CLOCK
-                + " from due where w.id = due.id"
+                + " from due, held where w.id = due.id"
                 + " returning w.id, w.tenant_id, w.work_type, w.contract_version,"
                 + " w.payload::text as payload, w.attempt_count, w.max_attempts, w.correlation_id,"
                 + " w.lease_token, w.lease_expires_at")
@@ -259,6 +272,14 @@ class R2dbcWorkRepository implements WorkRepository {
 
   @Override
   public Mono<Long> giveBack(UUID leaseToken, String safeReason) {
+    // A statement of its own: the update below must take its snapshot after the claim that holds
+    // this lock has ended, or it would still see the row as it was before the claim.
+    Mono<Void> claimEnded =
+        databaseClient.sql("select " + TOKEN_LOCK).bind("token", leaseToken).then();
+    return claimEnded.then(giveBackNow(leaseToken, safeReason));
+  }
+
+  private Mono<Long> giveBackNow(UUID leaseToken, String safeReason) {
     return databaseClient
         .sql(
             "update jobs.work_item set status = 'PENDING', failure_reason = :reason,"

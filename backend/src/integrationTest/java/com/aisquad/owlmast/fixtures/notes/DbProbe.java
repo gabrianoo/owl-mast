@@ -1,5 +1,6 @@
 package com.aisquad.owlmast.fixtures.notes;
 
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -163,6 +164,36 @@ public final class DbProbe {
   public void removeAuditEventFault() {
     runSql("drop trigger if exists fixture_audit_fault on audit.event");
     runSql("drop function if exists fixture_audit_fault()");
+  }
+
+  /**
+   * Makes the commit of every claim take {@code delay}: a deferred constraint trigger sleeps at
+   * commit time, as a commit does that waits for a synchronous standby. The claim stays invisible
+   * to other sessions meanwhile.
+   */
+  public void installSlowClaimCommit(Duration delay) {
+    runSql(
+        "create or replace function fixture_slow_claim_commit() returns trigger language plpgsql"
+            + " as $$ begin perform pg_sleep("
+            + delay.toMillis() / 1000.0
+            + "); return null; end $$");
+    runSql(
+        "create constraint trigger fixture_slow_claim_commit after update on jobs.work_item"
+            + " deferrable initially deferred for each row"
+            + " when (old.status = 'PENDING' and new.status = 'RUNNING')"
+            + " execute function fixture_slow_claim_commit()");
+  }
+
+  public void removeSlowClaimCommit() {
+    runSql("drop trigger if exists fixture_slow_claim_commit on jobs.work_item");
+    runSql("drop function if exists fixture_slow_claim_commit()");
+  }
+
+  /** Other sessions whose COMMIT is running right now. */
+  public long commitsInFlight() {
+    return count(
+        "select count(*) from pg_stat_activity where state = 'active'"
+            + " and pid <> pg_backend_pid() and query ilike 'commit%'");
   }
 
   private static WorkRow toWorkRow(io.r2dbc.spi.Readable row) {

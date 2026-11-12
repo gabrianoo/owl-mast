@@ -348,11 +348,11 @@ public final class WorkProcessor {
   /**
    * The slot was cancelled from outside (a graceful shutdown). An attempt whose outcome is still
    * open is handed back at once and uncounted, by the lease token alone, so a claim whose answer
-   * never arrived is covered too; an attempt that had already failed or been denied gets that
-   * outcome written instead, so the shutdown cannot erase it. Either write is fenced by the lease
-   * this slot holds and changes nothing once the item left {@code RUNNING}. Without it the item
-   * would stay {@code RUNNING} until its lease ran out and the reclaim would count an attempt the
-   * item never failed.
+   * never arrived, or whose commit is still in flight (the give-back waits for it), is covered too;
+   * an attempt that had already failed or been denied gets that outcome written instead, so the
+   * shutdown cannot erase it. Either write is fenced by the lease this slot holds and changes
+   * nothing once the item left {@code RUNNING}. Without it the item would stay {@code RUNNING}
+   * until its lease ran out and the reclaim would count an attempt the item never failed.
    */
   private void settleCancelled(Dispatch dispatch) {
     if (dispatch.ended()) {
