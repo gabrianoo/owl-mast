@@ -145,6 +145,8 @@ routing:
 # 1.1.1 and its pgvector dependency installed in the database).
 database:
   bundled: true
+  # template0 and template1 are refused; postgres is refused on the bundled PostgreSQL (the same rule holds
+  # for identity.keycloak.database.name).
   name: owlmast
   # Existing Secret with keys `username` and `password` for the application principal.
   existingSecret: owl-mast-db
@@ -267,6 +269,8 @@ identity:
         sslMode: require
         allowInsecureTransport: false
     service:
+      # Part of the cluster-local issuer (http://<fullname>-keycloak:<port>/realms/<realm>). Port 80 is left
+      # out of KC_HOSTNAME and of the backend's issuer, because Keycloak publishes its issuer without it.
       port: 8080
       managementPort: 9000
     resources:

@@ -1745,6 +1745,92 @@ class ReviewCycle4Test(unittest.TestCase):
                     render(*args); render("--skip-schema-validation", *args)
 
 
+@unittest.skipIf(HELM is None, "helm binary required (OWLMAST_HELM)")
+class ReviewCycle6Test(unittest.TestCase):
+    """PR #116 review 5867533032 (cycle 6)."""
+
+    def bundled_issuer(self, *args):
+        """(KC_HOSTNAME, backend issuer, NOTES issuer, Service port) of one bundled-Keycloak render."""
+        docs = render(*args)
+        d = deployments_of(docs)
+        service = next(s for s in by_kind(docs, "Service") if s["metadata"]["name"] == "t-owl-mast-keycloak")
+        printed = re.search(r"^Identity:\s+bundled Keycloak -> (\S+)$", notes(*args), re.M).group(1)
+        return (env_of(d["t-owl-mast-keycloak"])["KC_HOSTNAME"]["value"], env_of(d["t-owl-mast-backend"])["OWLMAST_IDENTITY_ISSUER_URI"]["value"],
+                printed, service["spec"]["ports"][0])
+
+    def test_bundled_keycloak_on_port_80_publishes_the_issuer_the_backend_expects(self):
+        """4545058435: Keycloak drops the scheme's default port from the issuer it publishes, so a rendered ':80' never matched."""
+        hostname, issuer, printed, port = self.bundled_issuer(*sets("identity.keycloak.service.port=80"))
+        self.assertEqual(hostname, "http://t-owl-mast-keycloak")
+        self.assertEqual(issuer, "http://t-owl-mast-keycloak/realms/owl-mast")
+        self.assertEqual(issuer, f"{hostname}/realms/owl-mast")
+        self.assertEqual(printed, issuer)
+        # the Service still listens on 80 and still targets the container's http port
+        self.assertEqual((port["port"], port["targetPort"]), (80, "http"))
+        # a values file carries the port as a float, --set-string as a string: the same result
+        for args in (["--set-json", "identity.keycloak.service.port=80.0"], ["--skip-schema-validation", "--set-string", "identity.keycloak.service.port=80"]):
+            self.assertEqual(self.bundled_issuer(*args)[:2], (hostname, issuer), args)
+
+    def test_bundled_keycloak_on_another_port_keeps_it_in_both_values(self):
+        """4545058435: every port but 80 stays, 443 included (the bundle is http, so 443 is not its default port)."""
+        for value in (8080, 8081, 443, 8, 800, 65535):
+            hostname, issuer, printed, port = self.bundled_issuer(*sets(f"identity.keycloak.service.port={value}"))
+            self.assertEqual(hostname, f"http://t-owl-mast-keycloak:{value}", value)
+            self.assertEqual(issuer, f"{hostname}/realms/owl-mast", value)
+            self.assertEqual(printed, issuer, value)
+            self.assertEqual(port["port"], value)
+
+    def test_the_bundled_base_url_has_one_source(self):
+        """4545058435: the two values came from two printf calls that could drift apart."""
+        helpers = (CHART / "templates" / "_helpers.tpl").read_text()
+        deployment = (CHART / "templates" / "keycloak-deployment.yaml").read_text()
+        self.assertIn('value: {{ include "owl-mast.keycloak.baseUrl" . | quote }}', deployment)
+        self.assertIn('printf "%s/realms/%s" (include "owl-mast.keycloak.baseUrl" .)', helpers)
+        for text in (deployment, (CHART / "templates" / "NOTES.txt").read_text()):
+            self.assertNotIn("keycloak.service.port", text)
+        self.assertEqual(helpers.count("keycloak.service.port"), 1)
+
+    def test_the_keycloak_network_policy_admits_the_container_port_whatever_the_service_port(self):
+        """4545058435: a NetworkPolicy port is the pod's port; the Service port must not leak into it."""
+        docs = render(*sets("identity.keycloak.service.port=80"))
+        policy = next(p for p in by_kind(docs, "NetworkPolicy") if p["metadata"]["name"] == "t-owl-mast-keycloak")
+        self.assertEqual([p["port"] for rule in policy["spec"]["ingress"] for p in rule["ports"]], [8080])
+        container = deployments_of(docs)["t-owl-mast-keycloak"]["spec"]["template"]["spec"]["containers"][0]
+        self.assertIn({"name": "http", "containerPort": 8080}, [{k: p[k] for k in ("name", "containerPort")} for p in container["ports"]])
+
+    def test_postgresql_system_databases_are_refused_as_database_names(self):
+        """4545058440: postgres, template0 and template1 rendered and failed only after initdb."""
+        for key in ("database.name", "identity.keycloak.database.name"):
+            for name in ("template0", "template1"):
+                self.assertIn("schema", refused(*sets(f"{key}={name}")).lower(), (key, name))
+                for spelling in (name, name.upper(), name.capitalize()):
+                    err = refused("--skip-schema-validation", *sets(f"{key}={spelling}"))
+                    self.assertIn(f'{key}="{spelling}" is refused: template0 and template1', err, (key, spelling))
+                # an external server does not make a template database usable
+                err = refused(*sets(*ReviewFindingsTest.EXTERNAL_DB, f"{key}={name}"))
+                self.assertIn("schema", err.lower(), (key, name))
+                err = refused("--skip-schema-validation", *sets(*ReviewFindingsTest.EXTERNAL_DB, f"{key}={name}"))
+                self.assertIn(f'{key}="{name}" is refused', err, (key, name))
+            err = refused(*sets(f"{key}=postgres"))
+            self.assertIn(f'{key}="postgres" is refused with database.bundled=true', err, key)
+            for spelling in ("POSTGRES", "Postgres"):
+                self.assertIn("schema", refused(*sets(f"{key}={spelling}")).lower(), (key, spelling))
+                err = refused("--skip-schema-validation", *sets(f"{key}={spelling}"))
+                self.assertIn(f'{key}="{spelling}" is refused with database.bundled=true', err, (key, spelling))
+            # an external server may use postgres: the chart runs no script there
+            render(*sets(*ReviewFindingsTest.EXTERNAL_DB, f"{key}=postgres"))
+            # names that only contain a reserved name are ordinary names
+            for name in ("postgres_app", "template2", "template01", "my_template1"):
+                render(*sets(f"{key}={name}"))
+
+    def test_an_unused_keycloak_database_name_is_not_validated_by_the_templates(self):
+        """4545058440: with an external issuer nothing reads identity.keycloak.database.name."""
+        external_id = sets(*ReviewFindingsTest.EXTERNAL_ID, "identity.external.issuerUri=https://idp.example/realms/x")
+        render(*external_id, *sets("identity.keycloak.database.name=postgres"))
+        render("--skip-schema-validation", *external_id, *sets("identity.keycloak.database.name=template1"))
+        self.assertIn('database.name="postgres" is refused', refused(*external_id, *sets("database.name=postgres")))
+
+
 def notes_for(release, *args):
     result = helm("install", release, str(CHART), "--dry-run=client", *args)
     if result.returncode != 0:

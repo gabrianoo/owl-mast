@@ -104,12 +104,44 @@ characters, the limit of its PostgreSQL Service name) therefore renders the clai
 {{- if .Values.database.bundled -}}disable{{- else -}}{{ .Values.identity.keycloak.database.external.sslMode }}{{- end -}}
 {{- end -}}
 
+{{/*
+Base URL of the bundled Keycloak, the one value behind both KC_HOSTNAME and the issuer the backend trusts.
+Keycloak leaves the scheme's default port out of the issuer it publishes (HostnameV2Provider sanitises the
+port), and the backend compares issuers exactly, so port 80 is left out here too. The bundle is http only,
+so 443 is an ordinary port and stays.
+*/}}
+{{- define "owl-mast.keycloak.baseUrl" -}}
+{{- $port := int .Values.identity.keycloak.service.port -}}
+{{- if eq $port 80 -}}
+{{- printf "http://%s" (include "owl-mast.keycloak.fullname" .) -}}
+{{- else -}}
+{{- printf "http://%s:%d" (include "owl-mast.keycloak.fullname" .) $port -}}
+{{- end -}}
+{{- end -}}
+
 {{/* Issuer the backend trusts: bundled Keycloak realm or the supplied external issuer. */}}
 {{- define "owl-mast.identity.issuerUri" -}}
 {{- if .Values.identity.bundled -}}
-{{- printf "http://%s:%v/realms/%s" (include "owl-mast.keycloak.fullname" .) .Values.identity.keycloak.service.port .Values.identity.realm -}}
+{{- printf "%s/realms/%s" (include "owl-mast.keycloak.baseUrl" .) .Values.identity.realm -}}
 {{- else -}}
 {{- .Values.identity.external.issuerUri -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+PostgreSQL system databases are never an application database. Arguments: value path, name, whether the
+bundled PostgreSQL serves it. template0 and template1 are refused everywhere; postgres only on the bundled
+server, where the init scripts would refuse it after initdb (it is owned by the superuser). The comparison
+ignores case: the schema admits lowercase only, and this also holds with --skip-schema-validation.
+*/}}
+{{- define "owl-mast.validateDatabaseName" -}}
+{{- $path := index . 0 -}}
+{{- $name := lower (toString (index . 1)) -}}
+{{- if has $name (list "template0" "template1") -}}
+{{- fail (printf "%s=%q is refused: template0 and template1 are PostgreSQL's template databases, never an application database" $path (index . 1)) -}}
+{{- end -}}
+{{- if and (index . 2) (eq $name "postgres") -}}
+{{- fail (printf "%s=%q is refused with database.bundled=true: postgres is the maintenance database of the bundled PostgreSQL, owned by the superuser, so the initialisation scripts would refuse it only after initdb and leave the volume without the role and database" $path (index . 1)) -}}
 {{- end -}}
 {{- end -}}
 
@@ -162,7 +194,9 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- end -}}
 {{- include "owl-mast.validateSslMode" (list "database.external" $v.database.external) -}}
 {{- end -}}
+{{- include "owl-mast.validateDatabaseName" (list "database.name" $v.database.name $v.database.bundled) -}}
 {{- if $v.identity.bundled -}}
+{{- include "owl-mast.validateDatabaseName" (list "identity.keycloak.database.name" $v.identity.keycloak.database.name $v.database.bundled) -}}
 {{- if and (eq (include "owl-mast.keycloak.bootstrapAdminEnabled" .) "true") (not $v.identity.keycloak.bootstrapExistingSecret) -}}
 {{- fail "identity.keycloak.bootstrapExistingSecret is required when identity.bundled=true and identity.keycloak.bootstrapAdmin.enabled=true" -}}
 {{- end -}}

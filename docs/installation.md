@@ -100,7 +100,10 @@ port range as well. The
 backend also refuses a plaintext `http://` issuer by itself unless `owlmast.identity.allow-insecure-issuer` is
 true, which the chart sets (`OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER`) only for the cluster-local bundled Keycloak
 or for `identity.external.allowInsecureIssuer=true`, so the rule holds on every deployment path. The issuer is
-used verbatim: a trailing slash is part of it. `backend.javaToolOptions` accepts a named allow-list of JVM memory
+used verbatim: a trailing slash is part of it. For the bundled Keycloak the chart builds `KC_HOSTNAME` and the
+backend's issuer from one helper (`http://<fullname>-keycloak:<identity.keycloak.service.port>`), and leaves the
+port out when it is 80, because Keycloak publishes its issuer without the scheme's default port. This is render
+support, covered by render tests; only the default port 8080 was run on the local target. `backend.javaToolOptions` accepts a named allow-list of JVM memory
 and tuning options only: `-Xms`/`-Xmx`/`-Xmn`/`-Xss` with a size, and the `-XX` options listed next to the value
 in `values.yaml` (for example `-XX:MaxRAMPercentage=75`, `-XX:+UseZGC`). System properties (`-D…`), agents,
 argument files and every other `-XX` option are refused, the file-loading, hook and attach options included
@@ -221,6 +224,11 @@ who can pose as the database and collect the application's and Keycloak's creden
 needs `sslMode=verify-full` with a mounted CA, which the chart does not ship yet; both that mount and TLS for the
 bundled PostgreSQL are tracked as deferred work. The release NOTES state this for every bundled-database
 install.
+
+Rendering refuses PostgreSQL's system databases as `database.name` or `identity.keycloak.database.name`,
+whatever their case: `template0` and `template1` always, and `postgres` when the bundled PostgreSQL serves the
+database (there the scripts would refuse it only after `initdb`, because the superuser owns it). An external
+server may use `postgres`, as some managed services provide nothing else.
 
 `database.name`, `identity.keycloak.database.name` and the usernames and passwords in the principals' Secrets are
 fixed at first initialisation: the scripts run once, on an empty data directory, and a later change of these

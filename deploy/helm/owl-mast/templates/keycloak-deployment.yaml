@@ -108,7 +108,7 @@ spec:
             {{- end }}
             # Cluster-local issuer; public origins and TLS termination are an OM-02.01 gate.
             - name: KC_HOSTNAME
-              value: {{ printf "http://%s:%v" (include "owl-mast.keycloak.fullname" .) .Values.identity.keycloak.service.port | quote }}
+              value: {{ include "owl-mast.keycloak.baseUrl" . | quote }}
             - name: KC_HTTP_ENABLED
               value: "true"
             - name: KC_HEALTH_ENABLED

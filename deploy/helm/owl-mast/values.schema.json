@@ -57,7 +57,8 @@
       "type": "string",
       "pattern": "^[a-z_][a-z0-9_]*$",
       "maxLength": 63,
-      "description": "PostgreSQL identifiers are truncated to 63 bytes (NAMEDATALEN-1); a longer name would create a database the URLs never find."
+      "not": {"enum": ["template0", "template1"]},
+      "description": "PostgreSQL identifiers are truncated to 63 bytes (NAMEDATALEN-1); a longer name would create a database the URLs never find. template0 and template1 are PostgreSQL's template databases; postgres is refused by the templates when the bundled PostgreSQL serves the database."
     },
     "execProbe": {
       "type": "object",
