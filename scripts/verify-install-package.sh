@@ -86,4 +86,6 @@ fi
 printf '%s\n' "$venv_stamp" >"$VENV/.owlmast-stamp"
 "$VENV/bin/python" -m pip list --format=freeze --disable-pip-version-check 2>/dev/null | grep -iE '^(pyyaml|jsonschema)=='
 cd "$ROOT"
-"$VENV/bin/python" -m unittest discover -s deploy/tests -t . -v
+# The suite runs the scripts under test (qualify-local-install.sh parses manifests with `python3` and PyYAML), so
+# the environment's interpreter comes first on PATH: the scripts see the pinned packages, never the host's.
+PATH="$VENV/bin:$PATH" "$VENV/bin/python" -m unittest discover -s deploy/tests -t . -v
