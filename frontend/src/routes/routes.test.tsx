@@ -72,7 +72,7 @@ describe('Daily Work connection panel (AC3/AC4)', () => {
     expect(screen.queryByText('Compatible frontend and backend')).toBeNull();
   });
 
-  it('removes shown content on a background denial without moving focus, and offers a working return', async () => {
+  it('removes shown content on a background denial, focuses the neutral heading, and offers a working return', async () => {
     vi.useFakeTimers();
     try {
       const { client } = clientReturning([{ kind: 'ok', value: compatible }, { kind: 'denied', status: 403 }]);
@@ -89,9 +89,17 @@ describe('Daily Work connection panel (AC3/AC4)', () => {
       expect(screen.queryByText('Compatible frontend and backend')).toBeNull();
       expect(screen.queryByText('0.1.0-SNAPSHOT')).toBeNull();
       const heading = screen.getByRole('heading', { level: 3, name: "This connection isn't available to this session" });
-      // A background check is not a user action: focus stays where the person is working.
-      expect(scope).toHaveFocus();
+      // OM-01.04 matrix row "Denied": the heading is focused, from a background check too, and the
+      // polite live region announces the state as well.
+      expect(heading).toHaveFocus();
+      expect(scope).not.toHaveFocus();
       expect(heading.closest('[role="status"]')).toHaveAttribute('aria-live', 'polite');
+      // The same denial confirmed by the next check does not take focus again.
+      scope.focus();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(scope).toHaveFocus();
       expect(screen.getByText('Unavailable')).toBeInTheDocument();
       const back = screen.getByRole('link', { name: 'Return to Daily Work' });
       expect(back).toHaveAttribute('href', '/');
@@ -105,11 +113,44 @@ describe('Daily Work connection panel (AC3/AC4)', () => {
     }
   });
 
-  it('leaves focus at the document start when the first check is denied', async () => {
+  it('focuses the neutral heading again when a denial returns after a recovery', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client } = clientReturning([{ kind: 'denied', status: 403 }, { kind: 'ok', value: compatible }, { kind: 'denied', status: 403 }]);
+      renderApp(client);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      const title = "This connection isn't available to this session";
+      expect(screen.getByRole('heading', { level: 3, name: title })).toHaveFocus();
+      // A denial is held against later answers: the recovery waits behind "New updates".
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      await act(async () => {
+        screen.getByRole('button', { name: 'Show 1 new update' }).click();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByText('Compatible frontend and backend')).toBeInTheDocument();
+      const scope = screen.getByRole('button', { name: 'Change scope' });
+      scope.focus();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      // The second denial is a new appearance, not the first one confirmed.
+      expect(screen.getByRole('heading', { level: 3, name: title })).toHaveFocus();
+      expect(scope).not.toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('focuses the neutral heading when the first check is denied', async () => {
     const { client } = clientReturning([{ kind: 'denied', status: 401 }]);
     renderApp(client);
-    expect(await screen.findByRole('heading', { level: 3, name: "This connection isn't available to this session" })).not.toHaveFocus();
-    expect(document.body).toHaveFocus();
+    const heading = await screen.findByRole('heading', { level: 3, name: "This connection isn't available to this session" });
+    expect(heading).toHaveFocus();
+    expect(heading.closest('[role="status"]')).toHaveAttribute('aria-live', 'polite');
   });
 
   it('moves focus to the neutral heading when a denial removes the control that held it', async () => {
@@ -142,13 +183,13 @@ describe('Daily Work connection panel (AC3/AC4)', () => {
     }
   });
 
-  it('does not move focus on a denial after the person left the control (focus fell to the document)', async () => {
+  it('does not move focus on a rollback after the person left the control (focus fell to the document)', async () => {
     vi.useFakeTimers();
     try {
       const { client } = clientReturning([
         { kind: 'ok', value: compatible },
         { kind: 'ok', value: { ...compatible, backendVersion: '0.2.0' } },
-        { kind: 'denied', status: 403 },
+        { kind: 'ok', value: { ...compatible, apiContract: { major: 2, minor: 0 } } },
       ]);
       renderApp(client);
       await act(async () => {
@@ -168,8 +209,8 @@ describe('Daily Work connection panel (AC3/AC4)', () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1000);
       });
-      const heading = screen.getByRole('heading', { level: 3, name: "This connection isn't available to this session" });
-      expect(heading).not.toHaveFocus();
+      expect(screen.getByText('Incompatible frontend and backend')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { level: 2, name: 'Workspace connection' })).not.toHaveFocus();
       expect(document.body).toHaveFocus();
     } finally {
       vi.useRealTimers();
@@ -182,7 +223,7 @@ describe('Daily Work connection panel (AC3/AC4)', () => {
       const { client } = clientReturning([
         { kind: 'ok', value: compatible },
         { kind: 'ok', value: { ...compatible, backendVersion: '0.2.0' } },
-        { kind: 'denied', status: 403 },
+        { kind: 'ok', value: { ...compatible, apiContract: { major: 2, minor: 0 } } },
       ]);
       renderApp(client);
       await act(async () => {
@@ -203,7 +244,7 @@ describe('Daily Work connection panel (AC3/AC4)', () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1000);
       });
-      expect(screen.getByRole('heading', { level: 3, name: "This connection isn't available to this session" })).toHaveFocus();
+      expect(screen.getByRole('heading', { level: 2, name: 'Workspace connection' })).toHaveFocus();
     } finally {
       vi.useRealTimers();
     }

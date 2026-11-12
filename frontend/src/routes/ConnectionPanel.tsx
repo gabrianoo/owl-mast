@@ -67,10 +67,12 @@ function formatTime(date: Date): string {
  * pair or no descriptor), error, and compatible. A changed descriptor waits behind "New updates";
  * answers that fail closed apply at once.
  *
- * Focus: a denial that arrives from a background check or on first paint is announced through the
- * state message's polite live region and never moves focus (no unexpected change of context). Focus
- * moves only to repair it: when the control that held the person's focus was removed by the change, focus
- * goes to the denial's neutral heading (or, for any other change, to this panel's heading).
+ * Focus: a denial moves focus to its neutral heading when it appears, on first paint and from a
+ * background check alike (OM-01.04 matrix row "Denied": the content the person was reading is gone),
+ * and the state message's polite live region announces it as well. A denial that is already shown
+ * does not take focus again on the next check. While a modal dialog is open the page behind it is
+ * inert and cannot take focus, so the move waits until the dialog has closed. No other background change takes focus: it moves
+ * only to repair it, to this panel's heading, when the change removed the control that held it.
  */
 export function ConnectionPanel({ pollIntervalMs = CONNECTION_POLL_MS }: { pollIntervalMs?: number }) {
   const api = useApi();
@@ -80,6 +82,8 @@ export function ConnectionPanel({ pollIntervalMs = CONNECTION_POLL_MS }: { pollI
   const sectionRef = useRef<HTMLElement | null>(null);
   const lastFocusedRef = useRef<Element | null>(null);
   const deniedTitleRef = useRef<HTMLElement | null>(null);
+  const deniedShownRef = useRef(false);
+  const deniedFocusWaitsRef = useRef(false);
 
   const load = useCallback(() => api.get(DESCRIPTOR_PATH, { protected: false }, parseDescriptor), [api]);
   const resource = useRevalidatingResource<Probe>({
@@ -129,16 +133,51 @@ export function ConnectionPanel({ pollIntervalMs = CONNECTION_POLL_MS }: { pollI
   const denied = probe?.kind === 'denied';
   const pendingCount = resource.pendingCount;
   useEffect(() => {
-    // Repair only: the control that held focus (the "Show update" button, the return link) was removed
-    // by a change of the shown answer and focus fell back to the document. It goes to the neutral
-    // heading of a denial, otherwise to this panel's heading. Focus anywhere else is left alone.
+    // A denial that has just appeared takes focus to its neutral heading, wherever focus was. Only
+    // the transition does: the same denial confirmed by a later check leaves focus alone.
+    const appeared = denied && !deniedShownRef.current;
+    deniedShownRef.current = denied;
+    if (!denied) deniedFocusWaitsRef.current = false;
+    if (appeared) {
+      lastFocusedRef.current = null;
+      const title = deniedTitleRef.current;
+      title?.focus();
+      // An open modal dialog makes everything behind it inert, so the heading could not take focus
+      // (and must not: focus stays in the dialog). The move is owed until the dialog has closed.
+      deniedFocusWaitsRef.current = title !== null && document.activeElement !== title && document.querySelector('dialog[open]') !== null;
+      return;
+    }
+    // Every other change repairs only: the control that held focus (the "Show update" button, the
+    // return link) was removed by a change of the shown answer and focus fell back to the document.
+    // It goes to this panel's heading. Focus anywhere else is left alone.
     const last = lastFocusedRef.current;
     if (last === null || last.isConnected) return;
     lastFocusedRef.current = null;
     const active = document.activeElement;
     if (active !== null && active !== document.body) return;
-    (denied ? deniedTitleRef.current : headingRef.current)?.focus();
+    headingRef.current?.focus();
   }, [probe, denied, pendingCount]);
+  useEffect(() => {
+    if (!denied) return undefined;
+    // The owed move. `close` does not bubble, so it is caught on the way down. The dialog's own
+    // close handler runs after this one and returns focus to the control that opened it; the
+    // heading takes focus in the next task, once that has happened.
+    let timer: number | undefined;
+    const onDialogClose = () => {
+      if (!deniedFocusWaitsRef.current) return;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        if (!deniedFocusWaitsRef.current || document.querySelector('dialog[open]') !== null) return;
+        deniedFocusWaitsRef.current = false;
+        deniedTitleRef.current?.focus();
+      }, 0);
+    };
+    document.addEventListener('close', onDialogClose, true);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener('close', onDialogClose, true);
+    };
+  }, [denied]);
   const checkedAt = resource.receivedAt ? `Checked at ${formatTime(resource.receivedAt)} (browser time).` : '';
 
   return (
