@@ -183,6 +183,44 @@ class IdentityDiscoveryHealthIndicatorTest {
   }
 
   @Test
+  void aPositiveIntervalExpiresOnTheProductionClockAndTimer() throws Exception {
+    // The only test that lets a positive interval run out in real time, on the pair production
+    // uses (System::nanoTime and Schedulers.parallel(), through the three-argument constructor).
+    // It checks the expiry side only, which cannot fail on a slow machine: there is no "still
+    // cached just before the interval ends" assertion here; the virtual-clock tests hold those.
+    Duration ttl = Duration.ofMillis(250);
+    try (StubIdentityProvider provider = StubIdentityProvider.start("owl-mast")) {
+      for (int attempt = 1; attempt <= 5; attempt++) {
+        IdentityDiscoveryHealthIndicator indicator =
+            new IdentityDiscoveryHealthIndicator(
+                WebClient.create(), new IdentityProperties(provider.issuerUri(), true), ttl);
+        int before = provider.discoveryRequests();
+        long asked = System.nanoTime();
+        assertThat(indicator.health().block(ANSWER).getStatus()).isEqualTo(Status.UP);
+        long answeredAfter = System.nanoTime() - asked;
+        assertThat(provider.discoveryRequests()).isEqualTo(before + 1);
+        if (answeredAfter >= ttl.toNanos()) {
+          // The answer may have used up the interval: then nothing was handed to the timer and
+          // this attempt would prove nothing. A cold first request can be that slow; retry.
+          continue;
+        }
+        // The answer came back inside the interval, so the rest of it was handed to the timer.
+        // Only that timer can clear the result: keep evaluating until a second request is made.
+        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while (provider.discoveryRequests() < before + 2 && System.nanoTime() < deadline) {
+          Thread.sleep(25);
+          assertThat(indicator.health().block(ANSWER).getStatus()).isEqualTo(Status.UP);
+        }
+        assertThat(provider.discoveryRequests())
+            .as("a second discovery request once the %s interval has run out", ttl)
+            .isEqualTo(before + 2);
+        return;
+      }
+      throw new AssertionError("five discovery answers in a row took longer than " + ttl);
+    }
+  }
+
+  @Test
   void aPublishedIssuerIsReportedBoundedAndPrintable(CapturedOutput output) {
     // JSON escapes, as the stub splices the text into the document: CR, LF and BEL once parsed.
     String hostile =
