@@ -65,8 +65,8 @@ fi
 # with hashes in deploy/tests/requirements.txt (generated from requirements.in) and installed with
 # --require-hashes into a virtual environment of its own, so the suite never runs against whatever the
 # interpreter happens to have and nothing is installed into it (E01-R-11). The environment is kept in
-# OWLMAST_TOOLS_DIR when that is set and reused while the requirements file is unchanged (its sha256 is
-# stamped into the environment); otherwise it is created in a scratch directory for this run.
+# OWLMAST_TOOLS_DIR when that is set and reused while the requirements file and the interpreter are unchanged
+# (both are stamped into the environment); otherwise it is created in a scratch directory for this run.
 REQUIREMENTS="$ROOT/deploy/tests/requirements.txt"
 VENV_HOME="${OWLMAST_TOOLS_DIR:-}"
 if [ -z "$VENV_HOME" ]; then
@@ -74,13 +74,16 @@ if [ -z "$VENV_HOME" ]; then
   trap 'rm -rf "$VENV_HOME"' EXIT
 fi
 VENV="$VENV_HOME/deploy-tests-venv"
-requirements_sha="$(sha256sum "$REQUIREMENTS" | cut -d' ' -f1)"
-if [ ! -x "$VENV/bin/python" ] || [ "$(cat "$VENV/.requirements-sha256" 2>/dev/null)" != "$requirements_sha" ]; then
+# The stamp also names the interpreter the environment was built from, so a changed python3 rebuilds it; the
+# hashed install runs every time (a no-op when every pinned version is in place, a reinstall of any that drifted).
+venv_stamp="$(sha256sum "$REQUIREMENTS" | cut -d' ' -f1) $(command -v python3) $(python3 -c 'import sys; print(sys.version.split()[0])')"
+if [ ! -x "$VENV/bin/python" ] || [ "$(cat "$VENV/.owlmast-stamp" 2>/dev/null)" != "$venv_stamp" ]; then
   rm -rf "$VENV"
   python3 -m venv "$VENV"
-  "$VENV/bin/python" -m pip install --quiet --disable-pip-version-check --require-hashes -r "$REQUIREMENTS"
-  printf '%s\n' "$requirements_sha" >"$VENV/.requirements-sha256"
 fi
+"$VENV/bin/python" -m pip install --quiet --disable-pip-version-check --require-hashes -r "$REQUIREMENTS"
+"$VENV/bin/python" -m pip check --disable-pip-version-check
+printf '%s\n' "$venv_stamp" >"$VENV/.owlmast-stamp"
 "$VENV/bin/python" -m pip list --format=freeze --disable-pip-version-check 2>/dev/null | grep -iE '^(pyyaml|jsonschema)=='
 cd "$ROOT"
 "$VENV/bin/python" -m unittest discover -s deploy/tests -t . -v

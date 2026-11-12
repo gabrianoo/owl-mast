@@ -76,7 +76,7 @@ check "application jar present at /app/owl-mast.jar" run --entrypoint test "$IMA
 check "application jar is a Spring Boot executable archive" bash -c "docker run --rm --network none --entrypoint sh '$IMAGE' -c 'cd /tmp && jar tf /app/owl-mast.jar 2>/dev/null || unzip -l /app/owl-mast.jar' | grep 'BOOT-INF/lib/' >/dev/null"
 check "entrypoint runs the application jar with native access enabled for Netty" bash -c "[ \"\$(docker image inspect -f '{{json .Config.Entrypoint}}' '$IMAGE')\" = '[\"java\",\"--enable-native-access=ALL-UNNAMED\",\"-jar\",\"/app/owl-mast.jar\"]' ]"
 # The native-access option must be the image's own: the chart's JAVA_TOOL_OPTIONS allow-list refuses it.
-check "the chart's javaToolOptions allow-list does not admit --enable-native-access (so the image must set it)" bash -c '! grep -q "enable-native-access" deploy/helm/owl-mast/values.schema.json deploy/helm/owl-mast/templates/_helpers.tpl'
+check "the chart's javaToolOptions allow-list does not admit --enable-native-access (so the image must set it)" bash -c 'for f in deploy/helm/owl-mast/values.schema.json deploy/helm/owl-mast/templates/_helpers.tpl; do test -f "$f" || { echo "missing $f" >&2; exit 1; }; done; ! grep -q "enable-native-access" deploy/helm/owl-mast/values.schema.json deploy/helm/owl-mast/templates/_helpers.tpl'
 
 
 # The application itself, started by the image's own entrypoint exactly as the chart's pod runs it, with the

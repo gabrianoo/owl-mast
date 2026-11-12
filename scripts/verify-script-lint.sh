@@ -12,8 +12,8 @@
 # and are not linted. `scripts/verify-quality-gates.sh` injects one shell and one Python defect into a copy
 # and requires this script to fail naming each. Tools: OWLMAST_SHELLCHECK / OWLMAST_RUFF name binaries to use as given; otherwise shellcheck is
 # fetched (linux-x86_64 release archive, sha256 verified, re-extracted on every run) into OWLMAST_TOOLS_DIR
-# or a scratch directory, and ruff is taken from PATH when it is exactly the pinned version or installed
-# from the hashed requirements into a scratch virtual environment.
+# or a scratch directory, and ruff is installed from the hashed requirements into a virtual environment there
+# (never taken from PATH).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -52,14 +52,19 @@ shellcheck_version="$("$OWLMAST_SHELLCHECK" --version | sed -n 's/^version: //p'
 [ "v$shellcheck_version" = "$SHELLCHECK_VERSION" ] || { echo "verify-script-lint: $OWLMAST_SHELLCHECK is shellcheck $shellcheck_version, not $SHELLCHECK_VERSION" >&2; exit 1; }
 
 if [ -z "${OWLMAST_RUFF:-}" ]; then
-  if command -v ruff >/dev/null 2>&1 && [ "$(ruff --version)" = "ruff $RUFF_VERSION" ]; then
-    OWLMAST_RUFF="$(command -v ruff)"
-  else
-    scratch_tools
-    python3 -m venv "$TOOLS/ruff-venv"
-    "$TOOLS/ruff-venv/bin/python" -m pip install --quiet --disable-pip-version-check --require-hashes -r scripts/lint-requirements.txt
-    OWLMAST_RUFF="$TOOLS/ruff-venv/bin/ruff"
+  # Never a ruff found on PATH: a version string proves nothing about the binary. The environment is reused
+  # from OWLMAST_TOOLS_DIR only while the requirements and the interpreter are the ones it was built from, and
+  # the hashed install runs every time (a no-op when the pinned version is already there).
+  scratch_tools
+  ruff_venv="$TOOLS/ruff-venv"
+  ruff_stamp="$(sha256sum scripts/lint-requirements.txt | cut -d' ' -f1) $(command -v python3) $(python3 -c 'import sys; print(sys.version.split()[0])')"
+  if [ ! -x "$ruff_venv/bin/python" ] || [ "$(cat "$ruff_venv/.owlmast-stamp" 2>/dev/null)" != "$ruff_stamp" ]; then
+    rm -rf "$ruff_venv"
+    python3 -m venv "$ruff_venv"
   fi
+  "$ruff_venv/bin/python" -m pip install --quiet --disable-pip-version-check --require-hashes -r scripts/lint-requirements.txt
+  printf '%s\n' "$ruff_stamp" >"$ruff_venv/.owlmast-stamp"
+  OWLMAST_RUFF="$ruff_venv/bin/ruff"
 fi
 [ "$("$OWLMAST_RUFF" --version)" = "ruff $RUFF_VERSION" ] || { echo "verify-script-lint: $OWLMAST_RUFF is $("$OWLMAST_RUFF" --version), not ruff $RUFF_VERSION" >&2; exit 1; }
 
