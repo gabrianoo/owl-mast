@@ -26,6 +26,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.r2dbc.core.DatabaseClient.GenericExecuteSpec;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import tools.jackson.core.type.TypeReference;
@@ -80,6 +81,9 @@ class R2dbcWorkRepository implements WorkRepository {
 
   private final DatabaseClient databaseClient;
 
+  /** Only for the cross-tenant discovery, which has no scope to open a scoped transaction with. */
+  private final TransactionalOperator transactionalOperator;
+
   /** The claimed columns before decoding, so a decoding failure can still name the row. */
   private record RawClaim(
       UUID id,
@@ -122,7 +126,8 @@ class R2dbcWorkRepository implements WorkRepository {
   }
 
   @Override
-  public Flux<Claim> claim(int limit, Duration lease, String leaseOwner, Set<WorkType> types) {
+  public Flux<Claim> claim(
+      int limit, Duration lease, String leaseOwner, UUID leaseToken, Set<WorkType> types) {
     return databaseClient
         .sql(
             "with due as (select id from jobs.work_item where tenant_id = "
@@ -134,7 +139,8 @@ class R2dbcWorkRepository implements WorkRepository {
                 + " limit :limit for update skip locked)"
                 + " update jobs.work_item w set status = 'RUNNING',"
                 + " attempt_count = w.attempt_count + 1, lease_owner = :owner,"
-                + " lease_token = gen_random_uuid(),"
+                + " lease_token = :token,"
+                + " release_count = case when w.status = 'RUNNING' then 0 else w.release_count end,"
                 + " lease_expires_at = "
                 + WALL_CLOCK
                 + " + make_interval(secs => :leaseSeconds),"
@@ -146,6 +152,7 @@ class R2dbcWorkRepository implements WorkRepository {
                 + " w.lease_token, w.lease_expires_at")
         .bind("limit", (long) limit)
         .bind("owner", leaseOwner)
+        .bind("token", leaseToken)
         .bind("leaseSeconds", seconds(lease))
         .bind("types", typeValues(types))
         .bind("version", WorkItemContract.VERSION)
@@ -251,7 +258,7 @@ class R2dbcWorkRepository implements WorkRepository {
   }
 
   @Override
-  public Mono<Boolean> giveBack(UUID id, UUID leaseToken, String safeReason) {
+  public Mono<Long> giveBack(UUID leaseToken, String safeReason) {
     return databaseClient
         .sql(
             "update jobs.work_item set status = 'PENDING', failure_reason = :reason,"
@@ -259,13 +266,14 @@ class R2dbcWorkRepository implements WorkRepository {
                 + WALL_CLOCK
                 + ", updated_at = "
                 + WALL_CLOCK
-                + LEASE_IS_CURRENT)
+                + " where tenant_id = "
+                + BOUND_TENANT
+                + " and status = 'RUNNING' and lease_token = :token and lease_expires_at > "
+                + WALL_CLOCK)
         .bind("reason", safeReason)
-        .bind("id", id)
         .bind("token", leaseToken)
         .fetch()
-        .rowsUpdated()
-        .map(rows -> rows == 1);
+        .rowsUpdated();
   }
 
   @Override
@@ -297,7 +305,13 @@ class R2dbcWorkRepository implements WorkRepository {
   }
 
   @Override
-  public Flux<TenantId> tenantsWithDueWork(int limit, Set<WorkType> types) {
+  public Flux<TenantId> tenantsWithDueWork(
+      int limit, Set<WorkType> types, Duration statementLimit) {
+    return transactionalOperator.execute(
+        transaction -> limitStatementTime(statementLimit).thenMany(dueTenants(limit, types)));
+  }
+
+  private Flux<TenantId> dueTenants(int limit, Set<WorkType> types) {
     return databaseClient
         .sql(
             "select tenant_id from jobs.work_item where "

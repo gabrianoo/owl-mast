@@ -15,8 +15,9 @@ CREATE TABLE jobs.work_item (
         CHECK (status IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'DENIED', 'OUTCOME_UNCERTAIN')),
     attempt_count    integer     NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
     max_attempts     integer     NOT NULL CHECK (max_attempts >= 1),
-    -- Consecutive uncounted give-backs after an undecided authorization recheck; drives their
-    -- backoff and is reset by the next attempt that runs the handler or ends the item.
+    -- Consecutive uncounted releases after an undecided authorization recheck; drives their
+    -- backoff and is reset by a recorded completion or failure and by the reclaim of an expired
+    -- lease.
     release_count    integer     NOT NULL DEFAULT 0 CHECK (release_count >= 0),
     next_attempt_at  timestamptz NOT NULL,
     lease_owner      text,

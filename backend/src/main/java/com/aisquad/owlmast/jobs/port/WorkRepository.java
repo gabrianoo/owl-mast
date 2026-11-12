@@ -13,11 +13,11 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /**
- * Persistence the jobs owner needs. Every method except {@link #tenantsWithDueWork(int, Set)} runs
- * inside a scoped transaction and filters on the tenant bound to that transaction, never on a
- * parameter; lease-fenced writes return {@code false} when the lease is no longer current, having
- * changed nothing. A lease token exists only while an item is {@code RUNNING}: every write that
- * leaves that status clears it.
+ * Persistence the jobs owner needs. Every method except {@link #tenantsWithDueWork(int, Set,
+ * Duration)} runs inside a scoped transaction and filters on the tenant bound to that transaction,
+ * never on a parameter; lease-fenced writes return {@code false} when the lease is no longer
+ * current, having changed nothing. A lease token exists only while an item is {@code RUNNING}:
+ * every write that leaves that status clears it.
  */
 public interface WorkRepository {
 
@@ -36,8 +36,14 @@ public interface WorkRepository {
    * recorded as terminal {@code FAILED} under its new lease and emitted as {@link
    * Claim.Undecodable}, so one poison row never stalls the tenant's queue and the caller can tell a
    * skipped row from an empty queue.
+   *
+   * <p>The caller chooses the lease token of the call, so it can still give the claim back ({@link
+   * #giveBack(UUID, String)}) when the claim committed but its answer never arrived. A reclaim of
+   * an expired lease ends the item's streak of consecutive releases: the attempt it replaces was
+   * not a release.
    */
-  Flux<Claim> claim(int limit, Duration lease, String leaseOwner, Set<WorkType> types);
+  Flux<Claim> claim(
+      int limit, Duration lease, String leaseOwner, UUID leaseToken, Set<WorkType> types);
 
   /** Running items of the bound tenant whose lease expired after their last permitted attempt. */
   Mono<Long> failExhaustedExpiredLeases(String safeReason);
@@ -60,11 +66,14 @@ public interface WorkRepository {
       UUID id, UUID leaseToken, String safeReason, Duration backoffBase, Duration backoffCap);
 
   /**
-   * Gives a claimed item back at once and uncounted because its dispatch was cancelled (a graceful
-   * shutdown): back to PENDING and due immediately, the attempt count restored, the reason
-   * recorded, the consecutive-release count unchanged.
+   * Gives back at once and uncounted what the claim made with {@code leaseToken} still holds,
+   * because its dispatch was cancelled (a graceful shutdown): back to PENDING and due immediately,
+   * the attempt count restored, the reason recorded, the consecutive-release count unchanged. The
+   * token alone identifies the claim, so this also works when the claimed row never reached the
+   * caller. Emits the number of items given back; zero when the lease is no longer current or the
+   * claim never committed.
    */
-  Mono<Boolean> giveBack(UUID id, UUID leaseToken, String safeReason);
+  Mono<Long> giveBack(UUID leaseToken, String safeReason);
 
   Mono<Boolean> deny(UUID id, UUID leaseToken, String safeReason);
 
@@ -75,9 +84,10 @@ public interface WorkRepository {
    * Identifier-only discovery across tenants, outside any scope; drives per-tenant processing. Only
    * work this instance can claim counts (the given types, a supported contract version). Tenants
    * are ordered by their longest-waiting due item, so a bounded wake-up never starves the tenants
-   * that sort after the limit.
+   * that sort after the limit. Runs in a read transaction of its own whose statements the server
+   * cancels after {@code statementLimit}, so a query the caller gave up on does not keep running.
    */
-  Flux<TenantId> tenantsWithDueWork(int limit, Set<WorkType> types);
+  Flux<TenantId> tenantsWithDueWork(int limit, Set<WorkType> types, Duration statementLimit);
 
   Flux<FailedWorkItem> listTerminalFailures(int limit);
 }

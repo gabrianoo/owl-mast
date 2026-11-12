@@ -24,6 +24,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
@@ -46,10 +47,11 @@ import reactor.core.publisher.Mono;
  *       logged at WARN from the configured attempt limit on.
  *   <li>The handler and the completion write share one transaction fenced by the lease token: a
  *       stale lease rolls back the handler's database effects and the write changes nothing (AC2).
- *   <li>{@link RetryPolicy#handlerDeadline()} is measured from the claim. A handler still running
- *       at the deadline is cancelled and the attempt fails with {@value #REASON_DEADLINE_EXCEEDED};
- *       its statements are bounded on the server by {@link RetryPolicy#statementTimeout()}, so one
- *       hung handler, including one blocked inside the database, cannot stall the dispatch of every
+ *   <li>{@link RetryPolicy#handlerDeadline()} is measured from the start of the claim step, which
+ *       is never later than the start of the lease in the database. A handler still running at the
+ *       deadline is cancelled and the attempt fails with {@value #REASON_DEADLINE_EXCEEDED}; its
+ *       statements are bounded on the server by {@link RetryPolicy#statementTimeout()}, so one hung
+ *       handler, including one blocked inside the database, cannot stall the dispatch of every
  *       other item and tenant.
  *   <li>Failed attempts persist the attempt count, a capped backoff and the exception class chain
  *       only; the last permitted attempt, or a {@link NonRetryableWorkException}, makes the item
@@ -60,7 +62,10 @@ import reactor.core.publisher.Mono;
  *       statement or commit fails its step instead of stopping every later wake-up.
  *   <li>A dispatch that is cancelled (a graceful shutdown cancels the scheduled wake-up) gives its
  *       item back at once and uncounted under the lease it holds ({@value
- *       #REASON_DISPATCH_CANCELLED}); {@link #quiesce()} completes when those writes have ended.
+ *       #REASON_DISPATCH_CANCELLED}), also when the claim committed but its answer had not arrived
+ *       yet. An attempt whose outcome was already decided (the handler failed, the recheck denied)
+ *       is not given back: its failure or denial is written instead, so a shutdown never erases it.
+ *       {@link #quiesce()} completes when those writes have ended.
  * </ul>
  */
 @Slf4j
@@ -74,7 +79,7 @@ public final class WorkProcessor {
   static final String REASON_DEADLINE_EXCEEDED = "handler-deadline-exceeded";
   static final String REASON_DISPATCH_CANCELLED = "dispatch-cancelled";
 
-  /** Upper bound of a give-back after a cancelled dispatch, so a shutdown never waits a lease. */
+  /** Upper bound of the write after a cancelled dispatch, so a shutdown never waits a lease. */
   static final Duration GIVE_BACK_TIMEOUT = Duration.ofSeconds(10);
 
   static final int MAX_TENANTS_PER_WAKE = 100;
@@ -107,8 +112,9 @@ public final class WorkProcessor {
   }
 
   /**
-   * Completes when every give-back started by a cancelled dispatch has ended (written, rejected or
-   * failed). The scheduler waits for it during a graceful shutdown, before the connections close.
+   * Completes when every write started by a cancelled dispatch (its give-back, or the outcome it
+   * had already decided) has ended: written, rejected or failed. The scheduler waits for it during
+   * a graceful shutdown, before the connections close.
    */
   public Mono<Void> quiesce() {
     return Mono.defer(() -> Mono.when(List.copyOf(pendingGiveBacks)));
@@ -117,7 +123,7 @@ public final class WorkProcessor {
   /** Processes every tenant with due work once; returns the number of items dispatched. */
   public Mono<Long> runOnce() {
     return repository
-        .tenantsWithDueWork(MAX_TENANTS_PER_WAKE, registry.types())
+        .tenantsWithDueWork(MAX_TENANTS_PER_WAKE, registry.types(), policy.stepTimeout())
         .collectList()
         .timeout(policy.stepTimeout())
         .flatMapMany(Flux::fromIterable)
@@ -144,22 +150,41 @@ public final class WorkProcessor {
     ScopeContext scope = ServiceIdentity.backendScope(tenant);
     return step(current -> repository.failExhaustedExpiredLeases(REASON_LEASE_EXHAUSTED))
         .thenMany(Flux.range(1, policy.claimBatchSize()))
-        .concatMap(slot -> claimNext())
-        .takeWhile(Slot::dueRowFound)
-        .concatMap(slot -> slot.dispatch().map(this::dispatch).orElseGet(Mono::empty))
+        .concatMap(slot -> claimAndDispatch(tenant))
+        .takeWhile(slot -> slot != Slot.NO_DUE_WORK)
+        .filter(slot -> slot == Slot.DISPATCHED)
         .count()
         .contextWrite(Scopes.bind(scope));
   }
 
-  private Mono<Slot> claimNext() {
-    return step(current ->
-            repository.claim(1, policy.leaseDuration(), leaseOwner, registry.types()).next())
-        .map(claim ->
-            switch (claim) {
-              case ClaimedWork work -> Slot.of(new Dispatch(work, System.nanoTime()));
-              case Claim.Undecodable skipped -> Slot.SKIPPED;
-            })
-        .defaultIfEmpty(Slot.NO_DUE_WORK);
+  /**
+   * One slot of a batch: the claim and, when it returned an item, its dispatch. The lease token and
+   * the clock reading are taken before the claim, so one cancellation hook covers the whole slot,
+   * including a claim that committed although its answer never arrived.
+   */
+  private Mono<Slot> claimAndDispatch(TenantId tenant) {
+    return Mono.defer(() -> {
+      Dispatch dispatch = new Dispatch(tenant, UUID.randomUUID(), System.nanoTime());
+      return step(current ->
+              repository
+                  .claim(
+                      1,
+                      policy.leaseDuration(),
+                      leaseOwner,
+                      dispatch.leaseToken(),
+                      registry.types())
+                  .next())
+          .flatMap(claim ->
+              switch (claim) {
+                case ClaimedWork work ->
+                    dispatch(dispatch.claimed(work)).thenReturn(Slot.DISPATCHED);
+                case Claim.Undecodable skipped -> Mono.just(Slot.SKIPPED);
+              })
+          .defaultIfEmpty(Slot.NO_DUE_WORK)
+          // The batch ends by cancelling its source after the slot answered: nothing to settle.
+          .doOnSuccess(slot -> dispatch.end())
+          .doOnCancel(() -> settleCancelled(dispatch));
+    });
   }
 
   /**
@@ -174,15 +199,12 @@ public final class WorkProcessor {
         .timeout(bound);
   }
 
-  private Mono<UUID> dispatch(Dispatch dispatch) {
-    WorkItem item = dispatch.item();
+  private Mono<Void> dispatch(Dispatch dispatch) {
     return registry
-        .find(item.type())
+        .find(dispatch.item().type())
         .map(handler -> authorizeAndRun(dispatch, handler))
         // Unreachable while claims are limited to registered types; kept as the fail-safe answer.
-        .orElseGet(() -> recordFailure(dispatch, REASON_UNREGISTERED, false))
-        .thenReturn(item.id())
-        .doOnCancel(() -> giveBackCancelled(dispatch));
+        .orElseGet(() -> recordFailure(dispatch, REASON_UNREGISTERED, false));
   }
 
   private Mono<Void> authorizeAndRun(Dispatch dispatch, WorkHandler handler) {
@@ -199,7 +221,8 @@ public final class WorkProcessor {
         .defaultIfEmpty(DispatchDecision.UNDECIDED)
         .flatMap(decision ->
             switch (decision) {
-              // An answer that arrived past the recheck's share is not charged to the handler.
+              // An answer past the recheck's share (a late answer the timeout could not preempt,
+              // or a claim that itself used the share up) is not charged to the handler.
               case ALLOW ->
                   dispatch.elapsed().compareTo(policy.recheckDeadline()) > 0
                       ? release(dispatch, REASON_AUTHORIZATION_UNDECIDED)
@@ -220,11 +243,14 @@ public final class WorkProcessor {
                     dispatch.remaining(policy.handlerDeadline()),
                     Mono.defer(() -> Mono.error(new HandlerDeadlineExceededException())))
                 .switchIfEmpty(Mono.error(NoEffectOutcomeException::new))
+                // From here on the attempt has failed, whatever interrupts the rollback or the
+                // failure write: a cancellation writes this outcome instead of giving back.
+                .doOnError(error -> dispatch.decide(failure(dispatch, error)))
                 .flatMap(outcome -> completeFenced(dispatch, outcome)))
         // The transaction as a whole (begin, completion write, commit) ends with the lease: past
         // it no write of this dispatch can count, so a commit that never answers must not hold
         // the wake-up. The failure write below is then rejected by the fence.
-        .timeout(dispatch.remaining(policy.leaseDuration()))
+        .timeout(dispatch.untilLeaseEnds(policy.leaseDuration()))
         .doOnNext(outcome ->
             log.debug(
                 "Work item {} ({}) finished with effect {}",
@@ -243,8 +269,11 @@ public final class WorkProcessor {
             })
         // One resume for every other failure: the reason is derived first, so a failure of the
         // failure write itself propagates instead of replacing a typed reason with its own class.
-        .onErrorResume(error ->
-            recordFailure(dispatch, reasonFor(error), error instanceof NonRetryableWorkException));
+        .onErrorResume(error -> failure(dispatch, error));
+  }
+
+  private Mono<Void> failure(Dispatch dispatch, Throwable error) {
+    return recordFailure(dispatch, reasonFor(error), error instanceof NonRetryableWorkException);
   }
 
   private static String reasonFor(Throwable error) {
@@ -266,11 +295,21 @@ public final class WorkProcessor {
 
   private Mono<Void> deny(Dispatch dispatch) {
     WorkItem item = dispatch.item();
-    return step(current ->
-            repository.deny(item.id(), dispatch.leaseToken(), REASON_AUTHORIZATION_DENIED))
-        .doOnNext(
-            written -> logWrite(written, item, "denied at dispatch", REASON_AUTHORIZATION_DENIED))
-        .then();
+    Mono<Void> write =
+        step(current ->
+                repository.deny(item.id(), dispatch.leaseToken(), REASON_AUTHORIZATION_DENIED))
+            .doOnNext(written ->
+                logWrite(written, item, "denied at dispatch", REASON_AUTHORIZATION_DENIED))
+            .then();
+    return decided(dispatch, write);
+  }
+
+  /** Marks the dispatch as decided when the write of its outcome starts. */
+  private static Mono<Void> decided(Dispatch dispatch, Mono<Void> write) {
+    return Mono.defer(() -> {
+      dispatch.decide(write);
+      return write;
+    });
   }
 
   /**
@@ -307,64 +346,83 @@ public final class WorkProcessor {
   }
 
   /**
-   * The dispatch was cancelled from outside (a graceful shutdown): the item is handed back at once
-   * and uncounted in a write of its own, fenced by the lease this dispatch holds, so a write that
-   * already left {@code RUNNING} is not touched. Without it the item would stay {@code RUNNING}
-   * until its lease ran out and the reclaim would count an attempt the item never failed.
+   * The slot was cancelled from outside (a graceful shutdown). An attempt whose outcome is still
+   * open is handed back at once and uncounted, by the lease token alone, so a claim whose answer
+   * never arrived is covered too; an attempt that had already failed or been denied gets that
+   * outcome written instead, so the shutdown cannot erase it. Either write is fenced by the lease
+   * this slot holds and changes nothing once the item left {@code RUNNING}. Without it the item
+   * would stay {@code RUNNING} until its lease ran out and the reclaim would count an attempt the
+   * item never failed.
    */
-  private void giveBackCancelled(Dispatch dispatch) {
-    WorkItem item = dispatch.item();
+  private void settleCancelled(Dispatch dispatch) {
+    if (dispatch.ended()) {
+      return;
+    }
     Duration bound =
         policy.stepTimeout().compareTo(GIVE_BACK_TIMEOUT) < 0
             ? policy.stepTimeout()
             : GIVE_BACK_TIMEOUT;
     Mono<Void> write =
-        step(current ->
-                repository.giveBack(item.id(), dispatch.leaseToken(), REASON_DISPATCH_CANCELLED))
+        dispatch
+            .decided()
+            .orElseGet(() -> giveBack(dispatch))
             .timeout(bound)
-            .doOnNext(written ->
-                logWrite(written, item, "given back uncounted", REASON_DISPATCH_CANCELLED))
-            .then()
             .onErrorResume(error -> {
               log.warn(
-                  "Work item {} ({}) could not be given back after its dispatch was cancelled and"
-                      + " waits for its lease to expire: {}",
-                  item.id(),
-                  item.type().value(),
+                  "{} could not be settled after its dispatch was cancelled and waits for its"
+                      + " lease to expire: {}",
+                  dispatch.label(),
                   SafeFailure.describe(error));
               return Mono.empty();
             })
-            .contextWrite(Scopes.bind(ServiceIdentity.backendScope(item.tenant())))
+            .contextWrite(Scopes.bind(ServiceIdentity.backendScope(dispatch.tenant())))
             .cache();
     pendingGiveBacks.add(write);
     write.doFinally(signal -> pendingGiveBacks.remove(write)).subscribe();
   }
 
-  private Mono<Void> recordFailure(Dispatch dispatch, String safeReason, boolean nonRetryable) {
-    WorkItem item = dispatch.item();
-    boolean terminal = nonRetryable || item.lastAttempt();
-    return step(current ->
-            repository.fail(
-                item.id(),
-                dispatch.leaseToken(),
-                safeReason,
-                policy.backoffFor(item.attempt()),
-                terminal))
-        .doOnNext(written -> {
-          logWrite(
-              written, item, terminal ? "failed terminally" : "scheduled for retry", safeReason);
-          if (written && !terminal && policy.exhausted(item.attempt())) {
-            log.warn(
-                "Work item {} ({}) has used {} attempts, reaching or passing the configured {}, and is"
-                    + " still being retried under its own limit: {}",
-                item.id(),
-                item.type().value(),
-                item.attempt(),
-                policy.maxAttempts(),
-                safeReason);
+  private Mono<Void> giveBack(Dispatch dispatch) {
+    return step(current -> repository.giveBack(dispatch.leaseToken(), REASON_DISPATCH_CANCELLED))
+        .doOnNext(givenBack -> {
+          if (givenBack > 0) {
+            log.info("{} given back uncounted: {}", dispatch.label(), REASON_DISPATCH_CANCELLED);
+          } else {
+            log.debug("{} held nothing to give back", dispatch.label());
           }
         })
         .then();
+  }
+
+  private Mono<Void> recordFailure(Dispatch dispatch, String safeReason, boolean nonRetryable) {
+    WorkItem item = dispatch.item();
+    boolean terminal = nonRetryable || item.lastAttempt();
+    Mono<Void> write =
+        step(current ->
+                repository.fail(
+                    item.id(),
+                    dispatch.leaseToken(),
+                    safeReason,
+                    policy.backoffFor(item.attempt()),
+                    terminal))
+            .doOnNext(written -> {
+              logWrite(
+                  written,
+                  item,
+                  terminal ? "failed terminally" : "scheduled for retry",
+                  safeReason);
+              if (written && !terminal && policy.exhausted(item.attempt())) {
+                log.warn(
+                    "Work item {} ({}) has used {} attempts, reaching or passing the configured {},"
+                        + " and is still being retried under its own limit: {}",
+                    item.id(),
+                    item.type().value(),
+                    item.attempt(),
+                    policy.maxAttempts(),
+                    safeReason);
+              }
+            })
+            .then();
+    return decided(dispatch, write);
   }
 
   private static void logWrite(boolean written, WorkItem item, String outcome, String reason) {
@@ -387,41 +445,102 @@ public final class WorkProcessor {
   }
 
   /**
-   * A claimed item plus the moment (monotonic JVM clock) its claim returned, so every bound of the
-   * dispatch counts from the claim rather than from the step that applies it. The database's lease
-   * expiry is not used here: the two clocks may differ.
+   * One slot's dispatch, from before its claim: the lease token this processor chose for the claim,
+   * and the moment (monotonic JVM clock) the claim step started. Every bound of the dispatch counts
+   * from that moment: it is never later than the start of the lease in the database, however long
+   * the claim took to answer, and the two clocks are never compared. Only the cut-off at the end of
+   * the lease counts from the moment the claim answered, which is never earlier than the start of
+   * the lease. The item is known once the claim answered; the decided write once the attempt failed
+   * or was denied.
    */
-  private record Dispatch(ClaimedWork claimed, long claimedAtNanos) {
+  private static final class Dispatch {
+    private final TenantId tenant;
+    private final UUID leaseToken;
+    private final long startedAtNanos;
+    private final AtomicReference<Mono<Void>> decided = new AtomicReference<>();
+    private volatile WorkItem item;
+    private volatile long claimedAtNanos;
+    private volatile boolean ended;
+
+    Dispatch(TenantId tenant, UUID leaseToken, long startedAtNanos) {
+      this.tenant = tenant;
+      this.leaseToken = leaseToken;
+      this.startedAtNanos = startedAtNanos;
+    }
+
+    Dispatch claimed(ClaimedWork work) {
+      this.item = work.item();
+      this.claimedAtNanos = System.nanoTime();
+      return this;
+    }
+
+    TenantId tenant() {
+      return tenant;
+    }
 
     WorkItem item() {
-      return claimed.item();
+      return Objects.requireNonNull(item, "the claim has not answered");
     }
 
     UUID leaseToken() {
-      return claimed.leaseToken();
+      return leaseToken;
+    }
+
+    /** The write of an outcome that no longer depends on how the dispatch ends. */
+    void decide(Mono<Void> write) {
+      decided.set(write);
+    }
+
+    Optional<Mono<Void>> decided() {
+      return Optional.ofNullable(decided.get());
+    }
+
+    void end() {
+      ended = true;
+    }
+
+    boolean ended() {
+      return ended;
+    }
+
+    String label() {
+      WorkItem claimed = item;
+      return claimed == null
+          ? "A claim of tenant " + tenant.value() + " whose answer had not arrived"
+          : "Work item " + claimed.id() + " (" + claimed.type().value() + ")";
     }
 
     Duration elapsed() {
-      return Duration.ofNanos(System.nanoTime() - claimedAtNanos);
+      return Duration.ofNanos(System.nanoTime() - startedAtNanos);
     }
 
     /**
-     * What is left of {@code budget} since the claim; at least one millisecond, so it still fires.
+     * What is left of {@code budget} since the claim step started; at least one millisecond, so it
+     * still fires.
      */
     Duration remaining(Duration budget) {
-      Duration remaining = budget.minus(elapsed());
+      return atLeastOneMillisecond(budget.minus(elapsed()));
+    }
+
+    /**
+     * What is left of the lease, counted from the moment the claim answered: never earlier than the
+     * lease's end in the database, so past it no write of this dispatch can count.
+     */
+    Duration untilLeaseEnds(Duration lease) {
+      return atLeastOneMillisecond(
+          lease.minus(Duration.ofNanos(System.nanoTime() - claimedAtNanos)));
+    }
+
+    private static Duration atLeastOneMillisecond(Duration remaining) {
       return remaining.compareTo(Duration.ofMillis(1)) < 0 ? Duration.ofMillis(1) : remaining;
     }
   }
 
-  /** One slot of a tenant's batch: no due row, a row skipped by the claim, or an item to run. */
-  private record Slot(boolean dueRowFound, Optional<Dispatch> dispatch) {
-    static final Slot NO_DUE_WORK = new Slot(false, Optional.empty());
-    static final Slot SKIPPED = new Slot(true, Optional.empty());
-
-    static Slot of(Dispatch dispatch) {
-      return new Slot(true, Optional.of(dispatch));
-    }
+  /** How one slot of a tenant's batch ended. */
+  private enum Slot {
+    NO_DUE_WORK,
+    SKIPPED,
+    DISPATCHED
   }
 
   /** The handler was cancelled at its deadline; recorded as {@value #REASON_DEADLINE_EXCEEDED}. */
