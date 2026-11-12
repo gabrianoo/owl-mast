@@ -2,17 +2,23 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "owl-mast.postgresql.fullname" . }}-init
+  name: {{ include "owl-mast.postgresql.initConfigMap" . }}
   labels:
     {{- include "owl-mast.labels" . | nindent 4 }}
     app.kubernetes.io/component: postgresql
 data:
   # Idempotent provisioning of Keycloak's own database and login principal (AC3): the role is
   # created only if absent (an existing role keeps its password; the Secret must match it), the
-  # database only if absent, grants are re-applied. Mounted OUTSIDE /docker-entrypoint-initdb.d (the
-  # image's entrypoint auto-executes every *.sh there) at /owl-mast/provision-keycloak.sh and invoked
-  # explicitly: by the init script when Keycloak is the bundled consumer, and by the pre-upgrade
-  # provisioning Job when Keycloak is enabled on an already initialised volume.
+  # database only if absent, grants are re-applied. Before anything is created it refuses a Keycloak
+  # principal that is the provisioning superuser or the application principal, an existing role with
+  # elevated attributes or role memberships, an existing database owned by another role, and a database
+  # name shared with the application. `--preflight` runs exactly those refusals and creates nothing: the
+  # first-initialisation script calls it before it creates the application role and database, so a Keycloak
+  # collision never leaves a half-initialised volume. Mounted OUTSIDE
+  # /docker-entrypoint-initdb.d (the image's entrypoint auto-executes every *.sh there) at
+  # /owl-mast/provision-keycloak.sh and invoked explicitly: by the init script when Keycloak is the
+  # bundled consumer, and by the pre-upgrade provisioning Job when Keycloak is enabled on an already
+  # initialised volume.
   provision-keycloak.sh: |
     #!/bin/bash
     set -euo pipefail
@@ -21,13 +27,35 @@ data:
       exit 0
     fi
     : "${OWLMAST_KEYCLOAK_DATABASE:?}" "${OWLMAST_KEYCLOAK_PASSWORD:?}"
+    refuse() { echo "owl-mast: refusing to provision Keycloak's database: $*; nothing created" >&2; exit 1; }
+    [ "$OWLMAST_KEYCLOAK_USERNAME" != "$POSTGRES_USER" ] || refuse "the Keycloak username equals the provisioning superuser username (identity.keycloak.database.existingSecret vs postgresql.adminExistingSecret)"
+    [ "$OWLMAST_KEYCLOAK_USERNAME" != "${OWLMAST_APP_USERNAME:-}" ] || refuse "the Keycloak username equals the application username (identity.keycloak.database.existingSecret vs database.existingSecret)"
+    [ "$OWLMAST_KEYCLOAK_DATABASE" != "${OWLMAST_APP_DATABASE:-}" ] || refuse "the Keycloak database name equals the application database name"
     if [ -n "${PGHOST:-}" ] && [ "${PGHOST#/}" = "$PGHOST" ]; then
-      # Over the network (provisioning Job): wait, bounded, until PostgreSQL accepts connections.
-      for attempt in $(seq 1 "${OWLMAST_PG_WAIT_ATTEMPTS:-60}"); do
-        pg_isready -h "$PGHOST" -p "${PGPORT:-5432}" -U "$POSTGRES_USER" -d postgres -q && break
+      # Over the network (provisioning Job). A Service that does not resolve means there is no bundled
+      # PostgreSQL in the release being upgraded: fail at once instead of waiting out the Helm timeout.
+      getent hosts "$PGHOST" >/dev/null || { echo "owl-mast: PostgreSQL service $PGHOST does not resolve (no bundled PostgreSQL in this release before the upgrade?); nothing provisioned" >&2; exit 1; }
+      # Bounded wait (well inside the Job's activeDeadlineSeconds and Helm's default 5m timeout).
+      for attempt in $(seq 1 "${OWLMAST_PG_WAIT_ATTEMPTS:-20}"); do
+        pg_isready -t 3 -h "$PGHOST" -p "${PGPORT:-5432}" -U "$POSTGRES_USER" -d postgres -q && break
         echo "owl-mast: waiting for PostgreSQL at $PGHOST:${PGPORT:-5432} ($attempt)"; sleep 5
       done
-      pg_isready -h "$PGHOST" -p "${PGPORT:-5432}" -U "$POSTGRES_USER" -d postgres -q || { echo "owl-mast: PostgreSQL not reachable; nothing provisioned" >&2; exit 1; }
+      pg_isready -t 3 -h "$PGHOST" -p "${PGPORT:-5432}" -U "$POSTGRES_USER" -d postgres -q || { echo "owl-mast: PostgreSQL not reachable; nothing provisioned" >&2; exit 1; }
+    fi
+    privileged="$(psql -v ON_ERROR_STOP=1 -Atq --host "${PGHOST:-/var/run/postgresql}" --username "$POSTGRES_USER" --dbname postgres --set=r="$OWLMAST_KEYCLOAK_USERNAME" <<'SQL'
+    SELECT rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication OR rolbypassrls
+           OR EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.member = r.oid) FROM pg_roles r WHERE rolname = :'r';
+    SQL
+    )"
+    [ "$privileged" != "t" ] || refuse "the existing role $OWLMAST_KEYCLOAK_USERNAME is privileged (superuser, createrole, createdb, replication or bypassrls) or a member of another role"
+    owner="$(psql -v ON_ERROR_STOP=1 -Atq --host "${PGHOST:-/var/run/postgresql}" --username "$POSTGRES_USER" --dbname postgres --set=d="$OWLMAST_KEYCLOAK_DATABASE" <<'SQL'
+    SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = :'d';
+    SQL
+    )"
+    [ -z "$owner" ] || [ "$owner" = "$OWLMAST_KEYCLOAK_USERNAME" ] || refuse "the existing database $OWLMAST_KEYCLOAK_DATABASE is owned by $owner, not $OWLMAST_KEYCLOAK_USERNAME"
+    if [ "${1:-}" = "--preflight" ]; then
+      echo "owl-mast: Keycloak provisioning preflight passed; nothing created"
+      exit 0
     fi
     psql -v ON_ERROR_STOP=1 --host "${PGHOST:-/var/run/postgresql}" --username "$POSTGRES_USER" --dbname postgres \
       --set=kc_db="$OWLMAST_KEYCLOAK_DATABASE" --set=kc_user="$OWLMAST_KEYCLOAK_USERNAME" --set=kc_password="$OWLMAST_KEYCLOAK_PASSWORD" <<'SQL'
@@ -36,21 +64,53 @@ data:
     SELECT format('CREATE DATABASE %I OWNER %I', :'kc_db', :'kc_user')
       WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'kc_db') \gexec
     REVOKE ALL ON DATABASE :"kc_db" FROM PUBLIC;
+    REVOKE ALL ON DATABASE template1 FROM PUBLIC;
     GRANT CONNECT, TEMPORARY ON DATABASE :"kc_db" TO :"kc_user";
     SQL
-  # Runs once on first initialisation of the data directory (docker-entrypoint-initdb.d), as the
+  # Runs on first initialisation of the data directory (docker-entrypoint-initdb.d), as the
   # provisioning superuser. Separate databases and login principals with restricted grants (AC3):
   # runtime principals are NOSUPERUSER NOCREATEDB NOCREATEROLE and may connect only to their own
-  # database. VectorChord is installed by the provisioning identity so the app never needs superuser.
+  # database (PUBLIC loses CONNECT on the application database, postgres and template1; template0 accepts
+  # no connections). VectorChord is installed by the provisioning identity so the app never needs superuser.
+  # Every statement is idempotent, so a first initialisation that failed midway can be completed by
+  # running the script again in the pod (docs/installation.md); a second run creates nothing. A
+  # principal collision, a privileged or member role, or an existing database owned by another role is
+  # refused before anything is created, for the application AND (through the helper's --preflight) for
+  # Keycloak.
   10-owl-mast-databases.sh: |
     #!/bin/bash
     set -euo pipefail
-    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres \
+    : "${OWLMAST_APP_DATABASE:?}" "${OWLMAST_APP_USERNAME:?}" "${OWLMAST_APP_PASSWORD:?}"
+    refuse() { echo "owl-mast: refusing to initialise: $*; nothing created" >&2; exit 1; }
+    [ "$OWLMAST_APP_USERNAME" != "$POSTGRES_USER" ] || refuse "the application username equals the provisioning superuser username (database.existingSecret vs postgresql.adminExistingSecret)"
+    if [ -n "${OWLMAST_KEYCLOAK_USERNAME:-}" ]; then
+      [ "$OWLMAST_KEYCLOAK_USERNAME" != "$POSTGRES_USER" ] || refuse "the Keycloak username equals the provisioning superuser username (identity.keycloak.database.existingSecret vs postgresql.adminExistingSecret)"
+      [ "$OWLMAST_KEYCLOAK_USERNAME" != "$OWLMAST_APP_USERNAME" ] || refuse "the Keycloak username equals the application username (identity.keycloak.database.existingSecret vs database.existingSecret)"
+    fi
+    privileged="$(psql -v ON_ERROR_STOP=1 -Atq --host "${PGHOST:-/var/run/postgresql}" --username "$POSTGRES_USER" --dbname postgres --set=r="$OWLMAST_APP_USERNAME" <<'SQL'
+    SELECT rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication OR rolbypassrls
+           OR EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.member = r.oid) FROM pg_roles r WHERE rolname = :'r';
+    SQL
+    )"
+    [ "$privileged" != "t" ] || refuse "the existing role $OWLMAST_APP_USERNAME is privileged (superuser, createrole, createdb, replication or bypassrls) or a member of another role"
+    owner="$(psql -v ON_ERROR_STOP=1 -Atq --host "${PGHOST:-/var/run/postgresql}" --username "$POSTGRES_USER" --dbname postgres --set=d="$OWLMAST_APP_DATABASE" <<'SQL'
+    SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = :'d';
+    SQL
+    )"
+    [ -z "$owner" ] || [ "$owner" = "$OWLMAST_APP_USERNAME" ] || refuse "the existing database $OWLMAST_APP_DATABASE is owned by $owner, not $OWLMAST_APP_USERNAME"
+    if [ -n "${OWLMAST_KEYCLOAK_USERNAME:-}" ]; then
+      # Every Keycloak refusal runs now, before the application role and database are created.
+      bash /owl-mast/provision-keycloak.sh --preflight
+    fi
+    psql -v ON_ERROR_STOP=1 --host "${PGHOST:-/var/run/postgresql}" --username "$POSTGRES_USER" --dbname postgres \
       --set=app_db="$OWLMAST_APP_DATABASE" --set=app_user="$OWLMAST_APP_USERNAME" --set=app_password="$OWLMAST_APP_PASSWORD" <<'SQL'
-    CREATE ROLE :"app_user" LOGIN PASSWORD :'app_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION;
-    CREATE DATABASE :"app_db" OWNER :"app_user";
+    SELECT format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION', :'app_user', :'app_password')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'app_user') \gexec
+    SELECT format('CREATE DATABASE %I OWNER %I', :'app_db', :'app_user')
+      WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'app_db') \gexec
     REVOKE ALL ON DATABASE :"app_db" FROM PUBLIC;
     REVOKE ALL ON DATABASE postgres FROM PUBLIC;
+    REVOKE ALL ON DATABASE template1 FROM PUBLIC;
     GRANT CONNECT, TEMPORARY ON DATABASE :"app_db" TO :"app_user";
     \connect :"app_db"
     CREATE EXTENSION IF NOT EXISTS vchord CASCADE;

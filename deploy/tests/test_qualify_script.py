@@ -8,6 +8,7 @@ success, failure or interruption, and that the isolation and readiness evaluator
 intended PostgreSQL denial / backend 503 and reject transport, authentication and generic failures.
 """
 
+import json
 import os
 import re
 import shutil
@@ -21,6 +22,47 @@ REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "qualify-local-install.sh"
 RUN_ID = "om-01-02-local-20261107-01"
 SENTINEL = "SENTINEL-SECRET-VALUE-9f3a7c"
+CHART = REPO / "deploy" / "helm" / "owl-mast"
+HELM = os.environ.get("OWLMAST_HELM") or shutil.which("helm")
+RUN_LABEL_KEY = "owlmast.aisquad.com/run"
+COMPONENTS = ("backend", "postgresql", "keycloak")  # the components whose pods the script proves
+
+
+def rendered_pod_run_labels():
+    """component -> whether the pod template the CHART renders carries the run label, when the label is set the way the
+    qualification script sets it (commonLabels). The real Helm renders it; None when no Helm 4 is available."""
+    if HELM is None:
+        return None
+    import yaml
+    r = subprocess.run([HELM, "template", "owl-mast", str(CHART), "--set", f"commonLabels.{RUN_LABEL_KEY.replace('.', chr(92) + '.')}={RUN_ID}"],
+                       capture_output=True, text=True, check=False)
+    if r.returncode != 0:
+        raise AssertionError(r.stderr)
+    out = {}
+    for doc in yaml.safe_load_all(r.stdout):
+        if doc and doc["kind"] == "Deployment":
+            comp = doc["metadata"]["labels"]["app.kubernetes.io/component"]
+            if doc["metadata"]["labels"].get(RUN_LABEL_KEY) != RUN_ID:
+                raise AssertionError(f"the {comp} Deployment itself must carry the run label: the ownership proof ends there")
+            out[comp] = doc["spec"]["template"]["metadata"]["labels"].get(RUN_LABEL_KEY) == RUN_ID
+    return out
+
+
+def template_pod_run_labels():
+    """The same answer read from the template sources (no Helm): does the pod template include commonLabels?"""
+    out = {}
+    for comp in COMPONENTS:
+        text = (CHART / "templates" / f"{comp}-deployment.yaml").read_text()
+        pod_metadata = text.split("\n  template:\n", 1)[1].split("\n    spec:\n", 1)[0]
+        out[comp] = ".Values.commonLabels" in pod_metadata or 'include "owl-mast.labels"' in pod_metadata
+    return out
+
+
+# The stub world answers the labels of the REAL rendered objects (review 5866834124, comment 4544473145): a stub that
+# labelled every pod hid that the PostgreSQL pods have no run label, which made the script refuse them on a cluster.
+POD_RUN_LABELS = rendered_pod_run_labels() or template_pod_run_labels()
+UNLABELLED_COMPONENTS = sorted(c for c in COMPONENTS if not POD_RUN_LABELS[c])
+
 MUTATING = re.compile(r"(^| )(create|apply|label|annotate|patch|delete|exec|rollout|upgrade|uninstall|install)( |$)")
 
 KUBECTL_STUB = r'''#!/usr/bin/env bash
@@ -97,16 +139,19 @@ fi
 # UIDs: deployment dep-<rel>-<comp>, replicaset rs-<rel>-<comp>. States: owned | foreign:unlabelled | foreign:<label> |
 # foreign:owner (ReplicaSet named for another release) | foreign:rs-foreign | foreign:rs-missing | foreign:rs-unreadable |
 # foreign:uid | foreign:deploy | foreign:ambiguous | foreign:no-controller | error
+# The run label of an `owned` pod and ReplicaSet is what the CHART renders for that component: components named in
+# $STUB_UNLABELLED_COMPONENTS (derived from the rendered chart by the test module) have none, like the real objects.
+lbl_of() { case " ${STUB_UNLABELLED_COMPONENTS:-} " in *" $1 "*) printf '' ;; *) printf '%s' "$STUB_RUN_ID" ;; esac; }
 if [[ "$args" == *" get pods -l "* && "$args" == *"ownerReferences"* ]]; then
   sel="$(sed -E 's/.* -l ([^ ]+).*/\1/' <<<"$args")"; rel="${sel#app.kubernetes.io/instance=}"; rel="${rel%%,*}"; comp="${sel##*component=}"
-  state="$(state_of pods "$ns" "$rel-$comp")"; pod="$rel-$comp-abc12-xyz"; rs="$rel-$comp-abc12"; uid="rs-$rel-$comp"
+  state="$(state_of pods "$ns" "$rel-$comp")"; pod="$rel-$comp-abc12-xyz"; rs="$rel-$comp-abc12"; uid="rs-$rel-$comp"; lbl="$(lbl_of "$comp")"
   case "$state" in
     absent) exit 0 ;;
-    owned|foreign:rs-foreign|foreign:rs-missing|foreign:rs-unreadable|foreign:deploy) printf '%s|%s|ReplicaSet/%s/%s/true \n' "$pod" "$STUB_RUN_ID" "$rs" "$uid"; exit 0 ;;
-    foreign:owner) printf '%s|%s|ReplicaSet/other-%s-abc12/rs-other/true \n' "$pod" "$STUB_RUN_ID" "$comp"; exit 0 ;;
-    foreign:uid) printf '%s|%s|ReplicaSet/%s/stale-uid/true \n' "$pod" "$STUB_RUN_ID" "$rs"; exit 0 ;;
-    foreign:ambiguous) printf '%s|%s|ReplicaSet/%s/%s/true ReplicaSet/%s-old/rs-old/true \n' "$pod" "$STUB_RUN_ID" "$rs" "$uid" "$rs"; exit 0 ;;
-    foreign:no-controller) printf '%s|%s|ReplicaSet/%s/%s/false \n' "$pod" "$STUB_RUN_ID" "$rs" "$uid"; exit 0 ;;
+    owned|foreign:rs-foreign|foreign:rs-missing|foreign:rs-unreadable|foreign:deploy) printf '%s|%s|ReplicaSet/%s/%s/true \n' "$pod" "$lbl" "$rs" "$uid"; exit 0 ;;
+    foreign:owner) printf '%s|%s|ReplicaSet/other-%s-abc12/rs-other/true \n' "$pod" "$lbl" "$comp"; exit 0 ;;
+    foreign:uid) printf '%s|%s|ReplicaSet/%s/stale-uid/true \n' "$pod" "$lbl" "$rs"; exit 0 ;;
+    foreign:ambiguous) printf '%s|%s|ReplicaSet/%s/%s/true ReplicaSet/%s-old/rs-old/true \n' "$pod" "$lbl" "$rs" "$uid" "$rs"; exit 0 ;;
+    foreign:no-controller) printf '%s|%s|ReplicaSet/%s/%s/false \n' "$pod" "$lbl" "$rs" "$uid"; exit 0 ;;
     foreign:unlabelled) printf '%s||ReplicaSet/%s/%s/true \n' "$pod" "$rs" "$uid"; exit 0 ;;
     foreign:*) printf '%s|%s|ReplicaSet/%s/%s/true \n' "$pod" "${state#foreign:}" "$rs" "$uid"; exit 0 ;;
     *) echo "Unable to connect to the server: dial tcp 10.0.0.1:6443: connect: connection refused" >&2; exit 1 ;;
@@ -115,13 +160,13 @@ fi
 if [[ "$args" == *" get replicaset "* ]]; then
   rs="$(sed -E 's/.* get replicaset ([^ ]+).*/\1/' <<<"$args")"; base="${rs%-abc12}"; base="${base%-old}"
   if [[ "$rs" == other-* ]]; then printf 'rs-other|%s|Deployment/other-%s/dep-other/true \n' "$STUB_RUN_ID" "${base#other-}"; exit 0; fi
-  state="$(state_of pods "$ns" "$base")"
+  state="$(state_of pods "$ns" "$base")"; lbl="$(lbl_of "${base##*-}")"
   case "$state" in
     foreign:rs-missing) echo "Error from server (NotFound): replicasets.apps \"$rs\" not found" >&2; exit 1 ;;
     foreign:rs-unreadable) echo "Error from server (Forbidden): replicasets.apps \"$rs\" is forbidden" >&2; exit 1 ;;
     foreign:rs-foreign) printf 'rs-%s|someone-else|Deployment/%s/dep-%s/true \n' "$base" "$base" "$base"; exit 0 ;;
-    foreign:deploy) printf 'rs-%s|%s|Deployment/%s-other/dep-%s-other/true \n' "$base" "$STUB_RUN_ID" "$base" "$base"; exit 0 ;;
-    *) printf 'rs-%s|%s|Deployment/%s/dep-%s/true \n' "$base" "$STUB_RUN_ID" "$base" "$base"; exit 0 ;;
+    foreign:deploy) printf 'rs-%s|%s|Deployment/%s-other/dep-%s-other/true \n' "$base" "$lbl" "$base" "$base"; exit 0 ;;
+    *) printf 'rs-%s|%s|Deployment/%s/dep-%s/true \n' "$base" "$lbl" "$base" "$base"; exit 0 ;;
   esac
 fi
 if [[ "$args" == *" get deployment "* && "$args" == *"{.metadata.uid}|"* ]]; then
@@ -134,6 +179,8 @@ if [[ "$args" == *" get deployment "* && "$args" == *"{.metadata.uid}|"* ]]; the
     *) echo "Unable to connect to the server" >&2; exit 1 ;;
   esac
 fi
+# The retained volume of the persistence step (T3): reclaim policy and class as the qualification's StorageClass gives them.
+if [[ "$args" == *" get pv "* && "$args" == *"persistentVolumeReclaimPolicy"* ]]; then printf 'Retain owl-mast-local-retain'; exit 0; fi
 if [[ "$args" == *" get secret"* ]]; then
   if [[ "$args" == *"-o json"* || "$args" == *"-o yaml"* || ( "$args" == *".data"* && "$args" != *'$k, $v := .data}}{{$k}}'* ) ]]; then
     printf '{"apiVersion":"v1","kind":"Secret","type":"Opaque","metadata":{"name":"x","namespace":"%s"},"data":{"username":"dXNlcg==","password":"%s"}}\n' "$ns" "$STUB_SENTINEL"
@@ -142,8 +189,64 @@ if [[ "$args" == *" get secret"* ]]; then
   fi
   exit 0
 fi
+# Backend image identity: the Running pods as custom-columns rows "NAME DELETING" (STUB_BACKEND_PODS) and the container status (STUB_IMAGE_ID).
+if [[ "$args" == *"--field-selector=status.phase=Running"* ]]; then printf '%b' "${STUB_BACKEND_PODS:-}"; exit 0; fi
+if [[ "$args" == *"].image} {.status.containerStatuses[0].imageID}"* ]]; then printf 'docker.io/owl-mast/backend:stub %s\n' "${STUB_IMAGE_ID:-}"; exit 0; fi
+if [[ "$args" == *"{.status.containerStatuses[0].imageID}"* ]]; then printf '%s' "${STUB_IMAGE_ID:-}"; exit 0; fi
+# The provisioning hook Job as the cluster serves it: the chart's delete policy (before-hook-creation,hook-succeeded) removes
+# the Job and its ConfigMap once the hook succeeded, so a direct read after a successful upgrade is NotFound. The world holds
+# a `job` line only for a hook that failed or was kept (the helm stub writes it, see STUB_HOOK).
+if [[ "$args" == *" get job "* ]]; then
+  job="$(sed -E 's/.* get job ([^ ]+).*/\1/' <<<"$args")"
+  if [ "$(state_of job "$ns" "$job")" = absent ]; then echo "Error from server (NotFound): jobs.batch \"$job\" not found" >&2; exit 1; fi
+  printf '1 \n'; exit 0
+fi
+if [[ "$args" == *" logs job/"* ]]; then
+  job="$(sed -E 's/.* logs job\/([^ ]+).*/\1/' <<<"$args")"
+  if [ "$(state_of job "$ns" "$job")" = absent ]; then echo "error: error from server (NotFound): jobs.batch \"$job\" not found" >&2; exit 1; fi
+  printf 'GRANT\n'; exit 0
+fi
+# Runtime answers for whole-step runs (STUB_RUNTIME=1): what a healthy install returns to the script's observations.
+if [ "${STUB_RUNTIME:-}" = 1 ]; then
+  if [[ "$args" == *" get --raw /api/v1/namespaces/"* ]]; then
+    svc="$(sed -E 's/.*\/services\/([^:\/]+).*/\1/' <<<"$args")"
+    if [[ "$args" == *"openid-configuration"* ]]; then printf '{"issuer":"http://%s:8080/realms/owl-mast"}\n' "$svc"; else printf '{"status":"UP"}\n'; fi
+    exit 0
+  fi
+  if [[ "$args" == *" get pods "* && "$args" == *"READY:.status.containerStatuses[0].ready"* ]]; then printf 'NAME READY RESTARTS\npostgresql-abc12-xyz   true   0\n'; exit 0; fi
+  if [[ "$args" == *" logs deploy/"* ]]; then printf 'identity bundle disabled; no Keycloak database or principal provisioned\nPostgreSQL init process complete; ready for start up.\n'; exit 0; fi
+  if [[ "$args" == *" get pvc "* && "$args" == *"{.metadata.uid}"* ]]; then
+    if [[ "$args" == *"metadata.labels"* ]]; then printf 'pvc-uid-1 Bound %s\n' "${STUB_FE_RUN_ID:-}"; elif [[ "$args" == *"{.status.phase}"* ]]; then printf 'pvc-uid-1 Bound\n'; else printf 'pvc-uid-1'; fi
+    exit 0
+  fi
+  if [[ "$args" == *" exec "* && "$args" == *"from pg_database where datname="* ]]; then printf '0\n0\n'; exit 0; fi
+  if [[ "$args" == *" exec "* && "$args" == *"qualification_marker"* ]]; then printf 'before-enable\n'; exit 0; fi
+fi
 if [[ "$args" == *" exec "* ]]; then
   db="$(sed -E "s/.* -d '([^']+)'.*/\1/" <<<"$args")"
+  # The Keycloak role/database identifiers (keycloak_db_identity). STUB_KC_IDENTITY_<n> is the answer after n successful
+  # provisioning upgrades (counted by the helm stub); unset = the same identifiers every time; empty = the read fails.
+  if [[ "$args" == *"'role='||r.oid"* ]]; then
+    n=0; [ -e "$STUB_WORLD.provisioned" ] && n="$(grep -c . "$STUB_WORLD.provisioned")"
+    var="STUB_KC_IDENTITY_$n"; identity="${!var-role=16385 database=16386 owner=16385}"
+    if [ -z "$identity" ]; then printf 'psql: error: connection to server at "127.0.0.1", port 5432 failed: FATAL:  password authentication failed for user "keycloak_app"\ncommand terminated with exit code 2\n'; exit 2; fi
+    printf '%s\n' "$identity"; exit 0
+  fi
+  if [ -n "${STUB_KC_SCHEMA:-}" ] && [[ "$args" == *"information_schema.tables"* ]]; then printf '%s\n' "$STUB_KC_SCHEMA"; exit 0; fi
+  if [ "${STUB_EXEC_MODE:-}" = ac3 ]; then
+    # Every AC3 observation of check_shared_postgres succeeds; only the CONNECT attempts follow STUB_AC3_CONNECT
+    # (denied: the intended denial for the other database; allowed: both principals connect everywhere;
+    # keycloak-allowed / app-allowed: only that principal crosses over, the other one is still denied).
+    if [[ "$args" == *"select current_database()"* ]]; then
+      mode="${STUB_AC3_CONNECT:-denied}"; app_denied=0; kc_denied=0
+      case "$mode" in denied) app_denied=1; kc_denied=1 ;; keycloak-allowed) app_denied=1 ;; app-allowed) kc_denied=1 ;; esac
+      if { [ "$app_denied" = 1 ] && [[ "$args" == *OWLMAST_APP_PASSWORD* ]] && [ "$db" = keycloak ]; } || { [ "$kc_denied" = 1 ] && [[ "$args" == *OWLMAST_KEYCLOAK_PASSWORD* ]] && [ "$db" = owlmast ]; }; then
+        printf 'FATAL:  permission denied for database "%s"\nDETAIL:  User does not have CONNECT privilege.\ncommand terminated with exit code 2\n' "$db"; exit 2
+      fi
+      printf '%s\n' "$db"; exit 0
+    fi
+    printf 'owlmast_app|f|f|f\nkeycloak_app|f|f|f\nvchord=1.1.1\nvector=0.8.2\nt\n001|true\nIndex Scan using vectors_vchordrq on vectors\nCREATE INDEX vectors_vchordrq ON qualification.vectors USING vchordrq (embedding vector_l2_ops)\n'; exit 0
+  fi
   case "${STUB_EXEC_MODE:-denied}" in
     denied) if [ "$db" = "${STUB_DENIED_DB:-keycloak}" ]; then printf 'psql: error: connection to server at "127.0.0.1", port 5432 failed: FATAL:  permission denied for database "%s"\nDETAIL:  User does not have CONNECT privilege.\ncommand terminated with exit code 2\n' "$db"; exit 2; fi; printf '%s\n' "$db"; exit 0 ;;
     refused) echo "Unable to connect to the server: dial tcp 10.0.0.1:6443: connect: connection refused"; exit 1 ;;
@@ -153,12 +256,26 @@ if [[ "$args" == *" exec "* ]]; then
     denied-control-broken) if [ "$db" = "keycloak" ]; then printf 'FATAL:  permission denied for database "keycloak"\nDETAIL:  User does not have CONNECT privilege.\n'; exit 2; fi; echo "Unable to connect to the server"; exit 1 ;;
   esac
 fi
-if [[ "$args" == *" create secret generic "* ]]; then  # the stub world learns what the script created, labelled by the following label call
-  name="$(sed -E 's/.* create secret generic ([^ ]+).*/\1/' <<<"$args")"; printf 'secret %s %s owned\n' "$ns" "$name" >> "$STUB_WORLD"; echo "secret/$name created"; exit 0
+if [[ "$args" == *" create secret generic "* ]]; then
+  name="$(sed -E 's/.* create secret generic ([^ ]+).*/\1/' <<<"$args")"
+  if [[ "$args" == *"--dry-run=client"* ]]; then  # built client-side only: nothing reaches the stub world
+    # a value fed on stdin is counted, never stored: the test checks that the password arrived there and not in argv
+    if [[ "$args" == *"--from-file=password=/dev/stdin"* ]]; then printf '%s %s\n' "$name" "$(wc -c | tr -d ' ')" >> "$STUB_CALLS.stdin"; fi
+    printf '{"apiVersion":"v1","kind":"Secret","type":"Opaque","metadata":{"name":"%s"},"data":{"username":"dXNlcg==","password":"%s"}}\n' "$name" "$STUB_SENTINEL"; exit 0
+  fi
+  # a bare create leaves an object WITHOUT the ownership label (what a later run refuses as foreign)
+  printf 'secret %s %s foreign:unlabelled\n' "$ns" "$name" >> "$STUB_WORLD"; echo "secret/$name created"; exit 0
 fi
-if [[ "$args" == *" apply -f -"* ]]; then  # a replicated Secret arrives on stdin; it is consumed, never stored
-  dst="$(python3 -c 'import json,sys; o=json.load(sys.stdin); print(o["metadata"]["namespace"], o["metadata"]["name"])' 2>/dev/null || echo "- -")"
-  printf 'secret %s owned\n' "$dst" >> "$STUB_WORLD"; echo "stub: applied"; exit 0
+if [[ "$args" == *" create -f -"* ]]; then  # a Secret arrives on stdin; the world records it with the label it carries, never its data
+  dst="$(STUB_NS="$ns" python3 -c 'import json,os,sys
+o=json.load(sys.stdin); m=o["metadata"]; owner=(m.get("labels") or {}).get("owlmast.aisquad.com/run")
+ns=m.get("namespace") or os.environ["STUB_NS"]
+state="owned" if owner==os.environ["STUB_RUN_ID"] else ("foreign:"+owner if owner else "foreign:unlabelled")
+print("secret", ns, m["name"], state)' 2>/dev/null || echo "secret - - foreign:unparsed")"
+  if awk -v l="$dst" 'BEGIN{split(l,a," ")} $1=="secret" && $2==a[2] && $3==a[3] {found=1} END{exit !found}' "$STUB_WORLD"; then
+    echo "Error from server (AlreadyExists): error when creating \"STDIN\": secrets already exists" >&2; exit 1  # create never overwrites
+  fi
+  printf '%s\n' "$dst" >> "$STUB_WORLD"; echo "stub: created"; exit 0
 fi
 if [[ "$args" == *" apply "* ]]; then [[ "$args" == *" -f -"* ]] && cat >/dev/null; echo "stub: applied"; exit 0; fi
 echo "stub ok"
@@ -172,14 +289,76 @@ if [[ "$args" == *" template "* && "$args" == *"backend-deployment.yaml"* ]]; th
   if [[ "$rel" == *owl-mast* ]]; then full="$rel"; else full="$rel-owl-mast"; fi
   printf 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: %s-backend\n' "$full"; exit 0
 fi
+rev_file() { printf '%s.rev.%s' "$STUB_WORLD" "$1"; }
+hooks_file() { printf '%s.hooks.%s' "$STUB_WORLD" "$1"; }   # the hooks[] of the release record of the current revision
+go_now() { date +%Y-%m-%dT%H:%M:%S.%N%:z; }   # time.Time as Go's encoding/json prints it: RFC 3339, nine fractional digits, local offset
+# One hooks[] entry as Helm 4.3.1 stores it (pkg/release/v1/hook.go): hook_entry <name> <kind> <weight> <last_run json>.
+# `weight` has omitempty, so the Job (weight 0) carries none. A hook that was not run has last_run {"phase":""}.
+hook_entry() {
+  local weight=""; [ "$3" != 0 ] && weight="\"weight\":$3,"
+  printf '{"name":"%s","kind":"%s","path":"owl-mast/templates/postgresql-provision-keycloak-job.yaml","manifest":"stub","events":["pre-upgrade"],"last_run":%s,%s"delete_policies":["before-hook-creation","hook-succeeded"]}' "$1" "$2" "$4" "$weight"
+}
 if [[ "$args" == *" status "* ]]; then
-  rel="$(sed -E 's/.* status ([^ ]+).*/\1/' <<<"$args")"
+  rel="$(sed -E 's/.* status ([^ ]+).*/\1/' <<<"$args")"; ns="$(sed -E 's/.* -n ([^ ]+).*/\1/' <<<"$args")"
   state="$(awk -v m="$rel" '$1=="release" && $3==m {print $4; found=1} END {if (!found) print "absent"}' "$STUB_WORLD")"
   case "$state" in
     absent) echo "Error: release: not found" >&2; exit 1 ;;
     error) echo "Error: Kubernetes cluster unreachable" >&2; exit 1 ;;
-    *) echo "STATUS: deployed"; exit 0 ;;
   esac
+  rev=1; [ -e "$(rev_file "$rel")" ] && rev="$(grep -c . "$(rev_file "$rel")")"
+  if [[ "$args" != *" -o json"* ]]; then printf 'NAME: %s\nSTATUS: deployed\nREVISION: %s\n' "$rel" "$rev"; exit 0; fi
+  # `helm status -o json` (Helm 4.3.1): the release record, keys as in pkg/release/v1/release.go; `hooks` has omitempty.
+  # STUB_STATUS_JSON: error = the read fails; malformed = not JSON; old-revision = the record of the revision before.
+  case "${STUB_STATUS_JSON:-}" in
+    error) echo "Error: Kubernetes cluster unreachable: the server has asked for the client to provide credentials" >&2; exit 1 ;;
+    malformed) printf '{"name":"%s","hooks":[\n' "$rel"; exit 0 ;;
+    old-revision) rev=$((rev - 1)) ;;
+  esac
+  hooks=""; [ -s "$(hooks_file "$rel")" ] && hooks="\"hooks\":[$(cat "$(hooks_file "$rel")")],"
+  printf '{"name":"%s","info":{"first_deployed":"2026-11-07T09:00:00.000000001+01:00","last_deployed":"%s","description":"Upgrade complete","status":"deployed"},"chart":{"metadata":{"name":"owl-mast","version":"0.1.0"}},"manifest":"stub",%s"version":%s,"namespace":"%s","apply_method":"ssa"}\n' \
+    "$rel" "$(go_now)" "$hooks" "$rev" "$ns"
+  exit 0
+fi
+# An upgrade records the release and a new revision. A provisioning upgrade (postgresql.provisionKeycloakDatabase=true) runs the
+# pre-upgrade hook as Helm does, by STUB_HOOK: succeeded (default) = Helm deleted the hook Job and ConfigMap (hook-succeeded);
+# failed = the upgrade fails and the failed Job stays for diagnosis; kept = the upgrade succeeds but the hook objects remain
+# (a delete policy that did not apply). STUB_HELM_NO_NEW_REVISION=1 = a provisioning upgrade that records no new revision.
+# The release record of the new revision carries the hook's run, which outlives the deleted Job. More STUB_HOOK outcomes, all
+# with a successful upgrade, a new revision and no hook object left:
+#   skipped = no hook was rendered or run: the record has no hooks (the hook condition is false, or the value was dropped);
+#   not-run = the hook is in the record but was not run (`helm upgrade --no-hooks`): last_run {"phase":""};
+#   stale = last_run is Succeeded but started long before this upgrade;
+#   phase-failed = last_run is Failed;  phase-running = last_run is Running and has no completed_at.
+# STUB_HOOK_<n> overrides STUB_HOOK for the n-th provisioning upgrade (1 = the first), so one upgrade of a step can differ.
+if [[ "$args" == *" upgrade "* ]]; then
+  rel="$(sed -E 's/.* upgrade (--install )?([^ ]+).*/\2/' <<<"$args")"; ns="$(sed -E 's/.* -n ([^ ]+).*/\1/' <<<"$args")"
+  job="job $ns $rel-postgresql-provision-keycloak"; cm="configmap $ns $rel-postgresql-provision-scripts"
+  if [[ "$args" == *"provisionKeycloakDatabase=true"* ]]; then
+    grep -vE "^($job|$cm) " "$STUB_WORLD" > "$STUB_WORLD.tmp" || true; mv "$STUB_WORLD.tmp" "$STUB_WORLD"   # before-hook-creation
+    n=1; [ -e "$STUB_WORLD.provisioned" ] && n=$(( $(grep -c . "$STUB_WORLD.provisioned") + 1 ))
+    var="STUB_HOOK_$n"; mode="${!var:-${STUB_HOOK:-succeeded}}"
+    started="$(go_now)"; ran="{\"started_at\":\"$started\",\"completed_at\":\"$(go_now)\",\"phase\":\"Succeeded\"}"
+    case "$mode" in
+      failed) printf '%s owned\n%s owned\n' "$job" "$cm" >> "$STUB_WORLD"
+              echo "Error: UPGRADE FAILED: pre-upgrade hooks failed: 1 error occurred: * job $rel-postgresql-provision-keycloak failed: BackoffLimitExceeded" >&2; exit 1 ;;
+      kept) printf '%s owned\n%s owned\n' "$job" "$cm" >> "$STUB_WORLD" ;;
+      skipped) ran="" ;;
+      not-run) ran='{"phase":""}' ;;
+      stale) ran='{"started_at":"2026-11-07T09:00:00.123456789+01:00","completed_at":"2026-11-07T09:00:04.5+01:00","phase":"Succeeded"}' ;;
+      phase-failed) ran="{\"started_at\":\"$started\",\"completed_at\":\"$(go_now)\",\"phase\":\"Failed\"}" ;;
+      phase-running) ran="{\"started_at\":\"$started\",\"phase\":\"Running\"}" ;;
+    esac
+    if [ -n "$ran" ]; then printf '%s,%s' "$(hook_entry "$rel-postgresql-provision-scripts" ConfigMap -5 "$ran")" "$(hook_entry "$rel-postgresql-provision-keycloak" Job 0 "$ran")" > "$(hooks_file "$rel")"
+    else : > "$(hooks_file "$rel")"; fi
+    echo "$rel" >> "$STUB_WORLD.provisioned"
+    [ "${STUB_HELM_NO_NEW_REVISION:-}" = 1 ] && { echo "stub helm ok"; exit 0; }
+  else
+    : > "$(hooks_file "$rel")"   # a revision whose render has no provisioning hook records none
+  fi
+  if grep -q "^release - $rel " "$STUB_WORLD"; then [ -e "$(rev_file "$rel")" ] || echo "$rel" >> "$(rev_file "$rel")"   # a release the world started with is at revision 1
+  else printf 'release - %s owned\n' "$rel" >> "$STUB_WORLD"; fi
+  echo "$rel" >> "$(rev_file "$rel")"
+  echo "stub helm ok"; exit 0
 fi
 echo "stub helm ok"
 '''
@@ -199,7 +378,7 @@ class Harness:
     def env(self, **extra):
         env = {"PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": os.environ.get("HOME", "/"), "KUBECONFIG": str(self.tmp / "kubeconfig"),
                "OWLMAST_HELM": str(self.bin / "helm"), "EVIDENCE_DIR": str(self.evidence), "STUB_WORLD": str(self.world), "STUB_CALLS": str(self.calls), "STUB_RUN_ID": RUN_ID, "STUB_SENTINEL": SENTINEL,
-               "BACKEND_IMAGE_TAG": "stub"}
+               "BACKEND_IMAGE_TAG": "stub", "STUB_UNLABELLED_COMPONENTS": " ".join(UNLABELLED_COMPONENTS)}
         env.update(extra)
         return env
 
@@ -242,12 +421,16 @@ class PreflightTests(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             calls = h.calls.read_text().splitlines()
             created = [c for c in calls if " create secret generic " in c]
-            labelled = [c for c in calls if " label secret " in c]
             self.assertEqual(len(created), 6)  # eight synthetic Secrets minus the two that already exist and are owned
-            self.assertEqual(len(labelled), 6)
-            self.assertTrue(all("--overwrite" not in c for c in labelled))
-            self.assertTrue(all(any(name in c for c in created) for name in [c.split(" label secret ")[1].split()[0] for c in labelled]), "only newly created Secrets are labelled")
-            self.assertEqual(sum(" apply -f -" in c for c in calls), 2)  # the two replications, piped
+            # 109/4543776459: each Secret is built client-side and created WITH its label in one call; no separate label call exists
+            self.assertTrue(all("--dry-run=client" in c and "-o json" in c for c in created), created)
+            self.assertEqual([c for c in calls if " label " in c and " secret" in c], [])
+            # 109/4543776464: six labelled creations plus the two replications, all `create` (never `apply`, which overwrites)
+            self.assertEqual(sum(" create -f -" in c for c in calls), 8)
+            self.assertEqual(sum(" apply -f -" in c for c in calls), 0)  # no Secret is ever written with apply
+            world = h.world.read_text().splitlines()
+            self.assertEqual([l for l in world if l.startswith("secret ") and not l.endswith(" owned")], [], "every created Secret carries this run's label")
+            self.assertEqual(len([l for l in world if l.startswith("secret ")]), 2 + 8)
             self.assertIn("owned by this run (kept)", r.stdout)
             self.assertNotIn(SENTINEL, r.stdout + r.stderr + h.evidence_text())
             inventory = (h.evidence / "runtime" / "secrets-inventory.txt").read_text()
@@ -302,7 +485,6 @@ class PreflightTests(unittest.TestCase):
         cases = {
             "foreign:owner": "expected Deployment/owl-mast-postgresql",            # ReplicaSet of another release
             "foreign:another-run": "label 'another-run' is not",                    # pod label foreign
-            "foreign:unlabelled": "label '' is not",                                # pod unlabelled
             "foreign:rs-foreign": "label 'someone-else' is not",                    # ReplicaSet exists but foreign
             "foreign:rs-missing": "controller ReplicaSet owl-mast-postgresql-abc12 is missing",
             "foreign:rs-unreadable": "controller ReplicaSet owl-mast-postgresql-abc12 unreadable",
@@ -315,6 +497,10 @@ class PreflightTests(unittest.TestCase):
         for state, message in cases.items():
             r = self.run_refused(BASE_WORLD + dep + f"pods owl-mast-test owl-mast-postgresql {state}\n", "persistence")
             self.assertIn(message, r.stdout, state)
+        # a component whose pod template DOES carry the run label: an unlabelled pod or ReplicaSet is refused there
+        bdep = dep + "pods owl-mast-test owl-mast-postgresql owned\ndeployment owl-mast-test owl-mast-backend owned\n"
+        r = self.run_refused(BASE_WORLD + bdep + "pods owl-mast-test owl-mast-backend foreign:unlabelled\n", "persistence")
+        self.assertIn("chain pod owl-mast-test/owl-mast-backend-abc12-xyz: label '' is not", r.stdout)
         # a proven pod whose Deployment is absent or foreign is refused too
         self.run_refused(BASE_WORLD + "pods owl-mast-test owl-mast-postgresql owned\n", "persistence")
         self.run_refused(BASE_WORLD + "deployment owl-mast-test owl-mast-postgresql foreign:other\npods owl-mast-test owl-mast-postgresql owned\n", "persistence")
@@ -329,6 +515,74 @@ class PreflightTests(unittest.TestCase):
             self.assertIn("proven (owl-mast-postgresql-abc12-xyz -> ReplicaSet/owl-mast-postgresql-abc12 rs-owl-mast-postgresql -> Deployment/owl-mast-postgresql dep-owl-mast-postgresql", r.stdout)
             calls = h.calls.read_text()
             self.assertIn(" get replicaset owl-mast-postgresql-abc12 ", calls); self.assertIn(" get deployment owl-mast-postgresql ", calls)
+        finally:
+            h.close()
+
+    def test_stub_pod_labels_are_the_labels_the_chart_renders(self):
+        """4544473145: commit 9ca009b took commonLabels (and with them the run label) off the PostgreSQL pod template, and the
+        stub world went on answering a labelled pod. The stub's labels now come from the rendered chart, and the script's
+        list of unlabelled components must be exactly that."""
+        self.assertEqual(set(POD_RUN_LABELS), set(COMPONENTS))
+        self.assertEqual(UNLABELLED_COMPONENTS, ["postgresql"])  # what chart 0.2.0 renders; a change here must be deliberate
+        declared = re.search(r'^CHAIN_UNLABELLED_COMPONENTS="([^"]*)"$', SCRIPT.read_text(), re.M).group(1).split()
+        self.assertEqual(sorted(declared), UNLABELLED_COMPONENTS)
+        self.assertEqual(template_pod_run_labels(), POD_RUN_LABELS)  # the Helm-free fallback agrees with the render
+        if HELM is not None:
+            self.assertEqual(rendered_pod_run_labels(), POD_RUN_LABELS)
+
+    def test_unlabelled_postgresql_pods_are_proven_through_the_owned_deployment(self):
+        """4544473145: the pod and its ReplicaSet have no run label; the UID chain to the owned Deployment proves them. A label
+        naming someone else, or a Deployment that is not owned, still refuses. The same world fails if the script requires the label."""
+        world = BASE_WORLD + "deployment owl-mast-test owl-mast-postgresql owned\npods owl-mast-test owl-mast-postgresql owned\n"
+        h = Harness(world)
+        try:
+            r = h.source("verified_pods owl-mast postgresql " + RUN_ID)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            calls = h.calls.read_text()
+            self.assertIn("Deployment owned by " + RUN_ID + "; the postgresql pod template carries no run label", r.stdout)
+            self.assertNotIn("refusing", r.stdout)
+            # what the stub answered is what the chart renders: no label on the pod or the ReplicaSet
+            resources = (h.evidence / "runtime" / "preflight" / "resources.txt").read_text()
+            self.assertIn("pod owl-mast-test/owl-mast-postgresql-abc12-xyz label= refs=ReplicaSet/owl-mast-postgresql-abc12/", resources)
+            self.assertIn(" get replicaset owl-mast-postgresql-abc12 ", calls)
+            # a script that still required the label (the regression) refuses this very world
+            r = h.source("CHAIN_UNLABELLED_COMPONENTS=''; verified_pods owl-mast postgresql " + RUN_ID)
+            self.assertEqual(r.returncode, 1); self.assertIn("label '' is not", r.stdout)
+        finally:
+            h.close()
+        for bad, message in (("pods owl-mast-test owl-mast-postgresql foreign:another-run\n", "label 'another-run' is not"),
+                             ("pods owl-mast-test owl-mast-postgresql foreign:rs-foreign\n", "label 'someone-else' is not")):
+            r = self.run_refused(BASE_WORLD + "deployment owl-mast-test owl-mast-postgresql owned\n" + bad, "persistence")
+            self.assertIn(message, r.stdout)
+        r = self.run_refused(BASE_WORLD + "deployment owl-mast-test owl-mast-postgresql foreign:unlabelled\npods owl-mast-test owl-mast-postgresql owned\n", "persistence")
+        self.assertIn("exists but owner is 'unlabelled'", r.stdout)
+
+    def test_persistence_step_replaces_the_proven_unlabelled_postgresql_pod(self):
+        """4544473145: T3 stopped at 'pod controller chain not proven; nothing deleted' and the re-entry preflight refused every
+        existing release. With the labels the chart renders, the step passes preflight, proves the chain and deletes by name."""
+        world = BASE_WORLD + "release - owl-mast owned\npvc owl-mast-test owl-mast-postgresql-data owned\n"
+        for comp in COMPONENTS:
+            world += f"deployment owl-mast-test owl-mast-{comp} owned\npods owl-mast-test owl-mast-{comp} owned\n"
+        h = Harness(world)
+        try:
+            r = h.run("persistence")
+            self.assertNotIn("REFUSED", r.stdout, r.stdout)
+            self.assertIn("preflight passed", r.stdout)
+            self.assertNotIn("pod controller chain not proven", r.stdout)
+            deletes = [c for c in h.calls.read_text().splitlines() if " delete pod " in c]
+            self.assertEqual(len(deletes), 1, r.stdout)
+            self.assertIn(" delete pod -n owl-mast-test owl-mast-postgresql-abc12-xyz --wait=true", deletes[0])
+            self.assertEqual((h.evidence / "runtime" / "t3-delete-pod-proven.txt").read_text().split(), ["owl-mast-postgresql-abc12-xyz"])
+        finally:
+            h.close()
+
+    def test_inventory_lists_the_unlabelled_postgresql_pods(self):
+        """4544473145: the label-selected inventory cannot list objects that carry no run label."""
+        h = Harness(BASE_WORLD)
+        try:
+            h.source("step_inventory")
+            calls = h.calls.read_text()
+            self.assertIn("get pods,replicasets -n owl-mast-test -l app.kubernetes.io/component=postgresql", calls)
         finally:
             h.close()
 
@@ -443,7 +697,8 @@ class PreflightTests(unittest.TestCase):
         for rel in ("owl-mast", "owl-mast-broken", "owl-mast-wrongidp"):
             world += f"release - {rel} owned\n"
             for kind, suffix in (("deployment", "-backend"), ("deployment", "-postgresql"), ("deployment", "-keycloak"), ("deployment", "-frontend"), ("service", "-backend"), ("service", "-postgresql"), ("service", "-keycloak"), ("service", "-frontend"),
-                                 ("configmap", "-postgresql-init"), ("configmap", "-keycloak-realm"), ("configmap", "-postgresql-provision-scripts"), ("job", "-postgresql-provision-keycloak"), ("ingress", ""), ("httproute", ""), ("pvc", "-postgresql-data")):
+                                 ("configmap", "-postgresql-init"), ("configmap", "-keycloak-realm"), ("configmap", "-postgresql-provision-scripts"), ("job", "-postgresql-provision-keycloak"), ("ingress", ""), ("httproute", ""), ("pvc", "-postgresql-data"),
+                                 ("networkpolicy", "-postgresql"), ("networkpolicy", "-keycloak")):
                 world += f"{kind} owl-mast-test {rel}{suffix} owned\n"
             for comp in ("backend", "postgresql", "keycloak"):
                 world += f"pods owl-mast-test {rel}-{comp} owned\n"
@@ -488,7 +743,7 @@ class SecretValueSentinelTests(unittest.TestCase):
     def test_failure_during_replication_persists_no_value(self):
         h = Harness(BASE_WORLD)
         try:
-            r = h.run("prepare", STUB_FAIL_ON=" apply -f -")
+            r = h.run("prepare", STUB_FAIL_ON=" create -f -")
             self.assertNotEqual(r.returncode, 0)
             self.assertNotIn(SENTINEL, r.stdout + r.stderr + h.evidence_text())
         finally:
@@ -546,6 +801,441 @@ class EvidenceEvaluatorTests(unittest.TestCase):
                 self.assertNotEqual(h.source(f"assert_proxied_readiness_down '{bad}'").returncode, 0, bad.name)
         finally:
             h.close()
+
+
+class ReviewFindingsTests(unittest.TestCase):
+    """PR #109 post-merge review (5827094734) findings on the qualification script."""
+
+    def test_second_connect_denial_failure_is_not_swallowed_either(self):
+        """116/4543777563: only the keycloak principal can reach the other database, so the FIRST check passes and the
+        second one (keycloak -> owlmast) is the first failure; its `|| return 1` must stop the function."""
+        h = Harness(BASE_WORLD)
+        try:
+            r = h.source("check_shared_postgres owl-mast-test owl-mast-postgresql && echo PASSED || echo CAUGHT", STUB_EXEC_MODE="ac3", STUB_AC3_CONNECT="keycloak-allowed")
+            self.assertEqual(r.stdout.strip().splitlines()[-1], "CAUGHT", r.stdout + r.stderr)
+            self.assertIn("ok   ac3-owl-mast-test-app-cannot-connect-keycloak-db", r.stdout)  # the first check passed
+            self.assertIn("FAIL ac3-owl-mast-test-keycloak-cannot-connect-owlmast-db: the principal connected to owlmast", r.stdout)
+            self.assertNotIn("ac3-owl-mast-test-extensions", r.stdout)  # nothing after the failed check ran
+            self.assertNotIn("PASSED", r.stdout)
+        finally:
+            h.close()
+        # the mirror image: only the application principal crosses over, so the first check is the failure
+        h = Harness(BASE_WORLD)
+        try:
+            r = h.source("check_shared_postgres owl-mast-test owl-mast-postgresql && echo PASSED || echo CAUGHT", STUB_EXEC_MODE="ac3", STUB_AC3_CONNECT="app-allowed")
+            self.assertEqual(r.stdout.strip().splitlines()[-1], "CAUGHT", r.stdout + r.stderr)
+            self.assertIn("FAIL ac3-owl-mast-test-app-cannot-connect-keycloak-db", r.stdout)
+            self.assertNotIn("keycloak-cannot-connect-owlmast-db", r.stdout)
+        finally:
+            h.close()
+
+    def test_secret_creation_is_atomic_and_never_leaves_an_unlabelled_object(self):
+        """109/4543776459: a failed or interrupted creation leaves nothing behind, so a rerun is not refused as foreign."""
+        for step, name in (("ensure_secret owl-mast-test owl-mast-db owlmast_app", "owl-mast-db"), ("ensure_broken_secret", "owl-mast-db-broken")):
+            h = Harness(BASE_WORLD)
+            try:
+                r = h.source(f"{step}; echo CONTINUED", STUB_FAIL_ON=" create -f -")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr); self.assertNotIn("CONTINUED", r.stdout)
+                self.assertIn(f"REFUSED: secret owl-mast-test/{name} could not be created with its ownership label", r.stdout)
+                self.assertNotIn(f"secret owl-mast-test {name}", h.world.read_text())  # nothing exists, labelled or not
+                self.assertNotIn(SENTINEL, r.stdout + r.stderr + h.evidence_text())
+                rerun = h.source(f"{step}; echo CONTINUED")  # the next run starts clean and owns what it creates
+                self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr); self.assertIn("CONTINUED", rerun.stdout)
+                self.assertIn(f"secret owl-mast-test {name} owned", h.world.read_text())
+                self.assertEqual([c for c in h.calls.read_text().splitlines() if " label " in c], [])
+            finally:
+                h.close()
+
+    def test_generated_password_is_never_a_process_argument(self):
+        """116/4544181109: the password was a --from-literal argument of kubectl, visible in the process list, while the
+        comment said it existed only in the pipe. It is now written to kubectl's stdin by a shell builtin."""
+        h = Harness(BASE_WORLD)
+        try:
+            r = h.source("ensure_secret owl-mast-test owl-mast-db owlmast_app; echo CONTINUED")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr); self.assertIn("CONTINUED", r.stdout)
+            calls = h.calls.read_text().splitlines()
+            self.assertEqual([c for c in calls if "password=" in c and "--from-file=password=/dev/stdin" not in c], [])
+            created = [c for c in calls if " create secret generic owl-mast-db " in c]
+            self.assertEqual(len(created), 1)
+            self.assertIn("--from-file=password=/dev/stdin", created[0]); self.assertIn("--from-literal=username=owlmast_app", created[0])
+            name, size = Path(str(h.calls) + ".stdin").read_text().split()
+            self.assertEqual(name, "owl-mast-db")
+            self.assertTrue(20 <= int(size) <= 32, size)  # the generated value, without a trailing newline
+            self.assertIn("secret owl-mast-test owl-mast-db owned", h.world.read_text())
+        finally:
+            h.close()
+        script = (REPO / "scripts" / "qualify-local-install.sh").read_text()
+        self.assertNotIn("--from-literal=password", script)
+
+    def test_replication_never_overwrites_and_reports_its_failure(self):
+        """109/4543776464: the destination appears between the absence check and the write, or the write fails."""
+        source = "secret owl-mast-test owl-mast-db owned\n"
+        h = Harness(BASE_WORLD + source)
+        try:
+            r = h.source("replicate_secret owl-mast-test owl-mast-db owl-mast-test-external owl-mast-db; echo CONTINUED", STUB_FAIL_ON=" create -f -")
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr); self.assertNotIn("CONTINUED", r.stdout)
+            self.assertIn("REFUSED: secret owl-mast-test-external/owl-mast-db could not be replicated from owl-mast-test/owl-mast-db", r.stdout)
+            self.assertIn("stub: injected failure", r.stdout)  # the client's error is reported, not discarded
+            self.assertNotIn("replicated from", r.stdout.replace("could not be replicated from", ""))
+            calls = h.calls.read_text()
+            self.assertNotIn(" apply ", calls)
+            self.assertNotIn(SENTINEL, r.stdout + r.stderr + h.evidence_text())
+        finally:
+            h.close()
+        # the racing object: absent at the check (the stub answers the check from a world that does not list it yet),
+        # present at the write. `create` fails with AlreadyExists and the foreign object is untouched.
+        h = Harness(BASE_WORLD + source)
+        try:
+            race = ("resource_state() { if [ \"$3\" = owl-mast-db ] && [ \"$1\" = owl-mast-test-external ]; then "
+                    "printf 'secret owl-mast-test-external owl-mast-db foreign:someone-else\\n' >> \"$STUB_WORLD\"; echo absent; else echo owned; fi; }")
+            r = h.source(f"{race}; replicate_secret owl-mast-test owl-mast-db owl-mast-test-external owl-mast-db; echo CONTINUED")
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("could not be replicated", r.stdout); self.assertIn("AlreadyExists", r.stdout)
+            self.assertIn("secret owl-mast-test-external owl-mast-db foreign:someone-else", h.world.read_text())
+            self.assertNotIn("secret owl-mast-test-external owl-mast-db owned", h.world.read_text())
+        finally:
+            h.close()
+
+    def test_connect_denial_failure_is_not_swallowed_when_called_under_or(self):
+        """4513680539: first-enable calls check_shared_postgres under `||`, which disables set -e in its body."""
+        for connect, expected in (("allowed", "CAUGHT"), ("denied", "PASSED")):
+            h = Harness(BASE_WORLD)
+            try:
+                r = h.source("check_shared_postgres owl-mast-test owl-mast-postgresql && echo PASSED || echo CAUGHT", STUB_EXEC_MODE="ac3", STUB_AC3_CONNECT=connect)
+                self.assertEqual(r.stdout.strip().splitlines()[-1], expected, r.stdout + r.stderr)
+                if connect == "allowed":
+                    self.assertIn("FAIL ac3-owl-mast-test-app-cannot-connect-keycloak-db: the principal connected to keycloak", r.stdout)
+                    self.assertNotIn("ac3-owl-mast-test-extensions", r.stdout)  # nothing after the failed check ran
+            finally:
+                h.close()
+
+    def image_check(self, pods, image_id, node_id="sha256:local", digests="docker.io/owl-mast/backend@sha256:import "):
+        h = Harness(BASE_WORLD)
+        try:
+            docker = h.bin / "docker"
+            docker.write_text('#!/usr/bin/env bash\nif [[ "$*" == *".status.id"* ]]; then printf %s "$STUB_NODE_ID"; else printf %s "$STUB_NODE_DIGESTS"; fi\n')
+            docker.chmod(0o755)
+            r = h.source("verify_backend_image combo && echo PASSED || echo CAUGHT", STUB_BACKEND_PODS=pods, STUB_IMAGE_ID=image_id, STUB_NODE_ID=node_id,
+                         STUB_NODE_DIGESTS=digests, BACKEND_IMAGE_ID="sha256:local")
+            r.calls = h.calls.read_text()
+            return r
+        finally:
+            h.close()
+
+    def test_image_identity_requires_one_running_pod_with_a_non_empty_image_id(self):
+        """4513680551: an empty imageID matched any digest list, and items[0] could be the terminating pod."""
+        new = "owl-mast-backend-new   <none>\n"
+        old = "owl-mast-backend-old   2026-11-09T10:00:00Z\n"
+        ok = self.image_check(new, "docker.io/owl-mast/backend@sha256:import")
+        self.assertIn("PASSED", ok.stdout, ok.stdout + ok.stderr)
+        self.assertIn("ok   combo-image-identity", ok.stdout)
+        ok = self.image_check(new, "sha256:local")
+        self.assertIn("PASSED", ok.stdout, ok.stdout + ok.stderr)
+        # a terminating pod listed first is excluded; the check reads the live one
+        ok = self.image_check(old + new, "docker.io/owl-mast/backend@sha256:import")
+        self.assertIn("PASSED", ok.stdout, ok.stdout + ok.stderr)
+        self.assertIn(" get pod owl-mast-backend-new ", ok.calls)
+        self.assertNotIn(" get pod owl-mast-backend-old ", ok.calls)
+        for pods, image_id, message in (
+            (new, "", "reports no imageID"),
+            ("", "docker.io/owl-mast/backend@sha256:import", "expected exactly one Running, non-terminating backend pod"),
+            (old, "docker.io/owl-mast/backend@sha256:import", "expected exactly one Running, non-terminating backend pod"),  # only a terminating pod is Running
+            ("owl-mast-backend-a   <none>\n" + new, "docker.io/owl-mast/backend@sha256:import", "expected exactly one Running, non-terminating backend pod"),
+            (new, "sha256:imp", "does not run the expected local build"),  # a prefix of a listed digest is not a match
+        ):
+            r = self.image_check(pods, image_id)
+            self.assertIn("CAUGHT", r.stdout, (pods, image_id, r.stdout))
+            self.assertIn(message, r.stdout, (pods, image_id))
+        r = self.image_check("owl-mast-backend-new   <none>\n", "docker.io/owl-mast/backend@sha256:import", node_id="sha256:other")
+        self.assertIn("CAUGHT", r.stdout)
+
+    def test_backend_pod_selection_excludes_terminating_and_non_running_pods(self):
+        text = SCRIPT.read_text()
+        body = text[text.index("verify_backend_image() {"):text.index("\n}\n", text.index("verify_backend_image() {"))]
+        self.assertIn("--field-selector=status.phase=Running", body)
+        self.assertIn("DELETING:.metadata.deletionTimestamp", body)
+        self.assertNotIn("items[0]", body)
+
+    def test_plaintext_fixture_installs_carry_the_explicit_insecure_opt_ins(self):
+        """D1: the chart refuses http issuers and weak sslMode unless opted in; every fixture install must opt in."""
+        text = SCRIPT.read_text()
+        http_issuers = [l for l in text.splitlines() if 'identity.external.issuerUri="http://' in l]
+        self.assertGreaterEqual(len(http_issuers), 5)
+        self.assertTrue(all("identity.external.allowInsecureIssuer=true" in l for l in http_issuers), http_issuers)
+        for key in ("database.external", "identity.keycloak.database.external"):
+            weak = [l for l in text.splitlines() if f"--set {key}.sslMode=disable" in l]
+            self.assertTrue(weak, key)
+            self.assertTrue(all(f"--set {key}.allowInsecureTransport=true" in l for l in weak), weak)
+
+    def test_network_policies_are_part_of_the_release_enumeration(self):
+        h = Harness(BASE_WORLD + "networkpolicy owl-mast-test owl-mast-postgresql foreign:unlabelled\n")
+        try:
+            r = h.run("bundled-bundled")
+            self.assertEqual(r.returncode, 2, r.stdout); self.assertIn("preflight networkpolicy owl-mast-test/owl-mast-postgresql", r.stdout)
+            self.assertEqual(h.mutating_calls(), [])
+        finally:
+            h.close()
+
+
+class ProvisioningHookEvidenceTests(unittest.TestCase):
+    """V5 (owner's Kind qualification of PR #116, 2026-11-12): the script read the provisioning hook Job's status and log after
+    `helm upgrade --wait`, but the chart deletes the Job and its ConfigMap once the hook succeeded (hook-delete-policy
+    before-hook-creation,hook-succeeded), so the read was NotFound and the run stopped at `provision-keycloak-job`. The stub world
+    now deletes the hook objects on success like Helm does, and the script proves the hook from what outlives it."""
+
+    RUNTIME = {"STUB_RUNTIME": "1", "STUB_EXEC_MODE": "ac3", "STUB_BACKEND_PODS": "owl-mast-backend-new   <none>\n",
+               "STUB_IMAGE_ID": "docker.io/owl-mast/backend@sha256:import", "HOOK_GONE_TIMEOUT": "0"}
+    FE_RUN_ID = "om-01-02-followup-stub-01"
+
+    def direct_hook_reads(self, calls):  # the ownership query (--ignore-not-found, absence is an answer) is not a read of the Job's status
+        return [c for c in calls.splitlines() if " logs job/" in c or (" get job " in c and "--ignore-not-found" not in c)]
+
+    def step(self, step, **extra):
+        h = Harness(BASE_WORLD)
+        try:
+            r = h.run(step, **{**self.RUNTIME, **extra})
+            r.calls = h.calls.read_text()
+            r.world = h.world.read_text()
+            runtime = h.evidence / "runtime"
+            r.evidence = {p.stem: p.read_text() for p in runtime.glob("*.txt")} if runtime.exists() else {}
+            return r
+        finally:
+            h.close()
+
+    def first_enable(self, **extra):
+        return self.step("first-enable", OWLMAST_FOLLOWUP_RUN_ID=self.FE_RUN_ID, STUB_FE_RUN_ID=self.FE_RUN_ID, **extra)
+
+    def test_bundled_bundled_passes_when_the_succeeded_hook_job_is_gone(self):
+        r = self.step("bundled-bundled")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for line in ("ok   provision-keycloak-upgrade", "ok   provision-keycloak-revision (revision 1 -> 2, deployed)",
+                     "ok   provision-keycloak-hook-run (hook Job/owl-mast-postgresql-provision-keycloak events=pre-upgrade phase=Succeeded started_at=",
+                     "ok   provision-keycloak-identity-unchanged (role=16385 database=16386 owner=16385)",
+                     "ok   provision-keycloak-hook-removed (hook Job and ConfigMap absent after success",
+                     "ok   provision-keycloak-idempotent", "qualification steps complete: bundled-bundled"):
+            self.assertIn(line, r.stdout)
+        self.assertNotIn("FAIL", r.stdout)
+        # the world really has no hook Job after the successful upgrade, and the script never reads it or its log directly
+        self.assertNotIn("job owl-mast-test owl-mast-postgresql-provision-keycloak", r.world)
+        self.assertEqual(self.direct_hook_reads(r.calls), [])
+        self.assertEqual(r.evidence["provision-keycloak-identity-before"].splitlines()[-1], r.evidence["provision-keycloak-identity-after"].splitlines()[-1])
+        self.assertEqual(r.evidence["provision-keycloak-hook-removed"].splitlines(),
+                         ["job owl-mast-test/owl-mast-postgresql-provision-keycloak absent", "configmap owl-mast-test/owl-mast-postgresql-provision-scripts absent"])
+        # the identifiers are read before the upgrade and again after it
+        calls = r.calls.splitlines()
+        upgrade = next(i for i, c in enumerate(calls) if "provisionKeycloakDatabase=true" in c)
+        reads = [i for i, c in enumerate(calls) if "'role='||r.oid" in c]
+        self.assertEqual(len(reads), 2, reads); self.assertLess(reads[0], upgrade); self.assertGreater(reads[1], upgrade)
+
+    def test_a_direct_read_of_the_succeeded_hook_job_is_not_found_in_the_stub_world(self):
+        """What made the old script fail on the cluster, reproduced by the stub: the Job read and the log read are NotFound."""
+        h = Harness(BASE_WORLD)
+        try:
+            body = ('h upgrade owl-mast "$CHART" -n "$NS" --wait --set postgresql.provisionKeycloakDatabase=true >/dev/null; '
+                    'k -n "$NS" get job owl-mast-postgresql-provision-keycloak -o jsonpath="{.status.succeeded}" && echo get=0 || echo get=1; '
+                    'k -n "$NS" logs job/owl-mast-postgresql-provision-keycloak && echo logs=0 || echo logs=1')
+            r = h.source(body)
+            self.assertIn("get=1", r.stdout); self.assertIn("logs=1", r.stdout)
+            self.assertEqual(r.stderr.count('(NotFound): jobs.batch "owl-mast-postgresql-provision-keycloak" not found'), 2, r.stderr)
+            r = h.source(body.replace(">/dev/null;", ">/dev/null 2>&1 || true;"), STUB_HOOK="failed")  # a failed hook Job stays for diagnosis
+            self.assertIn("get=0", r.stdout); self.assertIn("logs=0", r.stdout)
+        finally:
+            h.close()
+
+    def test_changed_or_unreadable_identifiers_fail_the_step(self):
+        for after, message in (("role=16999 database=16386 owner=16999", "FAIL provision-keycloak-identity: provisioning dropped or recreated an existing role or database"),
+                               ("role=16385 database=17001 owner=16385", "FAIL provision-keycloak-identity: provisioning dropped or recreated an existing role or database"),
+                               ("role=16385 database=16386 owner=10", "FAIL provision-keycloak-identity: provisioning dropped or recreated an existing role or database"),
+                               ("", "FAIL provision-keycloak-identity-after"),
+                               ("stub ok", "FAIL provision-keycloak-identity-after: the Keycloak role/database identifiers were not read")):
+            with self.subTest(after=after):
+                r = self.step("bundled-bundled", STUB_KC_IDENTITY_1=after)
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn(message, r.stdout)
+                self.assertNotIn("ok   provision-keycloak-idempotent", r.stdout)
+                self.assertNotIn("qualification steps complete", r.stdout)
+        r = self.step("bundled-bundled", STUB_KC_IDENTITY_0="")  # unreadable before the upgrade: the upgrade is never started
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL provision-keycloak-identity-before", r.stdout)
+        self.assertNotIn("provisionKeycloakDatabase=true", r.calls)
+
+    def test_a_failed_hook_fails_the_step_at_the_upgrade(self):
+        r = self.step("bundled-bundled", STUB_HOOK="failed")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL provision-keycloak-upgrade", r.stdout)
+        self.assertIn("pre-upgrade hooks failed", r.evidence["provision-keycloak-upgrade"])
+        for later in ("provision-keycloak-revision-after", "provision-keycloak-identity-after", "provision-keycloak-idempotent"):
+            self.assertNotIn(later, r.stdout)
+
+    def test_a_hook_job_that_outlives_its_success_fails_the_step(self):
+        r = self.step("bundled-bundled", STUB_HOOK="kept")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL provision-keycloak-hook-removed: hook job owl-mast-test/owl-mast-postgresql-provision-keycloak is not absent after the successful upgrade (owned)", r.stdout)
+        self.assertNotIn("ok   provision-keycloak-idempotent", r.stdout)
+
+    def test_an_upgrade_without_a_new_deployed_revision_fails_the_step(self):
+        r = self.step("bundled-bundled", STUB_HELM_NO_NEW_REVISION="1")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL provision-keycloak-revision: the upgrade left no new deployed revision (before 1, after 1)", r.stdout)
+
+    def test_the_schema_check_is_kept(self):
+        r = self.step("bundled-bundled", STUB_KC_SCHEMA="f")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL keycloak schema", r.stdout)
+        self.assertNotIn("ok   provision-keycloak-idempotent", r.stdout)
+
+    def test_first_enable_passes_when_the_succeeded_hook_job_is_gone(self):
+        r = self.first_enable()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for line in ("ok   fe2-revision (revision 1 -> 2, deployed)", "ok   fe2-hook-removed",
+                     "ok   fe2-hook-run (hook Job/owl-mast-fe-postgresql-provision-keycloak events=pre-upgrade phase=Succeeded started_at=",
+                     "ok   fe3-hook-run (hook Job/owl-mast-fe-postgresql-provision-keycloak events=pre-upgrade phase=Succeeded started_at=",
+                     "ok   fe2-first-enable-provisioned (role and database absent before, present after the pre-upgrade hook: role=16385 database=16386 owner=16385)",
+                     "ok   fe3-revision (revision 2 -> 3, deployed)", "ok   fe3-identity-unchanged", "ok   fe3-hook-removed", "ok   fe3-retry-no-op", "ok   fe3-keycloak-schema-intact",
+                     "qualification steps complete: first-enable"):
+            self.assertIn(line, r.stdout)
+        self.assertNotIn("FAIL", r.stdout)
+        self.assertEqual(self.direct_hook_reads(r.calls), [])
+
+    def test_first_enable_fails_when_the_role_is_missing_after_the_hook_or_recreated_by_the_retry(self):
+        r = self.first_enable(STUB_KC_IDENTITY_1="")  # the Keycloak principal cannot log in after the first enable
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL fe2-keycloak-identity", r.stdout)
+        self.assertNotIn("ok   fe2-first-enable-provisioned", r.stdout)
+        r = self.first_enable(STUB_KC_IDENTITY_2="role=16385 database=17001 owner=16385")  # the retry recreated the database
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL fe3-identity: provisioning dropped or recreated an existing role or database", r.stdout)
+        self.assertNotIn("ok   fe3-retry-no-op", r.stdout)
+        r = self.first_enable(STUB_HOOK="failed")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL fe2-enable-upgrade", r.stdout)
+
+    # -- cycle-8 review of PR #116 (review 5871692033): every check above is equally true when no hook ran. The run of the hook
+    # is read from the release record (`helm status -o json`, hooks[].last_run), which outlives the deleted Job.
+    HOOK_RUN_FAILURES = (
+        ("skipped", "the release record lists 0 hooks of kind Job named {job}; the hook was not rendered for this upgrade"),
+        ("not-run", "the hook Job last_run.phase is '', not Succeeded; the hook did not run to success on this upgrade"),
+        ("stale", "the hook Job last_run.started_at 2026-11-07T09:00:00.123456789+01:00 is earlier than the start of this upgrade"),
+        ("phase-failed", "the hook Job last_run.phase is 'Failed', not Succeeded"),
+        ("phase-running", "the hook Job last_run.phase is 'Running', not Succeeded"),
+    )
+
+    def test_bundled_bundled_fails_when_the_release_record_does_not_show_the_hook_ran(self):
+        for mode, reason in self.HOOK_RUN_FAILURES:
+            with self.subTest(mode=mode):
+                r = self.step("bundled-bundled", STUB_HOOK=mode)
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn("FAIL provision-keycloak-hook-run: " + reason.format(job="owl-mast-postgresql-provision-keycloak"), r.stdout)
+                # everything the review listed still holds without the hook: the upgrade, the new revision, and no hook object
+                self.assertIn("ok   provision-keycloak-upgrade", r.stdout)
+                self.assertIn("ok   provision-keycloak-revision (revision 1 -> 2, deployed)", r.stdout)
+                self.assertNotIn("job owl-mast-test owl-mast-postgresql-provision-keycloak", r.world)
+                for later in ("provision-keycloak-identity-unchanged", "provision-keycloak-hook-removed", "ok   provision-keycloak-idempotent", "qualification steps complete"):
+                    self.assertNotIn(later, r.stdout)
+
+    def test_first_enable_retry_fails_when_the_release_record_does_not_show_the_hook_ran(self):
+        for mode, reason in self.HOOK_RUN_FAILURES:
+            with self.subTest(mode=mode):
+                r = self.first_enable(STUB_HOOK_2=mode)  # the first enable ran its hook; only the retry (fe3) did not
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn("ok   fe2-hook-run", r.stdout)
+                self.assertIn("ok   fe2-first-enable-provisioned", r.stdout)
+                self.assertIn("ok   fe3-retry-upgrade", r.stdout)
+                self.assertIn("ok   fe3-revision (revision 2 -> 3, deployed)", r.stdout)
+                self.assertIn("FAIL fe3-hook-run: " + reason.format(job="owl-mast-fe-postgresql-provision-keycloak"), r.stdout)
+                for later in ("fe3-identity-unchanged", "fe3-hook-removed", "ok   fe3-retry-no-op", "qualification steps complete"):
+                    self.assertNotIn(later, r.stdout)
+
+    def test_first_enable_fails_when_the_release_record_does_not_show_the_first_hook_ran(self):
+        r = self.first_enable(STUB_HOOK="skipped")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL fe2-hook-run: the release record lists 0 hooks of kind Job named owl-mast-fe-postgresql-provision-keycloak", r.stdout)
+        self.assertNotIn("ok   fe2-first-enable-provisioned", r.stdout)
+
+    def test_an_unreadable_or_malformed_release_record_fails_the_step(self):
+        for mode, message in (("error", "FAIL provision-keycloak-hook-run: the release record of owl-mast could not be read (helm status -o json exit 1; not evidence)"),
+                              ("malformed", "FAIL provision-keycloak-hook-run: the helm status output is not JSON"),
+                              ("old-revision", "FAIL provision-keycloak-hook-run: the record is of revision 1, not of the deployed revision 2")):
+            with self.subTest(mode=mode):
+                r = self.step("bundled-bundled", STUB_STATUS_JSON=mode)
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn(message, r.stdout)
+                self.assertNotIn("ok   provision-keycloak-idempotent", r.stdout)
+
+    def test_the_release_record_check_accepts_only_a_succeeded_run_of_this_upgrade(self):
+        """The evaluator on its own, with records in the shape Helm 4.3.1 prints (taken from an install and upgrade run with the
+        4.3.1 module): time formats it must read, and shapes it must refuse."""
+        job = "owl-mast-postgresql-provision-keycloak"
+        def record(last_run, version=2, kind="Job", name=job, events=("pre-upgrade",)):
+            return {"name": "owl-mast", "info": {"last_deployed": "2026-11-12T10:01:50.545494161+01:00", "status": "deployed"}, "version": version,
+                    "hooks": [{"name": "owl-mast-postgresql-provision-scripts", "kind": "ConfigMap", "events": ["pre-upgrade"], "weight": -5,
+                               "last_run": {"started_at": "2026-11-12T10:01:50.545519722+01:00", "completed_at": "2026-11-12T10:01:50.545521572+01:00", "phase": "Succeeded"}},
+                              {"name": name, "kind": kind, "events": list(events), "last_run": last_run}]}
+        ok = {"started_at": "2026-11-12T10:01:50.545521982+01:00", "completed_at": "2026-11-12T10:01:50.545522612+01:00", "phase": "Succeeded"}
+        since = 1794474110  # 2026-11-12T09:01:50Z, the second in which that hook started
+        cases = (
+            (record(ok), since, 0, "verdict: ok"),
+            (record(ok), since + 1, 1, "is earlier than the start of this upgrade"),
+            (record({**ok, "started_at": "2026-11-12T09:01:50Z", "completed_at": "2026-11-12T09:01:50.5Z"}), since, 0, "verdict: ok"),  # UTC, no or short fraction
+            (record({**ok, "started_at": "2026-11-12T04:01:50.9-05:00", "completed_at": "2026-11-12T04:01:51-05:00"}), since, 0, "verdict: ok"),  # a negative offset
+            (record({**ok, "started_at": "2026-11-12T11:01:49.999999999+02:00"}), since, 1, "is earlier than the start of this upgrade"),  # one nanosecond early
+            (record({**ok, "started_at": "2026-11-12 10:01:50"}), since, 1, "last_run.started_at is missing or not an RFC 3339 time"),
+            (record({**ok, "started_at": "2026-13-45T10:01:50Z"}), since, 1, "last_run.started_at is not a valid time"),
+            (record({"phase": "Succeeded"}), since, 1, "last_run.started_at is missing or not an RFC 3339 time"),
+            (record({"started_at": ok["started_at"], "phase": "Succeeded"}), since, 1, "last_run.completed_at is missing or not an RFC 3339 time"),
+            (record({**ok, "completed_at": "2026-11-12T10:01:50.5+01:00"}), since, 1, "completed_at is earlier than its started_at"),
+            (record({**ok, "phase": "Unknown"}), since, 1, "last_run.phase is 'Unknown', not Succeeded"),
+            (record({"phase": ""}), since, 1, "last_run.phase is '', not Succeeded"),
+            (record(None), since, 1, "the hook Job has no last_run"),
+            (record(ok, kind="ConfigMap"), since, 1, f"lists 0 hooks of kind Job named {job}"),
+            (record(ok, name="other-postgresql-provision-keycloak"), since, 1, f"lists 0 hooks of kind Job named {job}"),
+            (record(ok, events=("post-upgrade",)), since, 1, "the hook Job is not a pre-upgrade hook"),
+            (record(ok, version=3), since, 1, "the record is of revision 3, not of the deployed revision 2"),
+            (record(ok, version="2"), since, 1, "the record is of revision 2, not of the deployed revision 2"),
+            ({"name": "owl-mast", "version": 2}, since, 1, f"lists 0 hooks of kind Job named {job}"),  # hooks has omitempty
+            ({"name": "owl-mast", "version": 2, "hooks": {}}, since, 1, "hooks is not a list of objects"),
+            ({"name": "owl-mast", "version": 2, "hooks": ["x"]}, since, 1, "hooks is not a list of objects"),
+            ([], since, 1, "the helm status output is not a release object"),
+            ("", since, 1, "the helm status output is not JSON"),
+        )
+        h = Harness(BASE_WORLD)
+        try:
+            for i, (doc, not_before, code, text) in enumerate(cases):
+                with self.subTest(case=i, text=text):
+                    payload = doc if isinstance(doc, str) else json.dumps(doc)
+                    r = subprocess.run(["bash", "-c", f"source '{SCRIPT}'; python3 -c \"$HOOK_RUN_CHECK\" {job} {not_before} 2"], env=h.env(), input=payload,
+                                       capture_output=True, text=True, check=False, timeout=60)
+                    self.assertEqual(r.returncode, code, r.stdout + r.stderr)
+                    self.assertIn(text, r.stdout)
+                    self.assertEqual(r.stdout.count("verdict: "), 1, r.stdout)
+        finally:
+            h.close()
+
+    def test_the_release_record_is_never_written_to_evidence_whole(self):
+        r = self.step("bundled-bundled")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = r.evidence["provision-keycloak-hook-run"]
+        self.assertEqual(text.splitlines()[-1], "verdict: ok")
+        self.assertIn("hook ConfigMap/owl-mast-postgresql-provision-scripts events=pre-upgrade phase=Succeeded", text)
+        self.assertNotIn("{", text)
+        for whole in ('"manifest"', '"chart"', '"last_run"'):
+            self.assertNotIn(whole, "\n".join(r.evidence.values()))
+
+    def test_hook_gone_timeout_must_be_a_whole_number(self):
+        for value in ("30s", "-1", "1.5", "abc", " ", "08", "030"):
+            with self.subTest(value=value):
+                r = self.step("bundled-bundled", HOOK_GONE_TIMEOUT=value)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn(f"REFUSED: HOOK_GONE_TIMEOUT must be a whole number of seconds (digits only, no leading zero), got '{value}'", r.stderr)
+                self.assertEqual(r.calls, "")
+
+    def test_the_script_reads_no_hook_object_the_chart_deletes_on_success(self):
+        """The delete policy the script depends on is the chart's, and no step reads the hook Job, its log or its ConfigMap directly."""
+        hook = (CHART / "templates" / "postgresql-provision-keycloak-job.yaml").read_text()
+        self.assertEqual(hook.count("helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded"), 2)
+        text = "\n".join(l for l in SCRIPT.read_text().splitlines() if not l.lstrip().startswith("#"))
+        for pattern in (r"\bget job\b", r"\blogs\s+\"?job/", r"get configmap\b.*provision-scripts", r"hook-log", r"hook-job"):
+            self.assertIsNone(re.search(pattern, text), pattern)
 
 
 if __name__ == "__main__":

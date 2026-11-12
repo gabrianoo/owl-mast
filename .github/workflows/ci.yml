@@ -30,6 +30,8 @@ jobs:
         run: docker version
       - name: Build with all gates (formatting, Error Prone, ArchUnit, unit + integration suites)
         run: ./gradlew build --console=plain
+      - name: Backend runtime image (bootJar name, docker build, UID 10001, qualified JDK, read-only-root start with the chart's environment, up to the first database connection)
+        run: scripts/verify-backend-image.sh
       - name: Test reports
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -66,7 +68,8 @@ jobs:
   package-checks:
     name: Installation package (chart lint, four combinations, fail-closed validation)
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    # Docker-backed suites pull the pinned PostgreSQL and Keycloak images and start Keycloak read-only.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0

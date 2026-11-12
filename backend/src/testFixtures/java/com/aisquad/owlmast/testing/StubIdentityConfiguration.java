@@ -15,6 +15,11 @@ public class StubIdentityConfiguration {
 
   @Bean
   DynamicPropertyRegistrar identityIssuerProperty(StubIdentityProvider provider) {
-    return registry -> registry.add("owlmast.identity.issuer-uri", provider::issuerUri);
+    return registry -> {
+      registry.add("owlmast.identity.issuer-uri", provider::issuerUri);
+      // The stub speaks plaintext on loopback; the backend refuses http issuers without this
+      // opt-in.
+      registry.add("owlmast.identity.allow-insecure-issuer", () -> "true");
+    };
   }
 }

@@ -1,10 +1,12 @@
 # Both dependencies supplied by the operator: only the backend (and optionally the frontend) is deployed.
+# sslMode `require` encrypts the connection but does not authenticate the server; `verify-ca` and `verify-full`
+# are refused until the chart mounts a CA trust (docs/installation.md).
 database:
   bundled: false
   external:
     host: postgresql.data.example.internal
     port: 5432
-    sslMode: verify-full
+    sslMode: require
 identity:
   bundled: false
   external:

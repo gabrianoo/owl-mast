@@ -8,6 +8,10 @@ metadata:
     app.kubernetes.io/component: backend
 spec:
   replicas: {{ .Values.backend.replicas }}
+  # Single instance (AD-14): the old pod stops before the new one starts, so a rollout never runs two
+  # backends (and two startup migrations) against the same database.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "owl-mast.selectorLabels" . | nindent 6 }}
@@ -64,6 +68,10 @@ spec:
                   key: password
             - name: OWLMAST_IDENTITY_ISSUER_URI
               value: {{ include "owl-mast.identity.issuerUri" . | quote }}
+            # The backend itself refuses a plaintext issuer unless told otherwise: true only for the
+            # cluster-local bundled Keycloak or the explicit identity.external.allowInsecureIssuer opt-in.
+            - name: OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER
+              value: {{ ternary "true" "false" (or .Values.identity.bundled (default false .Values.identity.external.allowInsecureIssuer)) | quote }}
             {{- range .Values.backend.extraEnv }}
             - name: {{ .name | quote }}
               value: {{ .value | quote }}
@@ -74,18 +82,27 @@ spec:
               port: http
             periodSeconds: {{ .Values.backend.probes.startup.periodSeconds }}
             failureThreshold: {{ .Values.backend.probes.startup.failureThreshold }}
+            {{- with .Values.backend.probes.startup.timeoutSeconds }}
+            timeoutSeconds: {{ . }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: {{ .Values.backend.probes.liveness.path }}
               port: http
             periodSeconds: {{ .Values.backend.probes.liveness.periodSeconds }}
             failureThreshold: {{ .Values.backend.probes.liveness.failureThreshold }}
+            {{- with .Values.backend.probes.liveness.timeoutSeconds }}
+            timeoutSeconds: {{ . }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: {{ .Values.backend.probes.readiness.path }}
               port: http
             periodSeconds: {{ .Values.backend.probes.readiness.periodSeconds }}
             failureThreshold: {{ .Values.backend.probes.readiness.failureThreshold }}
+            # Defaulted here as well: a release upgraded with --reuse-values carries no timeoutSeconds, and the
+            # kubelet default of 1 s is shorter than the backend's identity-discovery timeout.
+            timeoutSeconds: {{ dig "timeoutSeconds" 5 .Values.backend.probes.readiness }}
           resources:
             {{- toYaml .Values.backend.resources | nindent 12 }}
           volumeMounts:

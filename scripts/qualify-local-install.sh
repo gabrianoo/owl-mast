@@ -12,6 +12,8 @@
 # Steps: prepare fixtures bundled-bundled persistence bundled-external external-bundled external-external failure-paths inventory all
 #        first-enable (needs OWLMAST_FOLLOWUP_RUN_ID; a fresh run-owned volume: app-only init, enable identity via the pre-upgrade hook, retry)
 # Optional: BACKEND_IMAGE_TAG (default 0.1.0), BACKEND_IMAGE_ID (expected local image id the node must run).
+# The synthetic fixtures speak plaintext (http issuer, sslMode=disable): every such install passes the chart's
+# explicit opt-ins (identity.external.allowInsecureIssuer, *.allowInsecureTransport); production values never do.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -230,14 +232,22 @@ release_state() { # release_state <release>: absent | present | error:<message> 
 RELEASE_KINDS_AND_SUFFIXES=( "deployment:-backend" "deployment:-postgresql" "deployment:-keycloak" "deployment:-frontend"
   "service:-backend" "service:-postgresql" "service:-keycloak" "service:-frontend"
   "configmap:-postgresql-init" "configmap:-keycloak-realm" "configmap:-postgresql-provision-scripts"
-  "job:-postgresql-provision-keycloak" "ingress:" "httproute:" "pvc:-postgresql-data" )
+  "job:-postgresql-provision-keycloak" "ingress:" "httproute:" "pvc:-postgresql-data"
+  "networkpolicy:-postgresql" "networkpolicy:-keycloak" )
+# Components whose pod template carries no commonLabels, so their pods and ReplicaSets have NO run label: the
+# chart keeps commonLabels off the PostgreSQL pod template (a label edit must not recreate the database).
+# Ownership of such a pod is proven through its Deployment alone (see verified_pods).
+CHAIN_UNLABELLED_COMPONENTS="postgresql"
 verified_pods() { # verified_pods <release> <component> <owner>: prints the names of the selected pods whose controller chain is proven
-  # Each selected pod must carry the owner label and exactly one controller reference to a ReplicaSet that
-  # exists, is readable, has that UID, carries the owner label and is itself controlled (one controller
-  # reference, matching UID) by the expected Deployment <release>-<component>, which must exist, be readable
-  # and carry the owner label. Anything else refuses. This proves the chain at the moment of reading; a pod
-  # replaced afterwards is not covered by this proof (no atomic guarantee is claimed).
-  local rel="$1" comp="$2" owner="$3" out rc=0 line name label refs dep_uid dep_label rs_out rs_uid rs_label rs_refs
+  # Each selected pod must have exactly one controller reference to a ReplicaSet that exists, is readable, has
+  # that UID and is itself controlled (one controller reference, matching UID) by the expected Deployment
+  # <release>-<component>, which must exist, be readable and carry the owner label. The pod and the ReplicaSet
+  # must carry the owner label too, except for CHAIN_UNLABELLED_COMPONENTS: there the label is absent by design,
+  # so an ABSENT label is accepted and the UID chain to the owned Deployment is the proof; a label naming anyone
+  # else still refuses. Anything else refuses. This proves the chain at the moment of reading; a pod replaced
+  # afterwards is not covered by this proof (no atomic guarantee is claimed).
+  local rel="$1" comp="$2" owner="$3" out rc=0 line name label refs dep_uid dep_label rs_out rs_uid rs_label rs_refs unlabelled_ok=0
+  case " $CHAIN_UNLABELLED_COMPONENTS " in *" $comp "*) unlabelled_ok=1 ;; esac
   local proven_file="$OUT/preflight/proven-pods-$rel-$comp.txt"; : >"$proven_file"  # the proven names, read by callers
   dep_uid="$(k -n "$NS" get deployment "$rel-$comp" -o jsonpath='{.metadata.uid}|{.metadata.labels.owlmast\.aisquad\.com/run}' 2>&1)" || rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -251,7 +261,7 @@ verified_pods() { # verified_pods <release> <component> <owner>: prints the name
   while IFS='|' read -r name label refs; do
     [ -n "$name" ] || continue
     printf 'pod %s/%s label=%s refs=%s\n' "$NS" "$name" "$label" "$refs" >>"$OUT/preflight/resources.txt"
-    if [ "$label" != "$owner" ]; then log "chain pod $NS/$name: label '$label' is not $owner: refusing"; failed=1; continue; fi
+    if [ "$label" != "$owner" ] && ! { [ "$unlabelled_ok" -eq 1 ] && [ -z "$label" ]; }; then log "chain pod $NS/$name: label '$label' is not $owner: refusing"; failed=1; continue; fi
     local controllers; controllers="$(tr ' ' '\n' <<<"$refs" | grep -E '/true$' || true)"
     if [ "$(grep -c . <<<"$controllers")" -ne 1 ] || [ -z "$controllers" ]; then log "chain pod $NS/$name: expected exactly one controller reference, got '$refs': refusing"; failed=1; continue; fi
     local ckind cname cuid; IFS='/' read -r ckind cname cuid _ <<<"$controllers"
@@ -263,14 +273,18 @@ verified_pods() { # verified_pods <release> <component> <owner>: prints the name
     fi
     IFS='|' read -r rs_uid rs_label rs_refs <<<"$rs_out"
     if [ "$rs_uid" != "$cuid" ]; then log "chain pod $NS/$name: ReplicaSet $cname UID $rs_uid differs from the pod's controller reference $cuid: refusing"; failed=1; continue; fi
-    if [ "$rs_label" != "$owner" ]; then log "chain pod $NS/$name: ReplicaSet $cname label '$rs_label' is not $owner: refusing"; failed=1; continue; fi
+    if [ "$rs_label" != "$owner" ] && ! { [ "$unlabelled_ok" -eq 1 ] && [ -z "$rs_label" ]; }; then log "chain pod $NS/$name: ReplicaSet $cname label '$rs_label' is not $owner: refusing"; failed=1; continue; fi
     local rs_controllers; rs_controllers="$(tr ' ' '\n' <<<"$rs_refs" | grep -E '/true$' || true)"
     if [ "$(grep -c . <<<"$rs_controllers")" -ne 1 ] || [ -z "$rs_controllers" ]; then log "chain pod $NS/$name: ReplicaSet $cname has no single controller: refusing"; failed=1; continue; fi
     local dkind dname duid; IFS='/' read -r dkind dname duid _ <<<"$rs_controllers"
     if [ "$dkind/$dname" != "Deployment/$rel-$comp" ] || [ "$duid" != "$dep_uid" ] || [ "$dep_label" != "$owner" ]; then
       log "chain pod $NS/$name: ReplicaSet $cname is controlled by $dkind/$dname ($duid), expected Deployment/$rel-$comp ($dep_uid) owned by $owner: refusing"; failed=1; continue
     fi
-    log "chain pod $NS/$name: proven ($name -> ReplicaSet/$cname $rs_uid -> Deployment/$rel-$comp $dep_uid, all $owner)"
+    if [ -z "$label" ] || [ -z "$rs_label" ]; then
+      log "chain pod $NS/$name: proven ($name -> ReplicaSet/$cname $rs_uid -> Deployment/$rel-$comp $dep_uid, Deployment owned by $owner; the $comp pod template carries no run label)"
+    else
+      log "chain pod $NS/$name: proven ($name -> ReplicaSet/$cname $rs_uid -> Deployment/$rel-$comp $dep_uid, all $owner)"
+    fi
     printf '%s\n' "$name" >>"$proven_file"
   done <<<"$out"
   [ "$failed" -eq 0 ]
@@ -364,6 +378,20 @@ preflight() { # preflight <step...>: every resource the selected steps consume o
 }
 
 # -- secrets (values never leave the cluster or an in-memory pipe) ----------------------------------
+create_labelled_secret() { # create_labelled_secret <namespace> <name> <owner> <kubectl create secret generic args...>
+  # One API call creates the Secret WITH its ownership label: the object is built client-side (--dry-run=client,
+  # nothing reaches the server), labelled in memory and created with `create`, which never overwrites. A separate
+  # `label` call could fail or be interrupted after the create and leave an unlabelled Secret that every later
+  # run refuses as foreign. A value the caller pipes in on stdin (--from-file=<key>=/dev/stdin) exists only in
+  # pipes; a --from-literal value is a kubectl argument, visible in the process list while the command runs, so
+  # it is for non-secret keys only.
+  local ns="$1" name="$2" owner="$3" err; shift 3
+  if ! err="$(k -n "$ns" create secret generic "$name" "$@" --dry-run=client -o json \
+        | python3 -c 'import json,sys; s=json.load(sys.stdin); s["metadata"].setdefault("labels",{})[sys.argv[1]]=sys.argv[2]; print(json.dumps(s))' "$RUN_LABEL_KEY" "$owner" \
+        | k -n "$ns" create -f - 2>&1 >/dev/null)"; then
+    refuse "secret $ns/$name could not be created with its ownership label (nothing unlabelled was left behind): ${err%%$'\n'*}"
+  fi
+}
 ensure_secret() { # ensure_secret <namespace> <name> <username> [owner]: random password, created only if absent and owned if present
   local ns="$1" name="$2" user="$3" owner="${4:-$RUN_ID}" state
   state="$(resource_state "$ns" secret "$name" "$owner")"
@@ -373,12 +401,15 @@ ensure_secret() { # ensure_secret <namespace> <name> <username> [owner]: random 
     *) refuse "secret $ns/$name: $state" ;;
   esac
   local password; password="$(openssl rand -base64 30 | tr -d '/+=' | cut -c1-32)"
-  k -n "$ns" create secret generic "$name" --from-literal=username="$user" --from-literal=password="$password" >/dev/null
-  k -n "$ns" label secret "$name" "$RUN_LABEL_KEY=$owner" >/dev/null  # newly created: labelled once with its explicit identity, never --overwrite
+  # The password goes in on stdin, written by a shell builtin: it is never an argument of any process. printf
+  # adds no newline, so the Secret holds exactly the generated value.
+  # (Process substitution, not a pipeline: the function must run in this shell so that its refusal stops the run.)
+  create_labelled_secret "$ns" "$name" "$owner" --from-literal=username="$user" --from-file=password=/dev/stdin \
+    < <(printf '%s' "$password")  # created with its explicit identity in one call
   log "secret $ns/$name created (synthetic, value not recorded)"
 }
 replicate_secret() { # replicate_secret <src-ns> <src-name> <dst-ns> <dst-name>: same values, owned source only, piped in memory only
-  local src_ns="$1" src="$2" dst_ns="$3" dst="$4" state
+  local src_ns="$1" src="$2" dst_ns="$3" dst="$4" state err
   state="$(resource_state "$src_ns" secret "$src")"
   [ "$state" = owned ] || refuse "secret $src_ns/$src cannot be replicated: $state"
   state="$(resource_state "$dst_ns" secret "$dst")"
@@ -387,17 +418,20 @@ replicate_secret() { # replicate_secret <src-ns> <src-name> <dst-ns> <dst-name>:
     absent) ;;
     *) refuse "secret $dst_ns/$dst: $state" ;;
   esac
-  k -n "$src_ns" get secret "$src" -o json \
-    | python3 -c 'import json,sys; s=json.load(sys.stdin); print(json.dumps({"apiVersion":"v1","kind":"Secret","type":s["type"],"metadata":{"name":sys.argv[1],"namespace":sys.argv[2],"labels":{sys.argv[3]:sys.argv[4]}},"data":s["data"]}))' "$dst" "$dst_ns" "$RUN_LABEL_KEY" "$RUN_ID" \
-    | k apply -f - >/dev/null 2>&1
+  # `create`, never `apply`: a Secret that appeared after the absence check above is not overwritten, the call
+  # fails and the step refuses. The failure is reported (first line of the client's error, never the object).
+  if ! err="$(k -n "$src_ns" get secret "$src" -o json \
+        | python3 -c 'import json,sys; s=json.load(sys.stdin); print(json.dumps({"apiVersion":"v1","kind":"Secret","type":s["type"],"metadata":{"name":sys.argv[1],"namespace":sys.argv[2],"labels":{sys.argv[3]:sys.argv[4]}},"data":s["data"]}))' "$dst" "$dst_ns" "$RUN_LABEL_KEY" "$RUN_ID" \
+        | k create -f - 2>&1 >/dev/null)"; then
+    refuse "secret $dst_ns/$dst could not be replicated from $src_ns/$src (an existing Secret is never overwritten): ${err%%$'\n'*}"
+  fi
   log "secret $dst_ns/$dst replicated from $src_ns/$src (synthetic, value not recorded)"
 }
 ensure_broken_secret() { # a Secret with the username key only (the failure path); created only if absent, labelled once
   local state; state="$(resource_state "$NS" secret owl-mast-db-broken)"
   case "$state" in
     owned) log "secret $NS/owl-mast-db-broken exists and is owned by this run (kept)"; return ;;
-    absent) k -n "$NS" create secret generic owl-mast-db-broken --from-literal=username=owlmast_app >/dev/null
-            k -n "$NS" label secret owl-mast-db-broken "$RUN_LABEL" >/dev/null
+    absent) create_labelled_secret "$NS" owl-mast-db-broken "$RUN_ID" --from-literal=username=owlmast_app
             log "secret $NS/owl-mast-db-broken created (username only, no password key)" ;;
     *) refuse "secret $NS/owl-mast-db-broken: $state" ;;
   esac
@@ -444,21 +478,188 @@ wait_ready() { # wait_ready <namespace> <deployment> <seconds>
   k -n "$1" rollout status "deploy/$2" --timeout="$3s"
 }
 verify_backend_image() { # verify_backend_image <name>: the running backend is exactly the local build loaded for this run
-  local name="$1" pod image_id node_id
-  pod="$(k -n "$NS" get pods -l "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=backend" -o jsonpath='{.items[0].metadata.name}')"
-  record "$name-image" k -n "$NS" get pod "$pod" -o jsonpath='{.status.containerStatuses[0].image} {.status.containerStatuses[0].imageID}{"\n"}'
+  local name="$1" rows pods pod image_id node_id node_digests
+  # Exactly one Running pod that is not terminating: after a rollout the old pod may still be listed first.
+  rows="$(k -n "$NS" get pods -l "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=backend" --field-selector=status.phase=Running \
+    -o custom-columns=NAME:.metadata.name,DELETING:.metadata.deletionTimestamp --no-headers)" \
+    || { log "FAIL $name-image-identity: backend pod selection unreadable"; return 1; }
+  pods="$(awk '$2 == "<none>" {print $1}' <<<"$rows")"
+  if [ "$(grep -c . <<<"$pods")" -ne 1 ]; then
+    log "FAIL $name-image-identity: expected exactly one Running, non-terminating backend pod, found '$(tr '\n' ' ' <<<"$pods")'"; return 1
+  fi
+  pod="$pods"
+  record "$name-image" k -n "$NS" get pod "$pod" -o jsonpath='{.status.containerStatuses[0].image} {.status.containerStatuses[0].imageID}{"\n"}' || return 1
+  image_id="$(k -n "$NS" get pod "$pod" -o jsonpath='{.status.containerStatuses[0].imageID}')" || { log "FAIL $name-image-identity: imageID unreadable"; return 1; }
+  # An empty imageID would match any digest list; it is never evidence.
+  [ -n "$image_id" ] || { log "FAIL $name-image-identity: pod $pod reports no imageID (container not started)"; return 1; }
   [ -n "$BACKEND_IMAGE_ID" ] || { log "note $name-image: BACKEND_IMAGE_ID not supplied; running image recorded, not compared"; return; }
   # The node's record for the tag: its image id (the config digest, identical to the local docker image id)
   # and the import digests containerd assigned when `kind load` imported this exact build.
   node_id="$(docker exec "$KIND_NODE" crictl inspecti -o go-template --template '{{.status.id}}' "docker.io/owl-mast/backend:$BACKEND_IMAGE_TAG" 2>/dev/null || true)"
-  local node_digests; node_digests="$(docker exec "$KIND_NODE" crictl inspecti -o go-template --template '{{range .status.repoDigests}}{{.}} {{end}}' "docker.io/owl-mast/backend:$BACKEND_IMAGE_TAG" 2>/dev/null || true)"
-  image_id="$(k -n "$NS" get pod "$pod" -o jsonpath='{.status.containerStatuses[0].imageID}')"
+  node_digests="$(docker exec "$KIND_NODE" crictl inspecti -o go-template --template '{{range .status.repoDigests}}{{.}} {{end}}' "docker.io/owl-mast/backend:$BACKEND_IMAGE_TAG" 2>/dev/null || true)"
   printf 'expected local image id: %s\nnode image id for tag %s: %s\nnode import digests: %s\npod imageID: %s\n' "$BACKEND_IMAGE_ID" "$BACKEND_IMAGE_TAG" "$node_id" "$node_digests" "$image_id" >>"$OUT/$name-image.txt"
-  if [ "$node_id" = "$BACKEND_IMAGE_ID" ] && { [ "$image_id" = "$BACKEND_IMAGE_ID" ] || grep -qF -- "$image_id" <<<"$node_digests"; }; then
+  if [ "$node_id" = "$BACKEND_IMAGE_ID" ] && { [ "$image_id" = "$BACKEND_IMAGE_ID" ] || tr ' ' '\n' <<<"$node_digests" | grep -qxF -- "$image_id"; }; then
     log "ok   $name-image-identity (node tag resolves to the expected local build and the pod runs it)"
   else
     log "FAIL $name-image-identity: the pod does not run the expected local build (see $OUT/$name-image.txt)"; return 1
   fi
+}
+
+# -- provisioning hook evidence ------------------------------------------------------------------------
+# The pre-upgrade provisioning hook Job and its ConfigMap carry `hook-delete-policy: before-hook-creation,hook-succeeded`:
+# Helm deletes both as soon as the hook succeeded, so neither the Job's status nor its log can be read after a
+# successful upgrade. The hook is therefore proven from what outlives it:
+#  - `helm upgrade --wait` returned 0 (Helm fails the upgrade when a pre-upgrade hook fails) and the release shows a
+#    higher revision in status `deployed`. This alone is equally true of an upgrade that ran no hook;
+#  - the release record of the new revision, which outlives the deleted Job: `helm status -o json` must list the hook
+#    Job with `last_run.phase` Succeeded and a `last_run.started_at` not earlier than the moment this script started
+#    the upgrade (hook_ran_succeeded). This is what shows that the hook was rendered and run on this upgrade;
+#  - the Keycloak role and database carry the same PostgreSQL object identifiers before and after (a dropped and
+#    recreated role or database gets a new oid), read as the Keycloak principal itself, so the login still works;
+#  - both hook objects are gone afterwards, which is the delete policy applied.
+HOOK_GONE_TIMEOUT="${HOOK_GONE_TIMEOUT:-30}"   # seconds to wait for Helm's hook deletion to be visible
+[[ "$HOOK_GONE_TIMEOUT" =~ ^(0|[1-9][0-9]*)$ ]] || { echo "REFUSED: HOOK_GONE_TIMEOUT must be a whole number of seconds (digits only, no leading zero), got '$HOOK_GONE_TIMEOUT'" >&2; exit 2; }
+KEYCLOAK_IDENTITY_RE='^role=[0-9]+ database=[0-9]+ owner=[0-9]+$'
+keycloak_db_identity() { # keycloak_db_identity <namespace> <deployment>: one line `role=<oid> database=<oid> owner=<oid>`
+  pg_exec "$1" "$2" OWLMAST_KEYCLOAK keycloak "select 'role='||r.oid||' database='||d.oid||' owner='||d.datdba from pg_roles r cross join pg_database d where r.rolname = current_user and d.datname = current_database()"
+}
+record_keycloak_identity() { # record_keycloak_identity <name> <namespace> <deployment>: exactly one well-formed line, or the check fails
+  record "$1" keycloak_db_identity "$2" "$3" || return 1
+  [ "$(grep -cE "$KEYCLOAK_IDENTITY_RE" "$OUT/$1.txt")" -eq 1 ] || { log "FAIL $1: the Keycloak role/database identifiers were not read as one 'role=<oid> database=<oid> owner=<oid>' line (not evidence)"; return 1; }
+}
+keycloak_identity_of() { grep -E "$KEYCLOAK_IDENTITY_RE" "$OUT/$1.txt"; }   # keycloak_identity_of <name>
+record_release_revision() { # record_release_revision <name> <release>: the release must be `deployed` with a numeric revision
+  record "$1" h status "$2" -n "$NS" || return 1
+  grep -qx 'STATUS: deployed' "$OUT/$1.txt" && grep -qE '^REVISION: [0-9]+$' "$OUT/$1.txt" \
+    || { log "FAIL $1: release $2 is not reported as deployed with a revision"; return 1; }
+}
+release_revision_of() { sed -n 's/^REVISION: \([0-9][0-9]*\)$/\1/p' "$OUT/$1.txt" | head -1; }   # release_revision_of <name>
+assert_revision_advanced() { # assert_revision_advanced <label> <before-name> <after-name>
+  local before after; before="$(release_revision_of "$2")"; after="$(release_revision_of "$3")"
+  [ "$after" -gt "$before" ] || { log "FAIL $1: the upgrade left no new deployed revision (before $before, after $after)"; return 1; }
+  log "ok   $1 (revision $before -> $after, deployed)"
+}
+# The release record Helm stores for a revision lists every hook rendered for it. Helm sets a hook's `last_run` when it
+# runs the hook and keeps it after it deleted the hook object (Helm 4.3.1: pkg/action/hooks.go, pkg/release/v1/hook.go).
+# `helm status -o json` prints that record: top-level `version` (the revision) and `hooks[]`, each with `name`, `kind`,
+# `events[]` and `last_run` = {"started_at", "completed_at", "phase"}. Times are RFC 3339 with up to nine fractional
+# digits and a numeric offset or Z; a hook that was not run has `last_run` = {"phase": ""} and no times.
+# Only the projection below is written to evidence. The whole record (chart, values, manifests, live objects) is not.
+HOOK_RUN_CHECK="$(cat <<'PY'
+import calendar, json, re, sys
+
+hook_name, not_before, revision = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+
+def fail(reason):
+    print("verdict: FAIL " + reason)
+    sys.exit(1)
+
+def instant(value, field):  # RFC 3339 as Go prints it -> nanoseconds since the epoch
+    m = re.fullmatch(r"(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.(\d{1,9}))?(Z|[+-]\d\d:\d\d)", value) if isinstance(value, str) else None
+    if not m:
+        fail("last_run.%s is missing or not an RFC 3339 time" % field)
+    try:
+        seconds = calendar.timegm(tuple(int(g) for g in m.groups()[:6]))
+    except (ValueError, OverflowError):
+        fail("last_run.%s is not a valid time" % field)
+    zone = m.group(8)
+    if zone != "Z":
+        offset = int(zone[1:3]) * 3600 + int(zone[4:6]) * 60
+        seconds -= offset if zone[0] == "+" else -offset
+    return seconds * 10**9 + int((m.group(7) or "").ljust(9, "0"))
+
+try:
+    release = json.load(sys.stdin)
+except ValueError:
+    fail("the helm status output is not JSON")
+if not isinstance(release, dict):
+    fail("the helm status output is not a release object")
+hooks = release.get("hooks", [])
+if not isinstance(hooks, list) or not all(isinstance(h, dict) for h in hooks):
+    fail("hooks is not a list of objects")
+print("release %s revision %s" % (release.get("name"), release.get("version")))
+print("not-before %s (epoch seconds, taken by this script just before the upgrade)" % not_before)
+for h in hooks:
+    run = h.get("last_run")
+    run = run if isinstance(run, dict) else {}
+    print("hook %s/%s events=%s phase=%s started_at=%s completed_at=%s" % (
+        h.get("kind"), h.get("name"), ",".join(str(e) for e in h.get("events") or []), run.get("phase") or "<none>",
+        run.get("started_at") or "<none>", run.get("completed_at") or "<none>"))
+if type(release.get("version")) is not int or release["version"] != revision:
+    fail("the record is of revision %s, not of the deployed revision %s" % (release.get("version"), revision))
+matches = [h for h in hooks if h.get("kind") == "Job" and h.get("name") == hook_name]
+if len(matches) != 1:
+    fail("the release record lists %d hooks of kind Job named %s; the hook was not rendered for this upgrade" % (len(matches), hook_name))
+hook = matches[0]
+if "pre-upgrade" not in (hook.get("events") or []):
+    fail("the hook Job is not a pre-upgrade hook")
+run = hook.get("last_run")
+if not isinstance(run, dict):
+    fail("the hook Job has no last_run")
+if run.get("phase") != "Succeeded":
+    fail("the hook Job last_run.phase is '%s', not Succeeded; the hook did not run to success on this upgrade" % (run.get("phase") or ""))
+started, completed = instant(run.get("started_at"), "started_at"), instant(run.get("completed_at"), "completed_at")
+if started < not_before * 10**9:
+    fail("the hook Job last_run.started_at %s is earlier than the start of this upgrade; the run is not of this upgrade" % run["started_at"])
+if completed < started:
+    fail("the hook Job last_run.completed_at is earlier than its started_at")
+print("verdict: ok")
+PY
+)"
+hook_ran_succeeded() { # hook_ran_succeeded <name> <release> <not-before-epoch-seconds> <revision-evidence-name>
+  # The hook Job must be in the release record of the deployed revision, Succeeded, and started by this upgrade.
+  # The clock is the one of this host on both sides: Helm stamps started_at in the client process this script starts.
+  # A status that cannot be read, or is not the expected JSON, fails the check; it is never read as "no hook needed".
+  local name="$1" rel="$2" since="$3" revision file="$OUT/$1.txt" json err rc=0
+  revision="$(release_revision_of "$4")"
+  printf '$ helm status %s -n %s -o json   (projection: hook runs only)
+' "$rel" "$NS" >"$file"
+  err="$(mktemp)"
+  json="$(h status "$rel" -n "$NS" -o json 2>"$err")" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'helm status failed (exit %s): %s
+' "$rc" "$(tr '\n' ' ' <"$err" | cut -c1-300)" >>"$file"; rm -f "$err"
+    log "FAIL $name: the release record of $rel could not be read (helm status -o json exit $rc; not evidence)"; return 1
+  fi
+  rm -f "$err"
+  rc=0; printf '%s' "$json" | python3 -c "$HOOK_RUN_CHECK" "$rel-postgresql-provision-keycloak" "$since" "$revision" >>"$file" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ] || [ "$(tail -n 1 "$file")" != "verdict: ok" ]; then
+    log "FAIL $name: $(grep '^verdict: FAIL ' "$file" | tail -n 1 | cut -c15- | grep . || echo "the release record check did not complete") (see $file)"; return 1
+  fi
+  log "ok   $name ($(grep "^hook Job/$rel-postgresql-provision-keycloak " "$file"))"
+}
+hook_objects_removed() { # hook_objects_removed <name> <release>: the hook Job and ConfigMap are absent after a successful hook
+  # Absence is the expected outcome here, never a failure. A hook object that is still present after the
+  # bounded wait, or whose state cannot be read, fails the check: the delete policy did not apply or is unproven.
+  local name="$1" rel="$2" pair kind obj state file="$OUT/$1.txt" deadline=$((SECONDS + HOOK_GONE_TIMEOUT))
+  : >"$file"
+  for pair in "job:$rel-postgresql-provision-keycloak" "configmap:$rel-postgresql-provision-scripts"; do
+    kind="${pair%%:*}"; obj="${pair#*:}"
+    while :; do
+      state="$(resource_state "$NS" "$kind" "$obj")"
+      if [ "$state" = absent ] || [ "$SECONDS" -ge "$deadline" ]; then break; fi
+      sleep 2
+    done
+    printf '%s %s/%s %s\n' "$kind" "$NS" "$obj" "$state" >>"$file"
+    [ "$state" = absent ] || { log "FAIL $name: hook $kind $NS/$obj is not absent after the successful upgrade ($state); expected hook-succeeded to delete it"; return 1; }
+  done
+  log "ok   $name (hook Job and ConfigMap absent after success: hook-succeeded applied)"
+}
+reprovision_keeps_keycloak() { # reprovision_keeps_keycloak <prefix> <release> <upgrade-evidence-name> <helm upgrade args...>
+  # A provisioning upgrade on a volume that already has Keycloak's role and database: nothing may be dropped or recreated.
+  local prefix="$1" rel="$2" upgrade="$3" before after since; shift 3
+  record_keycloak_identity "$prefix-identity-before" "$NS" "$rel-postgresql" || return 1
+  record_release_revision "$prefix-revision-before" "$rel" || return 1
+  since="$(date -u +%s)"
+  record "$upgrade" h upgrade "$rel" "$CHART" -n "$NS" --wait "$@" || return 1
+  record_release_revision "$prefix-revision-after" "$rel" || return 1
+  assert_revision_advanced "$prefix-revision" "$prefix-revision-before" "$prefix-revision-after" || return 1
+  hook_ran_succeeded "$prefix-hook-run" "$rel" "$since" "$prefix-revision-after" || return 1
+  record_keycloak_identity "$prefix-identity-after" "$NS" "$rel-postgresql" || return 1
+  before="$(keycloak_identity_of "$prefix-identity-before")"; after="$(keycloak_identity_of "$prefix-identity-after")"
+  [ "$before" = "$after" ] || { log "FAIL $prefix-identity: provisioning dropped or recreated an existing role or database (before '$before', after '$after')"; return 1; }
+  log "ok   $prefix-identity-unchanged ($after)"
+  hook_objects_removed "$prefix-hook-removed" "$rel" || return 1
 }
 
 # -- steps -------------------------------------------------------------------------------------------
@@ -512,21 +713,23 @@ install_combo() { # install_combo <name> <helm args...>
 }
 
 check_shared_postgres() { # check_shared_postgres <namespace> <deployment>  (AC3 on whichever instance is the shared one)
+  # Every check returns explicitly: callers may invoke this under `||` (first-enable), which disables
+  # `set -e` for the whole body, so a failed check must never fall through to the next one.
   local ns="$1" deploy="$2"
-  record "ac3-$ns-app-not-superuser" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "select current_user, rolsuper, rolcreatedb, rolcreaterole from pg_roles where rolname = current_user"
+  record "ac3-$ns-app-not-superuser" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "select current_user, rolsuper, rolcreatedb, rolcreaterole from pg_roles where rolname = current_user" || return 1
   grep -q 'owlmast_app|f|f|f' "$OUT/ac3-$ns-app-not-superuser.txt" || { log "FAIL app principal privileges"; return 1; }
-  record "ac3-$ns-keycloak-not-superuser" pg_exec "$ns" "$deploy" OWLMAST_KEYCLOAK keycloak "select current_user, rolsuper, rolcreatedb, rolcreaterole from pg_roles where rolname = current_user"
+  record "ac3-$ns-keycloak-not-superuser" pg_exec "$ns" "$deploy" OWLMAST_KEYCLOAK keycloak "select current_user, rolsuper, rolcreatedb, rolcreaterole from pg_roles where rolname = current_user" || return 1
   grep -q 'keycloak_app|f|f|f' "$OUT/ac3-$ns-keycloak-not-superuser.txt" || { log "FAIL keycloak principal privileges"; return 1; }
-  expect_connect_denied "ac3-$ns-app-cannot-connect-keycloak-db" "$ns" "$deploy" OWLMAST_APP keycloak owlmast
-  expect_connect_denied "ac3-$ns-keycloak-cannot-connect-owlmast-db" "$ns" "$deploy" OWLMAST_KEYCLOAK owlmast keycloak
-  record "ac3-$ns-extensions" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "select extname||'='||extversion from pg_extension where extname in ('vchord','vector') order by 1"
+  expect_connect_denied "ac3-$ns-app-cannot-connect-keycloak-db" "$ns" "$deploy" OWLMAST_APP keycloak owlmast || return 1
+  expect_connect_denied "ac3-$ns-keycloak-cannot-connect-owlmast-db" "$ns" "$deploy" OWLMAST_KEYCLOAK owlmast keycloak || return 1
+  record "ac3-$ns-extensions" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "select extname||'='||extversion from pg_extension where extname in ('vchord','vector') order by 1" || return 1
   grep -q 'vchord=1.1.1' "$OUT/ac3-$ns-extensions.txt" && grep -q 'vector=0.8.2' "$OUT/ac3-$ns-extensions.txt" || { log "FAIL extensions"; return 1; }
-  record "ac3-$ns-keycloak-schema-present" pg_exec "$ns" "$deploy" OWLMAST_KEYCLOAK keycloak "select count(*) > 10 from information_schema.tables where table_schema='public'"
+  record "ac3-$ns-keycloak-schema-present" pg_exec "$ns" "$deploy" OWLMAST_KEYCLOAK keycloak "select count(*) > 10 from information_schema.tables where table_schema='public'" || return 1
   grep -qx 't' "$OUT/ac3-$ns-keycloak-schema-present.txt" || { log "FAIL keycloak schema"; return 1; }
-  record "ac3-$ns-flyway-history" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "select version||'|'||success from flyway_schema_history order by installed_rank"
+  record "ac3-$ns-flyway-history" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "select version||'|'||success from flyway_schema_history order by installed_rank" || return 1
   grep -q '^001|true$' "$OUT/ac3-$ns-flyway-history.txt" || { log "FAIL flyway history"; return 1; }
   # VectorChord index usage on synthetic data with the application principal (AC3); re-entry appends, never drops.
-  record "ac3-$ns-vchord-index" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "create schema if not exists qualification; create table if not exists qualification.vectors(id int primary key, embedding vector(3)); insert into qualification.vectors select g, array[g, g*2, g*3]::vector from generate_series(1,200) g on conflict do nothing; create index if not exists vectors_vchordrq on qualification.vectors using vchordrq (embedding vector_l2_ops) with (options = E'residual_quantization = true\\n[build.internal]\\nlists = []'); analyze qualification.vectors; set enable_seqscan = off; explain (costs off) select id from qualification.vectors order by embedding <-> '[3,6,9]' limit 3; select id from qualification.vectors order by embedding <-> '[3,6,9]' limit 3; select indexdef from pg_indexes where schemaname='qualification' and indexname='vectors_vchordrq'"
+  record "ac3-$ns-vchord-index" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "create schema if not exists qualification; create table if not exists qualification.vectors(id int primary key, embedding vector(3)); insert into qualification.vectors select g, array[g, g*2, g*3]::vector from generate_series(1,200) g on conflict do nothing; create index if not exists vectors_vchordrq on qualification.vectors using vchordrq (embedding vector_l2_ops) with (options = E'residual_quantization = true\\n[build.internal]\\nlists = []'); analyze qualification.vectors; set enable_seqscan = off; explain (costs off) select id from qualification.vectors order by embedding <-> '[3,6,9]' limit 3; select id from qualification.vectors order by embedding <-> '[3,6,9]' limit 3; select indexdef from pg_indexes where schemaname='qualification' and indexname='vectors_vchordrq'" || return 1
   grep -q 'Index Scan using vectors_vchordrq' "$OUT/ac3-$ns-vchord-index.txt" && grep -q 'USING vchordrq' "$OUT/ac3-$ns-vchord-index.txt" || { log "FAIL vchord index usage"; return 1; }
   grep -qiE 'hnsw|ivfflat' "$OUT/ac3-$ns-vchord-index.txt" && { log "FAIL pgvector index type appeared"; return 1; }
   log "ok   ac3-$ns-vchord-index (vchordrq index scan on synthetic vectors)"
@@ -544,13 +747,11 @@ step_bundled_bundled() {
   check_bundled_keycloak
   check_shared_postgres "$NS" "$RELEASE-postgresql"
   # Explicit re-provisioning on an already initialised volume (R2): idempotent, nothing dropped, Keycloak schema intact.
-  record provision-keycloak-upgrade h upgrade "$RELEASE" "$CHART" -n "$NS" --wait --timeout 10m --reuse-values --set postgresql.provisionKeycloakDatabase=true
-  record provision-keycloak-job k -n "$NS" get job "$RELEASE-postgresql-provision-keycloak" -o jsonpath='{.status.succeeded} {.status.failed}{"\n"}'
-  grep -q '^1 ' "$OUT/provision-keycloak-job.txt" || { log "FAIL provisioning job did not succeed exactly once"; return 1; }
-  record provision-keycloak-job-log k -n "$NS" logs "job/$RELEASE-postgresql-provision-keycloak"
-  grep -qiE 'CREATE ROLE|CREATE DATABASE' "$OUT/provision-keycloak-job-log.txt" && { log "FAIL provisioning recreated an existing role or database"; return 1; }
+  # The hook Job is deleted on success, so its run is proven from the release record (last_run), and its effect by the
+  # unchanged identifiers and the absence of the hook objects.
+  reprovision_keeps_keycloak provision-keycloak "$RELEASE" provision-keycloak-upgrade --timeout 10m --reuse-values --set postgresql.provisionKeycloakDatabase=true || return 1
   record provision-keycloak-schema-intact pg_exec "$NS" "$RELEASE-postgresql" OWLMAST_KEYCLOAK keycloak "select count(*) > 10 from information_schema.tables where table_schema='public'"
-  grep -qx 't' "$OUT/provision-keycloak-schema-intact.txt" && log "ok   provision-keycloak-idempotent (existing role/database kept, grants re-applied, schema intact)" || { log "FAIL keycloak schema after provisioning"; return 1; }
+  grep -qx 't' "$OUT/provision-keycloak-schema-intact.txt" && log "ok   provision-keycloak-idempotent (hook run recorded as Succeeded, existing role/database kept by oid, schema intact)" || { log "FAIL keycloak schema after provisioning"; return 1; }
 }
 
 step_persistence() {
@@ -596,7 +797,7 @@ step_bundled_external() {
   # Keycloak Secret names are pointed at names that do not exist; any remaining reference would
   # leave a pod in CreateContainerConfigError instead of reaching readiness.
   install_combo bundled-external --set identity.bundled=false \
-    --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast" \
+    --set identity.external.allowInsecureIssuer=true --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast" \
     --set identity.keycloak.database.existingSecret=absent-keycloak-db-secret \
     --set identity.keycloak.bootstrapExistingSecret=absent-keycloak-bootstrap-secret
   record bundled-external-no-keycloak k get deploy -n "$NS" -o name
@@ -610,9 +811,9 @@ step_bundled_external() {
 
 step_external_bundled() {
   install_combo external-bundled --set database.bundled=false --set database.existingSecret=owl-mast-external-db \
-    --set database.external.host="external-postgresql.$EXT_NS.svc" --set database.external.sslMode=disable \
+    --set database.external.host="external-postgresql.$EXT_NS.svc" --set database.external.sslMode=disable --set database.external.allowInsecureTransport=true \
     --set identity.keycloak.database.existingSecret=owl-mast-external-keycloak-db \
-    --set identity.keycloak.database.external.host="external-postgresql.$EXT_NS.svc" --set identity.keycloak.database.external.sslMode=disable
+    --set identity.keycloak.database.external.host="external-postgresql.$EXT_NS.svc" --set identity.keycloak.database.external.sslMode=disable --set identity.keycloak.database.external.allowInsecureTransport=true
   # Only deployments are checked: the retained claim from the bundled run is expected to persist (T3).
   record external-bundled-no-postgres k get deploy -n "$NS" -o name
   grep -q postgresql "$OUT/external-bundled-no-postgres.txt" && { log "FAIL bundled postgresql rendered"; return 1; } || log "ok   external-bundled-no-bundled-postgresql"
@@ -624,8 +825,8 @@ step_external_bundled() {
 
 step_external_external() {
   install_combo external-external --set database.bundled=false --set database.existingSecret=owl-mast-external-db \
-    --set database.external.host="external-postgresql.$EXT_NS.svc" --set database.external.sslMode=disable \
-    --set identity.bundled=false --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast"
+    --set database.external.host="external-postgresql.$EXT_NS.svc" --set database.external.sslMode=disable --set database.external.allowInsecureTransport=true \
+    --set identity.bundled=false --set identity.external.allowInsecureIssuer=true --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast"
   record external-external-only-backend k get deploy,pvc,svc -n "$NS" -o name
   record external-external-uninstall h uninstall "$RELEASE" -n "$NS" --wait
 }
@@ -646,7 +847,7 @@ step_first_enable() {
     --set postgresql.adminExistingSecret="$FE_RELEASE-postgres-admin" --set database.existingSecret="$FE_RELEASE-db"
     --set identity.keycloak.database.existingSecret="$FE_RELEASE-keycloak-db" --set identity.keycloak.bootstrapExistingSecret="$FE_RELEASE-keycloak-bootstrap")
   record fe1-install-external-identity h upgrade --install "$FE_RELEASE" "$CHART" -n "$NS" --wait --timeout 10m "${common[@]}" \
-    --set identity.bundled=false --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast"
+    --set identity.bundled=false --set identity.external.allowInsecureIssuer=true --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast"
   record fe1-postgresql-pod k -n "$NS" get pods -l "app.kubernetes.io/instance=$FE_RELEASE,app.kubernetes.io/component=postgresql" -o custom-columns=NAME:.metadata.name,READY:.status.containerStatuses[0].ready,RESTARTS:.status.containerStatuses[0].restartCount
   grep -qE '^\S+ +true +0$' "$OUT/fe1-postgresql-pod.txt" || { log "FAIL fresh PostgreSQL did not initialise on its first start without restarts"; return 1; }
   record fe1-postgresql-init-log k -n "$NS" logs "deploy/$FE_RELEASE-postgresql"
@@ -661,13 +862,18 @@ step_first_enable() {
   record fe1-app-marker k -n "$NS" exec "deploy/$FE_RELEASE-postgresql" -- sh -c 'PGPASSWORD="$OWLMAST_APP_PASSWORD" psql -v ON_ERROR_STOP=1 -U "$OWLMAST_APP_USERNAME" -h 127.0.0.1 -d owlmast -Atc "create table if not exists qualification_marker(v text primary key); insert into qualification_marker values ('"'"'before-enable'"'"') on conflict do nothing; select v from qualification_marker"'
   grep -q before-enable "$OUT/fe1-app-marker.txt" || { log "FAIL marker"; return 1; }
   log "== enable the identity bundle with the pre-upgrade provisioning hook (helm upgrade --wait)"
+  record_release_revision fe2-revision-before "$FE_RELEASE" || return 1
+  local fe2_since; fe2_since="$(date -u +%s)"
   record fe2-enable-upgrade h upgrade "$FE_RELEASE" "$CHART" -n "$NS" --wait --timeout 10m "${common[@]}" \
     --set identity.bundled=true --set postgresql.provisionKeycloakDatabase=true
-  record fe2-hook-job k -n "$NS" get job "$FE_RELEASE-postgresql-provision-keycloak" -o jsonpath='{.status.succeeded} {.status.failed}{"\n"}'
-  grep -q '^1 ' "$OUT/fe2-hook-job.txt" || { log "FAIL provisioning hook did not succeed exactly once"; return 1; }
-  record fe2-hook-log k -n "$NS" logs "job/$FE_RELEASE-postgresql-provision-keycloak"
-  grep -q 'CREATE ROLE' "$OUT/fe2-hook-log.txt" && grep -q 'CREATE DATABASE' "$OUT/fe2-hook-log.txt" && grep -q 'GRANT' "$OUT/fe2-hook-log.txt" \
-    && log "ok   fe2-first-enable-provisioned (role and database created by the pre-upgrade hook)" || { log "FAIL first-enable hook log"; return 1; }
+  # The hook Job and its log are deleted on success (hook-succeeded). The role and database were absent before
+  # (fe1-no-keycloak-role); now the Keycloak principal logs in to its own database and both carry identifiers.
+  record_release_revision fe2-revision-after "$FE_RELEASE" || return 1
+  assert_revision_advanced fe2-revision fe2-revision-before fe2-revision-after || return 1
+  hook_ran_succeeded fe2-hook-run "$FE_RELEASE" "$fe2_since" fe2-revision-after || return 1
+  record_keycloak_identity fe2-keycloak-identity "$NS" "$FE_RELEASE-postgresql" || return 1
+  hook_objects_removed fe2-hook-removed "$FE_RELEASE" || return 1
+  log "ok   fe2-first-enable-provisioned (role and database absent before, present after the pre-upgrade hook: $(keycloak_identity_of fe2-keycloak-identity))"
   record fe2-keycloak-ready proxy_get "$NS" "$FE_RELEASE-keycloak:management" /health/ready
   record fe2-keycloak-discovery proxy_get "$NS" "$FE_RELEASE-keycloak:http" /realms/owl-mast/.well-known/openid-configuration
   grep -q "\"issuer\":\"http://$FE_RELEASE-keycloak:8080/realms/owl-mast\"" "$OUT/fe2-keycloak-discovery.txt" || { log "FAIL bundled issuer after enable"; return 1; }
@@ -682,15 +888,14 @@ step_first_enable() {
   check_shared_postgres "$NS" "$FE_RELEASE-postgresql" || { RELEASE="$saved_release"; return 1; }
   RELEASE="$saved_release"
   log "== retry the same transition: idempotent no-op"
-  record fe3-retry-upgrade h upgrade "$FE_RELEASE" "$CHART" -n "$NS" --wait --timeout 10m "${common[@]}" \
-    --set identity.bundled=true --set postgresql.provisionKeycloakDatabase=true
-  record fe3-hook-log k -n "$NS" logs "job/$FE_RELEASE-postgresql-provision-keycloak"
-  grep -q 'GRANT' "$OUT/fe3-hook-log.txt" && ! grep -qE 'CREATE ROLE|CREATE DATABASE' "$OUT/fe3-hook-log.txt" \
-    && log "ok   fe3-retry-no-op (grants re-applied, nothing recreated)" || { log "FAIL retry was not a no-op"; return 1; }
+  reprovision_keeps_keycloak fe3 "$FE_RELEASE" fe3-retry-upgrade --timeout 10m "${common[@]}" \
+    --set identity.bundled=true --set postgresql.provisionKeycloakDatabase=true || return 1
+  [ "$(keycloak_identity_of fe3-identity-after)" = "$(keycloak_identity_of fe2-keycloak-identity)" ] \
+    && log "ok   fe3-retry-no-op (hook run recorded as Succeeded again, role and database are the ones the first enable created)" || { log "FAIL retry was not a no-op"; return 1; }
   record fe3-app-marker k -n "$NS" exec "deploy/$FE_RELEASE-postgresql" -- sh -c 'PGPASSWORD="$OWLMAST_APP_PASSWORD" psql -v ON_ERROR_STOP=1 -U "$OWLMAST_APP_USERNAME" -h 127.0.0.1 -d owlmast -Atc "select v from qualification_marker"'
   grep -q before-enable "$OUT/fe3-app-marker.txt" || { log "FAIL app data after retry"; return 1; }
   record fe3-keycloak-schema k -n "$NS" exec "deploy/$FE_RELEASE-postgresql" -- sh -c 'PGPASSWORD="$OWLMAST_KEYCLOAK_PASSWORD" psql -U "$OWLMAST_KEYCLOAK_USERNAME" -h 127.0.0.1 -d keycloak -Atc "select count(*) > 10 from information_schema.tables where table_schema='"'"'public'"'"'"'
-  grep -qx t "$OUT/fe3-keycloak-schema.txt" || { log "FAIL keycloak schema after retry"; return 1; }
+  grep -qx t "$OUT/fe3-keycloak-schema.txt" && log "ok   fe3-keycloak-schema-intact" || { log "FAIL keycloak schema after retry"; return 1; }
   record fe4-uninstall h uninstall "$FE_RELEASE" -n "$NS" --wait
   record fe4-retained-claim k get pvc "$FE_RELEASE-postgresql-data" -n "$NS" -o jsonpath='{.metadata.uid} {.status.phase} {.metadata.labels.owlmast\.aisquad\.com/run}{"\n"}'
   grep -q "$fe_pvc_uid Bound $FE_RUN_ID" "$OUT/fe4-retained-claim.txt" && log "ok   fe4-fixture-claim-retained (owned by $FE_RUN_ID, not deleted)" || { log "FAIL fixture claim"; return 1; }
@@ -701,9 +906,9 @@ step_failure_paths() {
   ensure_broken_secret
   if h upgrade --install "$RELEASE-broken" "$CHART" -n "$NS" --wait --timeout 90s \
       --set backend.image.tag="$BACKEND_IMAGE_TAG" --set backend.image.pullPolicy=Never --set commonLabels."owlmast\.aisquad\.com/run"="$RUN_ID" \
-      --set database.bundled=false --set database.external.host="external-postgresql.$EXT_NS.svc" --set database.external.sslMode=disable \
+      --set database.bundled=false --set database.external.host="external-postgresql.$EXT_NS.svc" --set database.external.sslMode=disable --set database.external.allowInsecureTransport=true \
       --set database.existingSecret=owl-mast-db-broken \
-      --set identity.bundled=false --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast" \
+      --set identity.bundled=false --set identity.external.allowInsecureIssuer=true --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast" \
       >"$OUT/fail-missing-secret-key-install.txt" 2>&1; then
     log "FAIL install succeeded with a Secret missing the password key"; return 1
   fi
@@ -712,8 +917,8 @@ step_failure_paths() {
   record fail-missing-secret-key-uninstall h uninstall "$RELEASE-broken" -n "$NS" --wait
   if h upgrade --install "$RELEASE-wrongidp" "$CHART" -n "$NS" --wait --timeout 150s \
       --set backend.image.tag="$BACKEND_IMAGE_TAG" --set backend.image.pullPolicy=Never --set commonLabels."owlmast\.aisquad\.com/run"="$RUN_ID" \
-      --set database.bundled=false --set database.existingSecret=owl-mast-external-db --set database.external.host="external-postgresql.$EXT_NS.svc" --set database.external.sslMode=disable \
-      --set identity.bundled=false --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/does-not-exist" \
+      --set database.bundled=false --set database.existingSecret=owl-mast-external-db --set database.external.host="external-postgresql.$EXT_NS.svc" --set database.external.sslMode=disable --set database.external.allowInsecureTransport=true \
+      --set identity.bundled=false --set identity.external.allowInsecureIssuer=true --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/does-not-exist" \
       >"$OUT/fail-wrong-issuer-install.txt" 2>&1; then
     log "FAIL install became ready with a non-existent realm"; return 1
   fi
@@ -731,6 +936,9 @@ step_failure_paths() {
 
 step_inventory() {
   record inventory-all k get all,pvc,pv,secrets,configmap,resourcequota -A -l "$RUN_LABEL_KEY" -o custom-columns=KIND:.kind,NS:.metadata.namespace,NAME:.metadata.name,OWNER:.metadata.labels.owlmast\.aisquad\.com/run,CREATED:.metadata.creationTimestamp
+  # The PostgreSQL pods and ReplicaSets carry no run label (CHAIN_UNLABELLED_COMPONENTS), so the label query above
+  # cannot list them: they are listed by component with their controller references, which lead to the labelled Deployment.
+  record inventory-unlabelled-pods k get pods,replicasets -n "$NS" -l app.kubernetes.io/component=postgresql -o custom-columns=KIND:.kind,NS:.metadata.namespace,NAME:.metadata.name,INSTANCE:.metadata.labels.app\.kubernetes\.io/instance,CONTROLLER:.metadata.ownerReferences[0].kind,CONTROLLER-NAME:.metadata.ownerReferences[0].name,CREATED:.metadata.creationTimestamp
   record inventory-pv k get pv -o custom-columns=NAME:.metadata.name,CLAIM:.spec.claimRef.name,NS:.spec.claimRef.namespace,RECLAIM:.spec.persistentVolumeReclaimPolicy,CLASS:.spec.storageClassName,PHASE:.status.phase
   record inventory-helm h list -A
 }

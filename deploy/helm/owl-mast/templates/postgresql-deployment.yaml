@@ -20,16 +20,19 @@ spec:
       labels:
         {{- include "owl-mast.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: postgresql
-        {{- with .Values.commonLabels }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
+      # No commonLabels on this pod template (they are on the Deployment, Service, claim and policy): with
+      # strategy Recreate a label edit would stop the database, and the backend and Keycloak with it.
       annotations:
-        checksum/init: {{ include (print $.Template.BasePath "/postgresql-init-configmap.yaml") . | sha256sum }}
+        # The scripts only, never the ConfigMap's labels: a chart version bump or a commonLabels edit must not
+        # recreate the database pod (the first-initialisation script does not rerun on an initialised volume).
+        checksum/init: {{ (include (print $.Template.BasePath "/postgresql-init-configmap.yaml") . | fromYaml).data | toJson | sha256sum }}
     spec:
       securityContext:
         runAsUser: {{ .Values.postgresql.securityContext.runAsUser }}
         runAsGroup: {{ .Values.postgresql.securityContext.runAsGroup }}
         fsGroup: {{ .Values.postgresql.securityContext.fsGroup }}
+        # Ownership is fixed once, not by a recursive walk of the whole data directory on every start.
+        fsGroupChangePolicy: OnRootMismatch
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
@@ -87,22 +90,36 @@ spec:
                   name: {{ .Values.identity.keycloak.database.existingSecret }}
                   key: password
             {{- end }}
+          # Startup and liveness use the Unix socket: during first initialisation the image's entrypoint
+          # runs a temporary server that listens on the socket only, so a TCP probe would fail for the whole
+          # initdb and script run and the kubelet could kill the container mid-initialisation.
           startupProbe:
             exec:
-              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d postgres -h 127.0.0.1"]
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d postgres -h /var/run/postgresql"]
             periodSeconds: {{ .Values.postgresql.probes.startup.periodSeconds }}
             failureThreshold: {{ .Values.postgresql.probes.startup.failureThreshold }}
+            # Exec probe timeouts are enforced; the kubelet default of 1 s is too short on a loaded node.
+            timeoutSeconds: {{ dig "timeoutSeconds" 5 .Values.postgresql.probes.startup }}
           livenessProbe:
             exec:
-              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d postgres -h 127.0.0.1"]
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d postgres -h /var/run/postgresql"]
             periodSeconds: {{ .Values.postgresql.probes.liveness.periodSeconds }}
             failureThreshold: {{ .Values.postgresql.probes.liveness.failureThreshold }}
+            timeoutSeconds: {{ dig "timeoutSeconds" 5 .Values.postgresql.probes.liveness }}
           readinessProbe:
             exec:
-              # Ready only when the application database exists, i.e. initialisation completed.
-              command: ["sh", "-c", "psql -U \"$POSTGRES_USER\" -d \"$OWLMAST_APP_DATABASE\" -h 127.0.0.1 -Atc 'select 1' | grep -qx 1"]
+              # Ready only over TCP (the final server, not the socket-only initialisation server) and only when
+              # the application database exists. Keycloak's database is deliberately NOT part of it: a missing
+              # Keycloak database must leave only Keycloak unready. If it took this pod out of the Service, the
+              # backend would lose its database too and the provisioning hook could not reach the server.
+              command:
+                - sh
+                - -c
+                - >-
+                  psql -U "$POSTGRES_USER" -d "$OWLMAST_APP_DATABASE" -h 127.0.0.1 -Atc 'select 1' | grep -qx 1
             periodSeconds: {{ .Values.postgresql.probes.readiness.periodSeconds }}
             failureThreshold: {{ .Values.postgresql.probes.readiness.failureThreshold }}
+            timeoutSeconds: {{ dig "timeoutSeconds" 5 .Values.postgresql.probes.readiness }}
           resources:
             {{- toYaml .Values.postgresql.resources | nindent 12 }}
           volumeMounts:
@@ -119,19 +136,19 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: {{ default (printf "%s-data" (include "owl-mast.postgresql.fullname" .)) .Values.postgresql.persistence.existingClaim }}
+            claimName: {{ default (include "owl-mast.postgresql.dataClaim" .) .Values.postgresql.persistence.existingClaim }}
         # Only the first-initialisation script is auto-executed by the entrypoint; the provisioning
         # helper is mounted separately and called explicitly (a disabled identity bundle must not fail init).
         - name: init
           configMap:
-            name: {{ include "owl-mast.postgresql.fullname" . }}-init
+            name: {{ include "owl-mast.postgresql.initConfigMap" . }}
             defaultMode: 0555
             items:
               - key: 10-owl-mast-databases.sh
                 path: 10-owl-mast-databases.sh
         - name: provisioning
           configMap:
-            name: {{ include "owl-mast.postgresql.fullname" . }}-init
+            name: {{ include "owl-mast.postgresql.initConfigMap" . }}
             defaultMode: 0555
             items:
               - key: provision-keycloak.sh

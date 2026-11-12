@@ -28,6 +28,7 @@ class IdentityReadinessIT {
   @DynamicPropertySource
   static void issuer(DynamicPropertyRegistry registry) {
     registry.add("owlmast.identity.issuer-uri", MISMATCHED::issuerUri);
+    registry.add("owlmast.identity.allow-insecure-issuer", () -> "true");
   }
 
   @AfterAll

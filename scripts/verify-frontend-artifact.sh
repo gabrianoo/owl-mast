@@ -46,6 +46,25 @@ check "no JDK in the image" bash -c "! docker run --rm --entrypoint sh '$IMAGE' 
 check "no backend jar in the image" bash -c "! docker run --rm --entrypoint sh '$IMAGE' -c 'find / -name \"*.jar\" 2>/dev/null | grep -q .'"
 check "image does not proxy the backend (/api is handled by the shell fallback, not nginx proxy)" bash -c "curl -fsS '$BASE/api/compatibility' | grep -q '<div id=\"root\">'"
 
+# The chart runs the shell as UID/GID 101 on a read-only root with emptyDirs at /tmp and /etc/nginx/conf.d
+# (deploy/helm/owl-mast/templates/frontend-deployment.yaml); the same constraints here.
+CHART_FRONTEND="$ROOT/deploy/helm/owl-mast/templates/frontend-deployment.yaml"
+RUN_UID="$(sed -n '/^    spec:/,/containers:/s/^        runAsUser: //p' "$CHART_FRONTEND")"
+RUN_GID="$(sed -n '/^    spec:/,/containers:/s/^        runAsGroup: //p' "$CHART_FRONTEND")"
+[ -n "$RUN_UID" ] && [ -n "$RUN_GID" ] || { echo "FAIL: runAsUser/runAsGroup not found in $CHART_FRONTEND"; exit 1; }
+RO_NAME="$NAME-ro"
+trap 'cleanup; docker rm -f "$RO_NAME" >/dev/null 2>&1 || true' EXIT
+docker run -d --name "$RO_NAME" --user "$RUN_UID:$RUN_GID" --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --tmpfs "/tmp:rw,uid=$RUN_UID,gid=$RUN_GID" --tmpfs "/etc/nginx/conf.d:rw,uid=$RUN_UID,gid=$RUN_GID" \
+  -e "OWLMAST_API_PATH_PREFIX=$PREFIX" -p 127.0.0.1::8080 "$IMAGE" >/dev/null
+RO_BASE="http://127.0.0.1:$(docker port "$RO_NAME" 8080/tcp | head -n1 | sed 's/.*://')"
+for _ in $(seq 1 50); do
+  if curl -fs -o /dev/null "$RO_BASE/"; then break; fi
+  sleep 0.2
+done
+check "chart runtime constraints (UID/GID $RUN_UID:$RUN_GID, read-only root, no capabilities, emptyDir paths): shell served" bash -c "curl -fsS '$RO_BASE/' | grep -q '<div id=\"root\">'"
+check "chart runtime constraints: config endpoint rendered from the template" bash -c "[ \"\$(curl -fsS '$RO_BASE/owlmast-config.json')\" = '{\"apiPathPrefix\":\"$PREFIX\"}' ]"
+
 if [ "$failures" -ne 0 ]; then
   echo "$failures frontend artifact check(s) failed"
   exit 1

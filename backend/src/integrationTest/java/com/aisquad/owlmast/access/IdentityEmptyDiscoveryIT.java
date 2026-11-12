@@ -30,6 +30,7 @@ class IdentityEmptyDiscoveryIT {
   @DynamicPropertySource
   static void issuer(DynamicPropertyRegistry registry) {
     registry.add("owlmast.identity.issuer-uri", EMPTY::issuerUri);
+    registry.add("owlmast.identity.allow-insecure-issuer", () -> "true");
   }
 
   @AfterAll

@@ -1,0 +1,64 @@
+# Issuer samples shared by the chart render tests (deploy/tests/test_chart_render.py) and the backend
+# (IdentityPropertiesTest): the chart must refuse every issuer the backend refuses, so that nothing renders
+# and then crash-loops the backend, and must accept the hosts java.net.URI parses as a server host.
+# One sample per line: "<kind> <issuer>", separated by ONE space. Kinds:
+#   accept                    the chart renders it and IdentityProperties accepts it (plaintext not allowed)
+#   refuse:<reason>           the chart refuses it and IdentityProperties refuses it FOR THAT REASON
+#   chart-refuse              the chart refuses it although IdentityProperties accepts it (a deliberate, narrower chart rule)
+#   accept-insecure           an http issuer: both accept it with the plaintext opt-in (allowInsecureIssuer=true),
+#                             and both refuse it without, for the reason "insecure"
+#   refuse-insecure:<reason>  an http issuer both refuse for that reason even with the plaintext opt-in
+# Reasons (the backend's message; the chart has one message for every malformed issuer and one for plaintext):
+#   host      no host java.net.URI parses as a server host
+#   port      port outside 1-65535
+#   userinfo  user info present
+#   query     query or fragment present
+#   insecure  plaintext http without the opt-in
+accept https://idp.example/realms/owl-mast
+accept https://idp.example/realms/owl-mast/
+accept https://idp.example:8443/realms/x
+accept https://IDP.Example/realms/x
+accept https://idp/realms/x
+accept https://idp.example./realms/x
+accept https://x--y.example/realms/x
+accept https://a.b-c.z9/realms/x
+accept https://10.0.0.1/realms/x
+accept https://255.255.255.255:65535/realms/x
+accept https://0.0.0.0/realms/x
+accept https://123/realms/x
+accept https://9z/realms/x
+accept https://idp.example
+refuse:host https://idp.123/realms/x
+refuse:host https://1.2.3.999/realms/x
+refuse:host https://idp.example.1/realms/x
+refuse:host https://a.b-c.9z/realms/x
+refuse:host https://1.2.3/realms/x
+refuse:host https://1.2.3.4.5/realms/x
+refuse:host https://1.2.3.4./realms/x
+refuse:host https://256.1.1.1/realms/x
+refuse:host https://idp.example../realms/x
+refuse:host https://a-.example/realms/x
+refuse:host https://-a.example/realms/x
+refuse:host https://a.example-/realms/x
+refuse:host https://a_b.example/realms/x
+refuse:host https://.example/realms/x
+refuse:host https:///realms/x
+refuse:port https://idp.example:0/realms/x
+refuse:port https://idp.example:99999/realms/x
+refuse:userinfo https://user@idp.example/realms/x
+refuse:query https://idp.example/realms/x?a=b
+refuse:query https://idp.example/realms/x#f
+chart-refuse https://[::1]/realms/x
+chart-refuse https://[2001:db8::1]:8443/realms/x
+chart-refuse https://01.2.3.4/realms/x
+chart-refuse HTTPS://idp.example/realms/x
+accept-insecure http://idp.example/realms/owl-mast
+accept-insecure http://idp.example:8080/realms/x/
+accept-insecure http://10.0.0.1/realms/x
+accept-insecure http://idp/realms/x
+refuse-insecure:host http://idp.123/realms/x
+refuse-insecure:host http://1.2.3.999/realms/x
+refuse-insecure:host http://a_b.example/realms/x
+refuse-insecure:port http://idp.example:0/realms/x
+refuse-insecure:userinfo http://user@idp.example/realms/x
+refuse-insecure:query http://idp.example/realms/x?a=b
