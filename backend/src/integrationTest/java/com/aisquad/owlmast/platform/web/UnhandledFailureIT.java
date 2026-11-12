@@ -84,6 +84,45 @@ class UnhandledFailureIT {
         .doesNotContain("\tat ");
   }
 
+  @ParameterizedTest
+  @ValueSource(
+      strings = {"/api/test-only/failure/error-thrown", "/api/test-only/failure/error-signalled"})
+  void anErrorIsAnsweredWithTheSameEnvelope(String path, CapturedOutput output) {
+    byte[] body =
+        client()
+            .get()
+            .uri(path)
+            .exchange()
+            .expectStatus()
+            .isEqualTo(500)
+            .expectHeader()
+            .contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON)
+            .expectBody()
+            .jsonPath("$.status")
+            .isEqualTo(500)
+            .jsonPath("$.title")
+            .isEqualTo("Internal Server Error")
+            .jsonPath("$.detail")
+            .doesNotExist()
+            .jsonPath("$.trace")
+            .doesNotExist()
+            .jsonPath("$.message")
+            .doesNotExist()
+            .jsonPath("$.exception")
+            .doesNotExist()
+            .jsonPath("$.error")
+            .doesNotExist()
+            .returnResult()
+            .getResponseBody();
+    assertThat(new String(body, StandardCharsets.UTF_8))
+        .doesNotContain("s3cr3t")
+        .doesNotContain("AssertionError");
+    assertThat(output.getAll())
+        .contains("Unhandled request failure: AssertionError")
+        .doesNotContain("s3cr3t")
+        .doesNotContain("\tat ");
+  }
+
   @Test
   void theFrameworksOwnErrorResponsesKeepTheirStatus() {
     client()
@@ -122,6 +161,16 @@ class UnhandledFailureIT {
     @GetMapping("/api/test-only/failure/signalled")
     Mono<String> signalled() {
       return Mono.error(new IllegalStateException(SECRET, new RuntimeException(SECRET)));
+    }
+
+    @GetMapping("/api/test-only/failure/error-thrown")
+    Mono<String> errorThrown() {
+      throw new AssertionError(SECRET);
+    }
+
+    @GetMapping("/api/test-only/failure/error-signalled")
+    Mono<String> errorSignalled() {
+      return Mono.error(new AssertionError(SECRET));
     }
 
     @GetMapping("/api/test-only/failure/status")

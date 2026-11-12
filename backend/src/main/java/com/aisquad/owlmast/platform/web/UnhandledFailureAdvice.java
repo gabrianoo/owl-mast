@@ -11,8 +11,9 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.server.ServerWebExchange;
 
 /**
- * Common error envelope for failures no handler claimed (OM-01.04): an exception that leaves a
- * controller becomes an RFC 9457 problem detail with status 500 and nothing else.
+ * Common error envelope for failures no handler claimed (OM-01.04): anything thrown or signalled by
+ * a controller, an {@link Error} included, becomes an RFC 9457 problem detail with status 500 and
+ * nothing else.
  *
  * <p>{@code spring.webflux.problemdetails.enabled} only covers Spring's own {@code ErrorResponse}
  * exceptions (404, 405, 415, validation). Anything else used to reach Boot's default error handler,
@@ -25,6 +26,12 @@ import org.springframework.web.server.ServerWebExchange;
  * so it can be matched to the request; driver and SDK messages can hold connection strings and
  * payload fragments, and paths can hold protected identifiers.
  *
+ * <p>{@code Throwable}, not {@code Exception}: an {@code AssertionError} from a handler is answered
+ * either way (Boot's default handler would answer it and the server would carry on), so the only
+ * choice here is the envelope, and it is the same one. Not covered: an error Reactor treats as
+ * fatal when an operator raises it ({@code VirtualMachineError}, {@code LinkageError}) is rethrown
+ * instead of signalled and reaches no handler.
+ *
  * <p>A story that adds exceptions with their own status (authentication and authorization, E02)
  * must map them in a more specific advice: left to this one they would answer 500, not 401/403.
  */
@@ -33,8 +40,8 @@ import org.springframework.web.server.ServerWebExchange;
 @Order(Ordered.LOWEST_PRECEDENCE)
 class UnhandledFailureAdvice {
 
-  @ExceptionHandler(Exception.class)
-  ProblemDetail unhandled(Exception failure, ServerWebExchange exchange) {
+  @ExceptionHandler(Throwable.class)
+  ProblemDetail unhandled(Throwable failure, ServerWebExchange exchange) {
     log.error(
         "{}Unhandled request failure: {}", exchange.getLogPrefix(), SafeFailure.describe(failure));
     return ProblemDetail.forStatus(HttpStatus.INTERNAL_SERVER_ERROR);
