@@ -209,6 +209,12 @@ if [[ "$args" == *" logs job/"* ]]; then
   if [ "$(state_of job "$ns" "$job")" = absent ]; then echo "error: error from server (NotFound): jobs.batch \"$job\" not found" >&2; exit 1; fi
   printf 'GRANT\n'; exit 0
 fi
+# Pods of the release that are being deleted (wait_no_terminating_pods): STUB_TERMINATING=<n> reports one for the first n reads.
+if [[ "$args" == *" get pods "* && "$args" == *"?(@.metadata.deletionTimestamp)"* ]]; then
+  n=0; [ -e "$STUB_WORLD.terminating" ] && n="$(grep -c . "$STUB_WORLD.terminating")"
+  if [ "$n" -lt "${STUB_TERMINATING:-0}" ]; then echo read >> "$STUB_WORLD.terminating"; printf 'owl-mast-fe-keycloak-old-abc12\n'; fi
+  exit 0
+fi
 # Runtime answers for whole-step runs (STUB_RUNTIME=1): what a healthy install returns to the script's observations.
 if [ "${STUB_RUNTIME:-}" = 1 ]; then
   if [[ "$args" == *" get --raw /api/v1/namespaces/"* ]]; then
@@ -1148,6 +1154,24 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
         self.assertNotIn("KC_BOOTSTRAP_ADMIN", r.evidence["fe5-keycloak-env-after"])
         self.assertIn("KC_DB_PASSWORD=owl-mast-fe-keycloak-db", r.evidence["fe5-keycloak-env-after"])
 
+    def test_the_retirement_reads_the_secret_references_only_once_the_replaced_pod_is_gone(self):
+        """Review 5883535263: `helm upgrade --wait` can return while the replaced Keycloak pod still terminates, and that pod still
+        names the bootstrap Secret; reading the references then would report a retirement that worked as failed."""
+        r = self.first_enable(STUB_TERMINATING="1", TERMINATING_POD_TIMEOUT="30")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok   fe5-bootstrap-admin-retired", r.stdout)
+        calls = r.calls.splitlines()
+        waits = [i for i, c in enumerate(calls) if "?(@.metadata.deletionTimestamp)" in c and "owl-mast-fe" in c]
+        reads = [i for i, c in enumerate(calls) if " get deploy,pods " in c and "-o json" in c]
+        self.assertEqual(len(waits), 2, waits)  # one read still saw the terminating pod, the next one none
+        self.assertEqual(len(reads), 1, reads)
+        self.assertLess(waits[-1], reads[0])
+        r = self.first_enable(STUB_TERMINATING="1000", TERMINATING_POD_TIMEOUT="0")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL fe5: pod(s) still terminating after 0s: owl-mast-fe-keycloak-old-abc12", r.stdout)
+        self.assertNotIn("ok   fe5-bootstrap-admin-retired", r.stdout)
+        self.assertNotIn(" get deploy,pods ", r.calls)
+
     def test_first_enable_fails_when_the_bootstrap_admin_is_still_injected_after_the_retirement(self):
         r = self.first_enable(STUB_RETIRE="kept")
         self.assertNotEqual(r.returncode, 0, r.stdout)
@@ -1383,6 +1407,16 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
                 self.assertIn(f"REFUSED: HOOK_GONE_TIMEOUT must be a whole number of seconds (digits only, no leading zero), got '{value}'", r.stderr)
                 self.assertEqual(r.calls, "")
+
+    def test_the_step_timeouts_must_be_whole_numbers_without_a_leading_zero(self):
+        """Review 5883535263: `08` passed `^[0-9]+$` and then aborted the step in bash's octal arithmetic."""
+        for name in ("DURABLE_WORK_TIMEOUT", "TERMINATING_POD_TIMEOUT"):
+            for value in ("08", "030", "-1", "1.5", " ", "2m"):
+                with self.subTest(name=name, value=value):
+                    r = self.step("bundled-bundled", **{name: value})
+                    self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                    self.assertIn(f"REFUSED: {name} must be a whole number of seconds (digits only, no leading zero), got '{value}'", r.stderr)
+                    self.assertEqual(r.calls, "")
 
     def test_the_script_reads_no_hook_object_the_chart_deletes_on_success(self):
         """The delete policy the script depends on is the chart's, and no step reads the hook Job, its log or its ConfigMap directly."""

@@ -13,7 +13,8 @@
 #        first-enable (needs OWLMAST_FOLLOWUP_RUN_ID; a fresh run-owned volume: app-only init, enable identity via the pre-upgrade hook, retry,
 #        then retire the Keycloak bootstrap admin with identity.keycloak.bootstrapAdmin.enabled=false)
 # Optional: BACKEND_IMAGE_TAG (default 0.1.0), BACKEND_IMAGE_ID (expected local image id the node must run),
-#           DURABLE_WORK_TIMEOUT (seconds to wait for the backend to publish the synthetic audit intent, default 120).
+#           DURABLE_WORK_TIMEOUT (seconds to wait for the backend to publish the synthetic audit intent, default 120),
+#           TERMINATING_POD_TIMEOUT (seconds a replaced pod may take to terminate after an upgrade, default 180).
 # The synthetic fixtures speak plaintext (http issuer, sslMode=disable): every such install passes the chart's
 # explicit opt-ins (identity.external.allowInsecureIssuer, *.allowInsecureTransport); production values never do.
 set -euo pipefail
@@ -521,6 +522,12 @@ verify_backend_image() { # verify_backend_image <name>: the running backend is e
 #  - both hook objects are gone afterwards, which is the delete policy applied.
 HOOK_GONE_TIMEOUT="${HOOK_GONE_TIMEOUT:-30}"   # seconds to wait for Helm's hook deletion to be visible
 [[ "$HOOK_GONE_TIMEOUT" =~ ^(0|[1-9][0-9]*)$ ]] || { echo "REFUSED: HOOK_GONE_TIMEOUT must be a whole number of seconds (digits only, no leading zero), got '$HOOK_GONE_TIMEOUT'" >&2; exit 2; }
+DURABLE_WORK_TIMEOUT="${DURABLE_WORK_TIMEOUT:-120}"   # seconds the installed backend has to finish the synthetic work item
+TERMINATING_POD_TIMEOUT="${TERMINATING_POD_TIMEOUT:-180}"   # seconds a replaced pod may take to terminate after an upgrade
+# Digits only, no leading zero: bash arithmetic reads 08 as octal and would abort mid-step instead of refusing here.
+for timeout_name in DURABLE_WORK_TIMEOUT TERMINATING_POD_TIMEOUT; do
+  [[ "${!timeout_name}" =~ ^(0|[1-9][0-9]*)$ ]] || { echo "REFUSED: $timeout_name must be a whole number of seconds (digits only, no leading zero), got '${!timeout_name}'" >&2; exit 2; }
+done
 KEYCLOAK_IDENTITY_RE='^role=[0-9]+ database=[0-9]+ owner=[0-9]+$'
 keycloak_db_identity() { # keycloak_db_identity <namespace> <deployment>: one line `role=<oid> database=<oid> owner=<oid>`
   pg_exec "$1" "$2" OWLMAST_KEYCLOAK keycloak "select 'role='||r.oid||' database='||d.oid||' owner='||d.datdba from pg_roles r cross join pg_database d where r.rolname = current_user and d.datname = current_database()"
@@ -779,10 +786,8 @@ expected_migrations() {
 # migrations, tenant discovery, the claim, the handler transaction (transaction_timeout, PostgreSQL 17+) and
 # the audit publisher on the installed release. The rows are synthetic and are kept: every run adds one
 # intent, one work item and one history row for the tenant `qualification` to the database it checked.
-DURABLE_WORK_TIMEOUT="${DURABLE_WORK_TIMEOUT:-120}"
 check_durable_work() {
   local label="$1" ns="$2" deploy="$3" corr deadline out
-  [[ "$DURABLE_WORK_TIMEOUT" =~ ^[0-9]+$ ]] || { log "FAIL DURABLE_WORK_TIMEOUT must be a whole number of seconds"; return 1; }
   corr="qualification-$label-$(date -u +%Y%m%dT%H%M%SZ)-$$"
   record "$label-durable-work-enqueue" pg_exec "$ns" "$deploy" OWLMAST_APP owlmast "with intent as (insert into audit.publication_intent (event_id, envelope_version, tenant_id, actor_kind, actor_id, object_type, object_id, action, outcome, occurred_at, correlation_id) values (gen_random_uuid(), 1, 'qualification', 'SERVICE', 'service:owl-mast-backend', 'qualification-probe', '$corr', 'qualify', 'SUCCEEDED', now(), '$corr') returning event_id) insert into jobs.work_item (id, tenant_id, work_type, contract_version, payload, status, attempt_count, max_attempts, next_attempt_at, enqueued_by, correlation_id) select gen_random_uuid(), 'qualification', 'audit.publish', 1, jsonb_build_object('eventId', event_id::text), 'PENDING', 0, 5, now(), 'service:owl-mast-backend', '$corr' from intent" || return 1
   deadline=$(( $(date -u +%s) + DURABLE_WORK_TIMEOUT ))
@@ -796,6 +801,22 @@ check_durable_work() {
     # A terminal state other than SUCCEEDED will not change: stop waiting.
     if grep -qE '^durable-work\|(FAILED|DENIED|OUTCOME_UNCERTAIN)\|' <<<"$out" || [ "$(date -u +%s)" -ge "$deadline" ]; then
       log "FAIL $label-durable-work: the synthetic audit.publish item was not published within ${DURABLE_WORK_TIMEOUT}s (see $OUT/$label-durable-work.txt)"; return 1
+    fi
+    sleep 3
+  done
+}
+
+# wait_no_terminating_pods <prefix> <release>: waits up to TERMINATING_POD_TIMEOUT seconds until no pod of the
+# release is being deleted.
+wait_no_terminating_pods() {
+  local prefix="$1" rel="$2" deadline terminating
+  deadline=$(( $(date -u +%s) + TERMINATING_POD_TIMEOUT ))
+  while :; do
+    terminating="$(k get pods -n "$NS" -l "app.kubernetes.io/instance=$rel" -o jsonpath='{range .items[?(@.metadata.deletionTimestamp)]}{.metadata.name}{"\n"}{end}')" \
+      || { log "FAIL $prefix: the release's pods could not be listed"; return 1; }
+    [ -z "$terminating" ] && return 0
+    if [ "$(date -u +%s)" -ge "$deadline" ]; then
+      log "FAIL $prefix: pod(s) still terminating after ${TERMINATING_POD_TIMEOUT}s: $(tr '\n' ' ' <<<"$terminating")"; return 1
     fi
     sleep 3
   done
@@ -828,6 +849,9 @@ retire_bootstrap_admin() {
   if grep -qE "KC_BOOTSTRAP_ADMIN|=($secret|absent-keycloak-bootstrap-secret)\$" "$OUT/$prefix-keycloak-env-after.txt"; then
     log "FAIL $prefix: the Keycloak pod still takes a bootstrap admin variable or references the bootstrap Secret"; return 1
   fi
+  # `helm upgrade --wait` can return while the replaced Keycloak pod is still terminating; that pod still
+  # names the bootstrap Secret, so the references are read once the release has no terminating pod left.
+  wait_no_terminating_pods "$prefix" "$rel" || return 1
   # Every place a workload can name a Secret, in the Deployments and in the pods as they run: only the
   # matching name fields reach the evidence, never an object.
   local objects references
