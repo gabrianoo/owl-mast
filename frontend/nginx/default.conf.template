@@ -22,10 +22,18 @@ server {
     root /usr/share/nginx/html;
     index index.html;
     server_tokens off;
-    # No range answers. nginx evaluates add_header before the range filter and again for the error
-    # answer, so an unsatisfiable range (416) would carry every header twice, and under /assets/
-    # both cache policies. The shell's files are small and are always sent whole.
-    max_ranges 0;
+    # Range requests are answered, except under /assets/ (see there). nginx runs add_header before
+    # the range filter and again when it sends the error answer for an unsatisfiable range, so a 416
+    # answered in the same location would carry every header twice. The 416 is therefore sent from a
+    # location that adds nothing: the answer keeps the headers the first pass wrote (the security
+    # headers and that location's Cache-Control), once each. Do not put add_header here or at
+    # server level.
+    # One range per request: a request for several is answered whole (200), so no multipart answer.
+    max_ranges 1;
+    error_page 416 @owlmast_range_not_satisfiable;
+    location @owlmast_range_not_satisfiable {
+        return 416;
+    }
 
     location = /owlmast-config.json {
         include /etc/nginx/owlmast-headers.conf;
@@ -58,6 +66,10 @@ server {
     }
 
     location /assets/ {
+        # No ranges here. The first pass has already written the immutable policy for the 200 it
+        # expected ($status is 200 until the range filter runs), and stock nginx cannot take a
+        # header back, so a 416 would be immutable for a year. Hashed assets are always sent whole.
+        max_ranges 0;
         include /etc/nginx/owlmast-headers.conf;
         add_header Cache-Control $owlmast_asset_cache_control always;
         try_files $uri =404;

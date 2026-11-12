@@ -143,6 +143,46 @@ test.describe('built frontend image in Chromium (production CSP, nginx template,
     }
   });
 
+  test('an unsatisfiable range is a 416 with every header once, and hashed assets are always sent whole', async ({ page }) => {
+    // nginx adds the headers before its range filter and again for the error answer; the template
+    // sends the 416 from a location that adds nothing, and keeps ranges off under /assets/, where
+    // the immutable policy is already written when the range turns out to be unsatisfiable.
+    const once = ['content-security-policy', 'x-content-type-options', 'x-frame-options', 'referrer-policy', 'cache-control'];
+    const count = (headers: { name: string; value: string }[], name: string) => headers.filter((header) => header.name.toLowerCase() === name).length;
+    for (const path of ['/', '/focus', '/theme-boot.js', '/api-compatibility.json']) {
+      const unsatisfiable = await page.request.get(path, { headers: { Range: 'bytes=999999999-' } });
+      expect(unsatisfiable.status(), path).toBe(416);
+      const headers = unsatisfiable.headersArray();
+      for (const name of once) expect(count(headers, name), `${path} ${name}`).toBe(1);
+      expect(parseCsp(unsatisfiable.headers()['content-security-policy'] ?? ''), path).toEqual(PRODUCTION_CSP);
+      expect(unsatisfiable.headers()['cache-control'], path).toBe('no-store');
+      expect(unsatisfiable.headers()['content-range'], path).toMatch(/^bytes \*\/\d+$/);
+
+      const partial = await page.request.get(path, { headers: { Range: 'bytes=0-9' } });
+      expect(partial.status(), path).toBe(206);
+      for (const name of once) expect(count(partial.headersArray(), name), `${path} ${name}`).toBe(1);
+      expect(partial.headers()['cache-control'], path).toBe('no-store');
+      expect((await partial.body()).length, path).toBe(10);
+    }
+
+    // One range per request (max_ranges 1): several are answered whole, so there is no multipart answer.
+    const several = await page.request.get('/theme-boot.js', { headers: { Range: 'bytes=0-1,3-4' } });
+    expect(several.status()).toBe(200);
+    for (const name of once) expect(count(several.headersArray(), name), name).toBe(1);
+    expect(several.headers()['content-type']).not.toContain('multipart');
+
+    const shell = await (await page.request.get('/')).text();
+    const asset = /\/assets\/[^"]+\.js/.exec(shell)?.[0] ?? '';
+    expect(asset).not.toBe('');
+    for (const range of ['bytes=999999999-', 'bytes=0-9']) {
+      const answer = await page.request.get(asset, { headers: { Range: range } });
+      expect(answer.status(), range).toBe(200);
+      for (const name of once) expect(count(answer.headersArray(), name), `${range} ${name}`).toBe(1);
+      expect(answer.headers()['cache-control'], range).toBe('public, max-age=31536000, immutable');
+      expect(answer.headers()['content-range'], range).toBeUndefined();
+    }
+  });
+
   test('the image publishes the API contract this build supports', async ({ page }) => {
     const published = await page.request.get('/api-compatibility.json');
     expect(published.status()).toBe(200);

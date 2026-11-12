@@ -87,12 +87,69 @@ check "the hashed asset is immutable for a year (exact value)" test "$(status_an
 ETAG="$(curl -sSI "$BASE$HASHED_ASSET" | tr -d '\r' | sed -n 's/^[Ee][Tt]ag: //p' || true)"
 check "the hashed asset has an ETag" test -n "$ETAG"
 check "a 304 for the hashed asset repeats the immutable policy" test "$(status_and_cache -H "If-None-Match: ${ETAG:-\"none\"}" "$BASE$HASHED_ASSET")" = "304 $IMMUTABLE_VALUE"
-# Ranges are off (max_ranges 0): nginx adds the headers before the range filter and again for a 416,
-# which would answer an unsatisfiable range with both cache policies and every security header twice.
-check "a range request for the hashed asset is answered whole, with one policy" test "$(status_and_cache -H 'Range: bytes=0-9' "$BASE$HASHED_ASSET")" = "200 $IMMUTABLE_VALUE"
-check "an unsatisfiable range on the hashed asset is no 416 with two policies" test "$(status_and_cache -H 'Range: bytes=999999999-' "$BASE$HASHED_ASSET")" = "200 $IMMUTABLE_VALUE"
-check "an unsatisfiable range on the shell is no 416 with every header twice" test "$(status_and_cache -H 'Range: bytes=999999999-' "$BASE/")" = '200 no-store'
-check "container variables named like nginx variables do not reach the template (status, uri)" bash -c "docker run --rm -e status=200 -e uri=/index.html '$IMAGE' nginx -T 2>/dev/null | grep -qF 'map \$status \$owlmast_asset_cache_control' && docker run --rm -e status=200 -e uri=/index.html '$IMAGE' nginx -T 2>/dev/null | grep -qF 'try_files \$uri /index.html'"
+# Ranges. nginx adds the headers before the range filter and again when it answers an unsatisfiable
+# range, so a 416 answered in place carries every header twice, and under /assets/ the immutable
+# policy next to no-store. The template sends the 416 from a location that adds nothing, and
+# keeps ranges off under /assets/, where the immutable policy is already written by then.
+# Prints the status and how often each policy header occurs in one answer.
+range_answer() {
+  curl -sS -o /dev/null -D - -H "Range: $1" "$2" | tr -d '\r' | awk '
+    NR==1 { status=$2 }
+    { name=tolower($1) }
+    name=="content-security-policy:" { csp++ }
+    name=="x-content-type-options:" { nosniff++ }
+    name=="x-frame-options:" { frame++ }
+    name=="referrer-policy:" { referrer++ }
+    name=="cache-control:" { cache++; sub(/^[^:]*: /, ""); policy=$0 }
+    name=="content-range:" { range++ }
+    END { printf "%s csp=%d nosniff=%d frame=%d referrer=%d cache=%d(%s) content-range=%d\n", status, csp, nosniff, frame, referrer, cache, policy, range }'
+}
+ONCE_EACH='csp=1 nosniff=1 frame=1 referrer=1'
+for path in / /focus /theme-boot.js /owl-mark.svg /api-compatibility.json; do
+  check "an unsatisfiable range on $path is a 416 with every header once and no-store" test "$(range_answer 'bytes=999999999-' "$BASE$path")" = "416 $ONCE_EACH cache=1(no-store) content-range=1"
+  check "a satisfiable range on $path is a 206 with every header once and no-store" test "$(range_answer 'bytes=0-9' "$BASE$path")" = "206 $ONCE_EACH cache=1(no-store) content-range=1"
+done
+check "a range request for the hashed asset is answered whole, with the immutable policy once" test "$(range_answer 'bytes=0-9' "$BASE$HASHED_ASSET")" = "200 $ONCE_EACH cache=1($IMMUTABLE_VALUE) content-range=0"
+check "an unsatisfiable range on the hashed asset is no 416 (answered whole, immutable once)" test "$(range_answer 'bytes=999999999-' "$BASE$HASHED_ASSET")" = "200 $ONCE_EACH cache=1($IMMUTABLE_VALUE) content-range=0"
+check "a request for several ranges is answered whole (max_ranges 1), every header once" test "$(range_answer 'bytes=0-1,3-4' "$BASE/theme-boot.js")" = "200 $ONCE_EACH cache=1(no-store) content-range=0"
+check "a range on a missing asset is the same 404 with no-store" test "$(range_answer 'bytes=999999999-' "$BASE/assets/missing.js")" = "404 $ONCE_EACH cache=1(no-store) content-range=0"
+check "a range below the API prefix is the same 404 with no-store" test "$(range_answer 'bytes=0-9' "$BASE$PREFIX/compatibility")" = "404 $ONCE_EACH cache=1(no-store) content-range=0"
+
+# Template substitution (frontend/Dockerfile NGINX_ENVSUBST_FILTER=^OWLMAST_, docs/frontend.md):
+# only OWLMAST_* variables are substituted, every one the template names has a value, and nginx's
+# own variables reach nginx unchanged whatever the container environment holds.
+TEMPLATE="$ROOT/frontend/nginx/default.conf.template"
+TEMPLATE_VARIABLES="$(grep -oE '\$\{?OWLMAST_[A-Z0-9_]*' "$TEMPLATE" | sed -E 's/^\$\{?//' | sort -u || true)"
+check "the template names at least one OWLMAST_ variable" test -n "$TEMPLATE_VARIABLES"
+for variable in $TEMPLATE_VARIABLES; do
+  check "template variable $variable has a default in the image (frontend/Dockerfile ENV)" grep -qE "^ENV $variable=" "$ROOT/frontend/Dockerfile"
+done
+check "the Dockerfile limits substitution to OWLMAST_ variables" grep -qxF 'ENV NGINX_ENVSUBST_FILTER=^OWLMAST_' "$ROOT/frontend/Dockerfile"
+RENDERED="$(docker exec "$NAME" cat /etc/nginx/conf.d/default.conf || true)"
+check "the rendered configuration is not empty" test -n "$RENDERED"
+check "the rendered configuration has no unexpanded OWLMAST_ variable" bash -c "! grep -qE '\\\$\{?OWLMAST_' <<<\"\$1\"" _ "$RENDERED"
+check "the rendered configuration holds the deployed prefix where the template names it" bash -c "grep -qF 'location = $PREFIX {' <<<\"\$1\" && grep -qF 'location ^~ $PREFIX/ {' <<<\"\$1\"" _ "$RENDERED"
+for kept in 'map $status $owlmast_asset_cache_control {' 'add_header Cache-Control $owlmast_asset_cache_control always;' 'try_files $uri /index.html;' 'try_files $uri =404;'; do
+  check "nginx's own variables survive rendering: $kept" grep -qF -- "$kept" <<<"$RENDERED"
+done
+HOSTILE_ENV=(-e status=200 -e uri=/index.html -e owlmast_asset_cache_control=public)
+HOSTILE="$(docker run --rm "${HOSTILE_ENV[@]}" "$IMAGE" nginx -T 2>/dev/null || true)"
+for kept in 'map $status $owlmast_asset_cache_control {' 'add_header Cache-Control $owlmast_asset_cache_control always;' 'try_files $uri /index.html;'; do
+  check "container variables named like nginx variables do not reach the template: $kept" grep -qF -- "$kept" <<<"$HOSTILE"
+done
+# A template that names an OWLMAST_ variable nobody set is not rendered with an empty value: the
+# text stays, nginx reads it as an unknown variable of its own and refuses to start.
+sed 's|{"apiPathPrefix":"${OWLMAST_API_PATH_PREFIX}"}|{"apiPathPrefix":"${OWLMAST_API_PATH_PREFIX}","unset":"${OWLMAST_NOT_SET}"}|' "$TEMPLATE" >"$TMP/unset.conf.template"
+chmod 0644 "$TMP/unset.conf.template"
+check "the modified template names the unset variable" grep -qF '${OWLMAST_NOT_SET}' "$TMP/unset.conf.template"
+unset_refused() {
+  local out
+  if out="$(docker run --rm -v "$TMP/unset.conf.template:/etc/nginx/templates/default.conf.template:ro" "$IMAGE" nginx -t 2>&1)"; then
+    echo "      started with an unset template variable"; return 1
+  fi
+  grep -qi 'unknown "owlmast_not_set" variable' <<<"$out" || { echo "      stopped for another reason: $out"; return 1; }
+}
+check "a template variable without a value stops the container instead of rendering an empty string" unset_refused
 check "no JDK in the image" bash -c "! docker run --rm --entrypoint sh '$IMAGE' -c 'command -v java'"
 check "no backend jar in the image" bash -c "! docker run --rm --entrypoint sh '$IMAGE' -c 'find / -name \"*.jar\" 2>/dev/null | grep -q .'"
 check "a request below the API prefix is 404, never the shell (misrouted API fails closed)" bash -c "[ \"\$(curl -s -o \"$TMP/misrouted\" -w '%{http_code}' '$BASE$PREFIX/compatibility')\" = 404 ] && ! grep -q '<div id=\"root\">' \"$TMP/misrouted\""
@@ -113,6 +170,36 @@ refuses_prefix() {
   fi
   grep -q 'OWLMAST_API_PATH_PREFIX' <<<"$out" || { echo "      no diagnostic for '$1': $out"; return 1; }
 }
+# The diagnostic of one refused prefix (empty when the container started).
+refusal_of() { docker run --rm -e "OWLMAST_API_PATH_PREFIX=$1" "$IMAGE" nginx -t 2>&1 | grep 'OWLMAST_API_PATH_PREFIX' || true; }
+CHARSET_HINT="expected an absolute path of letters"
+# A collision is a well-formed value: its refusal names what it collides with and what to choose,
+# and does not end with the character-set rule the value already satisfies.
+collision_message() {
+  local out
+  out="$(refusal_of "$1")"
+  grep -qF -- "$2" <<<"$out" || { echo "      '$1' is not refused with '$2': $out"; return 1; }
+  grep -qF -- "$3" <<<"$out" || { echo "      '$1' is not refused with '$3': $out"; return 1; }
+  ! grep -qF -- "$CHARSET_HINT" <<<"$out" || { echo "      '$1' is refused with the character-set hint: $out"; return 1; }
+}
+SHELL_PAGES="$(sed -n 's/^owlmast_shell_routes="\(.*\)"$/\1/p' "$ROOT/frontend/docker-entrypoint.d/16-owlmast-api-prefix.envsh")"
+check "the guard lists the shell's pages" test -n "$SHELL_PAGES"
+check "a shell page as the prefix is refused with its own message" collision_message /usage 'it collides with a page of the shell (/usage)' "its first path segment must not be one of: $SHELL_PAGES"
+check "a path below a shell page is refused with the page it collides with" collision_message /focus/x 'it collides with a page of the shell (/focus)' 'its first path segment must not be one of:'
+check "a file of the web root as the prefix is refused with its own message" collision_message /theme-boot.js 'it collides with a path this image serves itself (/theme-boot.js)' 'a file or directory of the web root'
+check "a path below /assets is refused with its own message" collision_message /assets/x 'it collides with a path this image serves itself' 'must not be /assets'
+check "the root as the prefix is refused with its own message" collision_message / 'the API cannot be served at the root' 'at least one path segment'
+check "a refusal names the value as it was given, trailing slash included" bash -c "docker run --rm -e OWLMAST_API_PATH_PREFIX=/usage/ '$IMAGE' nginx -t 2>&1 | grep -qF \"OWLMAST_API_PATH_PREFIX '/usage/' is refused\" && docker run --rm -e OWLMAST_API_PATH_PREFIX=/ '$IMAGE' nginx -t 2>&1 | grep -qF \"OWLMAST_API_PATH_PREFIX '/' is refused\""
+# Without the shell in the web root the guard cannot tell which paths the image serves: no prefix is accepted.
+no_web_root_refused() {
+  local out
+  if out="$(docker run --rm --tmpfs /usr/share/nginx/html "$IMAGE" nginx -t 2>&1)"; then
+    echo "      started without index.html in the web root"; return 1
+  fi
+  grep -qF "OWLMAST_API_PATH_PREFIX '/api' cannot be checked: the web root /usr/share/nginx/html has no index.html" <<<"$out" || { echo "      stopped for another reason: $out"; return 1; }
+}
+check "a web root without index.html stops the container with its own message" no_web_root_refused
+check "a malformed prefix is still refused with the character-set rule" bash -c "docker run --rm -e \"OWLMAST_API_PATH_PREFIX=/a b\" '$IMAGE' nginx -t 2>&1 | grep -F 'OWLMAST_API_PATH_PREFIX' | grep -qF '$CHARSET_HINT'"
 for bad in "/a'b" '/a$b' '/a"b' '/a b' '/a%2Fb' '/a;b' '//evil.example' '/a//b' '/a/../b' '/a/./b' '/a/..' 'api' '' '/' '//' '/assets' '/assets/x' '/owlmast-config.json' '/api-compatibility.json' \
   '/index.html' '/theme-boot.js' '/owl-mark.svg' '/index.html/' '/index.html/x' '/theme-boot.js/x' \
   '/focus' '/knowledge' '/connections' '/usage' '/preferences' '/usage/' '/focus/x' '/preferences/api'; do
