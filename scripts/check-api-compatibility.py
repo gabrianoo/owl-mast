@@ -9,6 +9,11 @@ Frontend side: frontend/api-compatibility.json in this checkout (build-time chec
 Backend side: the backend's api-contract.properties in this checkout, or, with --backend-url, a
 running backend's GET {prefix}/compatibility.
 
+Credentials (opt-in): an endpoint that needs them gets one Authorization header value per side,
+from the environment (OWLMAST_COMPAT_FRONTEND_AUTHORIZATION, OWLMAST_COMPAT_BACKEND_AUTHORIZATION)
+or from a file (--frontend-authorization-file, --backend-authorization-file). The value is never
+taken from the command line or a URL and never printed.
+
 Exit 0 when the pair is compatible; exit 1 (with both contracts named) when it is not, and exit 1
 with one "INCOMPATIBLE (unverifiable)" line when either side cannot be read (fail closed). The
 script never ends in a traceback: automation parses the verdict line.
@@ -17,12 +22,15 @@ from __future__ import annotations
 
 import argparse
 import http.client
+import ipaddress
 import json
+import os
 import re
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +44,11 @@ MAX_TIMEOUT_SECONDS = 3600.0
 MAX_VERDICT_CHARS = 2000
 # The chart caps routing.apiPathPrefix at the same length.
 MAX_PATH_CHARS = 1024
+# Credentials are opt-in and per side, so a backend token is never sent to the frontend host or
+# the other way round. They are read from the environment or a file only: a command line is
+# visible in the process list and in CI logs, and a URL is printed in the verdict.
+AUTHORIZATION_ENV = {"frontend": "OWLMAST_COMPAT_FRONTEND_AUTHORIZATION", "backend": "OWLMAST_COMPAT_BACKEND_AUTHORIZATION"}
+MAX_AUTHORIZATION_CHARS = 8192
 
 
 @dataclass(frozen=True)
@@ -139,10 +152,12 @@ def read_frontend_manifest(path: Path) -> tuple[Supported, str, str]:
     return parse_frontend_manifest(text, path)
 
 
-def fetch_frontend_manifest(frontend_url: str, timeout: float) -> tuple[Supported, str, str]:
+def fetch_frontend_manifest(frontend_url: str, timeout: float, authorization: str | None = None) -> tuple[Supported, str, str]:
     """The manifest the deployed frontend artifact publishes (emitted by its build, served by its image)."""
     url = _base_url(frontend_url, "--frontend-url") + FRONTEND_MANIFEST_PATH
-    body = _http_get(url, timeout, "application/json")
+    if authorization is not None:
+        _credentials_allowed(url, "--frontend-url")
+    body = _http_get(url, timeout, "application/json", authorization)
     try:
         text = body.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -262,11 +277,98 @@ def _base_url(value: str, option: str) -> str:
     return value.rstrip("/")
 
 
-def _http_get(url: str, timeout: float, accept: str) -> bytes:
-    """GET that turns every transport failure into CheckError (timeout, reset, truncated body, bad URL)."""
+def read_authorization(side: str, file: Path | None, url_given: bool, environ: Mapping[str, str]) -> str | None:
+    """The Authorization header value for one side's request, or None when none is configured.
+
+    No message here repeats the value or any part of it: it is a secret. The environment variable
+    is ignored when it is empty (an unset pipeline secret) or when that side is read from the
+    checkout; a file given for a side that is read from the checkout is a mistake.
+    """
+    option = f"--{side}-authorization-file"
+    variable = AUTHORIZATION_ENV[side]
+    from_environment = environ.get(variable) or None
+    if file is not None:
+        if not url_given:
+            raise CheckError(f"{option} needs --{side}-url: credentials are sent to a URL only")
+        if from_environment is not None:
+            raise CheckError(f"{option} and {variable} are both set: choose one source for the {side} credentials")
+        try:
+            with file.open("rb") as handle:  # bounded: the path may be a device or a very large file
+                raw = handle.read(MAX_AUTHORIZATION_CHARS + 3)
+        except OSError as error:
+            raise CheckError(f"cannot read {option}: {type(error).__name__}") from None
+        if len(raw) > MAX_AUTHORIZATION_CHARS + 2:
+            raise CheckError(f"invalid {option}: more than {MAX_AUTHORIZATION_CHARS} characters (the value is not repeated here)")
+        try:
+            value = raw.decode("ascii")
+        except UnicodeDecodeError:
+            raise CheckError(f"invalid {option}: not printable ASCII (the value is not repeated here)") from None
+        # One line end, as an editor or `echo` leaves it; anything else in the file is part of the value.
+        value = value[:-2] if value.endswith("\r\n") else value[:-1] if value.endswith("\n") else value
+        source = option
+    elif from_environment is not None and url_given:
+        value, source = from_environment, variable
+    else:
+        return None
+    # One header line of visible ASCII: no line break (a second header), no control character.
+    if not value or len(value) > MAX_AUTHORIZATION_CHARS or value != value.strip(" ") or any(not 0x20 <= ord(character) <= 0x7E for character in value):
+        raise CheckError(
+            f"invalid {source}: expected one line of printable ASCII such as 'Bearer <token>', at most {MAX_AUTHORIZATION_CHARS} characters, "
+            "without leading or trailing spaces (the value is not repeated here)"
+        )
+    return value
+
+
+def _is_loopback(host: str) -> bool:
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _credentials_allowed(url: str, option: str) -> None:
+    """Credentials leave this machine only over TLS; plain http is accepted for a loopback address (a port-forward)."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "https" and not _is_loopback(parts.hostname or ""):
+        raise CheckError(f"{option} is plain http to a host that is not this machine: credentials are sent over https or to a loopback address only")
+
+
+def _opener_with_credentials(url: str) -> urllib.request.OpenerDirector:
+    """No redirects; and no proxy for plain http, which is a loopback address here.
+
+    urllib takes proxies from the environment (http_proxy) and on Linux does not exempt
+    localhost, so the plain request and its Authorization header would go to the proxy host. An
+    https request keeps the configured proxy: it only relays the encrypted connection.
+    """
+    handlers: list[urllib.request.BaseHandler] = [_NoRedirect()]
+    if urllib.parse.urlsplit(url).scheme != "https":
+        handlers.append(urllib.request.ProxyHandler({}))
+    return urllib.request.build_opener(*handlers)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """With credentials a redirect is not followed: urllib would repeat the Authorization header to the new host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ARG002 - urllib API
+        return None
+
+
+def _http_get(url: str, timeout: float, accept: str, authorization: str | None = None) -> bytes:
+    """GET that turns every transport failure into CheckError (timeout, reset, truncated body, bad URL).
+
+    `authorization` is sent as the Authorization header of this request only; it is never part of
+    a message.
+    """
     try:
         request = urllib.request.Request(url, headers={"Accept": accept})
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - operator-supplied URL
+        if authorization is None:
+            opener = urllib.request.build_opener()
+        else:
+            request.add_unredirected_header("Authorization", authorization)
+            opener = _opener_with_credentials(url)
+        with opener.open(request, timeout=timeout) as response:  # noqa: S310 - operator-supplied URL
             if response.status != 200:
                 raise CheckError(f"{url} answered {response.status}; the pair cannot be verified")
             body = response.read(MAX_BODY_BYTES + 1)
@@ -275,6 +377,8 @@ def _http_get(url: str, timeout: float, accept: str) -> bytes:
             return body
     except urllib.error.HTTPError as error:
         error.close()  # the error object owns the response socket
+        if authorization is not None and 300 <= error.code < 400:
+            raise CheckError(f"{url} answered {error.code}; a redirect is not followed when credentials are sent") from None
         raise CheckError(f"{url} answered {error.code}; the pair cannot be verified") from None
     except urllib.error.URLError as error:
         raise CheckError(f"{url} is unreachable: {error.reason}") from error
@@ -283,10 +387,14 @@ def _http_get(url: str, timeout: float, accept: str) -> bytes:
     except (OSError, http.client.HTTPException) as error:
         raise CheckError(f"{url} failed mid-answer: {type(error).__name__}") from error
     except ValueError as error:
+        if authorization is not None:  # http.client quotes a header it refuses
+            raise CheckError(f"invalid URL or header for {_shown(url)}: {type(error).__name__}") from None
         raise CheckError(f"invalid URL {_shown(url)}: {error}") from error
 
 
-def fetch_live_descriptor(backend_url: str, api_path_prefix: str, descriptor_path: str, timeout: float) -> tuple[Contract, str]:
+def fetch_live_descriptor(
+    backend_url: str, api_path_prefix: str, descriptor_path: str, timeout: float, authorization: str | None = None
+) -> tuple[Contract, str]:
     # Appended to the base URL as written: without the leading slash it would extend the host name,
     # and a query, dot segment or control character would change which resource is asked. Same
     # rule as the shell and the image apply to the prefix; "/" alone is a backend served at the root.
@@ -294,7 +402,9 @@ def fetch_live_descriptor(backend_url: str, api_path_prefix: str, descriptor_pat
     if not api_path_prefix.startswith("/") or (prefix and not _is_plain_path(prefix)):
         raise CheckError(f"invalid --api-path-prefix {_shown(api_path_prefix)}: expected an absolute path such as /api")
     url = _base_url(backend_url, "--backend-url") + prefix + descriptor_path
-    return parse_descriptor(_http_get(url, timeout, "application/json, application/problem+json"), url)
+    if authorization is not None:
+        _credentials_allowed(url, "--backend-url")
+    return parse_descriptor(_http_get(url, timeout, "application/json, application/problem+json", authorization), url)
 
 
 def evaluate(backend: Contract, supported: Supported) -> tuple[bool, str]:
@@ -305,7 +415,7 @@ def evaluate(backend: Contract, supported: Supported) -> tuple[bool, str]:
     return True, f"COMPATIBLE: backend API contract {backend.label()} satisfies frontend requirement {supported.label()}"
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--frontend-manifest", type=Path, default=DEFAULT_FRONTEND_MANIFEST, help="manifest file of the frontend build (default: this checkout)")
     parser.add_argument("--frontend-url", help=f"base URL of a deployed frontend; reads the manifest it publishes at {FRONTEND_MANIFEST_PATH} instead of the file")
@@ -313,7 +423,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--backend-url", help="base URL of a running backend; checks its live descriptor instead of the properties file")
     parser.add_argument("--api-path-prefix", default="/api", help="routing.apiPathPrefix the backend is served under (default /api)")
     parser.add_argument("--timeout", type=float, default=10.0)
-    args = parser.parse_args(argv)
+    for side in ("frontend", "backend"):
+        parser.add_argument(
+            f"--{side}-authorization-file",
+            type=Path,
+            help=f"file holding the Authorization header value for --{side}-url (for example 'Bearer <token>'); "
+            f"or set {AUTHORIZATION_ENV[side]}. The value itself is never an argument",
+        )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
 
     # Named in the unverifiable verdict once known, so the line always says what the frontend needs.
     frontend = "frontend contract unknown"
@@ -324,15 +445,22 @@ def main(argv: list[str] | None = None) -> int:
                 raise CheckError(f"invalid {option} {_shown(value)}: empty")
         if not 0 < args.timeout <= MAX_TIMEOUT_SECONDS:  # also false for nan
             raise CheckError(f"invalid --timeout {args.timeout!r}: expected seconds in (0, {MAX_TIMEOUT_SECONDS:g}]")
+        frontend_authorization = read_authorization("frontend", args.frontend_authorization_file, bool(args.frontend_url), os.environ)
+        backend_authorization = read_authorization("backend", args.backend_authorization_file, bool(args.backend_url), os.environ)
+        # Both sides are judged before the first request, so a refusal for one never follows a
+        # request that already carried the other's credentials.
+        for option, value, authorization in (("--frontend-url", args.frontend_url, frontend_authorization), ("--backend-url", args.backend_url, backend_authorization)):
+            if authorization is not None:
+                _credentials_allowed(_base_url(value, option), option)
         if args.frontend_url:
-            supported, frontend_version, descriptor_path = fetch_frontend_manifest(args.frontend_url, args.timeout)
+            supported, frontend_version, descriptor_path = fetch_frontend_manifest(args.frontend_url, args.timeout, frontend_authorization)
             frontend_source = args.frontend_url
         else:
             supported, frontend_version, descriptor_path = read_frontend_manifest(args.frontend_manifest)
             frontend_source = str(args.frontend_manifest)
         frontend = f"frontend {frontend_version} supports API contract {supported.label()}, from {frontend_source}"
         if args.backend_url:
-            backend, backend_version = fetch_live_descriptor(args.backend_url, args.api_path_prefix, descriptor_path, args.timeout)
+            backend, backend_version = fetch_live_descriptor(args.backend_url, args.api_path_prefix, descriptor_path, args.timeout, backend_authorization)
             source = args.backend_url
         else:
             backend = read_backend_properties(args.backend_contract)

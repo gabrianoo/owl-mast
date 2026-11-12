@@ -6,6 +6,8 @@ import http.server
 import importlib.util
 import io
 import json
+import os
+import re
 import socket
 import struct
 import sys
@@ -13,6 +15,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "check-api-compatibility.py"
@@ -42,6 +45,8 @@ class StubBackend(http.server.ThreadingHTTPServer):
         self.response = (status, body, content_type)
         self.served = served
         self.paths: list[str] = []
+        self.authorizations: list[str | None] = []
+        self.redirect_to: str | None = None
         super().__init__(("127.0.0.1", 0), StubHandler)
 
 
@@ -49,6 +54,12 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 - http.server API
         status, body, content_type = self.server.response  # type: ignore[attr-defined]
         self.server.paths.append(self.path)  # type: ignore[attr-defined]
+        self.server.authorizations.append(self.headers.get("Authorization"))  # type: ignore[attr-defined]
+        if self.server.redirect_to is not None:  # type: ignore[attr-defined]
+            self.send_response(302)
+            self.send_header("Location", self.server.redirect_to + self.path)  # type: ignore[attr-defined]
+            self.end_headers()
+            return
         if self.path not in self.server.served:  # type: ignore[attr-defined]
             status, body, content_type = 404, b'{"status":404,"title":"Not Found"}', "application/problem+json"
         self.send_response(status)
@@ -72,6 +83,27 @@ def serving(status: int, body: bytes, content_type: str = "application/json", se
     finally:
         server.shutdown()
         server.server_close()
+
+
+@contextlib.contextmanager
+def stub(body: bytes, status: int = 200, redirect_to: str | None = None):
+    """A stub that also yields the server, for tests that inspect the requests it received."""
+    server = StubBackend(status, body)
+    server.redirect_to = redirect_to
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}", server
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+DESCRIPTOR = json.dumps({"service": "owl-mast-backend", "backendVersion": "0.1.0", "apiContract": {"major": 1, "minor": 0}}).encode()
+FRONTEND_SECRET = "Bearer frontend-s3cr3t-9f1c"
+BACKEND_SECRET = "Basic YmFja2VuZDpzM2NyM3QtYjdlMg=="
+# The scheme word is not secret (the usage message names "Bearer <token>"); everything after it is.
+SECRET_MARKERS = ("s3cr3t", "9f1c", "YmFja2VuZDpzM2NyM3QtYjdlMg", "Basic")
 
 
 @contextlib.contextmanager
@@ -470,6 +502,213 @@ class ApiCompatibilityCheckTest(unittest.TestCase):
             with serving(200, b"[]") as url:
                 self.assertIn("must be a JSON object", self.assert_unverifiable("--frontend-url", url, "--backend-contract", str(v1)))
             self.assert_unverifiable("--frontend-url", "http://127.0.0.1:9", "--timeout", "1")
+
+
+class CredentialsTest(unittest.TestCase):
+    """PR #119 walkthrough, risk 2: the check can authenticate, and the credentials never reach a command line, a URL or the output."""
+
+    def run_verdict(self, *args: str, env: dict[str, str] | None = None) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        cleared = {name: "" for name in check.AUTHORIZATION_ENV.values()}
+        with mock.patch.dict(os.environ, {**cleared, **(env or {})}), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = check.main(list(args))
+        return code, out.getvalue(), err.getvalue()
+
+    def assert_no_secret(self, *texts: str) -> None:
+        for text in texts:
+            for marker in SECRET_MARKERS:
+                self.assertNotIn(marker, text)
+
+    def assert_unverifiable(self, *args: str, env: dict[str, str] | None = None) -> str:
+        code, out, err = self.run_verdict(*args, env=env)
+        self.assertEqual(code, 1, err)
+        self.assertEqual(out, "")
+        self.assertEqual(len(err.strip().splitlines()), 1, err)
+        self.assertTrue(err.startswith("INCOMPATIBLE (unverifiable): "), err)
+        self.assertNotIn("Traceback", err)
+        self.assert_no_secret(err)
+        return err
+
+    def test_each_side_gets_its_own_value_and_nothing_is_printed(self):
+        env = {"OWLMAST_COMPAT_FRONTEND_AUTHORIZATION": FRONTEND_SECRET, "OWLMAST_COMPAT_BACKEND_AUTHORIZATION": BACKEND_SECRET}
+        with stub(manifest().encode()) as (frontend_url, frontend), stub(DESCRIPTOR) as (backend_url, backend):
+            code, out, err = self.run_verdict("--frontend-url", frontend_url, "--backend-url", backend_url, env=env)
+            self.assertEqual((code, err), (0, ""))
+            self.assertTrue(out.startswith("COMPATIBLE: "), out)
+            self.assert_no_secret(out)
+            self.assertEqual(frontend.authorizations, [FRONTEND_SECRET])
+            self.assertEqual(backend.authorizations, [BACKEND_SECRET])
+        # one side only: the other request carries no Authorization header at all
+        with stub(manifest().encode()) as (frontend_url, frontend), stub(DESCRIPTOR) as (backend_url, backend):
+            code, out, _ = self.run_verdict("--frontend-url", frontend_url, "--backend-url", backend_url, env={"OWLMAST_COMPAT_BACKEND_AUTHORIZATION": BACKEND_SECRET})
+            self.assertEqual(code, 0, out)
+            self.assertEqual(frontend.authorizations, [None])
+            self.assertEqual(backend.authorizations, [BACKEND_SECRET])
+        # nothing configured: no header, as before
+        with stub(DESCRIPTOR) as (backend_url, backend):
+            self.assertEqual(self.run_verdict("--backend-url", backend_url)[0], 0)
+            self.assertEqual(backend.authorizations, [None])
+
+    def test_a_file_holds_the_value_with_one_optional_line_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for name, content in (("plain", BACKEND_SECRET), ("newline", BACKEND_SECRET + "\n"), ("crlf", BACKEND_SECRET + "\r\n")):
+                with self.subTest(name), stub(DESCRIPTOR) as (backend_url, backend):
+                    code, out, err = self.run_verdict("--backend-url", backend_url, "--backend-authorization-file", str(write(directory, name, content)))
+                    self.assertEqual((code, err), (0, ""))
+                    self.assert_no_secret(out)
+                    self.assertEqual(backend.authorizations, [BACKEND_SECRET])
+            with stub(manifest().encode()) as (frontend_url, frontend):
+                code, out, _ = self.run_verdict("--frontend-url", frontend_url, "--frontend-authorization-file", str(write(directory, "frontend", FRONTEND_SECRET + "\n")))
+                self.assertEqual(code, 0, out)
+                self.assertEqual(frontend.authorizations, [FRONTEND_SECRET])
+
+    def test_a_refused_answer_names_the_status_and_not_the_credentials(self):
+        env = {"OWLMAST_COMPAT_BACKEND_AUTHORIZATION": BACKEND_SECRET}
+        for status in (401, 403, 500):
+            with self.subTest(status), stub(b'{"title":"no"}', status) as (backend_url, backend):
+                self.assertIn(f"answered {status}", self.assert_unverifiable("--backend-url", backend_url, env=env))
+                self.assertEqual(backend.authorizations, [BACKEND_SECRET])
+        with stub(b"not json") as (backend_url, _):
+            self.assertIn("is not JSON", self.assert_unverifiable("--backend-url", backend_url, env=env))
+        self.assert_unverifiable("--backend-url", "http://127.0.0.1:9", "--timeout", "1", env=env)
+        # incompatible pair: the verdict on stdout carries no credentials either
+        with stub(DESCRIPTOR.replace(b'"major": 1', b'"major": 2')) as (backend_url, _):
+            code, out, err = self.run_verdict("--backend-url", backend_url, env=env)
+            self.assertEqual(code, 1)
+            self.assertTrue(out.startswith("INCOMPATIBLE: "), out)
+            self.assert_no_secret(out, err)
+
+    def test_a_value_that_is_not_one_printable_header_line_is_refused_before_any_request(self):
+        bad = {
+            "second header": "Bearer s3cr3t\r\nX-Injected: 1",
+            "line feed": "Bearer s3cr3t\nX-Injected: 1",
+            "control character": "Bearer s3cr3t\x7f",
+            "tab": "Bearer\ts3cr3t",
+            "non-ascii": "Bearer s3cr3t-\u043a\u043b\u044e\u0447",
+            "leading space": " Bearer s3cr3t",
+            "trailing space": "Bearer s3cr3t ",
+            "only spaces": "   ",
+            "too long": "Bearer " + "s3cr3t" * 2000,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for name, value in bad.items():
+                with self.subTest(name), stub(DESCRIPTOR) as (backend_url, backend):
+                    err = self.assert_unverifiable("--backend-url", backend_url, env={"OWLMAST_COMPAT_BACKEND_AUTHORIZATION": value})
+                    self.assertIn("invalid OWLMAST_COMPAT_BACKEND_AUTHORIZATION", err)
+                    self.assertIn("not repeated", err)
+                    path = directory / "value"
+                    path.write_bytes(value.encode("utf-8"))
+                    err = self.assert_unverifiable("--backend-url", backend_url, "--backend-authorization-file", str(path))
+                    self.assertIn("invalid --backend-authorization-file", err)
+                    self.assertEqual(backend.paths, [])
+            for name, raw in (("empty file", b""), ("only a line end", b"\n"), ("two lines", b"Bearer s3cr3t\n\n"), ("nul", b"Bearer s3cr3t\x00"), ("latin-1", b"Bearer s3cr3t\xe9")):
+                with self.subTest(name), stub(DESCRIPTOR) as (backend_url, backend):
+                    path = directory / "raw"
+                    path.write_bytes(raw)
+                    self.assertIn("invalid --backend-authorization-file", self.assert_unverifiable("--backend-url", backend_url, "--backend-authorization-file", str(path)))
+                    self.assertEqual(backend.paths, [])
+
+    def test_sources_are_unambiguous(self):
+        with tempfile.TemporaryDirectory() as tmp, stub(DESCRIPTOR) as (backend_url, backend):
+            directory = Path(tmp)
+            secret = write(directory, "secret", BACKEND_SECRET)
+            err = self.assert_unverifiable("--backend-url", backend_url, "--backend-authorization-file", str(secret), env={"OWLMAST_COMPAT_BACKEND_AUTHORIZATION": BACKEND_SECRET})
+            self.assertIn("both set", err)
+            # a file for a side that is read from the checkout is a mistake, not something to ignore
+            self.assertIn("needs --backend-url", self.assert_unverifiable("--backend-authorization-file", str(secret)))
+            self.assertIn("needs --frontend-url", self.assert_unverifiable("--backend-url", backend_url, "--frontend-authorization-file", str(secret)))
+            self.assertIn("cannot read --backend-authorization-file: FileNotFoundError", self.assert_unverifiable("--backend-url", backend_url, "--backend-authorization-file", str(directory / "missing")))
+            self.assertIn("cannot read --backend-authorization-file", self.assert_unverifiable("--backend-url", backend_url, "--backend-authorization-file", str(directory)))
+            self.assertEqual(backend.paths, [])
+            # the value given where the file name belongs (also through argparse's abbreviation) is not echoed
+            for option in ("--backend-authorization-file", "--backend-authorization", "--backend-auth"):
+                self.assertIn("cannot read --backend-authorization-file", self.assert_unverifiable("--backend-url", backend_url, option, BACKEND_SECRET))
+            self.assertEqual(backend.paths, [])
+        # the environment is ambient in a pipeline: without a URL for that side it is ignored, as is an empty value
+        env = {"OWLMAST_COMPAT_BACKEND_AUTHORIZATION": BACKEND_SECRET, "OWLMAST_COMPAT_FRONTEND_AUTHORIZATION": "not\nvalid"}
+        code, out, err = self.run_verdict(env=env)
+        self.assertEqual((code, err), (0, ""))
+        self.assert_no_secret(out)
+        with stub(DESCRIPTOR) as (backend_url, backend):
+            self.assertEqual(self.run_verdict("--backend-url", backend_url, env={"OWLMAST_COMPAT_BACKEND_AUTHORIZATION": ""})[0], 0)
+            self.assertEqual(backend.authorizations, [None])
+
+    def test_credentials_do_not_follow_a_redirect(self):
+        env = {"OWLMAST_COMPAT_BACKEND_AUTHORIZATION": BACKEND_SECRET}
+        with stub(DESCRIPTOR) as (other_url, other), stub(b"", redirect_to=other_url) as (backend_url, backend):
+            err = self.assert_unverifiable("--backend-url", backend_url, env=env)
+            self.assertIn("answered 302", err)
+            self.assertIn("redirect is not followed", err)
+            self.assertEqual(backend.authorizations, [BACKEND_SECRET])
+            self.assertEqual(other.paths, [])
+            # without credentials a redirect is followed as before, and still carries none
+            self.assertEqual(self.run_verdict("--backend-url", backend_url)[0], 0)
+            self.assertEqual(other.authorizations, [None])
+        with stub(manifest().encode()) as (other_url, other), stub(b"", redirect_to=other_url) as (frontend_url, _):
+            err = self.assert_unverifiable("--frontend-url", frontend_url, env={"OWLMAST_COMPAT_FRONTEND_AUTHORIZATION": FRONTEND_SECRET})
+            self.assertIn("redirect is not followed", err)
+            self.assertEqual(other.paths, [])
+
+    def test_credentials_leave_the_machine_over_https_only(self):
+        for url in ("https://backend.example", "https://backend.example:8443/x", "http://localhost:8080", "http://LOCALHOST", "http://127.0.0.1:8080", "http://127.9.9.9", "http://[::1]:8080"):
+            with self.subTest(url):
+                check._credentials_allowed(url, "--backend-url")
+        for url in ("http://backend.example", "http://127.0.0.1.example", "http://localhost.example", "http://10.0.0.5:8080", "http://0.0.0.0:8080", "http://[::ffff:10.0.0.5]", "http://backend"):
+            with self.subTest(url), self.assertRaises(check.CheckError):
+                check._credentials_allowed(url, "--backend-url")
+        env = {"OWLMAST_COMPAT_BACKEND_AUTHORIZATION": BACKEND_SECRET, "OWLMAST_COMPAT_FRONTEND_AUTHORIZATION": FRONTEND_SECRET}
+        self.assertIn("--backend-url is plain http", self.assert_unverifiable("--backend-url", "http://backend.example:8080", env=env))
+        with stub(DESCRIPTOR) as (backend_url, backend):
+            self.assertIn("--frontend-url is plain http", self.assert_unverifiable("--frontend-url", "http://frontend.example", "--backend-url", backend_url, env=env))
+            self.assertEqual(backend.paths, [])
+        # the refusal for the backend comes before the frontend request, which would carry its own credentials
+        with stub(manifest().encode()) as (frontend_url, frontend):
+            self.assertIn("--backend-url is plain http", self.assert_unverifiable("--frontend-url", frontend_url, "--backend-url", "http://backend.example:8080", env=env))
+            self.assertEqual(frontend.paths, [])
+
+    def test_a_proxy_from_the_environment_does_not_receive_plain_http_credentials(self):
+        """urllib does not exempt localhost from http_proxy on Linux: the header would go to the proxy in clear."""
+        env = {"OWLMAST_COMPAT_BACKEND_AUTHORIZATION": BACKEND_SECRET, "no_proxy": "", "NO_PROXY": ""}
+        with stub(DESCRIPTOR) as (proxy_url, proxy), stub(DESCRIPTOR) as (backend_url, backend):
+            env.update({"http_proxy": proxy_url, "HTTP_PROXY": proxy_url})
+            code, out, err = self.run_verdict("--backend-url", backend_url, env=env)
+            self.assertEqual((code, err), (0, ""))
+            self.assertEqual(proxy.paths, [])
+            self.assertEqual(backend.authorizations, [BACKEND_SECRET])
+        # an https request keeps the configured proxy (it relays the encrypted connection only)
+        handlers = [type(handler).__name__ for handler in check._opener_with_credentials("https://backend.example").handlers]
+        self.assertIn("_NoRedirect", handlers)
+        with mock.patch.dict(os.environ, {"https_proxy": "http://proxy.example:3128", "no_proxy": ""}):
+            proxies = [handler for handler in check._opener_with_credentials("https://backend.example").handlers if isinstance(handler, check.urllib.request.ProxyHandler)]
+            self.assertEqual([handler.proxies.get("https") for handler in proxies], ["http://proxy.example:3128"])
+            plain = [handler for handler in check._opener_with_credentials("http://127.0.0.1:8080").handlers if isinstance(handler, check.urllib.request.ProxyHandler)]
+            self.assertEqual(plain, [])  # an empty ProxyHandler replaces the default one and registers no proxy
+
+    def test_a_device_or_an_oversized_file_is_a_bounded_read(self):
+        with stub(DESCRIPTOR) as (backend_url, backend):
+            if Path("/dev/zero").exists():
+                self.assertIn("invalid --backend-authorization-file", self.assert_unverifiable("--backend-url", backend_url, "--backend-authorization-file", "/dev/zero"))
+            with tempfile.TemporaryDirectory() as tmp:
+                big = Path(tmp) / "big"
+                big.write_bytes(b"Bearer " + b"s3cr3t" * 1_000_000)
+                self.assertIn("invalid --backend-authorization-file", self.assert_unverifiable("--backend-url", backend_url, "--backend-authorization-file", str(big)))
+            self.assertEqual(backend.paths, [])
+
+    def test_credentials_in_a_url_stay_refused(self):
+        env = {"OWLMAST_COMPAT_BACKEND_AUTHORIZATION": BACKEND_SECRET}
+        with stub(DESCRIPTOR) as (backend_url, backend):
+            with_userinfo = backend_url.replace("http://", "http://user:s3cr3t@")
+            self.assertIn("contains '@'", self.assert_unverifiable("--backend-url", with_userinfo))
+            self.assertIn("contains '@'", self.assert_unverifiable("--backend-url", with_userinfo, env=env))
+            self.assertEqual(backend.paths, [])
+
+    def test_no_option_takes_the_value_itself(self):
+        options = [option for action in check.build_parser()._actions for option in action.option_strings]
+        self.assertIn("--backend-url", options)
+        credential_options = [option for option in options if re.search(r"auth|token|password|secret|header|credential", option)]
+        self.assertEqual(sorted(credential_options), ["--backend-authorization-file", "--frontend-authorization-file"])
 
 
 if __name__ == "__main__":
