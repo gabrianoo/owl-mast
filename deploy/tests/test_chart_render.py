@@ -1147,9 +1147,11 @@ class ReviewCycle2Test(unittest.TestCase):
         self.assertIn("sslMode=require encrypts the connection but does NOT authenticate the server", text)
         self.assertIn("an active interceptor can still pose as the database", text)
         self.assertIn("sslMode=verify-full with a mounted CA) is not shipped yet (deferred", text)
-        deferred = (REPO / "_bmad-output" / "implementation-artifacts" / "deferred-work.md").read_text()
-        self.assertIn("sslMode=verify-ca|verify-full", deferred)
-        self.assertIn("TLS for the bundled PostgreSQL", deferred)  # leftover of thread zl: the bundled instance's plaintext is tracked too
+        # Deferred work is tracked as GitHub issues, not in a repository ledger: the CA trust mount for
+        # sslMode=verify-ca|verify-full is #121; leftover of thread zl, TLS for the bundled PostgreSQL, is #124.
+        guide = (REPO / "docs" / "installation.md").read_text()
+        self.assertIn("https://github.com/gabrianoo/owl-mast/issues/121", guide)
+        self.assertIn("https://github.com/gabrianoo/owl-mast/issues/124", guide)
 
     def test_readiness_period_is_longer_than_the_backends_cache_interval(self):
         """4544181114: the cache interval was tied to the probe period only by a literal 10 s in a Java test."""

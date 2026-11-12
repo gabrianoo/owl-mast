@@ -97,7 +97,7 @@ WorktreeCheck = Callable[[str, str], tuple[bool, str]]
 # protocol itself (authorize under the lock before delegate_task, bind the receipt afterwards,
 # keep ownership until task_status/task_cancel report a terminal state) is supported by the
 # tools and implemented below, but it has not been qualified with an actual worker.
-OPERATING_AGREEMENT = "trusted-machine operating agreement accepted by the owner on 2026-11-06 (spec-eng-01-trusted-operation.md)"
+OPERATING_AGREEMENT = "trusted-machine operating agreement accepted by the owner on 2026-11-06 (spec-eng-01-trusted-operation, a spec comment on GitHub issue #106)"
 # Why real-transport state commands are still refused, stated under the accepted agreement. These are
 # the current reasons, not the superseded strict prerequisites (hard child bounds, exhaustive
 # credential-denial qualification, automated Project Status synchronization). Accepting a residual

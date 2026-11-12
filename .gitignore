@@ -17,3 +17,6 @@ build/
 *.iml
 .vscode/
 .unattended-runs/
+
+# GitHub delivery workflow working copies (GitHub is the source of truth)
+.bmad-work/
