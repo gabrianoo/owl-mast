@@ -510,11 +510,15 @@ verify_backend_image() { # verify_backend_image <name>: the running backend is e
 # Helm deletes both as soon as the hook succeeded, so neither the Job's status nor its log can be read after a
 # successful upgrade. The hook is therefore proven from what outlives it:
 #  - `helm upgrade --wait` returned 0 (Helm fails the upgrade when a pre-upgrade hook fails) and the release shows a
-#    higher revision in status `deployed`;
+#    higher revision in status `deployed`. This alone is equally true of an upgrade that ran no hook;
+#  - the release record of the new revision, which outlives the deleted Job: `helm status -o json` must list the hook
+#    Job with `last_run.phase` Succeeded and a `last_run.started_at` not earlier than the moment this script started
+#    the upgrade (hook_ran_succeeded). This is what shows that the hook was rendered and run on this upgrade;
 #  - the Keycloak role and database carry the same PostgreSQL object identifiers before and after (a dropped and
 #    recreated role or database gets a new oid), read as the Keycloak principal itself, so the login still works;
 #  - both hook objects are gone afterwards, which is the delete policy applied.
 HOOK_GONE_TIMEOUT="${HOOK_GONE_TIMEOUT:-30}"   # seconds to wait for Helm's hook deletion to be visible
+[[ "$HOOK_GONE_TIMEOUT" =~ ^[0-9]+$ ]] || { echo "REFUSED: HOOK_GONE_TIMEOUT must be a whole number of seconds (digits only), got '$HOOK_GONE_TIMEOUT'" >&2; exit 2; }
 KEYCLOAK_IDENTITY_RE='^role=[0-9]+ database=[0-9]+ owner=[0-9]+$'
 keycloak_db_identity() { # keycloak_db_identity <namespace> <deployment>: one line `role=<oid> database=<oid> owner=<oid>`
   pg_exec "$1" "$2" OWLMAST_KEYCLOAK keycloak "select 'role='||r.oid||' database='||d.oid||' owner='||d.datdba from pg_roles r cross join pg_database d where r.rolname = current_user and d.datname = current_database()"
@@ -533,7 +537,96 @@ release_revision_of() { sed -n 's/^REVISION: \([0-9][0-9]*\)$/\1/p' "$OUT/$1.txt
 assert_revision_advanced() { # assert_revision_advanced <label> <before-name> <after-name>
   local before after; before="$(release_revision_of "$2")"; after="$(release_revision_of "$3")"
   [ "$after" -gt "$before" ] || { log "FAIL $1: the upgrade left no new deployed revision (before $before, after $after)"; return 1; }
-  log "ok   $1 (revision $before -> $after, deployed; helm upgrade --wait returned 0, so the pre-upgrade hook succeeded)"
+  log "ok   $1 (revision $before -> $after, deployed)"
+}
+# The release record Helm stores for a revision lists every hook rendered for it. Helm sets a hook's `last_run` when it
+# runs the hook and keeps it after it deleted the hook object (Helm 4.3.1: pkg/action/hooks.go, pkg/release/v1/hook.go).
+# `helm status -o json` prints that record: top-level `version` (the revision) and `hooks[]`, each with `name`, `kind`,
+# `events[]` and `last_run` = {"started_at", "completed_at", "phase"}. Times are RFC 3339 with up to nine fractional
+# digits and a numeric offset or Z; a hook that was not run has `last_run` = {"phase": ""} and no times.
+# Only the projection below is written to evidence. The whole record (chart, values, manifests, live objects) is not.
+HOOK_RUN_CHECK="$(cat <<'PY'
+import calendar, json, re, sys
+
+hook_name, not_before, revision = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+
+def fail(reason):
+    print("verdict: FAIL " + reason)
+    sys.exit(1)
+
+def instant(value, field):  # RFC 3339 as Go prints it -> nanoseconds since the epoch
+    m = re.fullmatch(r"(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.(\d{1,9}))?(Z|[+-]\d\d:\d\d)", value) if isinstance(value, str) else None
+    if not m:
+        fail("last_run.%s is missing or not an RFC 3339 time" % field)
+    try:
+        seconds = calendar.timegm(tuple(int(g) for g in m.groups()[:6]))
+    except (ValueError, OverflowError):
+        fail("last_run.%s is not a valid time" % field)
+    zone = m.group(8)
+    if zone != "Z":
+        offset = int(zone[1:3]) * 3600 + int(zone[4:6]) * 60
+        seconds -= offset if zone[0] == "+" else -offset
+    return seconds * 10**9 + int((m.group(7) or "").ljust(9, "0"))
+
+try:
+    release = json.load(sys.stdin)
+except ValueError:
+    fail("the helm status output is not JSON")
+if not isinstance(release, dict):
+    fail("the helm status output is not a release object")
+hooks = release.get("hooks", [])
+if not isinstance(hooks, list) or not all(isinstance(h, dict) for h in hooks):
+    fail("hooks is not a list of objects")
+print("release %s revision %s" % (release.get("name"), release.get("version")))
+print("not-before %s (epoch seconds, taken by this script just before the upgrade)" % not_before)
+for h in hooks:
+    run = h.get("last_run")
+    run = run if isinstance(run, dict) else {}
+    print("hook %s/%s events=%s phase=%s started_at=%s completed_at=%s" % (
+        h.get("kind"), h.get("name"), ",".join(str(e) for e in h.get("events") or []), run.get("phase") or "<none>",
+        run.get("started_at") or "<none>", run.get("completed_at") or "<none>"))
+if type(release.get("version")) is not int or release["version"] != revision:
+    fail("the record is of revision %s, not of the deployed revision %s" % (release.get("version"), revision))
+matches = [h for h in hooks if h.get("kind") == "Job" and h.get("name") == hook_name]
+if len(matches) != 1:
+    fail("the release record lists %d hooks of kind Job named %s; the hook was not rendered for this upgrade" % (len(matches), hook_name))
+hook = matches[0]
+if "pre-upgrade" not in (hook.get("events") or []):
+    fail("the hook Job is not a pre-upgrade hook")
+run = hook.get("last_run")
+if not isinstance(run, dict):
+    fail("the hook Job has no last_run")
+if run.get("phase") != "Succeeded":
+    fail("the hook Job last_run.phase is '%s', not Succeeded; the hook did not run to success on this upgrade" % (run.get("phase") or ""))
+started, completed = instant(run.get("started_at"), "started_at"), instant(run.get("completed_at"), "completed_at")
+if started < not_before * 10**9:
+    fail("the hook Job last_run.started_at %s is earlier than the start of this upgrade; the run is not of this upgrade" % run["started_at"])
+if completed < started:
+    fail("the hook Job last_run.completed_at is earlier than its started_at")
+print("verdict: ok")
+PY
+)"
+hook_ran_succeeded() { # hook_ran_succeeded <name> <release> <not-before-epoch-seconds> <revision-evidence-name>
+  # The hook Job must be in the release record of the deployed revision, Succeeded, and started by this upgrade.
+  # The clock is the one of this host on both sides: Helm stamps started_at in the client process this script starts.
+  # A status that cannot be read, or is not the expected JSON, fails the check; it is never read as "no hook needed".
+  local name="$1" rel="$2" since="$3" revision file="$OUT/$1.txt" json err rc=0
+  revision="$(release_revision_of "$4")"
+  printf '$ helm status %s -n %s -o json   (projection: hook runs only)
+' "$rel" "$NS" >"$file"
+  err="$(mktemp)"
+  json="$(h status "$rel" -n "$NS" -o json 2>"$err")" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'helm status failed (exit %s): %s
+' "$rc" "$(tr '\n' ' ' <"$err" | cut -c1-300)" >>"$file"; rm -f "$err"
+    log "FAIL $name: the release record of $rel could not be read (helm status -o json exit $rc; not evidence)"; return 1
+  fi
+  rm -f "$err"
+  rc=0; printf '%s' "$json" | python3 -c "$HOOK_RUN_CHECK" "$rel-postgresql-provision-keycloak" "$since" "$revision" >>"$file" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ] || [ "$(tail -n 1 "$file")" != "verdict: ok" ]; then
+    log "FAIL $name: $(grep '^verdict: FAIL ' "$file" | tail -n 1 | cut -c15- | grep . || echo "the release record check did not complete") (see $file)"; return 1
+  fi
+  log "ok   $name ($(grep "^hook Job/$rel-postgresql-provision-keycloak " "$file"))"
 }
 hook_objects_removed() { # hook_objects_removed <name> <release>: the hook Job and ConfigMap are absent after a successful hook
   # Absence is the expected outcome here, never a failure. A hook object that is still present after the
@@ -554,12 +647,14 @@ hook_objects_removed() { # hook_objects_removed <name> <release>: the hook Job a
 }
 reprovision_keeps_keycloak() { # reprovision_keeps_keycloak <prefix> <release> <upgrade-evidence-name> <helm upgrade args...>
   # A provisioning upgrade on a volume that already has Keycloak's role and database: nothing may be dropped or recreated.
-  local prefix="$1" rel="$2" upgrade="$3" before after; shift 3
+  local prefix="$1" rel="$2" upgrade="$3" before after since; shift 3
   record_keycloak_identity "$prefix-identity-before" "$NS" "$rel-postgresql" || return 1
   record_release_revision "$prefix-revision-before" "$rel" || return 1
+  since="$(date -u +%s)"
   record "$upgrade" h upgrade "$rel" "$CHART" -n "$NS" --wait "$@" || return 1
   record_release_revision "$prefix-revision-after" "$rel" || return 1
   assert_revision_advanced "$prefix-revision" "$prefix-revision-before" "$prefix-revision-after" || return 1
+  hook_ran_succeeded "$prefix-hook-run" "$rel" "$since" "$prefix-revision-after" || return 1
   record_keycloak_identity "$prefix-identity-after" "$NS" "$rel-postgresql" || return 1
   before="$(keycloak_identity_of "$prefix-identity-before")"; after="$(keycloak_identity_of "$prefix-identity-after")"
   [ "$before" = "$after" ] || { log "FAIL $prefix-identity: provisioning dropped or recreated an existing role or database (before '$before', after '$after')"; return 1; }
@@ -652,10 +747,11 @@ step_bundled_bundled() {
   check_bundled_keycloak
   check_shared_postgres "$NS" "$RELEASE-postgresql"
   # Explicit re-provisioning on an already initialised volume (R2): idempotent, nothing dropped, Keycloak schema intact.
-  # The hook Job is deleted on success, so it is proven by the upgrade result, the unchanged identifiers and its absence.
+  # The hook Job is deleted on success, so its run is proven from the release record (last_run), and its effect by the
+  # unchanged identifiers and the absence of the hook objects.
   reprovision_keeps_keycloak provision-keycloak "$RELEASE" provision-keycloak-upgrade --timeout 10m --reuse-values --set postgresql.provisionKeycloakDatabase=true || return 1
   record provision-keycloak-schema-intact pg_exec "$NS" "$RELEASE-postgresql" OWLMAST_KEYCLOAK keycloak "select count(*) > 10 from information_schema.tables where table_schema='public'"
-  grep -qx 't' "$OUT/provision-keycloak-schema-intact.txt" && log "ok   provision-keycloak-idempotent (hook succeeded, existing role/database kept by oid, schema intact)" || { log "FAIL keycloak schema after provisioning"; return 1; }
+  grep -qx 't' "$OUT/provision-keycloak-schema-intact.txt" && log "ok   provision-keycloak-idempotent (hook run recorded as Succeeded, existing role/database kept by oid, schema intact)" || { log "FAIL keycloak schema after provisioning"; return 1; }
 }
 
 step_persistence() {
@@ -767,12 +863,14 @@ step_first_enable() {
   grep -q before-enable "$OUT/fe1-app-marker.txt" || { log "FAIL marker"; return 1; }
   log "== enable the identity bundle with the pre-upgrade provisioning hook (helm upgrade --wait)"
   record_release_revision fe2-revision-before "$FE_RELEASE" || return 1
+  local fe2_since; fe2_since="$(date -u +%s)"
   record fe2-enable-upgrade h upgrade "$FE_RELEASE" "$CHART" -n "$NS" --wait --timeout 10m "${common[@]}" \
     --set identity.bundled=true --set postgresql.provisionKeycloakDatabase=true
   # The hook Job and its log are deleted on success (hook-succeeded). The role and database were absent before
   # (fe1-no-keycloak-role); now the Keycloak principal logs in to its own database and both carry identifiers.
   record_release_revision fe2-revision-after "$FE_RELEASE" || return 1
   assert_revision_advanced fe2-revision fe2-revision-before fe2-revision-after || return 1
+  hook_ran_succeeded fe2-hook-run "$FE_RELEASE" "$fe2_since" fe2-revision-after || return 1
   record_keycloak_identity fe2-keycloak-identity "$NS" "$FE_RELEASE-postgresql" || return 1
   hook_objects_removed fe2-hook-removed "$FE_RELEASE" || return 1
   log "ok   fe2-first-enable-provisioned (role and database absent before, present after the pre-upgrade hook: $(keycloak_identity_of fe2-keycloak-identity))"
@@ -793,7 +891,7 @@ step_first_enable() {
   reprovision_keeps_keycloak fe3 "$FE_RELEASE" fe3-retry-upgrade --timeout 10m "${common[@]}" \
     --set identity.bundled=true --set postgresql.provisionKeycloakDatabase=true || return 1
   [ "$(keycloak_identity_of fe3-identity-after)" = "$(keycloak_identity_of fe2-keycloak-identity)" ] \
-    && log "ok   fe3-retry-no-op (hook succeeded again, role and database are the ones the first enable created)" || { log "FAIL retry was not a no-op"; return 1; }
+    && log "ok   fe3-retry-no-op (hook run recorded as Succeeded again, role and database are the ones the first enable created)" || { log "FAIL retry was not a no-op"; return 1; }
   record fe3-app-marker k -n "$NS" exec "deploy/$FE_RELEASE-postgresql" -- sh -c 'PGPASSWORD="$OWLMAST_APP_PASSWORD" psql -v ON_ERROR_STOP=1 -U "$OWLMAST_APP_USERNAME" -h 127.0.0.1 -d owlmast -Atc "select v from qualification_marker"'
   grep -q before-enable "$OUT/fe3-app-marker.txt" || { log "FAIL app data after retry"; return 1; }
   record fe3-keycloak-schema k -n "$NS" exec "deploy/$FE_RELEASE-postgresql" -- sh -c 'PGPASSWORD="$OWLMAST_KEYCLOAK_PASSWORD" psql -U "$OWLMAST_KEYCLOAK_USERNAME" -h 127.0.0.1 -d keycloak -Atc "select count(*) > 10 from information_schema.tables where table_schema='"'"'public'"'"'"'

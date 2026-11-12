@@ -8,6 +8,7 @@ success, failure or interruption, and that the isolation and readiness evaluator
 intended PostgreSQL denial / backend 503 and reject transport, authentication and generic failures.
 """
 
+import json
 import os
 import re
 import shutil
@@ -289,32 +290,70 @@ if [[ "$args" == *" template "* && "$args" == *"backend-deployment.yaml"* ]]; th
   printf 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: %s-backend\n' "$full"; exit 0
 fi
 rev_file() { printf '%s.rev.%s' "$STUB_WORLD" "$1"; }
+hooks_file() { printf '%s.hooks.%s' "$STUB_WORLD" "$1"; }   # the hooks[] of the release record of the current revision
+go_now() { date +%Y-%m-%dT%H:%M:%S.%N%:z; }   # time.Time as Go's encoding/json prints it: RFC 3339, nine fractional digits, local offset
+# One hooks[] entry as Helm 4.3.1 stores it (pkg/release/v1/hook.go): hook_entry <name> <kind> <weight> <last_run json>.
+# `weight` has omitempty, so the Job (weight 0) carries none. A hook that was not run has last_run {"phase":""}.
+hook_entry() {
+  local weight=""; [ "$3" != 0 ] && weight="\"weight\":$3,"
+  printf '{"name":"%s","kind":"%s","path":"owl-mast/templates/postgresql-provision-keycloak-job.yaml","manifest":"stub","events":["pre-upgrade"],"last_run":%s,%s"delete_policies":["before-hook-creation","hook-succeeded"]}' "$1" "$2" "$4" "$weight"
+}
 if [[ "$args" == *" status "* ]]; then
-  rel="$(sed -E 's/.* status ([^ ]+).*/\1/' <<<"$args")"
+  rel="$(sed -E 's/.* status ([^ ]+).*/\1/' <<<"$args")"; ns="$(sed -E 's/.* -n ([^ ]+).*/\1/' <<<"$args")"
   state="$(awk -v m="$rel" '$1=="release" && $3==m {print $4; found=1} END {if (!found) print "absent"}' "$STUB_WORLD")"
   case "$state" in
     absent) echo "Error: release: not found" >&2; exit 1 ;;
     error) echo "Error: Kubernetes cluster unreachable" >&2; exit 1 ;;
-    *) rev=1; [ -e "$(rev_file "$rel")" ] && rev="$(grep -c . "$(rev_file "$rel")")"
-       printf 'NAME: %s\nSTATUS: deployed\nREVISION: %s\n' "$rel" "$rev"; exit 0 ;;
   esac
+  rev=1; [ -e "$(rev_file "$rel")" ] && rev="$(grep -c . "$(rev_file "$rel")")"
+  if [[ "$args" != *" -o json"* ]]; then printf 'NAME: %s\nSTATUS: deployed\nREVISION: %s\n' "$rel" "$rev"; exit 0; fi
+  # `helm status -o json` (Helm 4.3.1): the release record, keys as in pkg/release/v1/release.go; `hooks` has omitempty.
+  # STUB_STATUS_JSON: error = the read fails; malformed = not JSON; old-revision = the record of the revision before.
+  case "${STUB_STATUS_JSON:-}" in
+    error) echo "Error: Kubernetes cluster unreachable: the server has asked for the client to provide credentials" >&2; exit 1 ;;
+    malformed) printf '{"name":"%s","hooks":[\n' "$rel"; exit 0 ;;
+    old-revision) rev=$((rev - 1)) ;;
+  esac
+  hooks=""; [ -s "$(hooks_file "$rel")" ] && hooks="\"hooks\":[$(cat "$(hooks_file "$rel")")],"
+  printf '{"name":"%s","info":{"first_deployed":"2026-11-07T09:00:00.000000001+01:00","last_deployed":"%s","description":"Upgrade complete","status":"deployed"},"chart":{"metadata":{"name":"owl-mast","version":"0.1.0"}},"manifest":"stub",%s"version":%s,"namespace":"%s","apply_method":"ssa"}\n' \
+    "$rel" "$(go_now)" "$hooks" "$rev" "$ns"
+  exit 0
 fi
 # An upgrade records the release and a new revision. A provisioning upgrade (postgresql.provisionKeycloakDatabase=true) runs the
 # pre-upgrade hook as Helm does, by STUB_HOOK: succeeded (default) = Helm deleted the hook Job and ConfigMap (hook-succeeded);
 # failed = the upgrade fails and the failed Job stays for diagnosis; kept = the upgrade succeeds but the hook objects remain
 # (a delete policy that did not apply). STUB_HELM_NO_NEW_REVISION=1 = a provisioning upgrade that records no new revision.
+# The release record of the new revision carries the hook's run, which outlives the deleted Job. More STUB_HOOK outcomes, all
+# with a successful upgrade, a new revision and no hook object left:
+#   skipped = no hook was rendered or run: the record has no hooks (the hook condition is false, or the value was dropped);
+#   not-run = the hook is in the record but was not run (`helm upgrade --no-hooks`): last_run {"phase":""};
+#   stale = last_run is Succeeded but started long before this upgrade;
+#   phase-failed = last_run is Failed;  phase-running = last_run is Running and has no completed_at.
+# STUB_HOOK_<n> overrides STUB_HOOK for the n-th provisioning upgrade (1 = the first), so one upgrade of a step can differ.
 if [[ "$args" == *" upgrade "* ]]; then
   rel="$(sed -E 's/.* upgrade (--install )?([^ ]+).*/\2/' <<<"$args")"; ns="$(sed -E 's/.* -n ([^ ]+).*/\1/' <<<"$args")"
   job="job $ns $rel-postgresql-provision-keycloak"; cm="configmap $ns $rel-postgresql-provision-scripts"
   if [[ "$args" == *"provisionKeycloakDatabase=true"* ]]; then
     grep -vE "^($job|$cm) " "$STUB_WORLD" > "$STUB_WORLD.tmp" || true; mv "$STUB_WORLD.tmp" "$STUB_WORLD"   # before-hook-creation
-    case "${STUB_HOOK:-succeeded}" in
+    n=1; [ -e "$STUB_WORLD.provisioned" ] && n=$(( $(grep -c . "$STUB_WORLD.provisioned") + 1 ))
+    var="STUB_HOOK_$n"; mode="${!var:-${STUB_HOOK:-succeeded}}"
+    started="$(go_now)"; ran="{\"started_at\":\"$started\",\"completed_at\":\"$(go_now)\",\"phase\":\"Succeeded\"}"
+    case "$mode" in
       failed) printf '%s owned\n%s owned\n' "$job" "$cm" >> "$STUB_WORLD"
               echo "Error: UPGRADE FAILED: pre-upgrade hooks failed: 1 error occurred: * job $rel-postgresql-provision-keycloak failed: BackoffLimitExceeded" >&2; exit 1 ;;
       kept) printf '%s owned\n%s owned\n' "$job" "$cm" >> "$STUB_WORLD" ;;
+      skipped) ran="" ;;
+      not-run) ran='{"phase":""}' ;;
+      stale) ran='{"started_at":"2026-11-07T09:00:00.123456789+01:00","completed_at":"2026-11-07T09:00:04.5+01:00","phase":"Succeeded"}' ;;
+      phase-failed) ran="{\"started_at\":\"$started\",\"completed_at\":\"$(go_now)\",\"phase\":\"Failed\"}" ;;
+      phase-running) ran="{\"started_at\":\"$started\",\"phase\":\"Running\"}" ;;
     esac
+    if [ -n "$ran" ]; then printf '%s,%s' "$(hook_entry "$rel-postgresql-provision-scripts" ConfigMap -5 "$ran")" "$(hook_entry "$rel-postgresql-provision-keycloak" Job 0 "$ran")" > "$(hooks_file "$rel")"
+    else : > "$(hooks_file "$rel")"; fi
     echo "$rel" >> "$STUB_WORLD.provisioned"
     [ "${STUB_HELM_NO_NEW_REVISION:-}" = 1 ] && { echo "stub helm ok"; exit 0; }
+  else
+    : > "$(hooks_file "$rel")"   # a revision whose render has no provisioning hook records none
   fi
   if grep -q "^release - $rel " "$STUB_WORLD"; then [ -e "$(rev_file "$rel")" ] || echo "$rel" >> "$(rev_file "$rel")"   # a release the world started with is at revision 1
   else printf 'release - %s owned\n' "$rel" >> "$STUB_WORLD"; fi
@@ -969,7 +1008,8 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
     def test_bundled_bundled_passes_when_the_succeeded_hook_job_is_gone(self):
         r = self.step("bundled-bundled")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        for line in ("ok   provision-keycloak-upgrade", "ok   provision-keycloak-revision (revision 1 -> 2, deployed",
+        for line in ("ok   provision-keycloak-upgrade", "ok   provision-keycloak-revision (revision 1 -> 2, deployed)",
+                     "ok   provision-keycloak-hook-run (hook Job/owl-mast-postgresql-provision-keycloak events=pre-upgrade phase=Succeeded started_at=",
                      "ok   provision-keycloak-identity-unchanged (role=16385 database=16386 owner=16385)",
                      "ok   provision-keycloak-hook-removed (hook Job and ConfigMap absent after success",
                      "ok   provision-keycloak-idempotent", "qualification steps complete: bundled-bundled"):
@@ -1047,9 +1087,11 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
     def test_first_enable_passes_when_the_succeeded_hook_job_is_gone(self):
         r = self.first_enable()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        for line in ("ok   fe2-revision (revision 1 -> 2, deployed", "ok   fe2-hook-removed",
+        for line in ("ok   fe2-revision (revision 1 -> 2, deployed)", "ok   fe2-hook-removed",
+                     "ok   fe2-hook-run (hook Job/owl-mast-fe-postgresql-provision-keycloak events=pre-upgrade phase=Succeeded started_at=",
+                     "ok   fe3-hook-run (hook Job/owl-mast-fe-postgresql-provision-keycloak events=pre-upgrade phase=Succeeded started_at=",
                      "ok   fe2-first-enable-provisioned (role and database absent before, present after the pre-upgrade hook: role=16385 database=16386 owner=16385)",
-                     "ok   fe3-revision (revision 2 -> 3, deployed", "ok   fe3-identity-unchanged", "ok   fe3-hook-removed", "ok   fe3-retry-no-op", "ok   fe3-keycloak-schema-intact",
+                     "ok   fe3-revision (revision 2 -> 3, deployed)", "ok   fe3-identity-unchanged", "ok   fe3-hook-removed", "ok   fe3-retry-no-op", "ok   fe3-keycloak-schema-intact",
                      "qualification steps complete: first-enable"):
             self.assertIn(line, r.stdout)
         self.assertNotIn("FAIL", r.stdout)
@@ -1067,6 +1109,125 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
         r = self.first_enable(STUB_HOOK="failed")
         self.assertNotEqual(r.returncode, 0, r.stdout)
         self.assertIn("FAIL fe2-enable-upgrade", r.stdout)
+
+    # -- cycle-8 review of PR #116 (review 5871692033): every check above is equally true when no hook ran. The run of the hook
+    # is read from the release record (`helm status -o json`, hooks[].last_run), which outlives the deleted Job.
+    HOOK_RUN_FAILURES = (
+        ("skipped", "the release record lists 0 hooks of kind Job named {job}; the hook was not rendered for this upgrade"),
+        ("not-run", "the hook Job last_run.phase is '', not Succeeded; the hook did not run to success on this upgrade"),
+        ("stale", "the hook Job last_run.started_at 2026-11-07T09:00:00.123456789+01:00 is earlier than the start of this upgrade"),
+        ("phase-failed", "the hook Job last_run.phase is 'Failed', not Succeeded"),
+        ("phase-running", "the hook Job last_run.phase is 'Running', not Succeeded"),
+    )
+
+    def test_bundled_bundled_fails_when_the_release_record_does_not_show_the_hook_ran(self):
+        for mode, reason in self.HOOK_RUN_FAILURES:
+            with self.subTest(mode=mode):
+                r = self.step("bundled-bundled", STUB_HOOK=mode)
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn("FAIL provision-keycloak-hook-run: " + reason.format(job="owl-mast-postgresql-provision-keycloak"), r.stdout)
+                # everything the review listed still holds without the hook: the upgrade, the new revision, and no hook object
+                self.assertIn("ok   provision-keycloak-upgrade", r.stdout)
+                self.assertIn("ok   provision-keycloak-revision (revision 1 -> 2, deployed)", r.stdout)
+                self.assertNotIn("job owl-mast-test owl-mast-postgresql-provision-keycloak", r.world)
+                for later in ("provision-keycloak-identity-unchanged", "provision-keycloak-hook-removed", "ok   provision-keycloak-idempotent", "qualification steps complete"):
+                    self.assertNotIn(later, r.stdout)
+
+    def test_first_enable_retry_fails_when_the_release_record_does_not_show_the_hook_ran(self):
+        for mode, reason in self.HOOK_RUN_FAILURES:
+            with self.subTest(mode=mode):
+                r = self.first_enable(STUB_HOOK_2=mode)  # the first enable ran its hook; only the retry (fe3) did not
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn("ok   fe2-hook-run", r.stdout)
+                self.assertIn("ok   fe2-first-enable-provisioned", r.stdout)
+                self.assertIn("ok   fe3-retry-upgrade", r.stdout)
+                self.assertIn("ok   fe3-revision (revision 2 -> 3, deployed)", r.stdout)
+                self.assertIn("FAIL fe3-hook-run: " + reason.format(job="owl-mast-fe-postgresql-provision-keycloak"), r.stdout)
+                for later in ("fe3-identity-unchanged", "fe3-hook-removed", "ok   fe3-retry-no-op", "qualification steps complete"):
+                    self.assertNotIn(later, r.stdout)
+
+    def test_first_enable_fails_when_the_release_record_does_not_show_the_first_hook_ran(self):
+        r = self.first_enable(STUB_HOOK="skipped")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL fe2-hook-run: the release record lists 0 hooks of kind Job named owl-mast-fe-postgresql-provision-keycloak", r.stdout)
+        self.assertNotIn("ok   fe2-first-enable-provisioned", r.stdout)
+
+    def test_an_unreadable_or_malformed_release_record_fails_the_step(self):
+        for mode, message in (("error", "FAIL provision-keycloak-hook-run: the release record of owl-mast could not be read (helm status -o json exit 1; not evidence)"),
+                              ("malformed", "FAIL provision-keycloak-hook-run: the helm status output is not JSON"),
+                              ("old-revision", "FAIL provision-keycloak-hook-run: the record is of revision 1, not of the deployed revision 2")):
+            with self.subTest(mode=mode):
+                r = self.step("bundled-bundled", STUB_STATUS_JSON=mode)
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn(message, r.stdout)
+                self.assertNotIn("ok   provision-keycloak-idempotent", r.stdout)
+
+    def test_the_release_record_check_accepts_only_a_succeeded_run_of_this_upgrade(self):
+        """The evaluator on its own, with records in the shape Helm 4.3.1 prints (taken from an install and upgrade run with the
+        4.3.1 module): time formats it must read, and shapes it must refuse."""
+        job = "owl-mast-postgresql-provision-keycloak"
+        def record(last_run, version=2, kind="Job", name=job, events=("pre-upgrade",)):
+            return {"name": "owl-mast", "info": {"last_deployed": "2026-11-12T10:01:50.545494161+01:00", "status": "deployed"}, "version": version,
+                    "hooks": [{"name": "owl-mast-postgresql-provision-scripts", "kind": "ConfigMap", "events": ["pre-upgrade"], "weight": -5,
+                               "last_run": {"started_at": "2026-11-12T10:01:50.545519722+01:00", "completed_at": "2026-11-12T10:01:50.545521572+01:00", "phase": "Succeeded"}},
+                              {"name": name, "kind": kind, "events": list(events), "last_run": last_run}]}
+        ok = {"started_at": "2026-11-12T10:01:50.545521982+01:00", "completed_at": "2026-11-12T10:01:50.545522612+01:00", "phase": "Succeeded"}
+        since = 1794474110  # 2026-11-12T09:01:50Z, the second in which that hook started
+        cases = (
+            (record(ok), since, 0, "verdict: ok"),
+            (record(ok), since + 1, 1, "is earlier than the start of this upgrade"),
+            (record({**ok, "started_at": "2026-11-12T09:01:50Z", "completed_at": "2026-11-12T09:01:50.5Z"}), since, 0, "verdict: ok"),  # UTC, no or short fraction
+            (record({**ok, "started_at": "2026-11-12T04:01:50.9-05:00", "completed_at": "2026-11-12T04:01:51-05:00"}), since, 0, "verdict: ok"),  # a negative offset
+            (record({**ok, "started_at": "2026-11-12T11:01:49.999999999+02:00"}), since, 1, "is earlier than the start of this upgrade"),  # one nanosecond early
+            (record({**ok, "started_at": "2026-11-12 10:01:50"}), since, 1, "last_run.started_at is missing or not an RFC 3339 time"),
+            (record({**ok, "started_at": "2026-13-45T10:01:50Z"}), since, 1, "last_run.started_at is not a valid time"),
+            (record({"phase": "Succeeded"}), since, 1, "last_run.started_at is missing or not an RFC 3339 time"),
+            (record({"started_at": ok["started_at"], "phase": "Succeeded"}), since, 1, "last_run.completed_at is missing or not an RFC 3339 time"),
+            (record({**ok, "completed_at": "2026-11-12T10:01:50.5+01:00"}), since, 1, "completed_at is earlier than its started_at"),
+            (record({**ok, "phase": "Unknown"}), since, 1, "last_run.phase is 'Unknown', not Succeeded"),
+            (record({"phase": ""}), since, 1, "last_run.phase is '', not Succeeded"),
+            (record(None), since, 1, "the hook Job has no last_run"),
+            (record(ok, kind="ConfigMap"), since, 1, f"lists 0 hooks of kind Job named {job}"),
+            (record(ok, name="other-postgresql-provision-keycloak"), since, 1, f"lists 0 hooks of kind Job named {job}"),
+            (record(ok, events=("post-upgrade",)), since, 1, "the hook Job is not a pre-upgrade hook"),
+            (record(ok, version=3), since, 1, "the record is of revision 3, not of the deployed revision 2"),
+            (record(ok, version="2"), since, 1, "the record is of revision 2, not of the deployed revision 2"),
+            ({"name": "owl-mast", "version": 2}, since, 1, f"lists 0 hooks of kind Job named {job}"),  # hooks has omitempty
+            ({"name": "owl-mast", "version": 2, "hooks": {}}, since, 1, "hooks is not a list of objects"),
+            ({"name": "owl-mast", "version": 2, "hooks": ["x"]}, since, 1, "hooks is not a list of objects"),
+            ([], since, 1, "the helm status output is not a release object"),
+            ("", since, 1, "the helm status output is not JSON"),
+        )
+        h = Harness(BASE_WORLD)
+        try:
+            for i, (doc, not_before, code, text) in enumerate(cases):
+                with self.subTest(case=i, text=text):
+                    payload = doc if isinstance(doc, str) else json.dumps(doc)
+                    r = subprocess.run(["bash", "-c", f"source '{SCRIPT}'; python3 -c \"$HOOK_RUN_CHECK\" {job} {not_before} 2"], env=h.env(), input=payload,
+                                       capture_output=True, text=True, check=False, timeout=60)
+                    self.assertEqual(r.returncode, code, r.stdout + r.stderr)
+                    self.assertIn(text, r.stdout)
+                    self.assertEqual(r.stdout.count("verdict: "), 1, r.stdout)
+        finally:
+            h.close()
+
+    def test_the_release_record_is_never_written_to_evidence_whole(self):
+        r = self.step("bundled-bundled")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = r.evidence["provision-keycloak-hook-run"]
+        self.assertEqual(text.splitlines()[-1], "verdict: ok")
+        self.assertIn("hook ConfigMap/owl-mast-postgresql-provision-scripts events=pre-upgrade phase=Succeeded", text)
+        self.assertNotIn("{", text)
+        for whole in ('"manifest"', '"chart"', '"last_run"'):
+            self.assertNotIn(whole, "\n".join(r.evidence.values()))
+
+    def test_hook_gone_timeout_must_be_a_whole_number(self):
+        for value in ("30s", "-1", "1.5", "abc", " "):
+            with self.subTest(value=value):
+                r = self.step("bundled-bundled", HOOK_GONE_TIMEOUT=value)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn(f"REFUSED: HOOK_GONE_TIMEOUT must be a whole number of seconds (digits only), got '{value}'", r.stderr)
+                self.assertEqual(r.calls, "")
 
     def test_the_script_reads_no_hook_object_the_chart_deletes_on_success(self):
         """The delete policy the script depends on is the chart's, and no step reads the hook Job, its log or its ConfigMap directly."""
