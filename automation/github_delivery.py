@@ -11,6 +11,8 @@ deterministic shape:
 - Review findings: one review thread per finding, marked ``<!-- bmad:finding id=... -->``: inline
   when the line is in the reviewed diff, otherwise a file-level thread.
 - Ticket claims: a short-lived issue comment marked ``<!-- bmad:claim token=... -->``.
+- Documents that are not specs (an epic context, a retrospective, a design note): one issue or
+  pull-request comment per key, marked ``<!-- bmad:doc key=... -->`` and edited in place.
 
 A marker counts only when a trusted author wrote it (``OWL_GH_TRUSTED_AUTHORS``, by default the
 authenticated ``gh`` user and anyone with write access), because on a public repository anyone can
@@ -46,7 +48,7 @@ TRUST_RULES = ("@me", "@write")
 GH_TIMEOUT_SECONDS = 120
 
 STATUSES = ("Backlog", "Ready", "In progress", "In review", "Blocked", "Done")
-MAX_REVIEW_ROUNDS = 6
+MAX_REVIEW_ROUNDS = 10
 COMMENT_LIMIT = 65536
 
 SPEC_MARKER = re.compile(r"<!-- bmad:spec key=([A-Za-z0-9._-]+) -->")
@@ -55,6 +57,8 @@ FINDING_MARKER = re.compile(r"<!-- bmad:finding id=([A-Za-z0-9._-]+) -->")
 CLAIM_MARKER = re.compile(r"<!-- bmad:claim token=([0-9a-f]{32}) -->")
 CLAIM_STALE_SECONDS = 900
 BODY_SENTINEL = "<!-- bmad:spec-body -->"
+DOC_MARKER = re.compile(r"<!-- bmad:doc key=([A-Za-z0-9._-]+) -->")
+DOC_SENTINEL = "<!-- bmad:doc-body -->"
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 DELETED_FILE = re.compile(r"^diff --git a/(.+) b/\1$")
 BINARY_FILE = re.compile(r"^Binary files .+ and (?:b/(.+)|/dev/null) differ$")
@@ -118,6 +122,30 @@ def parse_spec_comment(comment: str) -> Tuple[str, str]:
     frontmatter = rest[start + len("```yaml\n"):end]
     body = rest[end + len(f"\n```\n{BODY_SENTINEL}\n"):]
     return marker.group(1), f"---\n{frontmatter}\n---\n{body}"
+
+
+def render_doc_comment(key: str, text: str) -> str:
+    """Serialize any text file into its GitHub comment. Unlike a spec it needs no frontmatter."""
+    if not DOC_MARKER.fullmatch(f"<!-- bmad:doc key={key} -->"):
+        raise DeliveryError(f"invalid document key {key!r}: use letters, digits, '.', '_' or '-'")
+    comment = (
+        f"<!-- bmad:doc key={key} -->\n"
+        f"**BMAD document** `{key}` — published by the GitHub delivery workflow "
+        "(docs/github-delivery-workflow.md). Hydrate it with `doc-pull`; change it with `doc-push`, not by hand.\n"
+        f"{DOC_SENTINEL}\n{text}"
+    )
+    if len(comment) > COMMENT_LIMIT:
+        raise DeliveryError(f"document comment is {len(comment)} characters; GitHub's limit is {COMMENT_LIMIT}")
+    return comment
+
+
+def parse_doc_comment(comment: str) -> Tuple[str, str]:
+    """Return (key, file text) from a comment produced by render_doc_comment."""
+    marker = DOC_MARKER.match(comment)
+    start = comment.find(f"\n{DOC_SENTINEL}\n")
+    if not marker or start < 0:
+        raise DeliveryError("comment is not a bmad:doc comment (missing marker or body sentinel)")
+    return marker.group(1), comment[start + len(f"\n{DOC_SENTINEL}\n"):]
 
 
 # --------------------------------------------------------------------------- review anchoring
@@ -276,7 +304,7 @@ def build_review_payload(
             raise DeliveryError(f"finding {finding.id} is {len(comment['body'])} characters as a comment; "
                                 f"GitHub's limit is {COMMENT_LIMIT}")
     body = f"<!-- bmad:review round={round_number} verdict={verdict} -->\n" \
-           f"### bmad-review · round {round_number} of {MAX_REVIEW_ROUNDS} · {verdict}\n\n{summary.strip()}\n"
+           f"### review · round {round_number} of {MAX_REVIEW_ROUNDS} · {verdict}\n\n{summary.strip()}\n"
     if file_comments:
         body += "\nFile-level threads (not on a line of the reviewed diff): " \
                 + ", ".join(c["finding_id"] for c in file_comments) + "\n"
@@ -551,38 +579,56 @@ class GitHub:
         pages = json.loads(out)
         return [c for page in pages for c in page]
 
-    def spec_comments(self, number: int, ignored: Optional[List[dict]] = None) -> Dict[str, dict]:
-        """Spec comments by key. Only a trusted author's comment is a spec; the rest go to ``ignored``."""
+    def spec_comments(self, number: int, ignored: Optional[List[dict]] = None,
+                      pattern: "re.Pattern[str]" = SPEC_MARKER, kind: str = "spec") -> Dict[str, dict]:
+        """Spec (or, with ``DOC_MARKER``, document) comments by key.
+
+        Only a trusted author's comment counts; the rest go to ``ignored``.
+        """
         found: Dict[str, dict] = {}
-        trusted, untrusted = self._marker_comments(number, SPEC_MARKER)
+        trusted, untrusted = self._marker_comments(number, pattern)
         for marker, comment in trusted:
             if marker.group(1) in found:
-                raise DeliveryError(f"#{number} has two spec comments for key {marker.group(1)}; delete the stale one")
+                raise DeliveryError(f"#{number} has two {kind} comments for key {marker.group(1)}; delete the stale one")
             found[marker.group(1)] = comment
         if ignored is not None:
             ignored += untrusted
         return found
 
     def spec_pull(self, number: int, key: Optional[str], out: Path) -> dict:
-        ignored: List[dict] = []
-        specs = self.spec_comments(number, ignored)
-        note = f" ({len(ignored)} spec marker comment(s) by untrusted authors ignored)" if ignored else ""
-        if key is None:
-            if len(specs) != 1:
-                raise DeliveryError(f"#{number} has {len(specs)} spec comments ({', '.join(specs) or 'none'}); "
-                                    f"pass --key{note}")
-            key = next(iter(specs))
-        if key not in specs:
-            raise DeliveryError(f"#{number} has no spec comment for key {key}{note}")
-        parsed_key, text = parse_spec_comment(specs[key]["body"])
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(text, encoding="utf-8")
-        return {"number": number, "key": parsed_key, "file": str(out), "comment": specs[key]["html_url"]}
+        return self._pull(number, key, out, SPEC_MARKER, "spec", parse_spec_comment)
 
     def spec_push(self, number: int, key: str, spec_file: Path) -> dict:
-        body = render_spec_comment(key, spec_file.read_text(encoding="utf-8"))
+        return self._push(number, key, render_spec_comment(key, spec_file.read_text(encoding="utf-8")), SPEC_MARKER, "spec")
+
+    def doc_pull(self, number: int, key: Optional[str], out: Path) -> dict:
+        """Hydrate a document (epic context, retrospective, design note) from its marked comment."""
+        return self._pull(number, key, out, DOC_MARKER, "document", parse_doc_comment)
+
+    def doc_push(self, number: int, key: str, doc_file: Path) -> dict:
+        """Publish any text file as one marked comment, created or edited in place like a spec."""
+        return self._push(number, key, render_doc_comment(key, doc_file.read_text(encoding="utf-8")), DOC_MARKER, "document")
+
+    def _pull(self, number: int, key: Optional[str], out: Path, pattern: "re.Pattern[str]", kind: str,
+              parse: Callable[[str], Tuple[str, str]]) -> dict:
+        ignored: List[dict] = []
+        found = self.spec_comments(number, ignored, pattern, kind)
+        note = f" ({len(ignored)} {kind} marker comment(s) by untrusted authors ignored)" if ignored else ""
+        if key is None:
+            if len(found) != 1:
+                raise DeliveryError(f"#{number} has {len(found)} {kind} comments ({', '.join(found) or 'none'}); "
+                                    f"pass --key{note}")
+            key = next(iter(found))
+        if key not in found:
+            raise DeliveryError(f"#{number} has no {kind} comment for key {key}{note}")
+        parsed_key, text = parse(found[key]["body"])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text, encoding="utf-8")
+        return {"number": number, "key": parsed_key, "file": str(out), "comment": found[key]["html_url"]}
+
+    def _push(self, number: int, key: str, body: str, pattern: "re.Pattern[str]", kind: str) -> dict:
         self._require_trusted_writer()
-        existing = self.spec_comments(number).get(key)
+        existing = self.spec_comments(number, None, pattern, kind).get(key)
         if existing:
             if existing["body"] == body:
                 return {"number": number, "key": key, "comment": existing["html_url"], "changed": False}
@@ -594,6 +640,10 @@ class GitHub:
     def spec_list(self, number: int) -> List[dict]:
         return [{"key": k, "comment": c["html_url"], "updated_at": c["updated_at"]}
                 for k, c in self.spec_comments(number).items()]
+
+    def doc_list(self, number: int) -> List[dict]:
+        return [{"key": k, "comment": c["html_url"], "updated_at": c["updated_at"]}
+                for k, c in self.spec_comments(number, None, DOC_MARKER, "document").items()]
 
     # ---- reviews
 
@@ -769,10 +819,20 @@ def main(argv: Optional[Sequence[str]] = None, client: Optional[GitHub] = None) 
     p.add_argument("--key", help="defaults to the file name without .md")
     p = sub.add_parser("spec-list", help="list spec comments on an issue/PR")
     p.add_argument("number", type=int)
+    p = sub.add_parser("doc-list", help="list document comments on an issue/PR")
+    p.add_argument("number", type=int)
+    p = sub.add_parser("doc-pull", help="hydrate a document (not a spec) from its issue/PR comment")
+    p.add_argument("number", type=int)
+    p.add_argument("--key")
+    p.add_argument("--out", type=Path, required=True)
+    p = sub.add_parser("doc-push", help="publish any text file to its issue/PR comment (create or edit in place)")
+    p.add_argument("number", type=int)
+    p.add_argument("--file", type=Path, required=True)
+    p.add_argument("--key", help="defaults to the file name without its extension")
     p = sub.add_parser("review-state", help="head, rounds, open bmad findings, other unresolved threads and "
                                             "untrusted markers of a PR")
     p.add_argument("pr", type=int)
-    p = sub.add_parser("post-review", help="post one bmad-review round")
+    p = sub.add_parser("post-review", help="post one review round (a bmad-review round or a walkthrough round)")
     p.add_argument("pr", type=int)
     p.add_argument("--round", type=int, required=True)
     p.add_argument("--commit", required=True, help="full SHA of the reviewed commit (head_sha when the diff was staged)")
@@ -795,6 +855,12 @@ def main(argv: Optional[Sequence[str]] = None, client: Optional[GitHub] = None) 
             result = gh.spec_pull(args.number, args.key, args.out)
         elif args.command == "spec-push":
             result = gh.spec_push(args.number, args.key or args.file.stem, args.file)
+        elif args.command == "doc-list":
+            result = gh.doc_list(args.number)
+        elif args.command == "doc-pull":
+            result = gh.doc_pull(args.number, args.key, args.out)
+        elif args.command == "doc-push":
+            result = gh.doc_push(args.number, args.key or args.file.stem, args.file)
         elif args.command == "spec-list":
             result = gh.spec_list(args.number)
         elif args.command == "review-state":

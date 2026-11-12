@@ -8,7 +8,8 @@
 
 # GitHub delivery workflow (docs/github-delivery-workflow.md): build specs, deferred work,
 # epic-context caches and sprint state are disposable working copies of GitHub state.
-# Keep them out of Git so they never need merging or tracking. Historical artifacts already
-# committed under _bmad-output/implementation-artifacts stay where they are.
+# Keep them out of Git so they never need merging or tracking. The artifacts that used to be
+# committed under _bmad-output/implementation-artifacts moved to GitHub comments and issues and
+# were removed from the tree (docs/github-delivery-workflow.md, "Earlier artifacts").
 [modules.bmm]
 implementation_artifacts = "{project-root}/.bmad-work"

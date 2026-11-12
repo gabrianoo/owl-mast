@@ -1,8 +1,0 @@
-STALE_CLAIM: cancelled claim markers 1 release markers 0
-CLEANUP_REFUSED: OM-01.02 is cancelled; this operation needs ('claim-incomplete', 'reserved', 'claimed', 'implemented', 'checks-passed', 'checks-failed', 'review-authorized', 'review-requested', 'review-approved', 'changes-requested', 'repair-authorized', 'conflict')
-FOREIGN_CLAIMS: []
-OTHER_RUN_FOREIGN_CLAIMS: [{'kind': 'claim', 'op': 'claim', 'run': 'run-1', 'story': 'OM-01.02'}]
-CANCELLED_DONE_RECONCILIATION: proposed run.cancelled True
-REPLAYED_TASK_OTHER_STORY: claimed {'taskId': 'task-impl-1', 'role': 'implementer', 'authorization': 'run-1:OM-01.04:1', 'bound_at': '2026-11-06T16:15:23Z'}
-EXPIRED_AUTHORIZATION_REISSUED: review-authorized run-1:OM-01.02:2
-EXPIRED_AUTHORIZATION_BOUND: review-requested

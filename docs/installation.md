@@ -221,8 +221,9 @@ credentials and data cross the pod network unencrypted. Isolation relies on the 
 network. Where the pod network is not trusted, an external PostgreSQL with `sslMode=require` encrypts the
 connection but does not authenticate the server, so it stops a passive listener and not an active interceptor,
 who can pose as the database and collect the application's and Keycloak's credentials. Server authentication
-needs `sslMode=verify-full` with a mounted CA, which the chart does not ship yet; both that mount and TLS for the
-bundled PostgreSQL are tracked as deferred work. The release NOTES state this for every bundled-database
+needs `sslMode=verify-full` with a mounted CA, which the chart does not ship yet; both that mount
+([#121](https://github.com/gabrianoo/owl-mast/issues/121)) and TLS for the bundled PostgreSQL
+([#124](https://github.com/gabrianoo/owl-mast/issues/124)) are tracked as deferred work. The release NOTES state this for every bundled-database
 install.
 
 Rendering refuses PostgreSQL's system databases as `database.name` or `identity.keycloak.database.name`,

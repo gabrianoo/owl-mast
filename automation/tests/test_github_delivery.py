@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from automation.github_delivery import (
+    MAX_REVIEW_ROUNDS,
     DeliveryError,
     Finding,
     GitHub,
@@ -18,7 +19,9 @@ from automation.github_delivery import (
     diff_right_lines,
     gh_runner,
     main,
+    parse_doc_comment,
     parse_spec_comment,
+    render_doc_comment,
     render_spec_comment,
 )
 
@@ -305,12 +308,14 @@ class ReviewPayloadTests(unittest.TestCase):
 
     def test_verdict_and_round_invariants(self):
         one = [Finding("R1-1", "app.py", "x", 11)]
-        for args in [(0, "clean", []), (7, "clean", []), (1, "clean", one), (1, "changes", []), (1, "maybe", []),
+        for args in [(0, "clean", []), (11, "clean", []), (1, "clean", one), (1, "changes", []), (1, "maybe", []),
                      (1, "changes", one * 2)]:
             with self.subTest(args=args), self.assertRaises(DeliveryError):
                 build_review_payload(args[0], args[1], "s", args[2], DIFF, SHA)
-        payload, file_comments = build_review_payload(6, "clean", "ok", [], DIFF, SHA)
+        payload, file_comments = build_review_payload(10, "clean", "ok", [], DIFF, SHA)
         self.assertEqual((payload["comments"], file_comments), ([], []))
+        self.assertIn("round 10 of 10", payload["body"])
+        self.assertEqual(MAX_REVIEW_ROUNDS, 10)
 
 
 class StatusTests(unittest.TestCase):
@@ -515,6 +520,104 @@ class SpecSyncTests(unittest.TestCase):
         gh.spec_pull(42, None, out)
         self.assertEqual(out.read_text(encoding="utf-8"), SPEC.replace("in-progress", "done"))
 
+    def comment_store(self):
+        """A fake issue-comment store: list, create and edit in place. Returns (fake gh, the stored comments)."""
+        store = []
+
+        def create(_, stdin):
+            store.append({"id": len(store) + 1, "body": json.loads(stdin)["body"], "html_url": f"c{len(store) + 1}",
+                          "updated_at": "t", "user": {"login": ME}})
+            return store[-1]
+
+        def edit(call, stdin):
+            target = next(c for c in store if call.endswith(f"issues/comments/{c['id']} --input -"))
+            target["body"] = json.loads(stdin)["body"]
+            return target
+
+        return FakeGh([("--paginate", lambda *_: [store]), ("-X POST", create), ("-X PATCH", edit)]), store
+
+    def test_document_without_frontmatter_round_trips_and_is_edited_in_place(self):
+        """An epic context or a retrospective has no frontmatter, so spec-push refuses it; doc-push takes any text."""
+        text = "# Epic 1 Context\n\nNo frontmatter.\n\n```sh\necho '---'\n```\n<!-- bmad:doc-body -->\ntail\n"
+        comment = render_doc_comment("epic-1-context", text)
+        self.assertTrue(comment.startswith("<!-- bmad:doc key=epic-1-context -->\n"))
+        self.assertEqual(parse_doc_comment(comment), ("epic-1-context", text))  # a sentinel inside the text is content
+        with self.assertRaisesRegex(DeliveryError, "must start with a '---' YAML frontmatter"):
+            render_spec_comment("epic-1-context", text)
+        fake, store = self.comment_store()
+        gh = GitHub(run=fake)
+        doc = self.dir / "epic-1-context.md"
+        doc.write_text(text, encoding="utf-8")
+        self.assertTrue(gh.doc_push(1, "epic-1-context", doc)["changed"])
+        self.assertFalse(gh.doc_push(1, "epic-1-context", doc)["changed"])
+        doc.write_text(text + "more\n", encoding="utf-8")
+        self.assertEqual(gh.doc_push(1, "epic-1-context", doc), {"number": 1, "key": "epic-1-context", "comment": "c1",
+                                                                 "changed": True})
+        self.assertEqual(len(store), 1)
+        out = self.dir / "work" / "epic-1-context.md"
+        self.assertEqual(gh.doc_pull(1, None, out)["key"], "epic-1-context")
+        self.assertEqual(out.read_text(encoding="utf-8"), text + "more\n")
+
+    def test_documents_and_specs_with_the_same_key_do_not_see_each_other(self):
+        fake, store = self.comment_store()
+        gh = GitHub(run=fake)
+        spec, doc = self.dir / "k.md", self.dir / "k.txt"
+        spec.write_text(SPEC, encoding="utf-8")
+        doc.write_text("plain\n", encoding="utf-8")
+        gh.spec_push(7, "k", spec)
+        gh.doc_push(7, "k", doc)
+        self.assertEqual([c["body"].split("\n")[0] for c in store],
+                         ["<!-- bmad:spec key=k -->", "<!-- bmad:doc key=k -->"])
+        self.assertEqual([s["key"] for s in gh.spec_list(7)], ["k"])
+        self.assertEqual(gh.doc_list(7), [{"key": "k", "comment": "c2", "updated_at": "t"}])
+        self.assertEqual(GitHub(run=FakeGh([("--paginate", [[]])])).doc_list(7), [])  # nothing to hydrate is not a refusal
+        gh.spec_pull(7, None, self.dir / "spec.md")
+        gh.doc_pull(7, None, self.dir / "doc.txt")
+        self.assertEqual((self.dir / "spec.md").read_text(encoding="utf-8"), SPEC)
+        self.assertEqual((self.dir / "doc.txt").read_text(encoding="utf-8"), "plain\n")
+
+    def test_document_refusals(self):
+        with self.assertRaisesRegex(DeliveryError, "invalid document key"):
+            render_doc_comment("bad key", "x")
+        overhead = len(render_doc_comment("big", ""))
+        self.assertEqual(len(render_doc_comment("big", "x" * (65536 - overhead))), 65536)  # exactly the limit fits
+        with self.assertRaisesRegex(DeliveryError, r"document comment is 65537 characters; GitHub's limit is 65536"):
+            render_doc_comment("big", "x" * (65537 - overhead))
+        with self.assertRaisesRegex(DeliveryError, "not a bmad:doc comment"):
+            parse_doc_comment("<!-- bmad:doc key=k -->\nno sentinel")
+        real = {"id": 1, "body": render_doc_comment("k", "mine\n"), "html_url": "mine", "user": {"login": ME}}
+        forged = {"id": 2, "body": render_doc_comment("k", "evil\n"), "html_url": "theirs", "user": {"login": OUTSIDER}}
+        gh = GitHub(run=FakeGh([("--paginate", [[forged, real]])]))
+        out = self.dir / "k.md"
+        self.assertEqual(gh.doc_pull(1, "k", out)["comment"], "mine")  # a forged document is never hydrated
+        self.assertEqual(out.read_text(encoding="utf-8"), "mine\n")
+        with self.assertRaisesRegex(DeliveryError, r"no document comment for key other \(1 document marker comment"):
+            gh.doc_pull(1, "other", out)
+        twice = GitHub(run=FakeGh([("--paginate", [[real, dict(real, id=3)]])]))
+        with self.assertRaisesRegex(DeliveryError, "two document comments for key k"):
+            twice.doc_pull(1, "k", out)
+        outsider = GitHub(run=FakeGh([]), trusted_authors=WRITER)
+        with self.assertRaisesRegex(DeliveryError, "not a trusted author.*refusing to write"):
+            outsider.doc_push(1, "k", out)
+
+    def test_doc_cli_defaults_the_key_to_the_file_stem(self):
+        fake, store = self.comment_store()
+        doc = self.dir / "epic-1-retro-2026-11-12.md"
+        doc.write_text("retro\n", encoding="utf-8")
+        with redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(main(["doc-push", "1", "--file", str(doc)], client=GitHub(run=fake)), 0)
+        self.assertEqual(json.loads(out.getvalue())["key"], "epic-1-retro-2026-11-12")
+        target = self.dir / "pulled.md"
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["doc-pull", "1", "--out", str(target)], client=GitHub(run=fake)), 0)
+        self.assertEqual(target.read_text(encoding="utf-8"), "retro\n")
+        with redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(main(["doc-list", "1"], client=GitHub(run=fake)), 0)
+        self.assertEqual([d["key"] for d in json.loads(out.getvalue())], ["epic-1-retro-2026-11-12"])
+        with redirect_stderr(io.StringIO()) as err, redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["doc-pull", "1", "--key", "nope", "--out", str(target)], client=GitHub(run=fake)), 2)
+        self.assertIn("no document comment for key nope", err.getvalue())
+
     def test_duplicate_spec_comments_are_refused(self):
         body = render_spec_comment("k", SPEC)
         dup = [[{"id": 1, "body": body, "html_url": "a", "user": {"login": ME}},
@@ -666,11 +769,11 @@ class ReviewStateTests(unittest.TestCase):
                     write()
         self.assertFalse([c for c, _ in fake.calls if "-X POST" in c or "--paginate" in c])
 
-    def test_forged_clean_round_six_cannot_end_the_loop_or_be_posted_over(self):
-        reviews = [round_review(1), round_review(6, "clean", author=OUTSIDER)]
+    def test_forged_clean_last_round_cannot_end_the_loop_or_be_posted_over(self):
+        reviews = [round_review(1), round_review(10, "clean", author=OUTSIDER)]
         gh = GitHub(run=FakeGh([("pullRequest(number", pr_payload(reviews, []))]))
         with self.assertRaisesRegex(DeliveryError, "is at round 1; the next review must be round 2$"):
-            gh.post_review(12, 6, "clean", "ok", [], HEAD)
+            gh.post_review(12, 10, "clean", "ok", [], HEAD)
 
     def test_a_round_covers_the_head_only_when_it_was_posted_against_it(self):
         def at_head(reviews):
@@ -707,8 +810,8 @@ class ReviewStateTests(unittest.TestCase):
 
     def test_post_review_refuses_a_round_outside_the_limit_before_any_call(self):
         fake = FakeGh([("pullRequest(number", pr_payload([], []))])
-        for round_number in (0, -1, 7):
-            with self.subTest(round=round_number), self.assertRaisesRegex(DeliveryError, "review round must be 1..6"):
+        for round_number in (0, -1, 11):
+            with self.subTest(round=round_number), self.assertRaisesRegex(DeliveryError, "review round must be 1..10"):
                 GitHub(run=fake).post_review(12, round_number, "clean", "ok", [], HEAD)
         err = io.StringIO()
         with tempfile.TemporaryDirectory() as tmp, redirect_stderr(err), redirect_stdout(io.StringIO()):
@@ -717,7 +820,7 @@ class ReviewStateTests(unittest.TestCase):
             code = main(["post-review", "12", "--round", "0", "--commit", HEAD, "--verdict", "clean",
                          "--summary-file", str(summary)], client=GitHub(run=fake))
         self.assertEqual((code, fake.calls), (2, []))
-        self.assertIn("review round must be 1..6, got 0", err.getvalue())
+        self.assertIn("review round must be 1..10, got 0", err.getvalue())
 
     def test_post_review_refuses_a_pull_request_that_is_not_open(self):
         merged = pr_payload([], [])
@@ -898,9 +1001,25 @@ class CustomizationTests(unittest.TestCase):
         self.assertNotRegex(doc + on_complete("bmad-walkthrough"), r"--delete-branch`")  # no unpinned merge left
         review = on_complete("bmad-review")
         for needle in ("`last_round_at_head` true launches a new bmad-walkthrough thread",
-                       "anything else in round 6", "`last_round_at_head` false launches a new bmad-review thread"):
+                       "anything else in round 10", "`last_round_at_head` false launches a new bmad-review thread"):
             self.assertIn(needle, review)
-        self.assertIn("anything else in round 6", doc)
+        self.assertIn("anything else in round 10", doc)
+        self.assertIn(f"`next_round` exceeds {MAX_REVIEW_ROUNDS}", doc)
+        self.assertIn(f"At most {MAX_REVIEW_ROUNDS} rounds run per PR", doc)
+        walkthrough = on_complete("bmad-walkthrough")
+        for text in (doc, walkthrough, review):  # the old limit of six is gone everywhere
+            self.assertNotRegex(text, r"(?i)round 6\b|R = 6\b|exceeds 6\b|\bsix rounds|seventh round")
+        for needle in ("walkthrough round", "does not explicitly accept", "launch the bmad-build fix-round thread",
+                       "accepted risk", "Round 10: post it, then set the ticket Blocked", "steps 3-6"):
+            self.assertIn(needle, walkthrough)
+        with (REPO_ROOT / "_bmad" / "custom" / "bmad-walkthrough.toml").open("rb") as handle:
+            standing = " ".join(tomllib.load(handle)["workflow"]["activation_steps_prepend"])
+        for needle in ("ask the human which ones they accept", "accepted only when the human says so explicitly",
+                       "Never fix a risk in this thread", "steps 2-4", "`walkthrough-accepted-risks` document"):
+            self.assertIn(needle, standing)
+        for needle in ("3. **Risks the human does not accept**", "4. **Every risk accepted**", "5. **Approve**",
+                       "6. **Rework**", "The round is 10 → post it", "`walkthrough-accepted-risks` document"):
+            self.assertIn(needle, doc)  # the step numbers the overrides cite
         self.assertIn("OWL_GH_TRUSTED_AUTHORS", doc)
 
 

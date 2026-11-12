@@ -28,7 +28,7 @@ id = "eng01-activation-om-01-02-candidate"
 approver = "owner (trusted-coordinator engineering approval, not cryptographic authentication)"
 issued_at = "2026-11-07T00:00:00Z"
 expires_at = "2026-11-07T00:00:01Z"   # placeholder window, already expired; an approved copy uses a real window of at most 24h
-agreement = "_bmad-output/implementation-artifacts/spec-eng-01-trusted-operation.md (owner-accepted 2026-11-06)"
+agreement = "spec-eng-01-trusted-operation, https://github.com/gabrianoo/owl-mast/issues/106#issuecomment-6838323771 (owner-accepted 2026-11-06)"
 
 [binding]
 repository = "gabrianoo/owl-mast"
