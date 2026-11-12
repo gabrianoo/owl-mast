@@ -3,6 +3,7 @@ package com.aisquad.owlmast.jobs.adapter.scheduling;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
+import com.aisquad.owlmast.bootstrap.api.SchemaBaseline;
 import com.aisquad.owlmast.fixtures.jobs.HeldWorkRepository;
 import com.aisquad.owlmast.fixtures.jobs.HeldWorkRepository.Call;
 import com.aisquad.owlmast.fixtures.notes.DbProbe;
@@ -24,6 +25,7 @@ import com.aisquad.owlmast.platform.scope.Scopes;
 import com.aisquad.owlmast.testing.ContainersConfiguration;
 import com.aisquad.owlmast.testing.StubIdentityConfiguration;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -142,11 +144,13 @@ class WorkSchedulerIT {
 
   /**
    * E01-R-06 (retro B5): readiness DOWN on an unsupported PostgreSQL does not stop a scheduled
-   * task, so the wake-up refuses by itself until the database is confirmed as supported, logs the
-   * refusal once, and stops asking after the first yes.
+   * task, so the wake-up refuses by itself while the database is not confirmed as supported and
+   * logs the refusal when it starts. Review 5883535263: a yes is not kept, because the server
+   * behind the same address can change (a failover to an older server), and a precondition read
+   * that hangs counts as no.
    */
   @Test
-  void noWorkIsClaimedUntilTheDatabaseServerIsConfirmedAsSupported(CapturedOutput output) {
+  void noWorkIsClaimedWhileTheDatabaseServerIsNotConfirmedAsSupported(CapturedOutput output) {
     notes.createWithFollowUp("note body", Failure.NONE).contextWrite(Scopes.bind(TENANT_A)).block();
     UUID itemId = db.workItems().get(0).id();
     AtomicReference<Mono<Boolean>> answer = new AtomicReference<>(Mono.just(false));
@@ -163,7 +167,8 @@ class WorkSchedulerIT {
             () -> {
               asked.incrementAndGet();
               return answer.get();
-            });
+            },
+            Duration.ofMillis(200));
     scheduler.start();
 
     scheduler.wake().block(Duration.ofSeconds(10));
@@ -171,12 +176,14 @@ class WorkSchedulerIT {
     scheduler.wake().block(Duration.ofSeconds(10));
     answer.set(Mono.error(new IllegalStateException("s3cr3t connection detail")));
     scheduler.wake().block(Duration.ofSeconds(10));
+    answer.set(Mono.never());
+    scheduler.wake().block(Duration.ofSeconds(10));
 
     assertThat(db.work(itemId).status())
-        .as("unsupported, unknown and unreadable all leave the work unclaimed")
+        .as("unsupported, unknown, unreadable and unanswered all leave the work unclaimed")
         .isEqualTo("PENDING");
     assertThat(db.work(itemId).attempts()).isZero();
-    assertThat(asked).hasValue(3);
+    assertThat(asked).hasValue(4);
     assertThat(output.getAll().split("Durable work is not started", -1))
         .as("the refusal is logged once, not at every wake-up")
         .hasSize(2);
@@ -185,10 +192,88 @@ class WorkSchedulerIT {
     answer.set(Mono.just(true));
     scheduler.wake().block(Duration.ofSeconds(10));
     assertThat(db.work(itemId).status()).isEqualTo("SUCCEEDED");
+    assertThat(output.getAll()).contains("Durable work resumes");
 
+    notes
+        .createWithFollowUp("second note", Failure.NONE)
+        .contextWrite(Scopes.bind(TENANT_A))
+        .block();
+    UUID second =
+        db.workItems().stream()
+            .filter(row -> !row.id().equals(itemId))
+            .findFirst()
+            .orElseThrow()
+            .id();
     answer.set(Mono.just(false));
     scheduler.wake().block(Duration.ofSeconds(10));
-    assertThat(asked).as("a confirmed server is not asked about again").hasValue(4);
+    assertThat(asked).as("a confirmed server is asked again at the next wake-up").hasValue(6);
+    assertThat(db.work(second).status())
+        .as("after the server stops answering as supported, nothing more is claimed")
+        .isEqualTo("PENDING");
+    assertThat(output.getAll().split("Durable work is not started", -1))
+        .as("the new refusal is logged again")
+        .hasSize(3);
     scheduler.stop();
+  }
+
+  /**
+   * Review 5883535263: the production wiring of the precondition. The bean SchedulingConfiguration
+   * registers asks the bootstrap feature's schema baseline: a PostgreSQL 16 server and a missing
+   * baseline leave the work unclaimed, a PostgreSQL 17 server lets the wake-up run.
+   */
+  @Test
+  void theRegisteredSchedulerRunsOnlyOnASupportedServerFromTheSchemaBaseline() {
+    notes.createWithFollowUp("note body", Failure.NONE).contextWrite(Scopes.bind(TENANT_A)).block();
+    UUID itemId = db.workItems().get(0).id();
+    AtomicReference<Mono<SchemaBaseline>> baseline =
+        new AtomicReference<>(Mono.just(baselineOn(160_011)));
+    WorkScheduler scheduler =
+        new SchedulingConfiguration()
+            .workScheduler(
+                new WorkProcessor(
+                    transactions,
+                    repository,
+                    registry,
+                    new TenantInternalOnlyDispatchAuthorization(grants),
+                    policy,
+                    "wiring-test-processor"),
+                () -> baseline.get());
+    scheduler.start();
+
+    scheduler.wake().block(Duration.ofSeconds(10));
+    assertThat(db.work(itemId).status()).as("PostgreSQL 16").isEqualTo("PENDING");
+    baseline.set(Mono.empty());
+    scheduler.wake().block(Duration.ofSeconds(10));
+    assertThat(db.work(itemId).status()).as("no baseline").isEqualTo("PENDING");
+    assertThat(db.work(itemId).attempts()).isZero();
+
+    baseline.set(Mono.just(baselineOn(170_000)));
+    scheduler.wake().block(Duration.ofSeconds(10));
+    assertThat(db.work(itemId).status()).as("PostgreSQL 17").isEqualTo("SUCCEEDED");
+    scheduler.stop();
+  }
+
+  private static SchemaBaseline baselineOn(int serverVersionNumber) {
+    return new SchemaBaseline("1.1.1", "0.8.2", Instant.EPOCH, serverVersionNumber);
+  }
+
+  /** Review 5883535263: a stop ends a precondition read that has not answered. */
+  @Test
+  void aStopEndsAPreconditionReadInFlight() {
+    WorkScheduler scheduler =
+        new WorkScheduler(
+            new WorkProcessor(
+                transactions,
+                repository,
+                registry,
+                new TenantInternalOnlyDispatchAuthorization(grants),
+                policy,
+                "precondition-stop-processor"),
+            Mono::never,
+            Duration.ofMinutes(5));
+    scheduler.start();
+    Disposable wakeUp = scheduler.wake().subscribe();
+    scheduler.stop();
+    await().atMost(Duration.ofSeconds(5)).until(wakeUp::isDisposed);
   }
 }
