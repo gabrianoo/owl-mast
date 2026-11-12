@@ -6,6 +6,7 @@ import com.aisquad.owlmast.jobs.api.WorkEnqueue;
 import com.aisquad.owlmast.jobs.api.WorkHandler;
 import com.aisquad.owlmast.jobs.application.FailedWorkQueryService;
 import com.aisquad.owlmast.jobs.application.HandlerRegistry;
+import com.aisquad.owlmast.jobs.application.TenantInternalGrants;
 import com.aisquad.owlmast.jobs.application.TenantInternalOnlyDispatchAuthorization;
 import com.aisquad.owlmast.jobs.application.WorkEnqueueService;
 import com.aisquad.owlmast.jobs.application.WorkProcessor;
@@ -23,8 +24,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Wires the jobs owner. Handlers are every {@link WorkHandler} bean in the context; the dispatch
- * authorization is the access module's bean when one exists (OM-02.04) and the fail-closed
+ * Wires the jobs owner. Handlers are every {@link WorkHandler} bean in the context; a handler may
+ * register as tenant-internal system work only for a type in {@link TenantInternalGrants}; the
+ * dispatch authorization is the access module's bean when one exists (OM-02.04) and the fail-closed
  * tenant-internal default otherwise (AC7). The lease owner written to {@code lease_owner} names
  * this instance ({@code owlmast.jobs.instance-id}, by default {@code HOSTNAME} or the local host
  * name, which is the pod name on Kubernetes) plus a random part per start, and is logged once at
@@ -54,9 +56,16 @@ class JobsConfiguration {
   }
 
   @Bean
-  HandlerRegistry handlerRegistry(ObjectProvider<WorkHandler> handlers) {
-    HandlerRegistry registry = new HandlerRegistry(handlers.orderedStream().toList());
-    log.info("Durable work handlers registered: {}", registry.types());
+  HandlerRegistry handlerRegistry(
+      ObjectProvider<WorkHandler> handlers, ObjectProvider<TenantInternalGrants> grants) {
+    // No bean in production: the feature-module rules keep TenantInternalGrants private to jobs, so
+    // only a test fixture can supply another instance.
+    TenantInternalGrants granted = grants.getIfAvailable(TenantInternalGrants::platformDefault);
+    HandlerRegistry registry = new HandlerRegistry(handlers.orderedStream().toList(), granted);
+    log.info(
+        "Durable work handlers registered: {}; tenant-internal system work granted to: {}",
+        registry.types(),
+        granted.types());
     return registry;
   }
 

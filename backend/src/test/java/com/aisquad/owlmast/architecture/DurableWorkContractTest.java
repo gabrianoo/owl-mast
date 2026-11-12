@@ -9,10 +9,12 @@ import com.aisquad.owlmast.audit.api.ActorKind;
 import com.aisquad.owlmast.audit.api.AuditEnvelope;
 import com.aisquad.owlmast.audit.api.AuditEnvelopeContract;
 import com.aisquad.owlmast.audit.api.AuditOutcome;
+import com.aisquad.owlmast.jobs.api.DispatchAuthorization;
 import com.aisquad.owlmast.jobs.api.DispatchDecision;
 import com.aisquad.owlmast.jobs.api.WorkItem;
 import com.aisquad.owlmast.jobs.api.WorkItemContract;
 import com.aisquad.owlmast.jobs.api.WorkStatus;
+import com.aisquad.owlmast.jobs.application.TenantInternalGrants;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
@@ -163,6 +165,43 @@ class DurableWorkContractTest {
             "dev.restate..")
         .as("no broker, external scheduler or workflow-engine client (AD-6)")
         .check(production);
+  }
+
+  /**
+   * AC7, E01-R-03: the tenant-internal system-work privilege is granted by the jobs owner and by
+   * nobody else. {@link TenantInternalGrants} is the only place a type gets it; no production class
+   * outside the jobs module may touch it (construct it, declare it as a bean, read it), so a
+   * feature cannot extend or replace the list. The general feature-isolation rule already forbids
+   * this; it is stated by name because it is an authorization boundary. The recheck port, the other
+   * way to change the decision, may be implemented only by jobs (the fail-closed default) and by
+   * the access module, which supplies the real one in OM-02.04.
+   */
+  @Test
+  void tenantInternalSystemWorkIsGrantedOnlyByTheJobsOwner() {
+    String jobs = FeatureModuleRulesTest.ROOT + ".jobs..";
+    noClasses()
+        .that()
+        .resideOutsideOfPackage(jobs)
+        .should()
+        .dependOnClassesThat()
+        .areAssignableTo(TenantInternalGrants.class)
+        .as("tenant-internal system work is granted only by the jobs owner")
+        .check(production);
+    classes()
+        .that()
+        .implement(DispatchAuthorization.class)
+        .should()
+        .resideInAnyPackage(jobs, FeatureModuleRulesTest.ROOT + ".access..")
+        .as("the dispatch authorization recheck is implemented only by jobs and access")
+        .allowEmptyShould(true)
+        .check(production);
+  }
+
+  /** The audit publisher is the platform's only tenant-internal work, and it is granted. */
+  @Test
+  void thePlatformGrantsNameExactlyTheAuditPublisher() {
+    assertThat(TenantInternalGrants.platformDefault().types())
+        .containsExactly(AuditEnvelopeContract.PUBLISH_WORK_TYPE);
   }
 
   @Test
