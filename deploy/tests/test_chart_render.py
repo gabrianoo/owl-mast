@@ -1819,6 +1819,18 @@ class ReviewCycle6Test(unittest.TestCase):
             self.assertNotIn("keycloak.service.port", text)
         self.assertEqual(helpers.count("keycloak.service.port"), 1)
 
+    def test_keycloak_is_replaced_not_rolled(self):
+        """Kind qualification 2026-11-12 (E01-R-01): retiring the bootstrap admin changed the Keycloak pod for the first time. Under the
+        default rolling update the new pod waited for a cluster with the old one that the NetworkPolicy does not allow, never became
+        ready, and `helm upgrade --wait` timed out. The strategy stays RollingUpdate without surge: the same run showed that an
+        existing release cannot be upgraded to `type: Recreate` (the server refuses it next to the defaulted rollingUpdate block)."""
+        keycloak = deployments_of(render())["t-owl-mast-keycloak"]
+        self.assertEqual(keycloak["spec"]["strategy"], {"type": "RollingUpdate", "rollingUpdate": {"maxSurge": 0, "maxUnavailable": 1}})
+        self.assertEqual(keycloak["spec"]["replicas"], 1)
+        policy = next(p for p in by_kind(render(), "NetworkPolicy") if p["metadata"]["name"] == "t-owl-mast-keycloak")
+        ports = [p["port"] for rule in policy["spec"]["ingress"] for p in rule["ports"]]
+        self.assertNotIn(7800, ports, "no cluster port is admitted, so two Keycloak pods must never run together")
+
     def test_the_frontend_container_port_is_fixed_at_the_port_the_image_listens_on(self):
         """E01-R-06 (retro B6): any port was accepted, but the image's nginx listens on 8080 only, so the probes failed."""
         listen = (REPO / "frontend" / "nginx" / "default.conf.template").read_text()

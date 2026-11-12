@@ -8,6 +8,19 @@ metadata:
     app.kubernetes.io/component: keycloak
 spec:
   replicas: 1
+  # Single instance: the old pod stops before the new one starts (no surge). With the default rolling update
+  # the two pods run side by side and try to form a Keycloak cluster (JGroups, discovered through the shared
+  # database); the NetworkPolicy admits only the backend on :8080, so they cannot, the new pod's cluster health
+  # check stays DOWN, it never becomes ready and the rollout hangs until `helm upgrade --wait` times out. Found
+  # by the bootstrap-admin retirement on the Kind target (2026-11-12), the first upgrade that changed this pod.
+  # Deliberately not `type: Recreate`: a release installed while this Deployment still rolled carries the API
+  # server's default rollingUpdate block, and a server-side apply that only changes the type is refused
+  # ("rollingUpdate may not be specified when strategy type is Recreate"), so the fix could not be upgraded to.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       {{- include "owl-mast.selectorLabels" . | nindent 6 }}
