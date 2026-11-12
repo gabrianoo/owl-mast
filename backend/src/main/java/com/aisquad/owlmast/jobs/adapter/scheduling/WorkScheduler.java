@@ -5,6 +5,7 @@ import com.aisquad.owlmast.platform.diagnostics.SafeFailure;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -24,16 +25,32 @@ import reactor.core.publisher.Sinks;
  * dispatch; the processor then gives that item back at once and uncounted instead of leaving it
  * {@code RUNNING} until its lease expires. The stop completes only when that give-back has ended,
  * without blocking a thread, and a wake-up that fires afterwards claims nothing.
+ *
+ * <p>Database precondition (E01-R-06): no wake-up runs until the database server has been confirmed
+ * as supported once. Handler transactions are bounded with {@code transaction_timeout}, which
+ * PostgreSQL 17 introduced; on an older server every handler would fail, bounded work would end
+ * {@code FAILED} for a reason no retry cures and audit publication would retry forever. Readiness
+ * being DOWN for the same reason does not stop a scheduled task, so the wake-up checks for itself:
+ * while the precondition answers no (or cannot be read) nothing is claimed, and it is asked again
+ * at the next wake-up. Once it has answered yes it is not asked again.
  */
 @Slf4j
 public final class WorkScheduler implements SmartLifecycle {
 
   private final WorkProcessor processor;
+  private final Supplier<Mono<Boolean>> databaseSupported;
+  private final AtomicBoolean supported = new AtomicBoolean();
+  private final AtomicBoolean refusalLogged = new AtomicBoolean();
   private final AtomicBoolean running = new AtomicBoolean();
   private final AtomicReference<Sinks.One<Boolean>> stopping = new AtomicReference<>(Sinks.one());
 
-  WorkScheduler(WorkProcessor processor) {
+  /**
+   * @param databaseSupported whether the database server can run durable work; asked at each
+   *     wake-up until it answers {@code true}
+   */
+  WorkScheduler(WorkProcessor processor, Supplier<Mono<Boolean>> databaseSupported) {
     this.processor = Objects.requireNonNull(processor, "processor");
+    this.databaseSupported = Objects.requireNonNull(databaseSupported, "databaseSupported");
   }
 
   @Scheduled(
@@ -42,7 +59,36 @@ public final class WorkScheduler implements SmartLifecycle {
   public Mono<Void> wake() {
     // Spring asks for this publisher once and subscribes to it at every wake-up, so the lifecycle
     // state is read per subscription.
-    return Mono.defer(() -> running.get() ? wakeUp() : Mono.empty());
+    return Mono.defer(() ->
+        running.get()
+            ? confirmedSupported().flatMap(confirmed -> confirmed ? wakeUp() : Mono.empty())
+            : Mono.empty());
+  }
+
+  private Mono<Boolean> confirmedSupported() {
+    if (supported.get()) {
+      return Mono.just(true);
+    }
+    return Mono.defer(databaseSupported)
+        .defaultIfEmpty(false)
+        .doOnNext(answer -> {
+          if (answer) {
+            supported.set(true);
+          } else if (refusalLogged.compareAndSet(false, true)) {
+            log.warn(
+                "Durable work is not started: the database server is not a supported PostgreSQL"
+                    + " version, or its schema baseline cannot be read. No work is claimed until"
+                    + " it is");
+          }
+        })
+        .onErrorResume(error -> {
+          if (refusalLogged.compareAndSet(false, true)) {
+            log.warn(
+                "Durable work is not started: the database precondition could not be read: {}",
+                SafeFailure.describe(error));
+          }
+          return Mono.just(false);
+        });
   }
 
   private Mono<Void> wakeUp() {

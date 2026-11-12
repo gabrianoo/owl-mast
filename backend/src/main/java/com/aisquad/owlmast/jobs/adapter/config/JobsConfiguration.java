@@ -58,9 +58,7 @@ class JobsConfiguration {
   @Bean
   HandlerRegistry handlerRegistry(
       ObjectProvider<WorkHandler> handlers, ObjectProvider<TenantInternalGrants> grants) {
-    // No bean in production: the feature-module rules keep TenantInternalGrants private to jobs, so
-    // only a test fixture can supply another instance.
-    TenantInternalGrants granted = grants.getIfAvailable(TenantInternalGrants::platformDefault);
+    TenantInternalGrants granted = granted(grants);
     HandlerRegistry registry = new HandlerRegistry(handlers.orderedStream().toList(), granted);
     log.info(
         "Durable work handlers registered: {}; tenant-internal system work granted to: {}",
@@ -75,15 +73,26 @@ class JobsConfiguration {
       WorkRepository repository,
       HandlerRegistry registry,
       ObjectProvider<DispatchAuthorization> authorization,
+      ObjectProvider<TenantInternalGrants> grants,
       RetryPolicy policy,
       @Value("${owlmast.jobs.instance-id:${HOSTNAME:}}") String instanceId) {
     DispatchAuthorization recheck =
-        authorization.getIfAvailable(TenantInternalOnlyDispatchAuthorization::new);
+        authorization.getIfAvailable(
+            () -> new TenantInternalOnlyDispatchAuthorization(granted(grants)));
     log.info("Dispatch authorization recheck: {}", recheck.getClass().getSimpleName());
     String leaseOwner =
         leaseOwner(instanceId.isBlank() ? localHostName() : instanceId, UUID.randomUUID());
     log.info("Durable work lease owner of this instance: {}", leaseOwner);
     return new WorkProcessor(transactions, repository, registry, recheck, policy, leaseOwner);
+  }
+
+  /**
+   * The grants the registry and the default recheck share. There is no such bean in production: the
+   * feature-module rules keep {@link TenantInternalGrants} private to jobs, so only a test fixture
+   * can supply another instance.
+   */
+  private static TenantInternalGrants granted(ObjectProvider<TenantInternalGrants> grants) {
+    return grants.getIfAvailable(TenantInternalGrants::platformDefault);
   }
 
   /** The host name when neither the setting nor {@code HOSTNAME} names the instance. */

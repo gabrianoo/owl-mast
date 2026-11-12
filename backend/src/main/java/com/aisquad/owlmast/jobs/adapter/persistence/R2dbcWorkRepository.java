@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.r2dbc.core.DatabaseClient;
@@ -46,6 +47,11 @@ class R2dbcWorkRepository implements WorkRepository {
 
   /** Reason persisted for a claimed row that cannot be decoded into a {@link WorkItem}. */
   static final String REASON_UNDECODABLE = "undecodable-work-item";
+
+  /** How many distinct undecodable tenant ids are reported before the warning goes quiet. */
+  private static final int MAX_REPORTED_UNDECODABLE_TENANTS = 16;
+
+  private final Set<String> reportedUndecodableTenants = ConcurrentHashMap.newKeySet();
 
   private static final String BOUND_TENANT =
       "current_setting('" + ScopedTransactions.TENANT_SETTING + "', true)";
@@ -359,30 +365,42 @@ class R2dbcWorkRepository implements WorkRepository {
             "select tenant_id from jobs.work_item where "
                 + DUE
                 + CLAIMABLE
-                + " group by tenant_id order by min(case when status = 'PENDING' then"
-                + " next_attempt_at else lease_expires_at end), tenant_id limit :limit")
+                // A tenant id no scope can be bound to sorts last, so such rows take a slot of
+                // the limit only when fewer real tenants are due and never starve one.
+                + " group by tenant_id order by (tenant_id ~ '^[[:space:]]*$'),"
+                + " min(case when status = 'PENDING' then next_attempt_at else lease_expires_at"
+                + " end), tenant_id limit :limit")
         .bind("limit", (long) limit)
         .bind("types", typeValues(types))
         .bind("version", WorkItemContract.VERSION)
         .map(row -> Optional.ofNullable(row.get("tenant_id", String.class)))
         .all()
-        .flatMap(R2dbcWorkRepository::decodeTenant);
+        .flatMap(this::decodeTenant);
   }
 
   /**
-   * A stored tenant that cannot become a {@link TenantId} (blank; V004 rejects new ones, a row from
-   * before it or a hand-edited one may remain) is skipped with a warning, so one such row does not
-   * end the wake-up for every other tenant. Its work stays where it is: no tenant scope can be
-   * bound for it, so nothing can claim it, and an operator has to correct or remove the row.
+   * A stored tenant that cannot become a {@link TenantId} is skipped, so one such row does not end
+   * the wake-up for every other tenant. V004 rejects an empty or white-space tenant id; what can
+   * still arrive here is a row from before it, a hand-edited one, or a value the database check
+   * lets through and {@code TenantId} refuses (a few control characters count as blank in Java).
+   * Its work stays where it is: no tenant scope can be bound for it, so nothing can claim it, and
+   * an operator has to correct or remove the row (the contract document gives the query). The row
+   * is found again at every wake-up, so the warning is written once per distinct value and process,
+   * for a bounded number of values.
    */
-  private static Flux<TenantId> decodeTenant(Optional<String> stored) {
+  private Flux<TenantId> decodeTenant(Optional<String> stored) {
     try {
       return Flux.just(new TenantId(stored.orElse(null)));
     } catch (IllegalArgumentException undecodable) {
-      log.warn(
-          "Due work is stored under a tenant id that is not a valid tenant ({}); it is skipped and"
-              + " stays unclaimed until the row is corrected",
-          stored.map(value -> "blank, " + value.length() + " characters").orElse("null"));
+      String description =
+          stored.map(value -> "blank, " + value.length() + " characters").orElse("null");
+      if (reportedUndecodableTenants.size() < MAX_REPORTED_UNDECODABLE_TENANTS
+          && reportedUndecodableTenants.add(stored.orElse(""))) {
+        log.warn(
+            "Due work is stored under a tenant id that is not a valid tenant ({}); it is skipped"
+                + " and stays unclaimed until the row is corrected",
+            description);
+      }
       return Flux.empty();
     }
   }

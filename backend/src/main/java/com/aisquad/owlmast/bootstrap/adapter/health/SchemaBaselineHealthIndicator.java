@@ -3,6 +3,7 @@ package com.aisquad.owlmast.bootstrap.adapter.health;
 import com.aisquad.owlmast.bootstrap.api.SchemaBaseline;
 import com.aisquad.owlmast.bootstrap.api.SchemaBaselineQuery;
 import com.aisquad.owlmast.platform.diagnostics.SafeFailure;
+import java.util.concurrent.atomic.AtomicBoolean;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.health.contributor.Health;
@@ -13,8 +14,8 @@ import reactor.core.publisher.Mono;
 /**
  * Reports whether the bootstrap schema baseline (VectorChord plus pgvector) is in place on a
  * supported PostgreSQL server. An older server than {@link SchemaBaseline#MINIMUM_POSTGRESQL_MAJOR}
- * keeps readiness DOWN, so the instance takes no traffic instead of failing every piece of durable
- * work at run time.
+ * keeps readiness DOWN, so the instance takes no traffic; the durable-work scheduler checks the
+ * same fact for itself and claims nothing on such a server.
  */
 @Component("schemaBaseline")
 @RequiredArgsConstructor
@@ -22,6 +23,7 @@ import reactor.core.publisher.Mono;
 class SchemaBaselineHealthIndicator implements ReactiveHealthIndicator {
 
   private final SchemaBaselineQuery query;
+  private final AtomicBoolean unsupportedServerLogged = new AtomicBoolean();
 
   @Override
   public Mono<Health> health() {
@@ -38,11 +40,14 @@ class SchemaBaselineHealthIndicator implements ReactiveHealthIndicator {
         });
   }
 
-  private static Health unsupportedServer(SchemaBaseline baseline) {
-    log.warn(
-        "PostgreSQL {} answered; Owl Mast requires PostgreSQL {} or newer",
-        baseline.postgresqlMajor(),
-        SchemaBaseline.MINIMUM_POSTGRESQL_MAJOR);
+  private Health unsupportedServer(SchemaBaseline baseline) {
+    // Readiness is probed every few seconds: say it once per process, not once per probe.
+    if (unsupportedServerLogged.compareAndSet(false, true)) {
+      log.warn(
+          "PostgreSQL {} answered; Owl Mast requires PostgreSQL {} or newer",
+          baseline.postgresqlMajor(),
+          SchemaBaseline.MINIMUM_POSTGRESQL_MAJOR);
+    }
     return Health.down()
         .withDetail(
             "reason",

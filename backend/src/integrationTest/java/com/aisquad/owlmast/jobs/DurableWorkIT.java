@@ -23,11 +23,16 @@ import com.aisquad.owlmast.jobs.api.FailedWorkItem;
 import com.aisquad.owlmast.jobs.api.FailedWorkQuery;
 import com.aisquad.owlmast.jobs.api.NonRetryableWorkException;
 import com.aisquad.owlmast.jobs.api.WorkEnqueue;
+import com.aisquad.owlmast.jobs.api.WorkHandler;
+import com.aisquad.owlmast.jobs.api.WorkItem;
 import com.aisquad.owlmast.jobs.api.WorkItemContract;
+import com.aisquad.owlmast.jobs.api.WorkRegistration;
 import com.aisquad.owlmast.jobs.api.WorkStatus;
 import com.aisquad.owlmast.jobs.api.WorkType;
 import com.aisquad.owlmast.jobs.application.HandlerRegistry;
+import com.aisquad.owlmast.jobs.application.TenantInternalGrants;
 import com.aisquad.owlmast.jobs.application.TenantInternalOnlyDispatchAuthorization;
+import com.aisquad.owlmast.jobs.application.WorkEnqueueService;
 import com.aisquad.owlmast.jobs.application.WorkProcessor;
 import com.aisquad.owlmast.jobs.domain.RetryPolicy;
 import com.aisquad.owlmast.jobs.port.Claim;
@@ -58,6 +63,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -106,6 +113,7 @@ class DurableWorkIT {
   private static final String SECRET = "s3cr3t-PLANTED-9f8e2c";
 
   @Autowired private NotesFixture notes;
+  @Autowired private TenantInternalGrants grants;
   @Autowired private FollowUpHandler followUp;
   @Autowired private ExternalHandler external;
   @Autowired private EffectStore effects;
@@ -330,7 +338,7 @@ class DurableWorkIT {
             transactions,
             new CompletionHeldUntil(repository, release),
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             new RetryPolicy(
                 3, Duration.ofMillis(100), Duration.ofMillis(400), Duration.ofSeconds(1), 1),
             "short-lease-processor");
@@ -554,7 +562,7 @@ class DurableWorkIT {
             .then(Mono.<EffectOutcome>never()));
     WorkProcessor lateStatement =
         blockedHandlerProcessor(
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             Duration.ofSeconds(8),
             Duration.ofSeconds(4));
 
@@ -669,6 +677,61 @@ class DurableWorkIT {
   }
 
   // --- AC7 ---------------------------------------------------------------------------------
+
+  /**
+   * E01-R-03: the registration read at startup decides, at enqueue and at dispatch, whatever the
+   * handler answers later. The type holds the grant here, so only the registration differs: a
+   * processor or enqueue that asked the handler again would run the item, and store it without an
+   * attempt limit.
+   */
+  @Test
+  void dispatchAndEnqueueUseTheRegistrationReadAtStartup() {
+    WorkType type = WorkType.of("fixture.shifting");
+    AtomicReference<WorkRegistration> answer =
+        new AtomicReference<>(WorkRegistration.requiresAuthorization(type));
+    AtomicInteger invocations = new AtomicInteger();
+    WorkHandler shifting =
+        new WorkHandler() {
+          @Override
+          public WorkRegistration registration() {
+            return answer.get();
+          }
+
+          @Override
+          public Mono<EffectOutcome> handle(WorkItem item) {
+            invocations.incrementAndGet();
+            return Mono.just(EffectOutcome.applied(item.idempotencyKey()));
+          }
+        };
+    TenantInternalGrants granted = new TenantInternalGrants(Set.of(type));
+    HandlerRegistry atStartup = new HandlerRegistry(List.of(shifting), granted);
+
+    answer.set(WorkRegistration.tenantInternalRetriedWithoutLimit(type));
+
+    UUID itemId =
+        new WorkEnqueueService(transactions, repository, policy, () -> atStartup)
+            .enqueue(EnqueueRequest.of(type, Map.of("subject", "note-1")))
+            .contextWrite(Scopes.bind(TENANT_A))
+            .block();
+    assertThat(db.work(itemId).maxAttempts())
+        .as("the attempt limit of the startup registration, not unlimited")
+        .isEqualTo(policy.maxAttempts());
+
+    new WorkProcessor(
+            transactions,
+            repository,
+            atStartup,
+            new TenantInternalOnlyDispatchAuthorization(granted),
+            policy,
+            "startup-registration-processor")
+        .runOnce()
+        .block();
+
+    WorkRow row = db.work(itemId);
+    assertThat(row.status()).isEqualTo("DENIED");
+    assertThat(row.reason()).isEqualTo("authorization-denied");
+    assertThat(invocations).as("the handler was not invoked").hasValue(0);
+  }
 
   @Test
   void theDefaultRecheckDeniesHandlersThatAreNotTenantInternalWithoutInvokingThem() {
@@ -925,7 +988,7 @@ class DurableWorkIT {
             transactions,
             new HeldWorkRepository(repository, Call.DISCOVERY),
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             oneSecondSteps,
             "stalled-discovery-processor");
     StepVerifier.create(overStalledDiscovery.runOnce())
@@ -942,7 +1005,7 @@ class DurableWorkIT {
             transactions,
             repository,
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             new RetryPolicy(
                 policy.maxAttempts(),
                 policy.backoffBase(),
@@ -1006,7 +1069,7 @@ class DurableWorkIT {
             transactions,
             heldFailure,
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             singleItemPolicy(),
             "held-failure-processor");
 
@@ -1038,7 +1101,7 @@ class DurableWorkIT {
             transactions,
             heldDenial,
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             singleItemPolicy(),
             "held-denial-processor");
 
@@ -1064,7 +1127,7 @@ class DurableWorkIT {
             transactions,
             lostAnswer,
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             singleItemPolicy(),
             "lost-answer-processor");
 
@@ -1153,7 +1216,7 @@ class DurableWorkIT {
             transactions,
             watched,
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             new RetryPolicy(
                 policy.maxAttempts(),
                 policy.backoffBase(),
@@ -1198,7 +1261,7 @@ class DurableWorkIT {
             transactions,
             heldFailure,
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             singleItemPolicy(),
             "failed-completion-processor");
 
@@ -1226,7 +1289,7 @@ class DurableWorkIT {
             transactions,
             watched,
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             policy,
             "watched-processor");
 
@@ -1393,7 +1456,7 @@ class DurableWorkIT {
             transactions,
             new CompletionHeldUntil(repository, new CompletableFuture<>()),
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             new RetryPolicy(
                 3, Duration.ofMillis(100), Duration.ofMillis(400), Duration.ofSeconds(1), 1),
             "silent-completion-processor");
@@ -1526,7 +1589,7 @@ class DurableWorkIT {
             transactions,
             new FailingForTenant(repository, TENANT_A.tenant()),
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             policy,
             "isolating-processor");
 
@@ -1876,7 +1939,7 @@ class DurableWorkIT {
         transactions,
         repository,
         registry,
-        new TenantInternalOnlyDispatchAuthorization(),
+        new TenantInternalOnlyDispatchAuthorization(grants),
         new RetryPolicy(
             policy.maxAttempts(),
             policy.backoffBase(),
@@ -1921,7 +1984,7 @@ class DurableWorkIT {
         transactions,
         new LateClaimAnswer(repository, answerDelay),
         registry,
-        new TenantInternalOnlyDispatchAuthorization(),
+        new TenantInternalOnlyDispatchAuthorization(grants),
         retryPolicy,
         "late-claim-processor");
   }
@@ -2077,7 +2140,7 @@ class DurableWorkIT {
         transactions,
         repository,
         registry,
-        new TenantInternalOnlyDispatchAuthorization(),
+        new TenantInternalOnlyDispatchAuthorization(grants),
         policy,
         owner);
   }
@@ -2088,7 +2151,7 @@ class DurableWorkIT {
         transactions,
         repository,
         registry,
-        new TenantInternalOnlyDispatchAuthorization(),
+        new TenantInternalOnlyDispatchAuthorization(grants),
         singleItemPolicy(),
         "single-item-processor");
   }

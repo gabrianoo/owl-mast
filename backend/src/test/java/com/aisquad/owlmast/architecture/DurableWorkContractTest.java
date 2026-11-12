@@ -1,8 +1,10 @@
 package com.aisquad.owlmast.architecture;
 
+import static com.tngtech.archunit.core.domain.JavaClass.Predicates.assignableTo;
 import static com.tngtech.archunit.core.domain.properties.CanBeAnnotated.Predicates.annotatedWith;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noMethods;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.aisquad.owlmast.audit.api.ActorKind;
@@ -194,6 +196,17 @@ class DurableWorkContractTest {
         .resideInAnyPackage(jobs, FeatureModuleRulesTest.ROOT + ".access..")
         .as("the dispatch authorization recheck is implemented only by jobs and access")
         .allowEmptyShould(true)
+        .check(production);
+    // A lambda or method reference is no class that implements the port, so the supplier side is
+    // closed too: no method outside jobs and access may hand out a DispatchAuthorization (a @Bean
+    // method is how one would reach JobsConfiguration).
+    noMethods()
+        .that()
+        .areDeclaredInClassesThat()
+        .resideOutsideOfPackages(jobs, FeatureModuleRulesTest.ROOT + ".access..")
+        .should()
+        .haveRawReturnType(assignableTo(DispatchAuthorization.class))
+        .as("only jobs and access hand out a dispatch authorization recheck")
         .check(production);
   }
 

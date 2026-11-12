@@ -40,13 +40,22 @@ class SchemaBaselineHealthIndicatorTest {
     SchemaBaseline onSixteen =
         new SchemaBaseline("1.1.1", "0.8.2", Instant.parse("2026-11-06T10:00:00Z"), 160_011);
 
-    StepVerifier.create(new SchemaBaselineHealthIndicator(() -> Mono.just(onSixteen)).health())
-        .assertNext(health -> {
-          assertDown(health, "PostgreSQL 17 or newer is required");
-          assertThat(health.getDetails()).containsEntry("postgresqlMajor", 16);
-        })
-        .verifyComplete();
-    assertThat(output).contains("PostgreSQL 16 answered; Owl Mast requires PostgreSQL 17 or newer");
+    SchemaBaselineHealthIndicator indicator =
+        new SchemaBaselineHealthIndicator(() -> Mono.just(onSixteen));
+    for (int probe = 0; probe < 3; probe++) {
+      StepVerifier.create(indicator.health())
+          .assertNext(health -> {
+            assertDown(health, "PostgreSQL 17 or newer is required");
+            assertThat(health.getDetails()).containsEntry("postgresqlMajor", 16);
+          })
+          .verifyComplete();
+    }
+    assertThat(
+            output
+                .getAll()
+                .split("PostgreSQL 16 answered; Owl Mast requires PostgreSQL 17 or newer", -1))
+        .as("every probe answers DOWN, the reason is logged once")
+        .hasSize(2);
   }
 
   @Test

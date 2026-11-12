@@ -13,6 +13,7 @@ import com.aisquad.owlmast.fixtures.notes.NotesFixture;
 import com.aisquad.owlmast.fixtures.notes.NotesFixture.Failure;
 import com.aisquad.owlmast.fixtures.notes.NotesFixtureConfiguration;
 import com.aisquad.owlmast.jobs.application.HandlerRegistry;
+import com.aisquad.owlmast.jobs.application.TenantInternalGrants;
 import com.aisquad.owlmast.jobs.application.TenantInternalOnlyDispatchAuthorization;
 import com.aisquad.owlmast.jobs.application.WorkProcessor;
 import com.aisquad.owlmast.jobs.domain.RetryPolicy;
@@ -27,10 +28,15 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.Import;
 import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
@@ -47,11 +53,13 @@ import reactor.core.publisher.Mono;
   StubIdentityConfiguration.class,
   NotesFixtureConfiguration.class
 })
+@ExtendWith(OutputCaptureExtension.class)
 class WorkSchedulerIT {
 
   private static final ScopeContext TENANT_A = ScopeContext.of("tenant-a", "person-a");
 
   @Autowired private NotesFixture notes;
+  @Autowired private TenantInternalGrants grants;
   @Autowired private FollowUpHandler followUp;
   @Autowired private EffectStore effects;
   @Autowired private DbProbe db;
@@ -84,9 +92,10 @@ class WorkSchedulerIT {
                 transactions,
                 heldGiveBack,
                 registry,
-                new TenantInternalOnlyDispatchAuthorization(),
+                new TenantInternalOnlyDispatchAuthorization(grants),
                 policy,
-                "scheduler-test-processor"));
+                "scheduler-test-processor"),
+            () -> Mono.just(true));
 
     assertThat(scheduler.isRunning()).isFalse();
     scheduler.wake().block(Duration.ofSeconds(10));
@@ -129,5 +138,57 @@ class WorkSchedulerIT {
     assertThat(db.work(itemId).status())
         .as("a restarted scheduler runs wake-ups again")
         .isEqualTo("SUCCEEDED");
+  }
+
+  /**
+   * E01-R-06 (retro B5): readiness DOWN on an unsupported PostgreSQL does not stop a scheduled
+   * task, so the wake-up refuses by itself until the database is confirmed as supported, logs the
+   * refusal once, and stops asking after the first yes.
+   */
+  @Test
+  void noWorkIsClaimedUntilTheDatabaseServerIsConfirmedAsSupported(CapturedOutput output) {
+    notes.createWithFollowUp("note body", Failure.NONE).contextWrite(Scopes.bind(TENANT_A)).block();
+    UUID itemId = db.workItems().get(0).id();
+    AtomicReference<Mono<Boolean>> answer = new AtomicReference<>(Mono.just(false));
+    AtomicInteger asked = new AtomicInteger();
+    WorkScheduler scheduler =
+        new WorkScheduler(
+            new WorkProcessor(
+                transactions,
+                repository,
+                registry,
+                new TenantInternalOnlyDispatchAuthorization(grants),
+                policy,
+                "precondition-test-processor"),
+            () -> {
+              asked.incrementAndGet();
+              return answer.get();
+            });
+    scheduler.start();
+
+    scheduler.wake().block(Duration.ofSeconds(10));
+    answer.set(Mono.empty());
+    scheduler.wake().block(Duration.ofSeconds(10));
+    answer.set(Mono.error(new IllegalStateException("s3cr3t connection detail")));
+    scheduler.wake().block(Duration.ofSeconds(10));
+
+    assertThat(db.work(itemId).status())
+        .as("unsupported, unknown and unreadable all leave the work unclaimed")
+        .isEqualTo("PENDING");
+    assertThat(db.work(itemId).attempts()).isZero();
+    assertThat(asked).hasValue(3);
+    assertThat(output.getAll().split("Durable work is not started", -1))
+        .as("the refusal is logged once, not at every wake-up")
+        .hasSize(2);
+    assertThat(output.getAll()).doesNotContain("s3cr3t");
+
+    answer.set(Mono.just(true));
+    scheduler.wake().block(Duration.ofSeconds(10));
+    assertThat(db.work(itemId).status()).isEqualTo("SUCCEEDED");
+
+    answer.set(Mono.just(false));
+    scheduler.wake().block(Duration.ofSeconds(10));
+    assertThat(asked).as("a confirmed server is not asked about again").hasValue(4);
+    scheduler.stop();
   }
 }

@@ -438,6 +438,10 @@ class UnhandledFailureIT {
       return Mono.fromCallable(() -> occupied.await(5, TimeUnit.SECONDS))
           .subscribeOn(Schedulers.boundedElastic())
           .flatMap(taken -> {
+            if (!taken) {
+              return Mono.error(
+                  new AssertionError("the occupying call never started; nothing is proven"));
+            }
             Disposable queued = blocking.call("queued", () -> SECRET).subscribe();
             return blocking
                 .call(SECRET, () -> "never")
