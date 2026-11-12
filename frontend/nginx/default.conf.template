@@ -2,6 +2,8 @@
 # user. The image never proxies the backend: the ingress/gateway routes `/api` to the backend service
 # (chart `routing.*`; `/actuator` is routed only with `routing.exposeActuator=true`), and this template hands the shell the API path prefix it was
 # deployed with (env OWLMAST_API_PATH_PREFIX, chart `routing.apiPathPrefix`) as /owlmast-config.json.
+# The prefix is validated and normalised before this template is rendered
+# (docker-entrypoint.d/16-owlmast-api-prefix.envsh), so it is safe inside the strings below.
 server {
     listen 8080;
     server_name _;
@@ -14,6 +16,29 @@ server {
         default_type application/json;
         add_header Cache-Control "no-store" always;
         return 200 '{"apiPathPrefix":"${OWLMAST_API_PATH_PREFIX}"}';
+    }
+
+    # The API contract this build supports, for the pre-rollout check against the deployed artifact
+    # (scripts/check-api-compatibility.py --frontend-url). Missing means 404, never the shell.
+    location = /api-compatibility.json {
+        include /etc/nginx/owlmast-headers.conf;
+        default_type application/json;
+        add_header Cache-Control "no-store" always;
+        try_files $uri =404;
+    }
+
+    # A request at or below the API prefix that reaches this image was misrouted: the image never serves or
+    # proxies the backend. Answer 404 (the shell reports "no descriptor", fail closed) instead of the
+    # SPA fallback, whose 200 text/html would read as a healthy backend.
+    location = ${OWLMAST_API_PATH_PREFIX} {
+        include /etc/nginx/owlmast-headers.conf;
+        add_header Cache-Control "no-store" always;
+        return 404;
+    }
+    location ^~ ${OWLMAST_API_PATH_PREFIX}/ {
+        include /etc/nginx/owlmast-headers.conf;
+        add_header Cache-Control "no-store" always;
+        return 404;
     }
 
     location /assets/ {

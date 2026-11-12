@@ -15,6 +15,9 @@ RUN npm run build
 FROM nginxinc/nginx-unprivileged:1.31.7-alpine@sha256:b5047b9b76845eac124358373c6852377c52e4b05834a47647e955dd91cb8f1e
 # Routing contract handed to the shell by the chart (deploy/helm/owl-mast/templates/frontend-deployment.yaml).
 ENV OWLMAST_API_PATH_PREFIX=/api
+# Refuses to start on an API prefix that is unsafe inside the nginx template (must stay executable:
+# the base image's entrypoint ignores non-executable files).
+COPY --chmod=0755 docker-entrypoint.d/16-owlmast-api-prefix.envsh /docker-entrypoint.d/16-owlmast-api-prefix.envsh
 COPY nginx/owlmast-headers.conf /etc/nginx/owlmast-headers.conf
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /src/dist /usr/share/nginx/html

@@ -1,5 +1,6 @@
 /// <reference types="vitest/config" />
-import { defineConfig } from 'vite';
+import { readFileSync } from 'node:fs';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 
 // Development and preview servers proxy the backend paths from the routing contract
@@ -14,8 +15,23 @@ const proxy = {
   '^/actuator(?:[/?]|$)': { target: backendUrl, changeOrigin: false },
 };
 
+// The build publishes the API contract it supports next to the shell (`/api-compatibility.json`), so
+// the pre-rollout check can read it from the deployed artifact instead of a checkout that may be at
+// another commit (scripts/check-api-compatibility.py --frontend-url). The bundle still inlines it.
+const publishApiCompatibility: Plugin = {
+  name: 'owlmast-publish-api-compatibility',
+  apply: 'build',
+  generateBundle() {
+    this.emitFile({
+      type: 'asset',
+      fileName: 'api-compatibility.json',
+      source: readFileSync(new URL('./api-compatibility.json', import.meta.url), 'utf8'),
+    });
+  },
+};
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), publishApiCompatibility],
   server: { port: 5173, strictPort: true, proxy },
   preview: { port: 4173, strictPort: true, proxy },
   build: {

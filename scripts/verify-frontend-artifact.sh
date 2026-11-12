@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 # OM-01.04 AC4: build the independent frontend image and prove its runtime contract without any
 # backend: serves the shell on 8080 as a non-root user, falls back to index.html for app routes,
-# publishes the API path prefix it was deployed with, and contains no JDK or backend jar.
+# publishes the API path prefix it was deployed with and the API contract it supports, answers 404
+# below the API prefix (it never proxies or impersonates the backend), refuses an unsafe prefix at
+# start-up, and contains no JDK or backend jar.
+#
+# OWLMAST_IMAGE_BROWSER_SMOKE=1 also runs Chromium against the container (frontend/e2e/image): the
+# production CSP, the nginx template and /owlmast-config.json in a real browser. It needs
+# `npm ci` and `npx playwright install chromium` in frontend/ first; CI sets it.
+#
+# The prefix below is deliberately not /api: it proves the image hands over whatever it is given.
+# The chart itself only ever passes /api (it refuses any other routing.apiPathPrefix because the
+# backend serves /api and no rewrite is rendered).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -9,7 +19,9 @@ IMAGE="${OWLMAST_FRONTEND_IMAGE:-owl-mast/frontend:0.1.0-verify}"
 NAME="owlmast-frontend-verify-$$"
 PREFIX="/owl/api"
 
-cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
+TMP="$(mktemp -d)"
+
+cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; rm -rf "$TMP"; }
 trap cleanup EXIT
 
 echo "== build $IMAGE"
@@ -44,7 +56,28 @@ check "security headers present" bash -c "curl -fsSI '$BASE/' | grep -qi 'conten
 check "hashed assets served with immutable caching" bash -c "asset=\$(curl -fsS '$BASE/' | grep -o '/assets/[^\"]*\\.js' | head -n1); curl -fsSI \"$BASE\$asset\" | grep -qi 'immutable'"
 check "no JDK in the image" bash -c "! docker run --rm --entrypoint sh '$IMAGE' -c 'command -v java'"
 check "no backend jar in the image" bash -c "! docker run --rm --entrypoint sh '$IMAGE' -c 'find / -name \"*.jar\" 2>/dev/null | grep -q .'"
-check "image does not proxy the backend (/api is handled by the shell fallback, not nginx proxy)" bash -c "curl -fsS '$BASE/api/compatibility' | grep -q '<div id=\"root\">'"
+check "a request below the API prefix is 404, never the shell (misrouted API fails closed)" bash -c "[ \"\$(curl -s -o \"$TMP/misrouted\" -w '%{http_code}' '$BASE$PREFIX/compatibility')\" = 404 ] && ! grep -q '<div id=\"root\">' \"$TMP/misrouted\""
+check "the API prefix itself is 404 too" bash -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' '$BASE$PREFIX')\" = 404 ]"
+check "the API prefix match is a path segment (a sibling path is still the shell)" bash -c "curl -fsS '$BASE${PREFIX}x' | grep -q '<div id=\"root\">'"
+check "image does not proxy the backend (no upstream is configured)" bash -c "! docker exec '$NAME' nginx -T 2>/dev/null | grep -q 'proxy_pass'"
+check "published API contract equals the build's manifest" bash -c "curl -fsS '$BASE/api-compatibility.json' | cmp -s - '$ROOT/frontend/api-compatibility.json'"
+check "published API contract is JSON and not cached" bash -c "curl -fsSI '$BASE/api-compatibility.json' | grep -qi 'content-type: application/json' && curl -fsSI '$BASE/api-compatibility.json' | grep -qi 'cache-control: no-store'"
+check "pre-rollout check reads the contract from the running artifact (--frontend-url)" bash -c "python3 '$ROOT/scripts/check-api-compatibility.py' --frontend-url '$BASE' | grep -q \"^COMPATIBLE: .*from $BASE\""
+
+# Start-up guard (docker-entrypoint.d/16-owlmast-api-prefix.envsh): a prefix that would break the
+# nginx template, be read as an nginx variable or point the shell at another origin stops the
+# container with a diagnostic instead of serving a misconfigured shell.
+refuses_prefix() {
+  local out
+  if out="$(docker run --rm -e "OWLMAST_API_PATH_PREFIX=$1" "$IMAGE" nginx -t 2>&1)"; then
+    echo "      started with prefix '$1'"; return 1
+  fi
+  grep -q 'OWLMAST_API_PATH_PREFIX' <<<"$out" || { echo "      no diagnostic for '$1': $out"; return 1; }
+}
+for bad in "/a'b" '/a$b' '/a"b' '/a b' '/a%2Fb' '/a;b' '//evil.example' '/a//b' '/a/../b' '/a/./b' '/a/..' 'api' '' '/' '//' '/assets' '/assets/x' '/owlmast-config.json' '/api-compatibility.json'; do
+  check "start-up refuses OWLMAST_API_PATH_PREFIX='$bad'" refuses_prefix "$bad"
+done
+check "a trailing slash is normalised before the template is rendered" bash -c "docker run --rm -e OWLMAST_API_PATH_PREFIX=/owl/api/ '$IMAGE' nginx -T 2>/dev/null | grep -qF '{\"apiPathPrefix\":\"/owl/api\"}'"
 
 # The chart runs the shell as UID/GID 101 on a read-only root with emptyDirs at /tmp and /etc/nginx/conf.d
 # (deploy/helm/owl-mast/templates/frontend-deployment.yaml); the same constraints here.
@@ -64,6 +97,17 @@ for _ in $(seq 1 50); do
 done
 check "chart runtime constraints (UID/GID $RUN_UID:$RUN_GID, read-only root, no capabilities, emptyDir paths): shell served" bash -c "curl -fsS '$RO_BASE/' | grep -q '<div id=\"root\">'"
 check "chart runtime constraints: config endpoint rendered from the template" bash -c "[ \"\$(curl -fsS '$RO_BASE/owlmast-config.json')\" = '{\"apiPathPrefix\":\"$PREFIX\"}' ]"
+
+if [ "${OWLMAST_IMAGE_BROWSER_SMOKE:-0}" = "1" ]; then
+  echo "== Chromium against the image (production CSP, nginx template, runtime config)"
+  check "browser smoke of the built image (frontend/e2e/image)" bash -c "cd '$ROOT/frontend' && OWLMAST_IMAGE_BASE_URL='$BASE' OWLMAST_IMAGE_API_PREFIX='$PREFIX' npm run --silent test:e2e:image"
+elif [ -n "${CI:-}" ]; then
+  # A dropped or misspelt variable in the workflow must not turn the browser check into a silent skip.
+  echo "FAIL [browser smoke of the built image]: CI run without OWLMAST_IMAGE_BROWSER_SMOKE=1"
+  failures=$((failures + 1))
+else
+  echo "skip [browser smoke of the built image]: set OWLMAST_IMAGE_BROWSER_SMOKE=1 (CI does)"
+fi
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures frontend artifact check(s) failed"

@@ -15,5 +15,5 @@
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["e2e", "playwright.config.ts", "playwright.smoke.config.ts"]
+  "include": ["e2e", "playwright.config.ts", "playwright.smoke.config.ts", "playwright.image.config.ts"]
 }

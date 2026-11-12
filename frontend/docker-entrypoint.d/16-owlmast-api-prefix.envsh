@@ -1,0 +1,40 @@
+#!/bin/sh
+# Start-up guard for OWLMAST_API_PATH_PREFIX (sourced by the nginx image's docker-entrypoint.sh
+# before 20-envsubst-on-templates.sh renders /etc/nginx/templates/default.conf.template).
+#
+# The value is substituted into an nginx string and a JSON document, and the shell fetches below it.
+# Anything outside the unreserved path characters would break the nginx directive (a quote), be read
+# by nginx as a variable ($), or be refused by the shell (src/api/config.ts), which would then fall
+# back to /api against the wrong backend path. The container refuses to start instead. Same rule as
+# the shell's normalizeApiPathPrefix (a subset of what the chart's owl-mast.validatePathPrefix allows):
+#   ^/[A-Za-z0-9._~/-]*$ with no empty, "." or ".." segment.
+# One trailing slash is dropped so the shell and the nginx locations see the same prefix. The root
+# and the image's own paths are refused: the template answers 404 at and below the prefix, which
+# must not shadow the shell or collide with a location the image already defines.
+
+owlmast_api_prefix="${OWLMAST_API_PATH_PREFIX:-}"
+
+owlmast_refuse_api_prefix() {
+    printf '%s\n' "owlmast: OWLMAST_API_PATH_PREFIX '$owlmast_api_prefix' is refused: $1 (expected an absolute path of letters, digits, '.', '_', '~', '-' and '/', for example /api)" >&2
+    exit 1
+}
+
+case "$owlmast_api_prefix" in
+    /*) ;;
+    *) owlmast_refuse_api_prefix "it must start with '/'" ;;
+esac
+case "$owlmast_api_prefix" in
+    *[!A-Za-z0-9._~/-]*) owlmast_refuse_api_prefix "it contains a character outside the allowed set" ;;
+esac
+case "$owlmast_api_prefix/" in
+    *//?*) owlmast_refuse_api_prefix "it contains an empty path segment ('//')" ;;
+    */./* | */../*) owlmast_refuse_api_prefix "it contains a '.' or '..' path segment" ;;
+esac
+
+owlmast_api_prefix="${owlmast_api_prefix%/}"
+case "$owlmast_api_prefix" in
+    "") owlmast_refuse_api_prefix "the API cannot be served at the root, where this image serves the shell" ;;
+    /assets | /assets/* | /owlmast-config.json | /api-compatibility.json)
+        owlmast_refuse_api_prefix "it collides with a path this image serves itself" ;;
+esac
+export OWLMAST_API_PATH_PREFIX="$owlmast_api_prefix"
