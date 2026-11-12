@@ -1828,13 +1828,18 @@ class ReviewCycle6Test(unittest.TestCase):
         """Kind qualification 2026-11-12 (E01-R-01): retiring the bootstrap admin changed the Keycloak pod for the first time. Under the
         default rolling update the new pod waited for a cluster with the old one that the NetworkPolicy does not allow, never became
         ready, and `helm upgrade --wait` timed out. The strategy stays RollingUpdate without surge: the same run showed that an
-        existing release cannot be upgraded to `type: Recreate` (the server refuses it next to the defaulted rollingUpdate block)."""
+        existing release cannot be upgraded to `type: Recreate` (the server refuses it next to the defaulted rollingUpdate block).
+        Review 5883535263: no surge does not stop the two pods overlapping, so Keycloak runs with a local cache and never waits for a cluster."""
         keycloak = deployments_of(render())["t-owl-mast-keycloak"]
         self.assertEqual(keycloak["spec"]["strategy"], {"type": "RollingUpdate", "rollingUpdate": {"maxSurge": 0, "maxUnavailable": 1}})
         self.assertEqual(keycloak["spec"]["replicas"], 1)
         policy = next(p for p in by_kind(render(), "NetworkPolicy") if p["metadata"]["name"] == "t-owl-mast-keycloak")
         ports = [p["port"] for rule in policy["spec"]["ingress"] for p in rule["ports"]]
-        self.assertNotIn(7800, ports, "no cluster port is admitted, so two Keycloak pods must never run together")
+        self.assertNotIn(7800, ports, "no cluster port is admitted, so two Keycloak pods must never try to form a cluster")
+        # RollingUpdate without surge still lets the new pod start while the old one terminates (the controller does not
+        # count a terminating pod), so the overlap is made harmless instead: a local cache never looks for a cluster.
+        env = {e["name"]: e.get("value") for e in keycloak["spec"]["template"]["spec"]["containers"][0]["env"]}
+        self.assertEqual(env.get("KC_CACHE"), "local")
 
     def test_the_frontend_container_port_is_fixed_at_the_port_the_image_listens_on(self):
         """E01-R-06 (retro B6): any port was accepted, but the image's nginx listens on 8080 only, so the probes failed."""
