@@ -61,8 +61,39 @@ checkout".
 
 Both URLs are printed in the verdict line, which CI logs keep. A URL that contains `@`
 (`https://user:token@host`) is therefore refused, and a refused URL is never repeated in the
-message. The script has no way to authenticate: run it where the two endpoints need no credentials
-(a port-forward, the cluster network). The base URLs are printable ASCII without a query or fragment.
+message. The base URLs are printable ASCII without a query or fragment.
+
+An endpoint that needs credentials gets them as one `Authorization` header value per side. They are
+opt-in, and never an argument or part of a URL, because both end up in process lists and logs:
+
+| Side | Environment variable | File option |
+| --- | --- | --- |
+| `--frontend-url` | `OWLMAST_COMPAT_FRONTEND_AUTHORIZATION` | `--frontend-authorization-file <path>` |
+| `--backend-url` | `OWLMAST_COMPAT_BACKEND_AUTHORIZATION` | `--backend-authorization-file <path>` |
+
+```sh
+OWLMAST_COMPAT_BACKEND_AUTHORIZATION="Bearer $TOKEN" scripts/check-api-compatibility.py --frontend-url … --backend-url https://…
+scripts/check-api-compatibility.py --frontend-url … --backend-url https://… --backend-authorization-file /run/secrets/compat-authorization
+```
+
+- The value is the whole header value (`Bearer <token>`, `Basic <base64>`): one line of printable
+  ASCII, at most 8192 characters, no leading or trailing space. A file may end with one line end.
+- Each value goes to its own side's request only, and is never printed: not in the verdict, not in a
+  refusal (which names the variable or option, not the value).
+- A redirect is not followed when credentials are sent (the header would go to the new host), and
+  plain `http` is accepted only for a loopback address such as a port-forward; any other host needs
+  `https`.
+- Setting both the variable and the file for one side is refused. A file for a side that is read from
+  the checkout is refused; the variable is ignored there, and when it is empty.
+
+- With credentials for plain `http` no proxy from the environment is used (the header would reach the
+  proxy in clear); an `https` request keeps the configured proxy.
+
+All of these refusals are the usual `INCOMPATIBLE (unverifiable)` line with exit 1. An in-cluster
+`http://service:port` address is refused when credentials are configured: port-forward it to a loopback
+address, or use its `https` address. Where the two endpoints need no credentials (a port-forward, the
+cluster network), configure none.
+
 The manifest's `descriptorPath` and `--api-path-prefix` are appended to the backend URL, so each must
 be a plain absolute path of at most 1024 characters: segments of letters, digits, `.`, `_`, `~` and
 `-`, with no empty or dot segment, no percent-escape and, for `descriptorPath`, no trailing slash.
@@ -93,6 +124,14 @@ Backend error responses are RFC 9457 problem details (`application/problem+json`
   name, cause or trace (the log names the exception classes only); verified by `UnhandledFailureIT`.
   An error Reactor treats as fatal inside an operator (`VirtualMachineError`, `LinkageError`) is
   rethrown by Reactor and reaches no handler.
+- The same advice keeps the status of a failure that carries one, still as a problem detail without
+  message or reason: an exception that implements `ErrorResponse` (its status and headers), a class
+  annotated with `@ResponseStatus`, and Spring Security's `AccessDeniedException` (403) and
+  `AuthenticationException` (401) or a subclass. The two security types are matched by class name,
+  because Spring Security is not a dependency yet, and `AuthenticationServiceException` (the identity
+  provider or user store failed) stays 500. A carried status outside 4xx/5xx becomes 500, and
+  only the failure itself is looked at, not its causes. To give a new exception type its own status,
+  implement `ErrorResponse`, annotate it, or add a more specific advice.
 
 Not covered:
 
@@ -100,10 +139,11 @@ Not covered:
   gets Spring Boot's default error body, which is `application/json` with `status`, `error`, `path` and
   `requestId` and, by Boot's defaults, no message or trace. No such filter exists yet; the story that adds
   one (authentication, E02) must bring it under the envelope.
-- An exception type that should carry its own status. The catch-all answers 500 for everything Spring
-  does not already map, so the story that introduces authentication or authorization exceptions (E02)
-  must map them to 401/403 in a more specific advice; otherwise the shell would show a problem state
-  where it should show the denied state.
+- The authentication challenge. The name guard answers 401 without `WWW-Authenticate`, and only for
+  an exception that reaches a controller advice; the story that introduces authentication (E02) owns
+  the challenge and the failures its security filter raises before a controller runs. A controller
+  advice answers before a web filter sees the failure, so that story must remove the two names from the
+  guard (or replace them with its own advice) for Spring Security's own translation to apply.
 
 Stack traces, exception messages and binding errors are never included. The frontend client
 (`frontend/src/api/client.ts`) maps 401/403 to the denied state, 404 to not-found, other failures to a

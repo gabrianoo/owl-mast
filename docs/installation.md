@@ -403,10 +403,12 @@ helm upgrade --install owl-mast deploy/helm/owl-mast --set frontend.enabled=true
 
 The container receives `OWLMAST_API_PATH_PREFIX` (= `routing.apiPathPrefix`) and republishes it to
 the shell as `/owlmast-config.json`; the shell then calls `GET <prefix>/compatibility` on the same
-origin, so the route for `routing.apiPathPrefix` must reach the backend's `/api`. The container refuses
-to start when the prefix is not an absolute path of letters, digits, `.`, `_`, `~`, `-` and `/` without
-empty, `.` or `..` segments, or when it names a path the image serves or a page of the shell (`/assets`,
-`/usage`, ...), and it answers 404 below the prefix: a request that reaches the frontend
+origin, so the route for `routing.apiPathPrefix` must reach the backend's `/api`. The chart refuses every
+`routing.apiPathPrefix` other than `/api` at render time, so a prefix the image would refuse never reaches
+a pod. A container started outside the chart refuses to start on a prefix that is malformed, is the root,
+or names a path the image serves or a page of the shell
+([frontend.md, Image configuration](frontend.md#image-configuration) has the rule), and it answers 404
+below the prefix: a request that reaches the frontend
 there was misrouted, and the shell then reports that no descriptor was published instead of a healthy
 backend. Before enabling or upgrading the frontend, run the pre-rollout pair check against the artifacts
 being rolled out ([api-compatibility.md](api-compatibility.md)). `--frontend-url` reads the contract the
@@ -419,7 +421,11 @@ scripts/check-api-compatibility.py --frontend-url <candidate-frontend> --backend
 
 `<candidate-frontend>` is the image about to be rolled out, not the public origin, which still serves the
 previous frontend (for example `docker run --rm -p 127.0.0.1:8081:8080 <image>` and
-`http://127.0.0.1:8081`); [api-compatibility.md](api-compatibility.md) has the details.
+`http://127.0.0.1:8081`); [api-compatibility.md](api-compatibility.md) has the details. If an endpoint
+needs credentials, pass the `Authorization` header value through `OWLMAST_COMPAT_BACKEND_AUTHORIZATION` /
+`OWLMAST_COMPAT_FRONTEND_AUTHORIZATION` or `--backend-authorization-file` / `--frontend-authorization-file`,
+never in the URL or as an argument; they are sent over `https` or to a loopback address only and are
+never printed.
 
 This story proves the image contract and the browser → backend path locally and in CI; deploying
 the frontend image onto the Kind target remains a live qualification step. `routing.*` defines the path

@@ -21,6 +21,8 @@ context:
 
 **Owner pre-approval (2026-11-12, run brief):** checkpoints continue to implementation; push, PR and thread replies/resolution are required; no merge, no change to issue #23 or the board.
 
+**Owner decisions (2026-11-12, round 4, after the walkthrough of PR #119):** (1) the frozen OM-01.04 row "Denied … neutral heading focused" stands: every denial, on first paint or from a background re-check, moves focus to the neutral heading and is announced; other background changes still never take focus. (2) The pre-rollout check gets an opt-in way to send credentials that never passes through the command line, a URL or the output. (3) A prefix the image refuses must already fail at chart render. (4) Range requests come back where an unsatisfiable range can be answered without doubled headers or the immutable policy. (5) The template's substitution filter is documented and checked. (6) Exceptions that carry their own status keep it under the catch-all advice, with a guard for E02's authentication and authorization exceptions. Walkthrough risks 7–12 are recorded in `deferred-work.md`.
+
 ## Boundaries & Constraints
 
 **Always:** Keep AC1–AC4 of OM-01.04 and its frozen matrix; fail closed on every unverifiable pair; safe copy only (no backend detail, exception text or requested address rendered); frontend and backend stay separate artifacts; CI Ubuntu runners stay `ubuntu-26.04`; executable bits via `git update-index --chmod=+x`.
@@ -34,7 +36,10 @@ context:
 | Verdict downgrade | "Compatible" shown; re-check answers other major, lower minor or 404 | Replaced at once, no user action | Later answers issued before it never restore the view |
 | Non-content shown | shown answer is error, offline or not-found; next check differs | Replaces it directly (no "New updates") | — |
 | Offline probe | probe `offline` while the browser still reports online | Offline state message in the panel | Next answer replaces it |
-| Denial | 401/403 on first paint or a background re-check | Content removed, neutral heading, working return link; focus moves to the heading only when the removal dropped the user's focus | Polite live region announces otherwise |
+| Denial | 401/403 on first paint or a background re-check | Content removed, neutral heading focused, working return link | Polite live region announces it as well; a repeated denial does not take focus again; any other background change moves focus only to repair focus it dropped |
+| Check with credentials | `OWLMAST_COMPAT_{FRONTEND,BACKEND}_AUTHORIZATION` or `--{frontend,backend}-authorization-file` | Value sent as the `Authorization` header of that side's request only | Never printed; `@` in a URL still refused; bad value, both sources, a redirect, or plain http to a non-loopback host → unverifiable, exit 1 |
+| Unsatisfiable range | `Range: bytes=999999999-` on the shell's files / on `/assets/` | 416 with every security header once and `no-store` / answered whole (200) with the immutable policy | A satisfiable range outside `/assets/` is 206 |
+| Exception with its own status | controller throws an `ErrorResponse`, a `@ResponseStatus` exception, or a class named `AccessDeniedException`/`AuthenticationException` of Spring Security | That status (403/401 for the two names) as `application/problem+json` | No message, class name or trace in the body |
 | Client offline | `protected: true` while offline / `protected: false` while offline | Refused before the network / attempted with `no-store` | Failed fetch → `offline` or `error` |
 | Prefix | `//host`, `/a/../b`, `/a/./b`, `/a/..` | Client falls back to `/api`; image refuses to start on a prefix outside `^/[A-Za-z0-9._~/-]*$` or with those segments | Diagnostic names the variable |
 | Misroute | request under the image's API prefix reaches the frontend image | 404 (shell: "no descriptor"), never `index.html` | 2xx non-descriptor body → "not a valid descriptor" copy, no "status 200" |
@@ -58,6 +63,8 @@ context:
 - `scripts/check-api-compatibility.py`, `deploy/tests/test_api_compatibility.py` (F4–F9); `scripts/verify-quality-gates.sh:150` (F18); `scripts/verify-frontend-artifact.sh` (F15, F16, F20); `.github/workflows/ci.yml` job `frontend-backend-smoke`.
 - `backend/.../compatibility/CompatibilityEndpointIT.java` (F19, F23); `platform/diagnostics/SafeFailure`; `platform` must not depend on features (ArchUnit).
 - `deploy/helm/owl-mast/templates/_helpers.tpl:374` -- main already refuses `routing.apiPathPrefix != /api` (c7578bb, test `test_api_prefix_is_exactly_what_the_backend_serves_and_the_frontend_calls`): F2 and the chart half of F15 need no change.
+
+- Round 4: `ConnectionPanel.tsx` focus effects (`deniedTitleRef`, `lastFocusedRef`); `deploy/helm/owl-mast/templates/_helpers.tpl:375` already pins `routing.apiPathPrefix` to `/api` and `frontend-deployment.yaml` renders exactly one env entry (no `frontend.extraEnv`), so only a pinning render test is missing; `frontend/nginx/default.conf.template` (`max_ranges 0`, `map $status`); `scripts/check-api-compatibility.py` `_http_get`/`_base_url`; `UnhandledFailureAdvice` (Boot's `ProblemDetailsExceptionHandler`, order 0, already answers `ResponseStatusException` and `ErrorResponseException`; a custom `ErrorResponse`, `@ResponseStatus` and security exceptions fall through to the advice).
 
 ## Tasks & Acceptance
 
@@ -90,6 +97,15 @@ context:
 - [x] `frontend/Dockerfile` -- `NGINX_ENVSUBST_FILTER=^OWLMAST_` -- 3E2.
 - [x] `docs/frontend.md`, `docs/installation.md` -- both rules named.
 
+**Round 4 (walkthrough risks 1–6 resolved, 7–12 recorded; owner decisions above):**
+- [x] `frontend/src/routes/ConnectionPanel.tsx`, `routes.test.tsx`, `e2e/shell/states.spec.ts` -- a denial focuses its neutral heading when it appears (first paint and background), once; the repair rule stays for every other change -- risk 1.
+- [x] `scripts/check-api-compatibility.py`, `deploy/tests/test_api_compatibility.py`, `docs/api-compatibility.md`, `docs/installation.md` -- per-side `Authorization` value from the environment or a file; validated, never printed, not forwarded across a redirect, https or loopback only -- risk 2.
+- [x] `deploy/tests/test_chart_render.py`, `frontend/docker-entrypoint.d/16-owlmast-api-prefix.envsh`, `scripts/verify-frontend-artifact.sh`, `docs/frontend.md` -- render test: every value the image refuses fails at render (with and without the schema) and the frontend container gets only the pinned prefix; collision refusals print their own message; the rule is documented once in `docs/frontend.md` -- risk 3.
+- [x] `frontend/nginx/default.conf.template`, `frontend/e2e/image/image.spec.ts`, `scripts/verify-frontend-artifact.sh` -- ranges on except under `/assets/`; a 416 is answered from a named location that adds nothing, so headers appear once -- risk 4.
+- [x] `docs/frontend.md`, `scripts/verify-frontend-artifact.sh` -- how to add a templated variable; checks: no `${OWLMAST_` left in the rendered configuration, every template variable has an image default, nginx's own variables survive -- risk 5.
+- [x] `backend/.../platform/web/UnhandledFailureAdvice.java`, `UnhandledFailureIT.java`, `docs/api-compatibility.md` -- status kept for `ErrorResponse`, `@ResponseStatus` and the two named security exception types -- risk 6.
+- [x] `_bmad-output/implementation-artifacts/deferred-work.md` -- add the entries of risks 7–12 that are missing.
+
 **Acceptance Criteria:**
 - Given the 31 findings, when the PR is opened, then each is listed fixed or declined with a reason and every thread of review 5876022641 on PR #112 has a reply and is resolved.
 - Given the changed code, when the frontend, deploy, script and backend gates run, then they pass, or the gate that could not run is reported with its reason.
@@ -116,6 +132,15 @@ context:
 - Round 3 (2026-11-12, owner-pre-approved, same branch and PR #119): status reopened for the round (`in-progress`, then `in-review`); both findings of review 5878165802 reproduced against 24628df before any change. Implemented directly (two small edits), reviewed by subagents.
 - S1: `map $status` in the template's http context. 304 keeps the immutable value: a 304 replaces the stored headers, so `no-store` there would undo the policy of the cached 200. A range request is still status 200 when `add_header` is evaluated (the range filter runs later), and an unsatisfiable one is answered 416 with the headers added a second time, so it carried both policies (found in review, 3B1). Ranges are therefore off for the whole server (`max_ranges 0`): the shell's files are small. The image's envsubst replaces defined environment variables only, and since this round only `OWLMAST_*` ones (`NGINX_ENVSUBST_FILTER`), so `$status`, `$uri` and the map variable survive rendering whatever the container environment holds.
 - S2: the guard runs in the runtime image, where `destinations.ts` does not exist. A generated list would need a second build output outside the web root; a literal list in the guard plus a unit test that compares it with `DESTINATIONS` (both directions, and that every destination is one segment) is smaller and fails the same CI job. The router matches exactly and case-sensitively, so the comparison is exact; the whole first segment is reserved so a later child route (`/focus/...`) is covered.
+- Round 4 (2026-11-12, owner-pre-approved, same branch and PR #119, base 2570202): the owner read the walkthrough risks, decided 1–6 and deferred 7–12. The frozen block was changed for this round only where the owner decided: the "Owner decisions" paragraph, the "Denial" row and three new rows. Implemented directly, reviewed by subagents.
+- Risk 1: one effect in `ConnectionPanel` handles both rules. A denial that appears (the transition into `denied`, first paint included) focuses its heading; the same denial confirmed by a later check does not. Every other change keeps the repair rule, now always to the panel heading. A modal dialog makes the page inert, so a denial that arrives while the scope dialog is open cannot take focus out of it; it is still in the live region.
+- Risk 2: one value per side, because a backend token must not reach the frontend host. Sources are the environment and a file; no option takes the value. With credentials the request does not follow redirects (urllib would repeat the header to the new host) and needs `https` or a loopback address. The environment variable is ignored when empty or when that side is read from the checkout (it is ambient in a pipeline); a file option for such a side is refused.
+- Risk 3: verified, no chart change. `_helpers.tpl` refuses every `routing.apiPathPrefix` but `/api`, with and without the schema, and `frontend-deployment.yaml` renders one env entry; the schema has no `frontend.extraEnv`, and without the schema the key is not rendered. The new render test pins all of it against the guard's own page list. Collision refusals now have their own message shape (reverses triage row 3B7, on the owner's request). The rule lives in `docs/frontend.md`, "Image configuration".
+- Risk 4: reproduced on a prototype before the change. `error_page 416` to a named location that returns 416 and adds nothing leaves the headers of the first pass, once each. Under `/assets/` the first pass has already written the immutable policy and stock nginx has no directive that removes a header (the `expires` directive would rewrite it to `no-cache`, but only by an undocumented side effect on a header `add_header` created), so ranges stay off there: the owner's stated fallback.
+- Risk 5: a variable the filter lets through but nobody set is left as text, and nginx then refuses to start on an unknown variable; the artifact script proves that with a modified template.
+- Risk 6: Boot's `ProblemDetailsExceptionHandler` (order 0) already answers `ResponseStatusException` and `ErrorResponseException`, so the new branch is for what it does not know. Spring Security is not on the classpath; the IT uses two test-only classes with the real fully qualified names under `backend/src/integrationTest/java/org/springframework/security/`. Only the failure itself is inspected, not its causes. A 4xx is logged at debug, not as an unhandled failure.
+- Ledger: risks 8, 9, 10 and 11 were already recorded (10 gained a status line); 7 and 12 were added.
+- Round 4 review: a denial behind the open scope dialog cannot take focus (the page is inert). The move is owed and made when the dialog has closed, in the task after the dialog returned focus to its trigger. With credentials, plain http uses no proxy from the environment; ranges are limited to one per request; `AuthenticationServiceException` stays 500.
 
 ## Spec Change Log
 
@@ -223,9 +248,38 @@ Pass 3 (2026-11-12): blind-hunter (B), edge-case-hunter (E), verification-gap (V
 | 3E2 | A container variable named `status` is substituted into the map | low | True for the base image's envsubst (and for `uri` before this round). Patched: `NGINX_ENVSUBST_FILTER=^OWLMAST_`; check with `-e status=200 -e uri=/index.html`. |
 | 3E5 | Range check does not assert 206 | false | Moot: ranges are off and the check now asserts 200 with one policy. |
 
+Round 4 input (2026-11-12): the owner's decisions on the walkthrough risks of PR #119 at 2570202 (risks 1–6 to resolve, 7–12 to record).
+
+Pass 4 (2026-11-12): blind-hunter (B), edge-case-hunter (E), verification-gap (V) on the round 4 diff against 2570202. One finding touches the intent (4B10); it has one reading under the owner's decision and was patched, and is reported to the owner. All other kept findings routed to patch.
+
+| # | Finding | Verdict | Evidence / action |
+| --- | --- | --- | --- |
+| 4B1/4E1/4E7 | With `http_proxy` set, a plain-http loopback request and its `Authorization` header go to the proxy | medium | True: urllib does not exempt localhost on Linux. Patched: with credentials a plain-http request uses no proxy; https keeps it. Test with a stub proxy. |
+| 4B2/4E2 | The authorization file is read whole before the size check | low | True for a device or a huge file. Patched: at most 8195 bytes are read; tests with `/dev/zero` and a 6 MB file. |
+| 4B3 | argparse repeats an unrecognised option and its value on stderr | low | Rejected: the value is then already on the command line the option was typed on, which no code here can undo; changing argparse's messages for every option is more than a direct correction. The abbreviations of the file option are covered. |
+| 4B4/4V-other | `test_no_option_takes_the_value_itself` cannot fail | medium | True (the options are built with an f-string). Patched: `build_parser()`; the test reads the registered option strings. |
+| 4B5/4E4 | A carried status replaced by 500 keeps the `ErrorResponse` headers | low | True. Patched: headers only when the carried status is the answered one; the 204 case asserts `Retry-After` is absent. |
+| 4B6 | `AuthenticationServiceException` would answer 401 and log at debug | medium | True once Spring Security is present: an identity provider outage would look like a credential problem. Patched: the name is listed as 500 and the nearest listed class wins; stand-in class, IT case and unit assertions. |
+| 4B7 | The guard answers before Spring Security's own translation | low | True by construction. Patched in words: Javadoc, `docs/api-compatibility.md` and the ledger entry say E02 must remove or replace the two names. |
+| 4B8/4V3 | No carried 5xx is exercised; the debug line never runs | medium | Patched: a 503 `ErrorResponse` keeps status and headers and is logged as an unhandled failure. The debug line is not captured (it is off at the test's log level); its only argument is `SafeFailure.describe`, which the error line already pins. |
+| 4B9 | Nothing forces the removal of the test-only security classes | low | Patched: an IT fails when one of the three names resolves more than once or from a jar. |
+| 4B10/4E6/4V2 | A denial that arrives behind the open scope dialog never focuses the heading | medium | True: the page is inert, `focus()` does nothing and the transition was consumed. The owner's decision ("every denial … moves focus") has one reading here: the move happens when it can. Patched: the move is owed until the dialog has closed (a `close` listener, then the next task, after the dialog returned focus to its trigger). e2e test; jsdom has no inert. |
+| 4B11 | "Once" holds only for consecutive denials; an alternating backend would take focus every cycle | false | A denial is retained (`retainsView`): an error or a descriptor after it waits behind "New updates", so the denied state is left only by a user action. |
+| 4V1 | No test leaves the denied state and enters it again | medium | Patched: unit test denied → "Show update" → denied expects the heading focused again. |
+| 4B12 | Ranges went from off to unlimited; no multi-range test | low | Patched: `max_ranges 1` (several ranges are answered whole); checked in the artifact script and the image e2e. `If-Range` is not checked: it selects between the 206 and the 200 already covered. |
+| 4B13 | The missing-`index.html` refusal reads as a non sequitur; `/` is printed as `''` | low | Patched: own message for the missing web root; diagnostics print the value as given. Two checks. |
+| 4V4 | The missing-`index.html` branch is run by no check | low | Patched with 4B13 (`--tmpfs` over the web root). |
+| 4B14 | The page list is repeated in the artifact script and in `docs/frontend.md` | low | Script patched: the expected list is read from the guard. The documentation keeps the five names as an example of the rule; the guard and `DESTINATIONS` are the pinned pair. |
+| 4B15 | The chart test does not assert that `api` is no shell page; `assertRegex` is loose | low | First part patched. The regex is kept: the two alternatives are the two refusal messages the chart has for this value. |
+| 4B16 | Ledger and spec wording (stale evidence line, risk numbers, `:374`/`:375`, `review_loop_iteration`) | low | Rejected: the fixes are edits to this spec or to an existing ledger entry, which is left as written with a status line added. There was no loopback, so the counter stays 0. |
+| 4B17 | Documentation: missing blank line, in-cluster http with credentials, set-but-empty template variable, unused `OTHER_API_PATH_PREFIX` | low | Patched, all four. |
+| 4E3 | The frontend request, with its credentials, is sent before the backend URL is refused | low | True. Patched: both sides are judged before the first request; test. |
+| 4E5 | `TEMPLATE_VARIABLES=` and `RENDERED=` can abort the script without a FAIL line | low | Patched: `|| true`; the two "not empty" checks report it. |
+| 4V-other | Precedence of the three status sources is unpinned | low | Patched: an annotated subclass of `AccessDeniedException` answers its annotated status. |
+
 ## Design Notes
 
-- F10 narrows the OM-01.04 matrix row "Denied … heading focused": EXPERIENCE.md scopes that focus move to route/contextual entry ("Unavailable states focus their neutral heading"). A background poll or first paint is neither, so focus moves only to repair focus the removal dropped; the state is announced through the polite live region either way. Flagged to the owner in the PR.
+- F10 (owner decision, round 4): the OM-01.04 matrix row "Denied … neutral heading focused" is honoured as written. A denial removes content the person may have been reading, so focus goes to the neutral heading whenever a denial appears, on first paint and from a background re-check, and the polite live region announces it too. Rounds 1–3 had narrowed this to a repair of dropped focus; that narrowing is withdrawn. Every other background change (rollback, error, new values) still never takes focus and only repairs focus the change dropped.
 - F3/F13: no protected feature exists, so the documentation is corrected instead of building a gate; `protected` gets its documented meaning in the client.
 - F4: the manifest is emitted into the build output (`/api-compatibility.json`), so the deployed artifact answers for itself. A Helm pre-upgrade hook is not added: it needs cluster egress and image policy decisions outside this story.
 

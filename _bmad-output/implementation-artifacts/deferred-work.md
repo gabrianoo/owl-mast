@@ -92,9 +92,18 @@
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-gh-112-resolve-review-findings.md`
   summary: Bring failures raised outside controllers (web filters, codecs) and authentication/authorization exceptions under the RFC 9457 envelope with their own status.
+  status: partly resolved 2026-11-12 (PR #119 round 4, walkthrough risk 6). UnhandledFailureAdvice now keeps the status of an `ErrorResponse`, a `@ResponseStatus` class and Spring Security's `AccessDeniedException`/`AuthenticationException` (by class name: 403/401). Still deferred: failures raised outside controllers (web filters, codecs), and the authentication challenge (`WWW-Authenticate`), which E02 owns. E02 must also remove the two security class names from the guard (or replace them with its own advice): a controller advice answers before Spring Security's exception translation filter sees the failure.
   evidence: PR #112 thread 4551653387. UnhandledFailureAdvice covers controller exceptions (500); a filter-level failure still gets Spring Boot's default application/json body, and a future AccessDeniedException would answer 500 unless mapped. No filter or security dependency exists before E02.
 
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-gh-112-resolve-review-findings.md`
   summary: Decide whether the frontend image should ship the nginx base image's `50x.html`, and clear the web root before copying the build output if not.
   evidence: PR #119 round 2 self-review (2B12). The Dockerfile copies `dist` over `/usr/share/nginx/html` without clearing it, so the base image's `50x.html` is served at `/50x.html`; no error_page refers to it. Pre-existing since OM-01.04.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-gh-112-resolve-review-findings.md`
+  summary: Recover automatically from a shown Incompatible verdict or denial to Compatible when a later check passes, instead of waiting behind "New updates".
+  evidence: Owner-deferred 2026-11-12. Source: walkthrough of PR #119 at 2570202 (risk 7) and triage row B13. Failing closed is automatic (`invalidatesView` in `frontend/src/routes/ConnectionPanel.tsx`), but `retainsView` holds a descriptor and a denial against later answers, so after a backend is rolled forward again, or access is restored, the panel keeps the old state until the person activates "Show update"; pinned by tests in `routes.test.tsx`. The change needs a decision on which transitions may replace shown content without a user action (UX-DR "changed values wait behind one polite announcement").
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-gh-112-resolve-review-findings.md`
+  summary: Generate the list of shell pages the frontend image refuses as an API prefix from one source instead of keeping a literal copy in the start-up guard.
+  evidence: Owner-deferred 2026-11-12. Source: walkthrough of PR #119 at 2570202 (risk 12) and round 3 finding S2. `owlmast_shell_routes` in `frontend/docker-entrypoint.d/16-owlmast-api-prefix.envsh` repeats the first path segments of `DESTINATIONS` (`frontend/src/app/destinations.ts`); `src/app/destinations.test.ts` fails when they differ, so the copy cannot drift unnoticed. A generated list needs a second build output outside the web root that the Dockerfile copies next to the guard.
