@@ -16,6 +16,7 @@ import com.aisquad.owlmast.platform.persistence.ScopedTransactions;
 import com.aisquad.owlmast.platform.scope.ScopeContext;
 import com.aisquad.owlmast.platform.scope.Scopes;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -55,6 +56,12 @@ import reactor.util.context.Context;
  * (or any later path) free to write it again. Writers may therefore overlap; {@link
  * AuditStore#recordOutcome} is idempotent on the event id, so the {@code audit.event} primary key
  * keeps it to one row even when a commit lands without its success signal.
+ *
+ * <p>Every outcome write is bounded by the outcome-write deadline ({@code
+ * owlmast.audit.outcome-write-deadline}, default {@link #DEFAULT_OUTCOME_WRITE_DEADLINE}): failing
+ * mutations cluster during database trouble, exactly when this write is slow, and the caller's
+ * error must not wait on it without limit. A write that passes the deadline is cancelled and
+ * handled like a failed one (a log line naming the event; the completion observer may still write).
  */
 @Slf4j
 public final class AuditedMutationService implements AuditedMutations {
@@ -64,11 +71,15 @@ public final class AuditedMutationService implements AuditedMutations {
   static final String REASON_CANCELLED = "execution-cancelled";
   static final String REASON_COMPLETION_UNKNOWN = "transaction-completion-unknown";
 
+  /** Default bound of one separate outcome write. */
+  public static final Duration DEFAULT_OUTCOME_WRITE_DEADLINE = Duration.ofSeconds(5);
+
   private final ScopedTransactions transactions;
   private final ScopedTransactions separateTransactions;
   private final AuditStore store;
   private final WorkEnqueue enqueue;
   private final Clock clock;
+  private final Duration outcomeWriteDeadline;
 
   public AuditedMutationService(
       ScopedTransactions transactions,
@@ -76,12 +87,27 @@ public final class AuditedMutationService implements AuditedMutations {
       AuditStore store,
       WorkEnqueue enqueue,
       Clock clock) {
+    this(transactions, separateTransactions, store, enqueue, clock, DEFAULT_OUTCOME_WRITE_DEADLINE);
+  }
+
+  public AuditedMutationService(
+      ScopedTransactions transactions,
+      ScopedTransactions separateTransactions,
+      AuditStore store,
+      WorkEnqueue enqueue,
+      Clock clock,
+      Duration outcomeWriteDeadline) {
     this.transactions = Objects.requireNonNull(transactions, "transactions");
     this.separateTransactions =
         Objects.requireNonNull(separateTransactions, "separateTransactions");
     this.store = Objects.requireNonNull(store, "store");
     this.enqueue = Objects.requireNonNull(enqueue, "enqueue");
     this.clock = Objects.requireNonNull(clock, "clock");
+    this.outcomeWriteDeadline =
+        Objects.requireNonNull(outcomeWriteDeadline, "outcomeWriteDeadline");
+    if (outcomeWriteDeadline.isZero() || outcomeWriteDeadline.isNegative()) {
+      throw new IllegalArgumentException("the outcome write deadline must be positive");
+    }
   }
 
   @Override
@@ -179,6 +205,7 @@ public final class AuditedMutationService implements AuditedMutations {
             attempt.eventId(), mutation, outcome, reason, attempt.occurredAt());
     return separateTransactions
         .inTransaction(current -> store.recordOutcome(record))
+        .timeout(outcomeWriteDeadline)
         .doOnSuccess(ignored -> {
           attempt.markOutcomeRecorded();
           log.info(

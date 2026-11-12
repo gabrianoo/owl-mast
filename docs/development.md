@@ -17,7 +17,7 @@ No other tool is installed globally. Pins and the evidence behind them are in [t
 | --- | --- |
 | `./gradlew build` | The documented build: compile with Java 27 and Spring Boot 4.1.2, formatting check, Error Prone, unit suite, ArchUnit rules, integration suite, executable jar. CI runs exactly this. |
 | `./gradlew :backend:test` | Fast unit/component suite; no containers. |
-| `./gradlew :backend:integrationTest` | Container-backed suite (migrations, transactions, health, missing-extension negative case, durable work and audit recovery including a two-context process restart). |
+| `./gradlew :backend:integrationTest` | Container-backed suite (migrations, transactions, health, missing-extension negative case, durable work and audit recovery including a separate-process restart and a graceful-shutdown give-back). |
 | `./gradlew :backend:spotlessApply` | Reformat sources. |
 | `./gradlew :backend:bootTestRun --args='--server.port=8080'` | Run the application locally against a disposable VectorChord container; `GET http://localhost:8080/actuator/health` answers `{"status":"UP"}`. Stop with Ctrl-C; the container is removed. |
 | `./gradlew :backend:bootRun` | Run against an existing database; see below. |
@@ -84,7 +84,7 @@ backend/
     jobs/                     durable work: enqueue, claims, leases, retries, scheduling (OM-01.03)
     audit/                    audit envelope, publication intent, publisher, history (OM-01.03)
   src/main/resources
-    application.yaml          environment-driven configuration, owlmast.jobs.* defaults
+    application.yaml          environment-driven configuration, owlmast.jobs.* and owlmast.audit.* defaults
     db/migration/V001__…sql   bootstrap-owned schema only
     db/migration/V002__…sql   jobs-owned work table
     db/migration/V003__…sql   audit-owned intent and history tables

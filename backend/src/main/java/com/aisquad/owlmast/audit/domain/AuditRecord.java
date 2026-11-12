@@ -42,11 +42,20 @@ public record AuditRecord(
     Objects.requireNonNull(correlationId, "correlationId");
   }
 
+  /**
+   * A successful change. When the mutation named its object up front, the outcome must report that
+   * same object: otherwise the success would be filed under one object and a failure of the same
+   * mutation under another, and neither history would be true. The mismatch is raised here, before
+   * the intent is written, so the mutation rolls back and is recorded as {@code FAILED}.
+   */
   public static <T> AuditRecord succeeded(
       UUID eventId,
       AuditedMutation<T> mutation,
       MutationOutcome<T> outcome,
       OffsetDateTime occurredAt) {
+    if (mutation.objectId().isPresent() && !mutation.objectId().get().equals(outcome.objectId())) {
+      throw new OutcomeObjectMismatchException();
+    }
     return new AuditRecord(
         AuditEnvelopeContract.VERSION,
         eventId,
@@ -90,6 +99,18 @@ public record AuditRecord(
         Optional.of(storableReason(safeReason)),
         occurredAt,
         mutation.correlationId());
+  }
+
+  /**
+   * The business function reported a different object than the mutation requested; only the class
+   * name is ever persisted, never either identifier.
+   */
+  public static final class OutcomeObjectMismatchException extends IllegalStateException {
+    private static final long serialVersionUID = 1L;
+
+    OutcomeObjectMismatchException() {
+      super("the mutation outcome names a different object than the mutation requested");
+    }
   }
 
   /** Stands in for a reason the diagnostics could not name (an anonymous exception class). */

@@ -68,6 +68,21 @@ class AuditContractTypesTest {
   }
 
   @Test
+  void anActorIdFollowsTheRuleOfEveryTextualEnvelopeField() {
+    for (String forged : new String[] {"person-a\nouter line", "person-a\rother", "a\r\nb"}) {
+      assertThatThrownBy(() -> AuditActor.of(ActorKind.HUMAN, forged))
+          .as("a multi-line actor id could forge lines in a rendered history")
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("single line");
+    }
+    String atTheBound = "p".repeat(AuditEnvelopeContract.MAX_FIELD_LENGTH);
+    assertThat(AuditActor.of(ActorKind.AGENT, atTheBound).id()).contains(atTheBound);
+    assertThatThrownBy(() -> AuditActor.of(ActorKind.AGENT, atTheBound + "p"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining(Integer.toString(AuditEnvelopeContract.MAX_FIELD_LENGTH));
+  }
+
+  @Test
   void outcomeVocabularyMatchesTheContract() {
     assertThat(AuditOutcome.values())
         .extracting(Enum::name)

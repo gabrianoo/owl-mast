@@ -59,6 +59,10 @@ owlmast:
     poll-interval: PT1S
     initial-delay: PT0S
     # handler-deadline: absent means nine tenths of lease-duration; must stay shorter than the lease.
+    # instance-id: names this instance in lease_owner; absent means the host name (the pod name).
     scheduler:
       # In-process Spring scheduling is the only wake-up source; tests may drive the processor.
       enabled: true
+  audit:
+    # Bound of one separate (failed/denied/unresolved) outcome write; ISO-8601.
+    outcome-write-deadline: PT5S

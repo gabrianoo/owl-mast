@@ -12,6 +12,7 @@ import com.aisquad.owlmast.audit.api.AuditHistoryQuery;
 import com.aisquad.owlmast.audit.api.AuditOutcome;
 import com.aisquad.owlmast.audit.api.AuditedMutation;
 import com.aisquad.owlmast.audit.api.AuditedResult;
+import com.aisquad.owlmast.audit.api.MutationOutcome;
 import com.aisquad.owlmast.audit.application.AuditedMutationService;
 import com.aisquad.owlmast.audit.domain.AuditRecord;
 import com.aisquad.owlmast.audit.port.AuditStore;
@@ -44,6 +45,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -62,6 +64,7 @@ import org.springframework.transaction.ReactiveTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.TransactionSystemException;
 import org.springframework.transaction.reactive.GenericReactiveTransaction;
+import org.springframework.transaction.reactive.TransactionContext;
 import org.springframework.transaction.reactive.TransactionSynchronizationManager;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import org.springframework.transaction.support.DefaultTransactionDefinition;
@@ -69,6 +72,8 @@ import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
+import reactor.util.context.Context;
+import reactor.util.context.ContextView;
 
 /**
  * AC3, AC4 and AC8 against the pinned VectorChord PostgreSQL: the audit-publication intent commits
@@ -894,6 +899,133 @@ class AuditedMutationIT {
         .noneMatch(column -> column.matches(".*(payload|details|data|body|content).*"));
   }
 
+  @Test
+  void theSeparateOutcomeWriteKeepsTheCallersContextButNotItsTransaction() {
+    OutcomeProbeStore probe = new OutcomeProbeStore(auditStore, false);
+    AtomicReference<TransactionContext> businessTransaction = new AtomicReference<>();
+    AuditedMutation<UUID> failing =
+        AuditedMutation.creating(
+            ACTOR,
+            NotesFixture.OBJECT_TYPE,
+            NotesFixture.CREATE_ACTION,
+            "corr-9a",
+            scope ->
+                Mono.deferContextual(context -> {
+                  businessTransaction.set(context.get(TransactionContext.class));
+                  return Mono.error(new IllegalStateException("fixture: business failure"));
+                }));
+
+    StepVerifier.create(
+            auditedOver(probe)
+                .execute(failing)
+                .contextWrite(Scopes.bind(TENANT_A))
+                .contextWrite(Context.of("probe-key", "probe-value")))
+        .expectError(IllegalStateException.class)
+        .verify();
+
+    assertThat(probe.outcomeContexts())
+        .as("at least one outcome write ran")
+        .isNotEmpty()
+        .allSatisfy(context -> {
+          assertThat(context.<String>getOrEmpty("probe-key"))
+              .as("keys that are not Spring's transaction keys travel with the outcome write")
+              .contains("probe-value");
+          assertThat(context.get(TransactionContext.class))
+              .as("the write runs in its own transaction, not the one that is rolling back")
+              .isNotSameAs(businessTransaction.get());
+        });
+    assertThat(businessTransaction.get()).isNotNull();
+    assertThat(db.auditEvents())
+        .singleElement()
+        .satisfies(event -> {
+          assertThat(event.outcome()).isEqualTo("FAILED");
+          assertThat(event.correlationId()).isEqualTo("corr-9a");
+        });
+  }
+
+  @Test
+  void aStalledOutcomeWriteDoesNotHoldTheCallersErrorPastTheDeadline(CapturedOutput output) {
+    OutcomeProbeStore neverAnswers = new OutcomeProbeStore(auditStore, true);
+    AuditedMutationService bounded =
+        new AuditedMutationService(
+            transactions,
+            separateTransactions(),
+            neverAnswers,
+            enqueue,
+            clock,
+            Duration.ofMillis(300));
+    NotesFixture viaStalledStore = new NotesFixture(databaseClient, transactions, enqueue, bounded);
+
+    Duration elapsed =
+        StepVerifier.create(
+                viaStalledStore
+                    .auditedCreate("slow outcome", ACTOR, "corr-9b", AuditedMode.FAIL_AFTER_WRITE)
+                    .contextWrite(Scopes.bind(TENANT_A)))
+            .expectError(IllegalStateException.class)
+            .verify(Duration.ofSeconds(10));
+
+    assertThat(elapsed)
+        .as("the observer's write and the error path's write each wait 300 ms at most")
+        .isLessThan(Duration.ofSeconds(5));
+    assertThat(neverAnswers.outcomeContexts()).as("both writers tried").hasSize(2);
+    assertThat(notes.noteIds().block()).as("the business write rolled back").isEmpty();
+    assertThat(db.auditEvents()).as("no outcome write committed").isEmpty();
+    assertThat(output.getAll())
+        .as("the lost record is named in the log")
+        .contains("outcome record could not be written: TimeoutException")
+        .contains("corr-9b");
+    assertThatThrownBy(() ->
+            new AuditedMutationService(
+                transactions, separateTransactions(), auditStore, enqueue, clock, Duration.ZERO))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void anOutcomeNamingAnotherObjectThanRequestedRollsBackAndIsRecordedOnTheRequestedObject() {
+    UUID noteId = UUID.randomUUID();
+    AuditedMutation<UUID> renamed =
+        AuditedMutation.changing(
+            ACTOR,
+            NotesFixture.OBJECT_TYPE,
+            "note-requested",
+            "note.update",
+            "corr-9c",
+            scope ->
+                databaseClient
+                    .sql(
+                        "insert into "
+                            + NotesFixture.TABLE
+                            + " (id, tenant_id, body) values (:id, :tenant, 'changed')")
+                    .bind("id", noteId)
+                    .bind("tenant", scope.tenant().value())
+                    .then()
+                    .thenReturn(new MutationOutcome<>(noteId, "note-other", "2")));
+
+    StepVerifier.create(
+            auditedOver(auditStore).execute(renamed).contextWrite(Scopes.bind(TENANT_A)))
+        .expectError(AuditRecord.OutcomeObjectMismatchException.class)
+        .verify();
+
+    assertThat(notes.noteIds().block()).as("the business change rolled back").isEmpty();
+    assertThat(db.intents()).isEmpty();
+    assertThat(db.workItems()).isEmpty();
+    assertThat(db.auditEvents())
+        .singleElement()
+        .satisfies(event -> {
+          assertThat(event.outcome()).isEqualTo("FAILED");
+          assertThat(event.objectId()).isEqualTo("note-requested");
+          assertThat(event.reason()).isEqualTo("OutcomeObjectMismatchException");
+        });
+    assertThat(
+            history
+                .listByObject(NotesFixture.OBJECT_TYPE, "note-other", 10)
+                .contextWrite(Scopes.bind(TENANT_A))
+                .collectList()
+                .block())
+        .as("the object nobody asked to change gains no history")
+        .isEmpty();
+  }
+
   // --- helpers -----------------------------------------------------------------------------
 
   /** The same wiring as {@code AuditConfiguration}, over the given store. */
@@ -1021,6 +1153,58 @@ class AuditedMutationIT {
 
   private long historyRows(UUID eventId) {
     return db.count("select count(*) from audit.event where event_id = '" + eventId + "'");
+  }
+
+  /**
+   * Captures the Reactor context every outcome write runs under; with {@code stalled} the write
+   * never answers, as when the database stops responding after the statement was sent.
+   */
+  private static final class OutcomeProbeStore implements AuditStore {
+    private final AuditStore delegate;
+    private final boolean stalled;
+    private final List<ContextView> outcomeContexts = new CopyOnWriteArrayList<>();
+
+    private OutcomeProbeStore(AuditStore delegate, boolean stalled) {
+      this.delegate = delegate;
+      this.stalled = stalled;
+    }
+
+    List<ContextView> outcomeContexts() {
+      return List.copyOf(outcomeContexts);
+    }
+
+    @Override
+    public Mono<Void> recordIntent(AuditRecord record) {
+      return delegate.recordIntent(record);
+    }
+
+    @Override
+    public Mono<Long> publish(UUID eventId) {
+      return delegate.publish(eventId);
+    }
+
+    @Override
+    public Mono<Void> recordOutcome(AuditRecord record) {
+      return Mono.deferContextual(context -> {
+        outcomeContexts.add(context);
+        return stalled ? Mono.<Void>never() : delegate.recordOutcome(record);
+      });
+    }
+
+    @Override
+    public Mono<AuditEnvelope> find(UUID eventId) {
+      return delegate.find(eventId);
+    }
+
+    @Override
+    public Flux<AuditEnvelope> listByObject(String objectType, String objectId, int limit) {
+      return delegate.listByObject(objectType, objectId, limit);
+    }
+
+    @Override
+    public Mono<Long> countUnpublishedIntents() {
+      return delegate.countUnpublishedIntents();
+    }
   }
 
   /**

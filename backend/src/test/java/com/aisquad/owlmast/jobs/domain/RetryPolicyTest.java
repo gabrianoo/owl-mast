@@ -93,4 +93,15 @@ class RetryPolicyTest {
         .as("server-side bound halfway between the deadline and the lease expiry")
         .isEqualTo(Duration.ofMillis(28_500));
   }
+
+  @Test
+  void theRecheckMayUseHalfTheHandlerDeadlineAndEveryOtherStepIsBoundedByTheLease() {
+    RetryPolicy policy =
+        new RetryPolicy(3, Duration.ofSeconds(1), Duration.ofSeconds(5), Duration.ofSeconds(30), 1);
+
+    assertThat(policy.recheckDeadline())
+        .as("the handler always keeps at least half of its deadline")
+        .isEqualTo(Duration.ofMillis(13_500));
+    assertThat(policy.stepTimeout()).isEqualTo(policy.leaseDuration());
+  }
 }

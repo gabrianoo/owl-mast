@@ -26,6 +26,7 @@ import com.aisquad.owlmast.jobs.application.HandlerRegistry;
 import com.aisquad.owlmast.jobs.application.TenantInternalOnlyDispatchAuthorization;
 import com.aisquad.owlmast.jobs.application.WorkProcessor;
 import com.aisquad.owlmast.jobs.domain.RetryPolicy;
+import com.aisquad.owlmast.jobs.port.Claim;
 import com.aisquad.owlmast.jobs.port.ClaimedWork;
 import com.aisquad.owlmast.jobs.port.WorkRepository;
 import com.aisquad.owlmast.platform.persistence.ScopedTransactions;
@@ -51,6 +52,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -61,6 +63,7 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.r2dbc.core.DatabaseClient;
+import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
@@ -591,7 +594,7 @@ class DurableWorkIT {
   }
 
   @Test
-  void anUndecidedRecheckBlocksTheAttemptWithoutInvokingTheHandler() {
+  void anUndecidedRecheckBlocksTheAttemptWithoutInvokingTheHandler(CapturedOutput output) {
     createNote(TENANT_A, Failure.NONE);
     UUID itemId = db.workItems().get(0).id();
     WorkProcessor undecided =
@@ -618,7 +621,8 @@ class DurableWorkIT {
     assertThat(blocked.attempts()).as("a blocked attempt is given back uncounted").isZero();
     assertThat(blocked.reason()).isEqualTo("authorization-undecided");
     assertThat(blocked.leaseToken()).isNull();
-    assertThat(backoffOf(blocked)).isBetween(Duration.ofMillis(80), Duration.ofMillis(300));
+    assertThat(backoffOf(blocked)).isBetween(Duration.ofMillis(80), Duration.ofMillis(150));
+    assertThat(releaseCount(itemId)).isEqualTo(1);
     assertThat(followUp.invocations()).isEmpty();
 
     // More blocked rounds than the attempt budget: an outage of the deciding component never
@@ -631,17 +635,252 @@ class DurableWorkIT {
               () -> assertThat(silent.processTenant(TENANT_A.tenant()).block()).isEqualTo(1L));
       assertThat(db.work(itemId).attempts()).isZero();
       assertThat(db.work(itemId).status()).isEqualTo("PENDING");
+      assertThat(releaseCount(itemId)).as("consecutive releases are counted").isEqualTo(round + 2);
     }
     assertThat(followUp.invocations()).isEmpty();
+    assertThat(backoffOf(db.work(itemId)))
+        .as("releases back off exponentially (0.1 s, 0.2 s, 0.4 s) up to the 0.4 s cap")
+        .isBetween(Duration.ofMillis(380), Duration.ofMillis(450));
+    assertThat(output.getAll())
+        .as("a blocked item never becomes terminal, so it is reported once past the limit")
+        .contains("has been released " + policy.maxAttempts() + " times in a row");
 
     awaitAttempt(itemId, 1);
     assertThat(db.work(itemId).status()).isEqualTo("SUCCEEDED");
     assertThat(db.work(itemId).reason()).isNull();
+    assertThat(releaseCount(itemId)).as("a dispatch that ran ends the blocked streak").isZero();
+  }
+
+  @Test
+  void aReleaseFromAnExpiredLeaseIsRejected() {
+    createNote(TENANT_A, Failure.NONE);
+    UUID itemId = db.workItems().get(0).id();
+    WorkProcessor lateUndecided =
+        new WorkProcessor(
+            transactions,
+            repository,
+            registry,
+            (item, registration) ->
+                db.expireLeaseAsync(item.id()).thenReturn(DispatchDecision.UNDECIDED),
+            singleItemPolicy(),
+            "late-undecided-processor");
+
+    lateUndecided.processTenant(TENANT_A.tenant()).block();
+
+    WorkRow stale = db.work(itemId);
+    assertThat(stale.status()).as("the fenced release changed nothing").isEqualTo("RUNNING");
+    assertThat(stale.attempts()).as("the attempt count was not restored").isEqualTo(1);
+    assertThat(stale.reason()).isNull();
+    assertThat(stale.leaseToken()).as("the fencing token was not cleared").isNotNull();
+    assertThat(releaseCount(itemId)).isZero();
+    assertThat(followUp.invocations()).isEmpty();
+
+    processor.runOnce().block();
+    WorkRow done = db.work(itemId);
+    assertThat(done.status()).isEqualTo("SUCCEEDED");
+    assertThat(done.attempts()).isEqualTo(2);
+  }
+
+  @Test
+  void anAnswerPastTheRechecksShareReleasesTheItemInsteadOfChargingTheHandler() {
+    createNote(TENANT_A, Failure.NONE);
+    UUID itemId = db.workItems().get(0).id();
+    RetryPolicy halfSecondDeadline =
+        new RetryPolicy(
+            policy.maxAttempts(),
+            policy.backoffBase(),
+            policy.backoffCap(),
+            Duration.ofSeconds(5),
+            1,
+            Duration.ofMillis(500));
+    WorkProcessor lateAllow =
+        new WorkProcessor(
+            transactions,
+            repository,
+            registry,
+            (item, registration) ->
+                Mono.delay(Duration.ofMillis(450)).thenReturn(DispatchDecision.ALLOW),
+            halfSecondDeadline,
+            "late-allow-processor");
+
+    lateAllow.processTenant(TENANT_A.tenant()).block(Duration.ofSeconds(10));
+
+    WorkRow released = db.work(itemId);
+    assertThat(released.status()).isEqualTo("PENDING");
+    assertThat(released.attempts())
+        .as("an ALLOW that left the handler 50 ms of a 500 ms deadline is not a failed attempt")
+        .isZero();
+    assertThat(released.reason()).isEqualTo("authorization-undecided");
+    assertThat(followUp.invocations()).as("the handler was never started").isEmpty();
+
+    awaitAttempt(itemId, 1);
+    assertThat(db.work(itemId).status()).isEqualTo("SUCCEEDED");
+  }
+
+  @Test
+  void aCancelledDispatchGivesItsItemBackAtOnceAndUncounted() {
+    createNote(TENANT_A, Failure.NONE);
+    UUID itemId = db.workItems().get(0).id();
+    CompletableFuture<Void> started = new CompletableFuture<>();
+    followUp.behaveOnce(item -> {
+      started.complete(null);
+      return Mono.never();
+    });
+    WorkProcessor single = singleItemProcessor();
+
+    Disposable wakeUp = single.processTenant(TENANT_A.tenant()).subscribe();
+    started.orTimeout(10, TimeUnit.SECONDS).join();
+    assertThat(db.work(itemId).status()).isEqualTo("RUNNING");
+    wakeUp.dispose();
+    single.quiesce().block(Duration.ofSeconds(10));
+
+    WorkRow givenBack = db.work(itemId);
+    assertThat(givenBack.status())
+        .as("a shutdown does not leave the item RUNNING until its lease expires")
+        .isEqualTo("PENDING");
+    assertThat(givenBack.attempts()).as("the cancelled attempt is not counted").isZero();
+    assertThat(givenBack.reason()).isEqualTo("dispatch-cancelled");
+    assertThat(givenBack.leaseToken()).isNull();
+    assertThat(backoffOf(givenBack)).as("due at once").isLessThan(Duration.ofMillis(50));
+    assertThat(releaseCount(itemId)).as("not a blocked release").isZero();
+
+    assertThat(processor.runOnce().block()).isEqualTo(1L);
+    WorkRow done = db.work(itemId);
+    assertThat(done.status()).isEqualTo("SUCCEEDED");
+    assertThat(done.attempts()).isEqualTo(1);
+  }
+
+  @Test
+  void aGiveBackFromAnExpiredOrReplacedLeaseIsRejected() {
+    createNote(TENANT_A, Failure.NONE);
+    UUID itemId = db.workItems().get(0).id();
+    ScopeContext backend = ServiceIdentity.backendScope(TENANT_A.tenant());
+    ClaimedWork claimed =
+        (ClaimedWork)
+            transactions
+                .inTransaction(scope ->
+                    repository
+                        .claim(1, policy.leaseDuration(), "cancelled-holder", registry.types())
+                        .next())
+                .contextWrite(Scopes.bind(backend))
+                .block();
+
+    assertThat(giveBack(backend, itemId, UUID.randomUUID()))
+        .as("another lease's token gives nothing back")
+        .isFalse();
+    db.expireLeaseAsync(itemId).block();
+    assertThat(giveBack(backend, itemId, claimed.leaseToken()))
+        .as("a cancellation that arrives after the lease ran out gives nothing back")
+        .isFalse();
+
+    WorkRow untouched = db.work(itemId);
+    assertThat(untouched.status()).isEqualTo("RUNNING");
+    assertThat(untouched.attempts()).isEqualTo(1);
+    assertThat(untouched.reason()).isNull();
+    assertThat(untouched.leaseToken()).isEqualTo(claimed.leaseToken());
+  }
+
+  @Test
+  void aStalledStepFailsTheTenantInsteadOfStoppingTheWakeUp(CapturedOutput output) {
+    createNote(TENANT_A, Failure.NONE);
+    createNote(TENANT_B, Failure.NONE);
+    RetryPolicy oneSecondSteps =
+        new RetryPolicy(
+            policy.maxAttempts(),
+            policy.backoffBase(),
+            policy.backoffCap(),
+            Duration.ofSeconds(1),
+            1);
+    StalledFor stalledClaim = new StalledFor(repository, TENANT_A.tenant(), false);
+    WorkProcessor overStalledClaim =
+        new WorkProcessor(
+            transactions,
+            stalledClaim,
+            registry,
+            new TenantInternalOnlyDispatchAuthorization(),
+            oneSecondSteps,
+            "stalled-claim-processor");
+
+    assertThat(overStalledClaim.runOnce().block(Duration.ofSeconds(10)))
+        .as("tenant A's claim never answers; the wake-up still ends and tenant B is served")
+        .isEqualTo(1L);
+    assertThat(db.workItems())
+        .filteredOn(row -> row.tenant().equals("tenant-b"))
+        .singleElement()
+        .satisfies(row -> assertThat(row.status()).isEqualTo("SUCCEEDED"));
+    assertThat(output.getAll())
+        .contains("Processing work for tenant tenant-a failed: TimeoutException");
+    assertThat(stalledClaim.statementLimits())
+        .as("every step also bounds its statements on the server")
+        .contains(oneSecondSteps.stepTimeout());
+
+    WorkProcessor overStalledDiscovery =
+        new WorkProcessor(
+            transactions,
+            new StalledFor(repository, TENANT_A.tenant(), true),
+            registry,
+            new TenantInternalOnlyDispatchAuthorization(),
+            oneSecondSteps,
+            "stalled-discovery-processor");
+    StepVerifier.create(overStalledDiscovery.runOnce())
+        .expectError(TimeoutException.class)
+        .verify(Duration.ofSeconds(10));
+  }
+
+  @Test
+  void aCompletionThatNeverAnswersEndsWithTheLeaseInsteadOfHoldingTheWakeUp() {
+    createNote(TENANT_A, Failure.NONE);
+    UUID itemId = db.workItems().get(0).id();
+    WorkProcessor overSilentCompletion =
+        new WorkProcessor(
+            transactions,
+            new CompletionHeldUntil(repository, new CompletableFuture<>()),
+            registry,
+            new TenantInternalOnlyDispatchAuthorization(),
+            new RetryPolicy(
+                3, Duration.ofMillis(100), Duration.ofMillis(400), Duration.ofSeconds(1), 1),
+            "silent-completion-processor");
+
+    assertThat(overSilentCompletion.processTenant(TENANT_A.tenant()).block(Duration.ofSeconds(10)))
+        .as("the dispatch ended although its completion write never answered")
+        .isEqualTo(1L);
+
+    WorkRow expired = db.work(itemId);
+    assertThat(expired.status())
+        .as("past the lease no write of that dispatch counts, the failure write included")
+        .isEqualTo("RUNNING");
+    assertThat(expired.attempts()).isEqualTo(1);
+    assertThat(expired.reason()).isNull();
+
+    processor.runOnce().block();
+    WorkRow done = db.work(itemId);
+    assertThat(done.status()).isEqualTo("SUCCEEDED");
+    assertThat(done.attempts()).isEqualTo(2);
+  }
+
+  @Test
+  void enqueueRejectsAWorkTypeNoHandlerRegistersBeforeAnyWrite() {
+    StepVerifier.create(
+            notes
+                .enqueueOnly(WorkType.of("fixture.unknown"), Map.of())
+                .contextWrite(Scopes.bind(TENANT_A)))
+        .expectErrorSatisfies(error ->
+            assertThat(error)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("fixture.unknown"))
+        .verify();
+    assertThat(db.workItems()).as("an item no instance would ever claim is never stored").isEmpty();
+
+    assertThat(enqueueOnly(TENANT_A, FollowUpHandler.TYPE)).isNotNull();
+    assertThat(db.workItems()).hasSize(1);
   }
 
   @Test
   void workThisInstanceCannotRunIsLeftForAnInstanceThatCan() {
-    UUID unknownType = enqueueOnly(TENANT_A, WorkType.of("fixture.unknown"));
+    // Enqueue refuses unregistered types, so the row of a newer build is written directly.
+    UUID unknownType = enqueueOnly(TENANT_A, FollowUpHandler.TYPE);
+    db.runSql(
+        "update jobs.work_item set work_type = 'fixture.unknown' where id = '" + unknownType + "'");
     UUID newerVersion = enqueueOnly(TENANT_A, FollowUpHandler.TYPE);
     db.runSql(
         "update jobs.work_item set contract_version = "
@@ -870,40 +1109,47 @@ class DurableWorkIT {
   }
 
   @Test
-  void anUndecodableRowIsFailedTerminallyInsteadOfStallingTheTenantsQueue(CapturedOutput output) {
+  void undecodableRowsAreFailedTerminallyAndTheSameBatchMovesPastThem(CapturedOutput output) {
     createNote(TENANT_A, Failure.NONE);
     createNote(TENANT_A, Failure.NONE);
-    UUID poison = db.workItems().get(0).id();
-    UUID healthy = db.workItems().get(1).id();
-    db.runSql(
-        "update jobs.work_item set payload = '{\"noteId\": {\"nested\": true}}'::jsonb,"
-            + " next_attempt_at = now() - interval '1 minute' where id = '"
-            + poison
-            + "'");
+    createNote(TENANT_A, Failure.NONE);
+    List<UUID> poison = List.of(db.workItems().get(0).id(), db.workItems().get(1).id());
+    UUID healthy = db.workItems().get(2).id();
+    for (int i = 0; i < poison.size(); i++) {
+      db.runSql(
+          "update jobs.work_item set payload = '{\"noteId\": {\"nested\": true}}'::jsonb,"
+              + " next_attempt_at = now() - interval '"
+              + (2 - i)
+              + " minutes' where id = '"
+              + poison.get(i)
+              + "'");
+    }
 
-    processor.processTenant(TENANT_A.tenant()).block();
-    WorkRow failed = db.work(poison);
-    assertThat(failed.status()).isEqualTo("FAILED");
-    assertThat(failed.attempts()).isEqualTo(1);
-    assertThat(failed.reason()).isEqualTo("undecodable-work-item");
-    assertThat(failed.finishedAt()).isNotNull();
-    assertThat(failed.leaseToken()).isNull();
+    assertThat(processor.processTenant(TENANT_A.tenant()).block())
+        .as("one wake-up: two poison rows skipped, the valid item behind them dispatched")
+        .isEqualTo(1L);
+
+    for (UUID id : poison) {
+      WorkRow failed = db.work(id);
+      assertThat(failed.status()).isEqualTo("FAILED");
+      assertThat(failed.attempts()).isEqualTo(1);
+      assertThat(failed.reason()).isEqualTo("undecodable-work-item");
+      assertThat(failed.finishedAt()).isNotNull();
+      assertThat(failed.leaseToken()).isNull();
+    }
     assertThat(output.getAll()).contains("cannot be decoded and is failed terminally");
-
-    processor.processTenant(TENANT_A.tenant()).block();
     assertThat(db.work(healthy).status())
-        .as("the queue moved past the poison row")
+        .as("the queue moved past the poison rows within the same batch")
         .isEqualTo("SUCCEEDED");
     assertThat(followUp.invocations())
         .singleElement()
         .extracting(FollowUpHandler.Invocation::itemId)
         .isEqualTo(healthy);
     assertThat(terminalFailures(TENANT_A))
-        .singleElement()
-        .satisfies(item -> {
-          assertThat(item.id()).isEqualTo(poison);
-          assertThat(item.safeReason()).contains("undecodable-work-item");
-        });
+        .extracting(FailedWorkItem::id)
+        .containsExactlyInAnyOrderElementsOf(poison);
+    assertThat(terminalFailures(TENANT_A))
+        .allSatisfy(item -> assertThat(item.safeReason()).contains("undecodable-work-item"));
   }
 
   @Test
@@ -939,14 +1185,14 @@ class DurableWorkIT {
             Duration.ofSeconds(5),
             1,
             Duration.ofMillis(500));
-    followUp.behave(item -> Mono.delay(Duration.ofMillis(300)).then(followUp.applyEffect(item)));
+    followUp.behave(item -> Mono.delay(Duration.ofMillis(450)).then(followUp.applyEffect(item)));
     WorkProcessor slowRecheck =
         new WorkProcessor(
             transactions,
             repository,
             registry,
             (item, registration) ->
-                Mono.delay(Duration.ofMillis(350)).thenReturn(DispatchDecision.ALLOW),
+                Mono.delay(Duration.ofMillis(150)).thenReturn(DispatchDecision.ALLOW),
             halfSecondDeadline,
             "slow-recheck-processor");
 
@@ -956,7 +1202,7 @@ class DurableWorkIT {
     assertThat(overrun.status()).isEqualTo("PENDING");
     assertThat(overrun.attempts()).isEqualTo(1);
     assertThat(overrun.reason())
-        .as("350 ms recheck + 300 ms handler passes a 500 ms deadline measured from the claim")
+        .as("150 ms recheck + 450 ms handler passes a 500 ms deadline measured from the claim")
         .isEqualTo("handler-deadline-exceeded");
     assertThat(followUp.invocations()).hasSize(1);
 
@@ -1035,6 +1281,46 @@ class DurableWorkIT {
     }
   }
 
+  /**
+   * Delegates everything, but one tenant's claim (or the tenant discovery) never answers, as when
+   * the network partitions after the query was sent. Records every server-side statement bound.
+   */
+  private static final class StalledFor extends DelegatingWorkRepository {
+    private final TenantId stalled;
+    private final boolean discovery;
+    private final List<Duration> statementLimits = new CopyOnWriteArrayList<>();
+
+    private StalledFor(WorkRepository delegate, TenantId stalled, boolean discovery) {
+      super(delegate);
+      this.stalled = stalled;
+      this.discovery = discovery;
+    }
+
+    List<Duration> statementLimits() {
+      return List.copyOf(statementLimits);
+    }
+
+    @Override
+    public Mono<Void> limitStatementTime(Duration timeout) {
+      statementLimits.add(timeout);
+      return super.limitStatementTime(timeout);
+    }
+
+    @Override
+    public Flux<TenantId> tenantsWithDueWork(int limit, Set<WorkType> types) {
+      return discovery ? Flux.never() : super.tenantsWithDueWork(limit, types);
+    }
+
+    @Override
+    public Flux<Claim> claim(int limit, Duration lease, String leaseOwner, Set<WorkType> types) {
+      return Scopes.current()
+          .flatMapMany(scope ->
+              !discovery && scope.tenant().equals(stalled)
+                  ? Flux.<Claim>never()
+                  : super.claim(limit, lease, leaseOwner, types));
+    }
+  }
+
   /** Plain delegation, for fixtures that change one repository call. */
   private abstract static class DelegatingWorkRepository implements WorkRepository {
     private final WorkRepository delegate;
@@ -1064,14 +1350,19 @@ class DurableWorkIT {
     }
 
     @Override
-    public Flux<ClaimedWork> claim(
-        int limit, Duration lease, String leaseOwner, Set<WorkType> types) {
+    public Flux<Claim> claim(int limit, Duration lease, String leaseOwner, Set<WorkType> types) {
       return delegate.claim(limit, lease, leaseOwner, types);
     }
 
     @Override
-    public Mono<Boolean> release(UUID id, UUID leaseToken, String safeReason, Duration backoff) {
-      return delegate.release(id, leaseToken, safeReason, backoff);
+    public Mono<Integer> release(
+        UUID id, UUID leaseToken, String safeReason, Duration backoffBase, Duration backoffCap) {
+      return delegate.release(id, leaseToken, safeReason, backoffBase, backoffCap);
+    }
+
+    @Override
+    public Mono<Boolean> giveBack(UUID id, UUID leaseToken, String safeReason) {
+      return delegate.giveBack(id, leaseToken, safeReason);
     }
 
     @Override
@@ -1111,6 +1402,17 @@ class DurableWorkIT {
 
   private UUID enqueueOnly(ScopeContext scope, WorkType type) {
     return notes.enqueueOnly(type, Map.of()).contextWrite(Scopes.bind(scope)).block();
+  }
+
+  private long releaseCount(UUID itemId) {
+    return db.count("select release_count from jobs.work_item where id = '" + itemId + "'");
+  }
+
+  private boolean giveBack(ScopeContext backend, UUID itemId, UUID leaseToken) {
+    return transactions
+        .inTransaction(scope -> repository.giveBack(itemId, leaseToken, "dispatch-cancelled"))
+        .contextWrite(Scopes.bind(backend))
+        .block();
   }
 
   private List<FailedWorkItem> terminalFailures(ScopeContext scope) {

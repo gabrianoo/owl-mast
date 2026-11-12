@@ -33,10 +33,11 @@ public interface WorkRepository {
    * limited to the given work types and to items written with a contract version this build
    * supports, so an instance never takes work it cannot run (a rolling deploy with a new work type
    * or a newer contract version). A claimed row that cannot be decoded into a {@code WorkItem} is
-   * recorded as terminal {@code FAILED} under its new lease and not emitted, so one poison row
-   * never stalls the tenant's queue.
+   * recorded as terminal {@code FAILED} under its new lease and emitted as {@link
+   * Claim.Undecodable}, so one poison row never stalls the tenant's queue and the caller can tell a
+   * skipped row from an empty queue.
    */
-  Flux<ClaimedWork> claim(int limit, Duration lease, String leaseOwner, Set<WorkType> types);
+  Flux<Claim> claim(int limit, Duration lease, String leaseOwner, Set<WorkType> types);
 
   /** Running items of the bound tenant whose lease expired after their last permitted attempt. */
   Mono<Long> failExhaustedExpiredLeases(String safeReason);
@@ -48,12 +49,22 @@ public interface WorkRepository {
       UUID id, UUID leaseToken, String safeReason, Duration backoff, boolean terminal);
 
   /**
-   * Gives a claimed item back without counting the attempt: back to PENDING after {@code backoff},
-   * the attempt count restored, the reason recorded. For attempts the processor could not start (an
-   * undecided authorization recheck), so an outage of the deciding component never exhausts the
-   * item's budget.
+   * Gives a claimed item back without counting the attempt because the processor could not start it
+   * (an undecided authorization recheck): back to PENDING, the attempt count restored, the reason
+   * recorded and the consecutive-release count incremented. The delay doubles with every
+   * consecutive release from {@code backoffBase} up to {@code backoffCap}, so an outage of the
+   * deciding component never exhausts the item's budget and never becomes a fixed-rate loop. Emits
+   * the new consecutive-release count, or nothing when the lease is no longer current.
    */
-  Mono<Boolean> release(UUID id, UUID leaseToken, String safeReason, Duration backoff);
+  Mono<Integer> release(
+      UUID id, UUID leaseToken, String safeReason, Duration backoffBase, Duration backoffCap);
+
+  /**
+   * Gives a claimed item back at once and uncounted because its dispatch was cancelled (a graceful
+   * shutdown): back to PENDING and due immediately, the attempt count restored, the reason
+   * recorded, the consecutive-release count unchanged.
+   */
+  Mono<Boolean> giveBack(UUID id, UUID leaseToken, String safeReason);
 
   Mono<Boolean> deny(UUID id, UUID leaseToken, String safeReason);
 

@@ -19,6 +19,7 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
@@ -31,6 +32,9 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * context of its own. The death happens from inside the handler, after the claim committed, so the
  * proof does not depend on an external kill landing before the handler deadline. This proves
  * process restart with Testcontainers; live Kubernetes pod replacement belongs to OM-18.02.
+ *
+ * <p>The second test covers the other way a process ends: a graceful shutdown (SIGTERM) while a
+ * handler runs gives the item back at once and uncounted instead of leaving it leased.
  */
 class ProcessRestartRecoveryIT {
 
@@ -55,6 +59,19 @@ class ProcessRestartRecoveryIT {
     started.forEach(Process::destroyForcibly);
     if (database != null) {
       database.stop();
+    }
+  }
+
+  @BeforeEach
+  void emptyTheTables() throws SQLException {
+    try (Connection connection = database.createConnection("");
+        Statement statement = connection.createStatement()) {
+      statement.execute(
+          "do $$ begin"
+              + " if to_regclass('jobs.work_item') is not null then"
+              + " truncate jobs.work_item, audit.event, audit.publication_intent; end if;"
+              + " if to_regclass('fixture_notes') is not null then truncate fixture_notes; end if;"
+              + " end $$");
     }
   }
 
@@ -129,7 +146,61 @@ class ProcessRestartRecoveryIT {
     }
   }
 
+  @Test
+  void aGracefulShutdownGivesTheInFlightItemBackUncounted() throws Exception {
+    // A lease far longer than the test, so only the shutdown can end it.
+    Process hanging =
+        launch(
+            "hanging",
+            Duration.ofMinutes(5),
+            RestartFixtureProcess.MODE_HANG_WHILE_LEASED,
+            RestartFixtureProcess.SEED);
+    await()
+        .atMost(Duration.ofMinutes(2))
+        .pollInterval(Duration.ofMillis(250))
+        .ignoreExceptions()
+        .untilAsserted(() -> {
+          assertThat(hanging.isAlive()).as("process alive; log: %s", tail("hanging")).isTrue();
+          assertThat(count("select count(*) from jobs.work_item")).isEqualTo(SEEDED_WORK_ITEMS);
+          assertThat(
+                  count(
+                      "select count(*) from jobs.work_item where status = 'RUNNING'"
+                          + " and lease_expires_at > clock_timestamp()"))
+              .isEqualTo(1);
+        });
+    Lease held = runningLease();
+    assertThat(held.attempts()).isEqualTo(1);
+
+    hanging.destroy();
+    assertThat(hanging.waitFor(1, TimeUnit.MINUTES))
+        .as("the process stopped gracefully; log: %s", tail("hanging"))
+        .isTrue();
+
+    assertThat(count("select count(*) from jobs.work_item where status = 'RUNNING'"))
+        .as("no item is left leased until its five-minute lease expires; log: %s", tail("hanging"))
+        .isZero();
+    Lease givenBack = lease(held.id());
+    assertThat(givenBack.token()).isNull();
+    assertThat(givenBack.attempts()).as("the cancelled attempt is not counted").isZero();
+    assertThat(
+            count(
+                "select count(*) from jobs.work_item where id = '"
+                    + held.id()
+                    + "' and status = 'PENDING' and failure_reason = 'dispatch-cancelled'"
+                    + " and next_attempt_at <= clock_timestamp()"))
+        .as("the item is due at once for the next instance")
+        .isEqualTo(1);
+    assertThat(count("select count(*) from jobs.work_item where status <> 'PENDING'"))
+        .as("nothing else ran: the hanging handler held the serial dispatch")
+        .isZero();
+  }
+
   private static Process launch(String name, String... fixtureArguments) throws IOException {
+    return launch(name, LEASE, fixtureArguments);
+  }
+
+  private static Process launch(String name, Duration lease, String... fixtureArguments)
+      throws IOException {
     String java =
         ProcessHandle.current()
             .info()
@@ -158,7 +229,7 @@ class ProcessRestartRecoveryIT {
     command.add("--spring.main.banner-mode=off");
     command.add("--owlmast.jobs.scheduler.enabled=true");
     command.add("--owlmast.jobs.poll-interval=PT0.2S");
-    command.add("--owlmast.jobs.lease-duration=" + LEASE);
+    command.add("--owlmast.jobs.lease-duration=" + lease);
     command.addAll(List.of(fixtureArguments));
     Process process =
         new ProcessBuilder(command)

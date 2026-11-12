@@ -9,6 +9,8 @@ import com.aisquad.owlmast.audit.port.AuditStore;
 import com.aisquad.owlmast.jobs.api.WorkEnqueue;
 import com.aisquad.owlmast.platform.persistence.ScopedTransactions;
 import java.time.Clock;
+import java.time.Duration;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.r2dbc.core.DatabaseClient;
@@ -34,13 +36,15 @@ class AuditConfiguration {
       DatabaseClient databaseClient,
       AuditStore store,
       WorkEnqueue enqueue,
-      Clock clock) {
+      Clock clock,
+      @Value("${owlmast.audit.outcome-write-deadline:PT5S}") Duration outcomeWriteDeadline) {
     DefaultTransactionDefinition requiresNew = new DefaultTransactionDefinition();
     requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     ScopedTransactions separate =
         new ScopedTransactions(
             TransactionalOperator.create(transactionManager, requiresNew), databaseClient);
-    return new AuditedMutationService(transactions, separate, store, enqueue, clock);
+    return new AuditedMutationService(
+        transactions, separate, store, enqueue, clock, outcomeWriteDeadline);
   }
 
   @Bean

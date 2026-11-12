@@ -7,6 +7,7 @@ import com.aisquad.owlmast.jobs.api.WorkItem;
 import com.aisquad.owlmast.jobs.api.WorkItemContract;
 import com.aisquad.owlmast.jobs.api.WorkStatus;
 import com.aisquad.owlmast.jobs.api.WorkType;
+import com.aisquad.owlmast.jobs.port.Claim;
 import com.aisquad.owlmast.jobs.port.ClaimedWork;
 import com.aisquad.owlmast.jobs.port.WorkRepository;
 import com.aisquad.owlmast.platform.diagnostics.SafeFailure;
@@ -71,6 +72,9 @@ class R2dbcWorkRepository implements WorkRepository {
   private static final String CLAIMABLE =
       " and work_type = any(:types) and contract_version <= :version";
 
+  /** Past this many doublings every backoff is at its cap; keeps the SQL arithmetic bounded. */
+  private static final int MAX_BACKOFF_DOUBLINGS = 30;
+
   private static final JsonMapper JSON = JsonMapper.builder().build();
   private static final TypeReference<Map<String, String>> PAYLOAD = new TypeReference<>() {};
 
@@ -118,8 +122,7 @@ class R2dbcWorkRepository implements WorkRepository {
   }
 
   @Override
-  public Flux<ClaimedWork> claim(
-      int limit, Duration lease, String leaseOwner, Set<WorkType> types) {
+  public Flux<Claim> claim(int limit, Duration lease, String leaseOwner, Set<WorkType> types) {
     return databaseClient
         .sql(
             "with due as (select id from jobs.work_item where tenant_id = "
@@ -181,6 +184,7 @@ class R2dbcWorkRepository implements WorkRepository {
         .sql(
             "update jobs.work_item set status = :status, effect_outcome = :effect,"
                 + " effect_reference = :reference, failure_reason = null, lease_token = null,"
+                + " release_count = 0,"
                 + " finished_at = "
                 + WALL_CLOCK
                 + ", updated_at = "
@@ -202,7 +206,7 @@ class R2dbcWorkRepository implements WorkRepository {
     return databaseClient
         .sql(
             "update jobs.work_item set status = :status, failure_reason = :reason,"
-                + " lease_token = null, next_attempt_at = "
+                + " lease_token = null, release_count = 0, next_attempt_at = "
                 + WALL_CLOCK
                 + " + make_interval(secs => :backoffSeconds),"
                 + " finished_at = case when :terminal then "
@@ -222,17 +226,41 @@ class R2dbcWorkRepository implements WorkRepository {
   }
 
   @Override
-  public Mono<Boolean> release(UUID id, UUID leaseToken, String safeReason, Duration backoff) {
+  public Mono<Integer> release(
+      UUID id, UUID leaseToken, String safeReason, Duration backoffBase, Duration backoffCap) {
+    return databaseClient
+        .sql(
+            "update jobs.work_item set status = 'PENDING', failure_reason = :reason,"
+                + " attempt_count = attempt_count - 1, lease_token = null,"
+                + " release_count = release_count + 1, next_attempt_at = "
+                + WALL_CLOCK
+                + " + make_interval(secs => least(:baseSeconds * power(2::double precision,"
+                + " least(release_count, "
+                + MAX_BACKOFF_DOUBLINGS
+                + ")), :capSeconds)), updated_at = "
+                + WALL_CLOCK
+                + LEASE_IS_CURRENT
+                + " returning release_count")
+        .bind("reason", safeReason)
+        .bind("baseSeconds", seconds(backoffBase))
+        .bind("capSeconds", seconds(backoffCap))
+        .bind("id", id)
+        .bind("token", leaseToken)
+        .map(row -> row.get("release_count", Integer.class))
+        .one();
+  }
+
+  @Override
+  public Mono<Boolean> giveBack(UUID id, UUID leaseToken, String safeReason) {
     return databaseClient
         .sql(
             "update jobs.work_item set status = 'PENDING', failure_reason = :reason,"
                 + " attempt_count = attempt_count - 1, lease_token = null, next_attempt_at = "
                 + WALL_CLOCK
-                + " + make_interval(secs => :backoffSeconds), updated_at = "
+                + ", updated_at = "
                 + WALL_CLOCK
                 + LEASE_IS_CURRENT)
         .bind("reason", safeReason)
-        .bind("backoffSeconds", seconds(backoff))
         .bind("id", id)
         .bind("token", leaseToken)
         .fetch()
@@ -309,17 +337,18 @@ class R2dbcWorkRepository implements WorkRepository {
   /**
    * Decodes a claimed row; a row that cannot become a {@link WorkItem} (a payload that is not a map
    * of strings, a bound that was tightened, a hand-edited row) is marked terminal {@code FAILED}
-   * under the lease this claim took and is not emitted, so the queue moves past it.
+   * under the lease this claim took and reported as {@link Claim.Undecodable}, so the queue moves
+   * past it within the same batch.
    */
-  private Mono<ClaimedWork> decodeOrFail(RawClaim raw) {
-    return Mono.fromCallable(() -> decode(raw))
+  private Mono<Claim> decodeOrFail(RawClaim raw) {
+    return Mono.<Claim>fromCallable(() -> decode(raw))
         .onErrorResume(undecodable -> {
           log.warn(
               "Work item {} ({}) cannot be decoded and is failed terminally: {}",
               raw.id(),
               raw.type(),
               SafeFailure.describe(undecodable));
-          return failUndecodable(raw).then(Mono.empty());
+          return failUndecodable(raw).thenReturn(new Claim.Undecodable(raw.id()));
         });
   }
 

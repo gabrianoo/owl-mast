@@ -1,6 +1,7 @@
 package com.aisquad.owlmast.audit.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.aisquad.owlmast.audit.api.ActorKind;
 import com.aisquad.owlmast.audit.api.AuditActor;
@@ -8,6 +9,7 @@ import com.aisquad.owlmast.audit.api.AuditEnvelope;
 import com.aisquad.owlmast.audit.api.AuditEnvelopeContract;
 import com.aisquad.owlmast.audit.api.AuditOutcome;
 import com.aisquad.owlmast.audit.api.AuditedMutation;
+import com.aisquad.owlmast.audit.api.MutationOutcome;
 import com.aisquad.owlmast.platform.scope.TenantId;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -69,6 +71,37 @@ class AuditRecordTest {
               record.correlationId());
       assertThat(envelope.reason()).isPresent();
     }
+  }
+
+  @Test
+  void aSuccessIsRecordedOnlyOnTheObjectTheMutationRequested() {
+    AuditedMutation<UUID> changing =
+        AuditedMutation.changing(
+            AuditActor.of(ActorKind.HUMAN, "person-a"),
+            "fixture.note",
+            "note-a",
+            "note.update",
+            "corr-2",
+            scope -> Mono.empty());
+    UUID eventId = UUID.randomUUID();
+
+    assertThatThrownBy(() ->
+            AuditRecord.succeeded(
+                eventId, changing, new MutationOutcome<>(eventId, "note-b", "2"), AT))
+        .as("a success filed under another object would falsify both histories")
+        .isInstanceOf(AuditRecord.OutcomeObjectMismatchException.class)
+        .hasMessageNotContaining("note-a")
+        .hasMessageNotContaining("note-b");
+
+    AuditRecord same =
+        AuditRecord.succeeded(eventId, changing, new MutationOutcome<>(eventId, "note-a", "2"), AT);
+    assertThat(same.objectId()).contains("note-a");
+    assertThat(same.objectVersion()).contains("2");
+    AuditRecord created =
+        AuditRecord.succeeded(eventId, MUTATION, new MutationOutcome<>(eventId, "note-c", "1"), AT);
+    assertThat(created.objectId())
+        .as("a creating mutation names no object up front; the outcome supplies it")
+        .contains("note-c");
   }
 
   private static AuditRecord unsuccessful(String reason) {

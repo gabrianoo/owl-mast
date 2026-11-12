@@ -71,6 +71,26 @@ public record RetryPolicy(
     return handlerDeadline.plus(leaseDuration.minus(handlerDeadline).dividedBy(2));
   }
 
+  /**
+   * The share of the handler deadline the authorization recheck may use, counted from the claim:
+   * half of it. A recheck that has not allowed the dispatch by then counts as undecided and the
+   * item is released uncounted, so a slow deciding component can never leave the handler a budget
+   * too short to finish and have that charged to the item as a failed attempt.
+   */
+  public Duration recheckDeadline() {
+    return handlerDeadline.dividedBy(2);
+  }
+
+  /**
+   * Bound of every processor step outside the handler (tenant discovery, the exhausted-lease sweep,
+   * the claim, and the release, deny and failure writes): one lease. Past it the lease the step
+   * works under has run out anyway, so a statement stalled by the database or the network fails the
+   * step instead of stopping every later wake-up.
+   */
+  public Duration stepTimeout() {
+    return leaseDuration;
+  }
+
   /** Delay before the next attempt after {@code failedAttempt} (1-based) failed. */
   public Duration backoffFor(int failedAttempt) {
     if (failedAttempt < 1) {

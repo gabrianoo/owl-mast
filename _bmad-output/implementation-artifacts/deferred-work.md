@@ -52,3 +52,12 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-om-01-03-recover-background-work-and-record-mutation-evidence.md`
   summary: A failed separate-path outcome write leaves only a log line; a failure metric or readiness signal (for example `owlmast_audit_outcome_write_failures_total`) would make the gap visible to operators.
   evidence: PR #111 review comment 4511333029 (AuditedMutationService.writeOutcome). R5 put the event id and correlation id into that log line; no Micrometer meters exist in the backend yet, so the first metric should set the naming and registration convention rather than appear ad hoc here.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-om-01-03-recover-background-work-and-record-mutation-evidence.md`
+  summary: No operator-facing listing of work items that are blocked but not terminal (`PENDING` with `release_count > 0` after undecided authorization rechecks); today the count is stored on the row and each release past `max-attempts` logs a warning.
+  evidence: PR #111 review comment 4549349820 (WorkProcessor.release). R6 added the count, the exponential backoff and the WARN; `FailedWorkQuery` lists terminal items only (AC5), and an authorized operator view of non-terminal work belongs with the operator surface (OM-16.01) and the real authorization port (OM-02.04).
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-om-01-03-recover-background-work-and-record-mutation-evidence.md`
+  summary: The R2DBC connection carries no TCP keepalive or connect timeout, so a connection lost to a network partition is only abandoned by the client-side step bounds, not closed promptly.
+  evidence: PR #111 review comment 4549349838 (WorkProcessor.runOnce). R6 bounds every processor step and the handler transaction on the client and the server, which removes the stall; the socket options are parameters of the connection URL the install package renders (`OWLMAST_DATABASE_R2DBC_URL`, OM-01.02 chart), so they belong to a packaging change with its own render tests.
+

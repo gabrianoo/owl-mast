@@ -29,6 +29,9 @@ import reactor.core.publisher.Mono;
  *       live lease it never releases, with no shutdown hook or cleanup, as a SIGKILL would leave
  *       it. Doing this from inside the process removes any timing between an external kill and the
  *       handler deadline.
+ *   <li>{@code --fixture.mode=hang-while-leased}: the follow-up handler, once seeding has finished,
+ *       never completes, so the process holds a live lease until it is asked to stop (SIGTERM, a
+ *       graceful shutdown).
  *   <li>{@code --fixture.seed=true}: after start-up, enqueue work and covered mutations for two
  *       tenants through the published owner APIs.
  * </ul>
@@ -39,6 +42,7 @@ import reactor.core.publisher.Mono;
 public final class RestartFixtureProcess {
 
   public static final String MODE_HALT_WHILE_LEASED = "--fixture.mode=halt-while-leased";
+  public static final String MODE_HANG_WHILE_LEASED = "--fixture.mode=hang-while-leased";
   public static final String SEED = "--fixture.seed=true";
   public static final int HALT_EXIT_CODE = 137;
   public static final int SEEDED_FOLLOW_UPS = 4;
@@ -51,6 +55,7 @@ public final class RestartFixtureProcess {
 
   public static void main(String[] args) throws InterruptedException {
     boolean halt = Arrays.asList(args).contains(MODE_HALT_WHILE_LEASED);
+    boolean hang = Arrays.asList(args).contains(MODE_HANG_WHILE_LEASED);
     boolean seed = Arrays.asList(args).contains(SEED);
     String[] springArgs =
         Arrays.stream(args).filter(arg -> !arg.startsWith("--fixture.")).toArray(String[]::new);
@@ -69,6 +74,11 @@ public final class RestartFixtureProcess {
           .behave(item ->
               Mono.fromFuture(seeded)
                   .then(Mono.fromRunnable(() -> Runtime.getRuntime().halt(HALT_EXIT_CODE))));
+    }
+    if (hang) {
+      context
+          .getBean(FollowUpHandler.class)
+          .behave(item -> Mono.fromFuture(seeded).then(Mono.never()));
     }
     if (seed) {
       seed(context.getBean(NotesFixture.class));
