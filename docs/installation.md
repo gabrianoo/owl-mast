@@ -405,7 +405,8 @@ The container receives `OWLMAST_API_PATH_PREFIX` (= `routing.apiPathPrefix`) and
 the shell as `/owlmast-config.json`; the shell then calls `GET <prefix>/compatibility` on the same
 origin, so the route for `routing.apiPathPrefix` must reach the backend's `/api`. The container refuses
 to start when the prefix is not an absolute path of letters, digits, `.`, `_`, `~`, `-` and `/` without
-empty, `.` or `..` segments, and it answers 404 below the prefix: a request that reaches the frontend
+empty, `.` or `..` segments, or when it names a path the image serves or a page of the shell (`/assets`,
+`/usage`, ...), and it answers 404 below the prefix: a request that reaches the frontend
 there was misrouted, and the shell then reports that no descriptor was published instead of a healthy
 backend. Before enabling or upgrading the frontend, run the pre-rollout pair check against the artifacts
 being rolled out ([api-compatibility.md](api-compatibility.md)). `--frontend-url` reads the contract the

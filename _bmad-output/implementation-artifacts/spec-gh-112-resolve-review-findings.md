@@ -84,6 +84,12 @@ context:
 - [x] `frontend/e2e/image/image.spec.ts`, `scripts/verify-frontend-artifact.sh` -- exact CSP directives; security headers and `no-store` on the manifest and misroute locations -- R9, R10.
 - [x] `docs/api-compatibility.md` -- credentials, `descriptorPath`, `Error` envelope.
 
+**Round 3 (PR #119 review 5878165802, 2 findings S1–S2):**
+- [x] `frontend/nginx/default.conf.template`, `frontend/e2e/image/image.spec.ts`, `scripts/verify-frontend-artifact.sh` -- `/assets/` answers carry the one-year immutable policy only on 200/304 (a `map` on `$status`); every other status is `no-store`; ranges are off (`max_ranges 0`); the e2e and the artifact script expect `no-store` on `/assets/missing.js` and the exact immutable value on a hashed asset, the artifact script also on its 304 and on range requests -- S1.
+- [x] `frontend/docker-entrypoint.d/16-owlmast-api-prefix.envsh`, `frontend/src/app/destinations.test.ts`, `scripts/verify-frontend-artifact.sh` -- refuse a prefix whose first segment is a shell destination (`owlmast_shell_routes`); a unit test fails when that list and `DESTINATIONS` differ; `/usage`, `/focus/x` and siblings added to the negative list, `/usagex` and `/owl/usage` to the positive check -- S2.
+- [x] `frontend/Dockerfile` -- `NGINX_ENVSUBST_FILTER=^OWLMAST_` -- 3E2.
+- [x] `docs/frontend.md`, `docs/installation.md` -- both rules named.
+
 **Acceptance Criteria:**
 - Given the 31 findings, when the PR is opened, then each is listed fixed or declined with a reason and every thread of review 5876022641 on PR #112 has a reply and is resolved.
 - Given the changed code, when the frontend, deploy, script and backend gates run, then they pass, or the gate that could not run is reported with its reason.
@@ -107,6 +113,9 @@ context:
 - R7: the `@` test comes first and the value is never printed, because the other "invalid URL" messages echo the value.
 - Deferred (pre-existing, not caused by this round): the image still ships the base image's `50x.html` under the web root.
 - P1: keys are decoded (`\uXXXX`, `\t`, `\n`, `\r`, `\f`, `\x` to `x`); a malformed `\u` is refused like Java throws. Values stay undecoded: an escaped number fails the decimal check (fail closed).
+- Round 3 (2026-11-12, owner-pre-approved, same branch and PR #119): status reopened for the round (`in-progress`, then `in-review`); both findings of review 5878165802 reproduced against 24628df before any change. Implemented directly (two small edits), reviewed by subagents.
+- S1: `map $status` in the template's http context. 304 keeps the immutable value: a 304 replaces the stored headers, so `no-store` there would undo the policy of the cached 200. A range request is still status 200 when `add_header` is evaluated (the range filter runs later), and an unsatisfiable one is answered 416 with the headers added a second time, so it carried both policies (found in review, 3B1). Ranges are therefore off for the whole server (`max_ranges 0`): the shell's files are small. The image's envsubst replaces defined environment variables only, and since this round only `OWLMAST_*` ones (`NGINX_ENVSUBST_FILTER`), so `$status`, `$uri` and the map variable survive rendering whatever the container environment holds.
+- S2: the guard runs in the runtime image, where `destinations.ts` does not exist. A generated list would need a second build output outside the web root; a literal list in the guard plus a unit test that compares it with `DESTINATIONS` (both directions, and that every destination is one segment) is smaller and fails the same CI job. The router matches exactly and case-sensitively, so the comparison is exact; the whole first segment is reserved so a later child route (`/focus/...`) is covered.
 
 ## Spec Change Log
 
@@ -188,6 +197,31 @@ Pass 2 (2026-11-12): blind-hunter (B), edge-case-hunter (E), verification-gap (V
 | 2V3 | `_shown` pinned at one site only | medium | Patched for the remote `descriptorPath`; the operator-supplied sites no longer echo (2B1) or are covered by the prefix cases. |
 | 2V4 | `_verdict_line` on stdout untested | low | Patched: manifest in a directory whose name holds a line break; remote version with ESC. |
 | 2V5 | "Window lost focus keeps the control" untested | medium | Patched: unit test dispatches a destination-less `focusout` while the control stays active, then expects the repair. |
+
+Round 3 input (2026-11-12): PR #119 review 5878165802 (S1–S2), verified against 24628df.
+
+| # | Finding | Verdict | Evidence / action |
+| --- | --- | --- | --- |
+| S1 | A 404 below `/assets/` is immutable for a year | medium | Reproduced on the image built from 24628df (`404` with `Cache-Control: public, max-age=31536000, immutable`). Patched: `map $status`; `no-store` unless 200 or 304; e2e and artifact script expect it. |
+| S2 | Prefix guard accepts the shell's client routes | low | Reproduced (`/usage` renders `location = /usage { return 404; }`). Patched: first segment compared with `owlmast_shell_routes`; unit test compares the list with `DESTINATIONS`; eight values added to the negative list, three to the positive check. |
+
+Pass 3 (2026-11-12): blind-hunter (B), edge-case-hunter (E), verification-gap (V) on the round 3 diff against 24628df. No intent_gap or bad_spec; kept findings routed to patch.
+
+| # | Finding | Verdict | Evidence / action |
+| --- | --- | --- | --- |
+| 3B1/3E1/3E6/3V1 | An unsatisfiable range on a hashed asset is a 416 with both cache policies and every security header twice | medium | Reproduced by two reviewers. The doubled headers predate the round; the conflicting pair came with the `map`. Patched: `max_ranges 0` for the server; three checks (range answered whole, no 416 on an asset or on the shell, exactly one `Cache-Control`). |
+| 3B2 | The 206 map entry is unreachable | low | True. Patched: entry and comment removed (ranges are off). |
+| 3B3/3E7 | Task line claims the e2e checks the 304 | low | True: only the artifact script does, in the same CI step. Task line corrected; no second 304 test added. |
+| 3B4 | Status note says `in-progress`, frontmatter says `in-review` | low | Note reworded. `review_loop_iteration` counts loopbacks, of which there were none. |
+| 3B5 | No round 3 input rows | low | They are written at triage; this table and the one above. |
+| 3B6 | `docs/installation.md` describes the old refusal rule | low | True. Patched: one clause. |
+| 3B7 | Refusal message ends with the character-set hint for a collision | low | Rejected: the reason and the colliding path come first in the same line, the hint has ended every refusal since round 1, and a second message shape is more than a direct correction. |
+| 3B8/3E3 | Bare `ETAG=` assignment can abort the script without a FAIL line | low | Patched: `|| true`, and a check that the ETag is present. |
+| 3B9/3E4 | 304 policy check passes without a 304 | medium | True for an empty ETag. Patched: `status_and_cache` prints status and every `Cache-Control` of one answer; all cache checks compare both. |
+| 3B10 | Positive-check label omits `/Usage` | low | Patched. |
+| 3B11 | Unit test pins the list, not the loop; a destination at `/api` is not rejected | false | The loop is pinned by eight refusals in the artifact script (same CI run; the verification-gap layer confirmed removing it fails them). A destination at `/api` would stop the default image from starting, which the same script reports. |
+| 3E2 | A container variable named `status` is substituted into the map | low | True for the base image's envsubst (and for `uri` before this round). Patched: `NGINX_ENVSUBST_FILTER=^OWLMAST_`; check with `-e status=200 -e uri=/index.html`. |
+| 3E5 | Range check does not assert 206 | false | Moot: ranges are off and the check now asserts 200 with one policy. |
 
 ## Design Notes
 
