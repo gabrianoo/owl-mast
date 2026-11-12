@@ -13,6 +13,8 @@ deterministic shape:
 - Ticket claims: a short-lived issue comment marked ``<!-- bmad:claim token=... -->``.
 - Documents that are not specs (an epic context, a retrospective, a design note): one issue or
   pull-request comment per key, marked ``<!-- bmad:doc key=... -->`` and edited in place.
+- Deferred work: one issue labelled ``deferred-work`` that names its source issues and pull
+  requests, on the Project with ``Status`` Backlog.
 
 A marker counts only when a trusted author wrote it (``OWL_GH_TRUSTED_AUTHORS``, by default the
 authenticated ``gh`` user and anyone with write access), because on a public repository anyone can
@@ -49,7 +51,8 @@ GH_TIMEOUT_SECONDS = 120
 
 STATUSES = ("Backlog", "Ready", "In progress", "In review", "Blocked", "Done")
 MAX_REVIEW_ROUNDS = 10
-COMMENT_LIMIT = 65536
+COMMENT_LIMIT = 65536  # GitHub's limit for a comment and for an issue body
+DEFERRED_LABEL = "deferred-work"
 
 SPEC_MARKER = re.compile(r"<!-- bmad:spec key=([A-Za-z0-9._-]+) -->")
 REVIEW_MARKER = re.compile(r"<!-- bmad:review round=(\d+) verdict=(clean|changes) -->")
@@ -386,7 +389,7 @@ class GitHub:
         """Refuse to write a marker this helper would not count when it reads it back."""
         if not self.trusted(self.viewer()):
             raise DeliveryError(f"the gh user {self.viewer()} is not a trusted author ({TRUSTED_AUTHORS_ENV}="
-                                f"{self.trusted_authors!r}), so the markers it writes would not count; refusing to write")
+                                f"{self.trusted_authors!r}), so the helper would not count what it writes; refusing to write")
 
     def trusted(self, login: Optional[str]) -> bool:
         """Whether a bmad marker written by ``login`` counts.
@@ -571,6 +574,72 @@ class GitHub:
         rank = {name: index for index, name in enumerate(priority_order)}
         items.sort(key=lambda i: (rank.get(i["priority"], len(rank)), i["stable_id"] or "", i["number"]))
         return items
+
+    # ---- deferred work
+
+    def defer(self, title: str, body: str, sources: Sequence[int]) -> dict:
+        """File one piece of deferred work: a labelled issue that names its sources, on the Project as Backlog.
+
+        The title is the deferral's identity. When an open issue with the label and the same title
+        exists, written by a trusted author, nothing is created and its body and sources are left
+        alone; the run only finishes what is missing (the Project item, the Status), so the same
+        command can be run again after a failure. A Status that is already set stays: the owner may
+        have moved the item. The result lists ``sources`` only for an issue this call created.
+        """
+        title = " ".join(title.split())
+        sources = list(dict.fromkeys(sources))
+        if not title or not body.strip():
+            raise DeliveryError("deferred work needs a title and a body that says what is deferred and why")
+        if not sources:
+            raise DeliveryError("deferred work needs at least one --source: the issue or pull request it comes from")
+        self._require_trusted_writer()
+        links = []
+        for number in sources:
+            try:
+                source = self.rest("GET", f"repos/{self.repo}/issues/{number}") or {}
+            except DeliveryError as error:
+                raise DeliveryError(f"source #{number} cannot be read as an issue or pull request of {self.repo} "
+                                    f"({error})") from error
+            links.append(f"- {'PR' if source.get('pull_request') else 'Issue'} #{number}")
+        text = f"{body.rstrip()}\n\n## Source\n\n" + "\n".join(links) + "\n"
+        if len(text) > COMMENT_LIMIT:
+            raise DeliveryError(f"issue body is {len(text)} characters; GitHub's limit is {COMMENT_LIMIT}")
+        issue = self._deferred_issue(title)
+        created = issue is None
+        if created:
+            issue = self.rest("POST", f"repos/{self.repo}/issues", {"title": title, "body": text, "labels": [DEFERRED_LABEL]})
+            if DEFERRED_LABEL not in [label.get("name") for label in issue.get("labels") or []]:
+                # GitHub drops the labels of a user without push access and still creates the issue
+                raise DeliveryError(f"#{issue['number']} ({issue['html_url']}) was created without the "
+                                    f"{DEFERRED_LABEL} label, so a rerun would not find it and would file it again; "
+                                    "add the label by hand, then run the same command again")
+        try:
+            status = self.issue_item(issue["number"])[2]
+            if status is None:  # not on the Project, or on it without a Status
+                status = self.set_status(issue["number"], "Backlog")["to"]
+        except DeliveryError as error:
+            raise DeliveryError(f"#{issue['number']} ({issue['html_url']}) {'was created' if created else 'exists'} "
+                                f"but is not on the Project as Backlog yet; run the same command again ({error})") from error
+        result = {"issue": issue["number"], "url": issue["html_url"], "created": created, "status": status}
+        if created:
+            result["sources"] = sources
+        return result
+
+    def _deferred_issue(self, title: str) -> Optional[dict]:
+        """The open deferred-work issue with this title, or None. Only a trusted author's issue counts."""
+        out = self.run(["api", "--paginate", "--slurp",
+                        f"repos/{self.repo}/issues?labels={DEFERRED_LABEL}&state=all&per_page=100"], None)
+        same = [issue for page in json.loads(out) for issue in page
+                if "pull_request" not in issue and " ".join((issue.get("title") or "").split()) == title
+                and self.trusted((issue.get("user") or {}).get("login"))]
+        found = [issue for issue in same if issue.get("state") == "open"]
+        if len(found) > 1:
+            raise DeliveryError(f"{len(found)} open {DEFERRED_LABEL} issues are titled {title!r} "
+                                f"({', '.join('#%d' % i['number'] for i in found)}); close the duplicates")
+        if not found and same:
+            raise DeliveryError(f"#{same[0]['number']} is a closed {DEFERRED_LABEL} issue titled {title!r}; whether "
+                                "it covers this work is the owner's call, so nothing was filed or reopened")
+        return found[0] if found else None
 
     # ---- spec comments
 
@@ -809,6 +878,12 @@ def main(argv: Optional[Sequence[str]] = None, client: Optional[GitHub] = None) 
                    help="refuse unless the current Status is one of these (repeatable)")
     p.add_argument("--claim", action="store_true",
                    help="serialize rival runs with a claim marker comment; use it when picking up a ticket")
+    p = sub.add_parser("defer", help="file deferred work: a labelled issue linked to its source, on the Project "
+                                     "as Backlog; safe to run again")
+    p.add_argument("--title", required=True, help="the deferral's identity: a rerun finds the issue by it")
+    p.add_argument("--body-file", type=Path, required=True, help="what is deferred, why, and the evidence")
+    p.add_argument("--source", type=int, action="append", default=[], metavar="NUMBER",
+                   help="issue or pull request the work comes from (repeatable, at least one)")
     p = sub.add_parser("spec-pull", help="hydrate a spec file from its issue/PR comment")
     p.add_argument("number", type=int)
     p.add_argument("--key")
@@ -851,6 +926,8 @@ def main(argv: Optional[Sequence[str]] = None, client: Optional[GitHub] = None) 
             result = gh.ready()
         elif args.command == "status":
             result = gh.set_status(args.issue, args.to, args.expect, args.claim)
+        elif args.command == "defer":
+            result = gh.defer(args.title, args.body_file.read_text(encoding="utf-8"), args.source)
         elif args.command == "spec-pull":
             result = gh.spec_pull(args.number, args.key, args.out)
         elif args.command == "spec-push":

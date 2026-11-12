@@ -953,6 +953,165 @@ class ReviewStateTests(unittest.TestCase):
         self.assertEqual([(c["path"], c["line"], c["side"]) for c in review["comments"]], [("gone.py", 2, "LEFT")])
 
 
+class DeferTests(unittest.TestCase):
+    """`defer` files deferred work as a labelled issue on the Project with Status Backlog, once."""
+
+    TITLE = "OM-01.02: TLS for the bundled PostgreSQL"
+    CREATE = "-X POST repos/gabrianoo/owl-mast/issues --input"
+    WRITES = (CREATE, "addProjectV2ItemById", "updateProjectV2ItemFieldValue")
+
+    @staticmethod
+    def issue(number=150, title=TITLE, author="Delivery-Bot", state="open", **extra):
+        return {"number": number, "title": title, "state": state, "user": {"login": author},
+                "html_url": f"https://github.com/gabrianoo/owl-mast/issues/{number}",
+                "labels": [{"name": "deferred-work"}], **extra}
+
+    def client(self, existing=(), board=None, created=None, pages=None, add=None, **kwargs):
+        """``existing``: the labelled issues GitHub lists (``pages``: the same, page by page).
+
+        ``board``: the issue's Project item, None for no item. ``created``: GitHub's answer to the create call.
+        ``add``: the answer to the add-to-Project call.
+        """
+        node = item("Backlog")["data"] if board is None else board["data"]
+        if board is None:
+            node["repository"]["issueOrPullRequest"]["projectItems"]["nodes"] = []
+        fake = FakeGh([
+            ("issues?labels=deferred-work&state=all", pages or [list(existing)]),
+            ("owl-mast/issues/21", {"number": 21}),
+            ("owl-mast/issues/109", {"number": 109, "pull_request": {"url": "u"}}),
+            ("owl-mast/issues/999", lambda *_: (_ for _ in ()).throw(DeliveryError("gh api failed: Not Found (HTTP 404)"))),
+            (self.CREATE, created or self.issue()),
+            ("projectV2(number:$number){ id", {"data": PROJECT}),
+            ("issueOrPullRequest", {"data": node}),
+            ("addProjectV2ItemById", add or {"data": {"addProjectV2ItemById": {"item": {"id": "IT9"}}}}),
+            ("updateProjectV2ItemFieldValue", {"data": {"updateProjectV2ItemFieldValue": {}}}),
+        ])
+        return GitHub(run=fake, **kwargs), fake
+
+    def writes(self, fake):
+        return [next(w for w in self.WRITES if w in call) for call, _ in fake.calls if any(w in call for w in self.WRITES)]
+
+    def test_new_deferral_is_a_labelled_issue_linked_to_its_sources_on_the_project_as_backlog(self):
+        gh, fake = self.client()
+        result = gh.defer(f"  {self.TITLE} ", "What is deferred and why.\n\n", [21, 109, 21])
+        self.assertEqual(result, {"issue": 150, "url": "https://github.com/gabrianoo/owl-mast/issues/150",
+                                  "created": True, "status": "Backlog", "sources": [21, 109]})
+        self.assertEqual(self.writes(fake), list(self.WRITES))  # create, then add to the Project, then Status
+        payload = json.loads(next(stdin for call, stdin in fake.calls if self.CREATE in call))
+        self.assertEqual(payload, {"title": self.TITLE, "labels": ["deferred-work"],
+                                   "body": "What is deferred and why.\n\n## Source\n\n- Issue #21\n- PR #109\n"})
+        update = next(call for call, _ in fake.calls if "updateProjectV2ItemFieldValue" in call)
+        self.assertIn("i=IT9", update)  # the item that was just added
+        self.assertIn("o=o0", update)  # Backlog
+
+    def test_rerun_with_everything_done_writes_nothing(self):
+        gh, fake = self.client(existing=[self.issue(number=124)], board=item("Backlog"))
+        result = gh.defer(self.TITLE, "A different body is not written.", [21])
+        self.assertEqual(result, {"issue": 124, "url": "https://github.com/gabrianoo/owl-mast/issues/124",
+                                  "created": False, "status": "Backlog"})  # no sources: none were recorded
+        self.assertEqual(self.writes(fake), [])
+
+    def test_rerun_finds_the_issue_on_a_later_page_and_under_irregular_spacing(self):
+        pages = [[self.issue(number=n, title=f"other {n}") for n in range(1, 101)],
+                 [self.issue(number=124, title=self.TITLE.replace(": ", ":  ") + " ")]]
+        gh, fake = self.client(pages=pages, board=item("Backlog"))
+        self.assertEqual((gh.defer(self.TITLE, "body", [21])["issue"], self.writes(fake)), (124, []))
+        listing = next(call for call, _ in fake.calls if "issues?labels=deferred-work" in call)
+        self.assertEqual(listing, "api --paginate --slurp repos/gabrianoo/owl-mast/issues?labels=deferred-work"
+                                  "&state=all&per_page=100")
+
+    def test_an_issue_created_without_the_label_is_refused_and_named(self):
+        """GitHub drops the labels of a user without push access; a rerun would then file the work again."""
+        gh, fake = self.client(created=self.issue(labels=[]))
+        with self.assertRaisesRegex(DeliveryError, "#150 .*created without the deferred-work label"):
+            gh.defer(self.TITLE, "body", [21])
+        self.assertEqual(self.writes(fake), [self.CREATE])
+
+    def test_a_project_failure_after_the_create_names_the_issue_and_asks_for_a_rerun(self):
+        def fail(*_):
+            raise DeliveryError("gh api graphql failed: Server Error (HTTP 502)")
+        gh, fake = self.client(add=fail)
+        with self.assertRaisesRegex(DeliveryError, r"#150 \(https://github.com/gabrianoo/owl-mast/issues/150\) was "
+                                                   "created but is not on the Project.*run the same command again.*502"):
+            gh.defer(self.TITLE, "body", [21])
+
+    def test_rerun_after_a_partial_failure_finishes_the_project_part_without_a_second_issue(self):
+        gh, fake = self.client(existing=[self.issue(number=124)])  # created, never added to the Project
+        self.assertEqual(gh.defer(self.TITLE, "body", [21])["status"], "Backlog")
+        self.assertEqual(self.writes(fake), ["addProjectV2ItemById", "updateProjectV2ItemFieldValue"])
+        gh, fake = self.client(existing=[self.issue(number=124)], board=item(None))  # added, Status never set
+        self.assertEqual(gh.defer(self.TITLE, "body", [21])["status"], "Backlog")
+        self.assertEqual(self.writes(fake), ["updateProjectV2ItemFieldValue"])
+
+    def test_rerun_leaves_a_status_the_owner_already_moved(self):
+        gh, fake = self.client(existing=[self.issue(number=124)], board=item("Ready"))
+        self.assertEqual(gh.defer(self.TITLE, "body", [21])["status"], "Ready")
+        self.assertEqual(self.writes(fake), [])
+
+    def test_a_closed_issue_or_two_open_issues_with_the_title_are_refused(self):
+        gh, fake = self.client(existing=[self.issue(number=124, state="closed")])
+        with self.assertRaisesRegex(DeliveryError, "#124 is a closed deferred-work issue.*nothing was filed or reopened"):
+            gh.defer(self.TITLE, "body", [21])
+        self.assertEqual(self.writes(fake), [])
+        gh, fake = self.client(existing=[self.issue(number=124), self.issue(number=125)])
+        with self.assertRaisesRegex(DeliveryError, "#124, #125"):
+            gh.defer(self.TITLE, "body", [21])
+        self.assertEqual(self.writes(fake), [])
+        gh, fake = self.client(existing=[self.issue(number=124, state="closed"), self.issue(number=125)],
+                               board=item("Backlog"))
+        self.assertEqual(gh.defer(self.TITLE, "body", [21])["issue"], 125)  # the open one is the deferral
+
+    def test_an_outsiders_issue_a_pull_request_and_another_title_are_not_the_deferral(self):
+        others = [self.issue(number=124, author=OUTSIDER), self.issue(number=126, pull_request={"url": "u"}),
+                  self.issue(number=127, title=self.TITLE + " (bundled chart)")]
+        gh, fake = self.client(existing=others)
+        result = gh.defer(self.TITLE, "body", [21])
+        self.assertEqual((result["issue"], result["created"]), (150, True))
+        self.assertEqual(self.writes(fake), list(self.WRITES))
+
+    def test_another_trusted_authors_issue_is_the_deferral(self):
+        gh, fake = self.client(existing=[self.issue(number=124, author=WRITER)], board=item("Backlog"))
+        self.assertEqual(gh.defer(self.TITLE, "body", [21])["created"], False)
+
+    def test_bad_input_is_refused_before_anything_is_written(self):
+        for title, body, sources, message in (
+                ("  ", "body", [21], "needs a title and a body"),
+                (self.TITLE, " \n", [21], "needs a title and a body"),
+                (self.TITLE, "body", [], "at least one --source"),
+                (self.TITLE, "body", [21, 999], "source #999 cannot be read"),
+                (self.TITLE, "x" * 65536, [21], "GitHub's limit is 65536")):
+            with self.subTest(message=message):
+                gh, fake = self.client()
+                with self.assertRaisesRegex(DeliveryError, message):
+                    gh.defer(title, body, sources)
+                self.assertEqual(self.writes(fake), [])
+
+    def test_an_untrusted_gh_user_is_refused_because_a_rerun_would_not_find_its_issue(self):
+        gh, fake = self.client(trusted_authors=WRITER)
+        with self.assertRaisesRegex(DeliveryError, "not a trusted author.*would not count what it writes"):
+            gh.defer(self.TITLE, "body", [21])
+        self.assertEqual(fake.calls, [])
+
+    def test_cli_files_the_body_file_and_a_refusal_exits_2(self):
+        with tempfile.TemporaryDirectory() as folder:
+            body = Path(folder) / "deferred.md"
+            body.write_text("What is deferred and why.\n", encoding="utf-8")
+            gh, fake = self.client()
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = main(["defer", "--title", self.TITLE, "--body-file", str(body), "--source", "21"], client=gh)
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(out.getvalue())["issue"], 150)
+            self.assertIn("- Issue #21", json.loads(next(stdin for call, stdin in fake.calls if self.CREATE in call))["body"])
+            gh, fake = self.client()
+            err = io.StringIO()
+            with redirect_stderr(err), redirect_stdout(io.StringIO()):
+                code = main(["defer", "--title", self.TITLE, "--body-file", str(body)], client=gh)
+            self.assertEqual(code, 2)
+            self.assertIn("at least one --source", err.getvalue())
+            self.assertEqual(self.writes(fake), [])
+
+
 class CustomizationTests(unittest.TestCase):
     """The team overrides the delivery workflow depends on must parse and merge."""
 
@@ -1021,6 +1180,24 @@ class CustomizationTests(unittest.TestCase):
                        "6. **Rework**", "The round is 10 → post it", "`walkthrough-accepted-risks` document"):
             self.assertIn(needle, doc)  # the step numbers the overrides cite
         self.assertIn("OWL_GH_TRUSTED_AUTHORS", doc)
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib needs Python 3.11+")
+    def test_deferred_work_is_filed_with_defer_wherever_the_workflow_files_it(self):
+        import tomllib
+        doc = (REPO_ROOT / "docs" / "github-delivery-workflow.md").read_text(encoding="utf-8")
+        for needle in ("$H defer --title T --body-file B --source N [--source M]",
+                       "on the Project with Status Backlog", "| (new) → Backlog |"):
+            self.assertIn(needle, doc)
+        # section 1 step 5, the fix round, section 2 step 4
+        for heading in ("5. **Finish**", "**Fix round**", "4. **Triage new findings**"):
+            step = next((line for line in doc.splitlines() if line.lstrip().startswith(heading)), "")
+            self.assertIn("`defer`", step, heading)
+        for skill in ("bmad-build", "bmad-review"):
+            with self.subTest(skill=skill), (REPO_ROOT / "_bmad" / "custom" / f"{skill}.toml").open("rb") as handle:
+                on_complete = tomllib.load(handle)["workflow"]["on_complete"]
+                self.assertIn("python3 -m automation.github_delivery defer --title <T> --body-file <B> --source",
+                              on_complete)
+                self.assertIn("puts it on the Project as Backlog; never create these issues with raw `gh`", on_complete)
 
 
 class CliTests(unittest.TestCase):
