@@ -21,7 +21,7 @@ artifact and its smoke check are delivered by OM-01.04, browser realm/client/ses
 | NetworkPolicy enforcement on a disposable kindnet cluster | not applicable | one run on 2026-11-09, before the changes of 2026-11-11 |
 | Kind qualification (`scripts/qualify-local-install.sh all`): four combinations, persistence, failure paths | passed 2026-11-07 | passed 2026-11-12, three times: at `f188d51` (PR #116, before OM-01.03; 131 ok), at `4fc415b` (141 ok, 0 FAIL) and at `00b4853` (145 ok, 0 FAIL) |
 | Kind qualification, `first-enable`: fresh volume, identity bundle enabled through the pre-upgrade hook, retry | passed 2026-11-07 | passed 2026-11-12 at `00b4853` up to and including the retry (fresh volume `owl-mast-fe-e01r01`); the run then stopped at the retirement, see the next rows and the note below |
-| Kind qualification: every migration applied by `owlmast_app`, durable work published by the installed backend (in all four combinations and first-enable) | not applicable (no durable work before OM-01.03) | passed 2026-11-12 at `00b4853`: migrations 001–005 applied by `owlmast_app` on the bundled and the external database (V002–V005 as an upgrade of the databases the earlier runs left at V001); durable work published in bundled-bundled, bundled-external, external-bundled, external-external and first-enable |
+| Kind qualification: every migration applied by `owlmast_app`, durable work published by the installed backend (in all four combinations and first-enable). The probe writes a synthetic intent and its `audit.publish` item in SQL as `owlmast_app`, so it proves discovery, the claim, the handler transaction and the publisher, not the application's enqueue path; its rows are kept | not applicable (no durable work before OM-01.03) | passed 2026-11-12 at `00b4853`: migrations 001–005 applied by `owlmast_app` on the bundled and the external database (V002–V005 as an upgrade of the databases the earlier runs left at V001); durable work published in bundled-bundled, bundled-external, external-bundled, external-external and first-enable |
 | Kind qualification: Keycloak bootstrap admin retired (`identity.keycloak.bootstrapAdmin.enabled=false`), chart side only | not applicable | **failed** in the scripted run at `00b4853` (`helm upgrade --wait` timed out: chart defect, fixed in `31ee127`); **passed** when rerun on the same release with the fixed chart. Not yet run as part of one complete `first-enable` on a fresh volume |
 | Frontend image deployed on the Kind target | not run | **not run** by the script (`frontend.enabled=false`); deferred |
 | `helm upgrade` of a release installed from chart 0.1.0 | not applicable | **not run** on a cluster (render support only) |
@@ -97,7 +97,9 @@ when a secret reference is empty, or when an unknown key (for example `auth.enab
 (`values.schema.json` rejects unknown top-level keys).
 
 A "compatible" external PostgreSQL is version 17 or newer with VectorChord 1.1.1 preloaded and installed in the
-application database (the bundle is PostgreSQL 18.3). The chart cannot see the version of a server it does not
+application database (the bundle is PostgreSQL 18.3). Only PostgreSQL 18 is qualified: every test, CI job and
+Kind run uses an 18.x image. 17 is the oldest version the backend accepts (the first with `transaction_timeout`)
+and has not been run. The chart cannot see the version of a server it does not
 run, so the backend checks it: the `schemaBaseline` readiness component reads `server_version_num` and stays
 DOWN below 17, with the log line `PostgreSQL <major> answered; Owl Mast requires PostgreSQL 17 or newer` (once per
 process), and the durable-work scheduler claims nothing on such a server (`Durable work is not started: …`).
