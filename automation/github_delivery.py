@@ -57,6 +57,7 @@ CLAIM_STALE_SECONDS = 900
 BODY_SENTINEL = "<!-- bmad:spec-body -->"
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 DELETED_FILE = re.compile(r"^diff --git a/(.+) b/\1$")
+BINARY_FILE = re.compile(r"^Binary files .+ and (?:b/(.+)|/dev/null) differ$")
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
 
 Runner = Callable[[Sequence[str], Optional[str]], str]
@@ -130,6 +131,10 @@ def diff_anchors(diff_text: str) -> Tuple[Dict[str, set], Dict[str, set]]:
     line numbers; a deleted file has no new side, so its comments anchor to ``side: LEFT`` or to
     the file as a whole.
 
+    A file whose diff has headers but no hunks (a pure rename or copy, under its new path only; a
+    binary file; a new empty file; a mode-only change) is in ``right`` with no lines: it takes
+    file-level comments only.
+
     File headers are read only between hunks: the ``@@`` header's line counts say how long a hunk
     is, so an added line whose text starts with ``++ `` (it reads ``+++ ...``) stays content.
     """
@@ -173,6 +178,12 @@ def diff_anchors(diff_text: str) -> Tuple[Dict[str, set], Dict[str, set]]:
         elif raw.startswith("deleted file mode ") and named is not None:
             gone = named  # also covers an empty or binary file, which has no ---/+++ lines
             deleted.setdefault(gone, set())
+        elif raw.startswith(("new file mode ", "new mode ")) and named is not None:
+            right.setdefault(named, set())  # a new empty file or a mode-only change has no +++ line
+        elif raw.startswith(("rename to ", "copy to ")):
+            right.setdefault(raw.split(" to ", 1)[1], set())  # a pure rename or copy has no +++ line
+        elif (binary := BINARY_FILE.match(raw)) and binary.group(1) is not None:  # None: /dev/null, a deleted binary
+            right.setdefault(named or binary.group(1), set())
         elif raw.startswith("--- "):
             source = raw[4:].strip()
             old_name = None if source == "/dev/null" else re.sub(r"^a/", "", source)
@@ -212,11 +223,14 @@ def build_review_payload(
     """Build one review round: (create-review payload, file-level comment payloads).
 
     A finding on a line of the reviewed diff is an inline comment of the review. GitHub's
-    create-review endpoint has no ``subject_type``, so a finding outside the hunks, or on a file the
-    reviewed diff does not hold, is a separate ``POST pulls/{n}/comments`` payload with ``subject_type: file``
+    create-review endpoint has no ``subject_type``, so a finding outside the hunks of a file the
+    reviewed diff holds is a separate ``POST pulls/{n}/comments`` payload with ``subject_type: file``
     (each carries its ``finding_id``, which the caller removes before sending). A finding on a file
     the diff deletes is inline on ``side: LEFT`` when it names a removed line, otherwise a file-level
-    thread on that file. Either way every finding becomes one resolvable thread.
+    thread on that file. Either way every finding becomes one resolvable thread on its own file.
+
+    A finding on a path the reviewed diff does not hold is refused: GitHub has no thread for such a
+    file, and a thread on some other file would point the fix round at the wrong place.
 
     Finding ids must start with ``R<round>-``: ``post_review`` skips ids that already have a thread
     when a round is rerun, and the prefix keeps that from matching a thread of an earlier round.
@@ -232,7 +246,6 @@ def build_review_payload(
     anchors, deleted = diff_anchors(diff_text)
     if findings and not anchors and not deleted:
         raise DeliveryError("the pull-request diff has no files to anchor findings to")
-    fallback = sorted(anchors or deleted)[0] if anchors or deleted else None
     prefix = f"R{round_number}-"
     comments: List[dict] = []
     file_comments: List[dict] = []
@@ -250,12 +263,13 @@ def build_review_payload(
         if side:
             comment = {"path": finding.path, "line": finding.line, "side": side, "body": f"{text}\n\n{finding.body}"}
             comments.append(comment)
+        elif finding.path not in anchors and finding.path not in deleted:
+            raise DeliveryError(f"finding {finding.id} names {finding.path!r}, which is not a file of the reviewed "
+                                "diff, so it has no thread to live in; name the most relevant changed file and "
+                                "say in the body which file the problem is in")
         else:
-            known = finding.path in anchors or finding.path in deleted
-            why = ("outside the diff hunks" if finding.path in anchors else "file deleted by this change") \
-                if known else "file not in the reviewed diff"
-            comment = {"finding_id": finding.id, "commit_id": commit_id,
-                       "path": finding.path if known else fallback, "subject_type": "file",
+            why = "outside the diff hunks" if finding.path in anchors else "file deleted by this change"
+            comment = {"finding_id": finding.id, "commit_id": commit_id, "path": finding.path, "subject_type": "file",
                        "body": f"{text} · `{location}` ({why})\n\n{finding.body}"}
             file_comments.append(comment)
         if len(comment["body"]) > COMMENT_LIMIT:

@@ -151,6 +151,36 @@ index 2222222..0000000
 Binary files a/logo.png and /dev/null differ
 """
 
+HEADER_ONLY = """diff --git a/src/a.py b/src/a.py
+index 1111111..2222222 100644
+--- a/src/a.py
++++ b/src/a.py
+@@ -1 +1,2 @@
+ keep
++new
+diff --git a/old name.py b/pkg/new name.py
+similarity index 100%
+rename from old name.py
+rename to pkg/new name.py
+diff --git a/img.png b/img.png
+new file mode 100644
+index 0000000..3333333
+Binary files /dev/null and b/img.png differ
+diff --git a/logo.png b/logo.png
+index 4444444..5555555 100644
+Binary files a/logo.png and b/logo.png differ
+diff --git a/run.sh b/run.sh
+old mode 100644
+new mode 100755
+diff --git a/pkg/__init__.py b/pkg/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/base.txt b/copy.txt
+similarity index 100%
+copy from base.txt
+copy to copy.txt
+"""
+
 
 class ReviewPayloadTests(unittest.TestCase):
     def test_diff_right_lines_tracks_new_side_and_skips_deleted_files(self):
@@ -173,6 +203,48 @@ class ReviewPayloadTests(unittest.TestCase):
         self.assertIn("`gone.py` (file deleted by this change)", file_comments[1]["body"])
         with self.assertRaisesRegex(DeliveryError, "no files to anchor"):
             build_review_payload(1, "changes", "s", findings[:1], "", SHA)
+
+    def test_files_with_headers_but_no_hunks_are_anchors_without_lines(self):
+        cases = {
+            "rename": ("diff --git a/old.py b/new.py\nsimilarity index 100%\nrename from old.py\nrename to new.py\n", "new.py"),
+            "binary": ("diff --git a/img.png b/img.png\nnew file mode 100644\nindex 0000000..3333333\n"
+                       "Binary files /dev/null and b/img.png differ\n", "img.png"),
+            "changed binary": ("diff --git a/img.png b/img.png\nindex 1111111..3333333 100644\n"
+                               "Binary files a/img.png and b/img.png differ\n", "img.png"),
+            "renamed binary": ("diff --git a/a.png b/b.png\nsimilarity index 90%\nrename from a.png\nrename to b.png\n"
+                               "index 1111111..3333333 100644\nBinary files a/a.png and b/b.png differ\n", "b.png"),
+            "mode change": ("diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\n", "run.sh"),
+            "empty new file": ("diff --git a/pkg/__init__.py b/pkg/__init__.py\nnew file mode 100644\n"
+                               "index 0000000..e69de29\n", "pkg/__init__.py"),
+        }
+        for name, (diff, path) in cases.items():
+            with self.subTest(case=name):
+                self.assertEqual(diff_anchors(diff), ({path: set()}, {}))
+        self.assertEqual(diff_anchors(HEADER_ONLY), (
+            {"src/a.py": {1, 2}, "pkg/new name.py": set(), "img.png": set(), "logo.png": set(), "run.sh": set(),
+             "pkg/__init__.py": set(), "copy.txt": set()}, {}))
+        self.assertEqual(diff_anchors(DELETIONS)[0], {})  # a deleted binary or empty file is not a new-side file
+
+    def test_header_lookalikes_inside_a_hunk_stay_content(self):
+        diff = ("--- a/notes.txt\n+++ b/notes.txt\n@@ -1,3 +1,3 @@\n-rename to ghost.py\n-new mode 100755\n"
+                "-Binary files a/x and b/ghost.png differ\n+rename to ghost.py\n+new file mode 100644\n"
+                "+Binary files a/x and b/ghost.png differ\n")
+        self.assertEqual(diff_anchors(diff), ({"notes.txt": {1, 2, 3}}, {}))
+
+    def test_findings_on_header_only_files_are_file_level_threads_on_those_files(self):
+        paths = ["pkg/new name.py", "img.png", "logo.png", "run.sh", "pkg/__init__.py", "copy.txt"]
+        findings = [Finding(f"R1-{n}", path, "x", line) for n, (path, line) in enumerate(zip(paths, (3, None, 1, 2, 1, 1)), 1)]
+        payload, file_comments = build_review_payload(1, "changes", "s", findings, HEADER_ONLY, SHA)
+        self.assertEqual(payload["comments"], [])
+        self.assertEqual([(c["path"], c["subject_type"]) for c in file_comments], [(path, "file") for path in paths])
+        self.assertIn("`pkg/new name.py:3` (outside the diff hunks)", file_comments[0]["body"])
+        self.assertIn("`img.png` (outside the diff hunks)", file_comments[1]["body"])
+
+    def test_a_finding_on_a_path_outside_the_diff_is_refused_not_moved_to_another_file(self):
+        for diff, path in ((DIFF, "docs/x.md"), (HEADER_ONLY, "old name.py"), (HEADER_ONLY, "base.txt"),
+                           (DELETIONS, "app/main.py")):
+            with self.subTest(path=path), self.assertRaisesRegex(DeliveryError, "not a file of the reviewed diff"):
+                build_review_payload(1, "changes", "s", [Finding("R1-1", path, "x", 4)], diff, SHA)
 
     def test_finding_ids_must_carry_their_round(self):
         for round_number, bad in ((2, "R1-1"), (1, "R11-1"), (1, "r1-1"), (1, "F-1"), (1, "R1-")):
@@ -207,7 +279,7 @@ class ReviewPayloadTests(unittest.TestCase):
 
     def test_every_finding_becomes_a_thread(self):
         findings = [Finding("R1-1", "app.py", "in hunk", 11), Finding("R1-2", "app.py", "outside", 99),
-                    Finding("R1-3", "docs/x.md", "unchanged file", 4)]
+                    Finding("R1-3", "app.py", "whole file")]
         payload, file_comments = build_review_payload(1, "changes", "Two problems.", findings, DIFF, SHA)
         self.assertEqual((payload["event"], payload["commit_id"]), ("COMMENT", SHA))
         self.assertTrue(payload["body"].startswith("<!-- bmad:review round=1 verdict=changes -->"))
@@ -215,13 +287,13 @@ class ReviewPayloadTests(unittest.TestCase):
         (line,) = payload["comments"]
         self.assertEqual(line, {"path": "app.py", "line": 11, "side": "RIGHT",
                                 "body": "<!-- bmad:finding id=R1-1 -->\n**R1-1**\n\nin hunk"})
-        file_level, foreign = file_comments
+        file_level, whole = file_comments
         self.assertEqual({k: file_level[k] for k in ("finding_id", "commit_id", "path", "subject_type")},
                          {"finding_id": "R1-2", "commit_id": SHA, "path": "app.py", "subject_type": "file"})
         self.assertIn("`app.py:99` (outside the diff hunks)", file_level["body"])
-        self.assertEqual(foreign["path"], "app.py")
-        self.assertIn("`docs/x.md:4` (file not in the reviewed diff)", foreign["body"])
-        for comment, finding in zip([line, file_level, foreign], findings):
+        self.assertEqual(whole["path"], "app.py")
+        self.assertIn("`app.py` (outside the diff hunks)", whole["body"])
+        for comment, finding in zip([line, file_level, whole], findings):
             self.assertTrue(comment["body"].startswith(f"<!-- bmad:finding id={finding.id} -->"))
 
     def test_create_review_comments_use_only_the_fields_that_endpoint_documents(self):
@@ -712,7 +784,7 @@ class ReviewStateTests(unittest.TestCase):
 
     def test_file_level_findings_are_single_comments_posted_before_the_review(self):
         findings = [Finding("R1-1", "app.py", "in hunk", 11), Finding("R1-2", "app.py", "outside", 99),
-                    Finding("R1-3", "docs/x.md", "unchanged file", 4)]
+                    Finding("R1-3", "app.py", "whole file")]
         result, sent, _ = self.post(findings)
         self.assertEqual((result["findings"], result["file_level"], result["already_posted"]), (3, 2, []))
         self.assertEqual(["comments", "comments", "reviews"], [call.rsplit("/", 1)[-1].split()[0] for call, _ in sent])
@@ -724,7 +796,7 @@ class ReviewStateTests(unittest.TestCase):
         self.assertFalse([c for c in review["comments"] if "subject_type" in c])
 
     def test_rerun_after_a_partial_post_skips_file_level_findings_that_have_a_thread(self):
-        findings = [Finding("R1-1", "app.py", "outside", 99), Finding("R1-2", "docs/x.md", "unchanged file", 4)]
+        findings = [Finding("R1-1", "app.py", "outside", 99), Finding("R1-2", "app.py", "whole file")]
         result, sent, _ = self.post(findings, threads=[thread("T1", "<!-- bmad:finding id=R1-1 -->\nx", False)])
         self.assertEqual(result["already_posted"], ["R1-1"])
         self.assertEqual(len([c for c, _ in sent if "pulls/12/comments" in c]), 1)
@@ -758,18 +830,23 @@ class ReviewStateTests(unittest.TestCase):
                 GitHub(run=fake).post_review(12, 1, "changes", "s", [Finding("R1-1", "app.py", "outside", 98), big], HEAD)
             self.assertFalse([c for c, _ in fake.calls if "-X POST" in c])
 
+    def test_a_finding_on_a_path_outside_the_diff_is_refused_before_anything_is_posted(self):
+        fake = FakeGh(self.routes())
+        with self.assertRaisesRegex(DeliveryError, "finding R1-2 names 'docs/x.md', which is not a file of the reviewed"):
+            GitHub(run=fake).post_review(12, 1, "changes", "s", [Finding("R1-1", "app.py", "outside", 99),
+                                                                 Finding("R1-2", "docs/x.md", "unchanged file", 4)], HEAD)
+        self.assertFalse([c for c, _ in fake.calls if "-X POST" in c])
+
     def test_a_pr_that_only_deletes_files_can_take_a_changes_round(self):
         result, sent, _ = self.post([Finding("R1-1", "gone.py", "why delete it?", 2),
                                      Finding("R1-2", "gone.py", "whole file", None),
-                                     Finding("R1-3", "empty.txt", "still imported", 7),
-                                     Finding("R1-4", "app/main.py", "still imports the deleted module", 12)],
+                                     Finding("R1-3", "empty.txt", "still imported", 7)],
                                     diff=DELETIONS)
-        self.assertEqual((result["findings"], result["file_level"]), (4, 3))
-        (_, call_first), (_, call_second), (_, call_third), (_, review) = sent
-        self.assertEqual([(c["path"], c["subject_type"]) for c in (call_first, call_second, call_third)],
-                         [("gone.py", "file"), ("empty.txt", "file"), ("empty.txt", "file")])
+        self.assertEqual((result["findings"], result["file_level"]), (3, 2))
+        (_, call_first), (_, call_second), (_, review) = sent
+        self.assertEqual([(c["path"], c["subject_type"]) for c in (call_first, call_second)],
+                         [("gone.py", "file"), ("empty.txt", "file")])
         self.assertIn("`empty.txt:7` (file deleted by this change)", call_second["body"])
-        self.assertIn("`app/main.py:12` (file not in the reviewed diff)", call_third["body"])
         self.assertEqual([(c["path"], c["line"], c["side"]) for c in review["comments"]], [("gone.py", 2, "LEFT")])
 
 
