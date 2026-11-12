@@ -33,6 +33,9 @@ FRONTEND_MANIFEST_PATH = "/api-compatibility.json"
 # A descriptor or manifest is a few hundred bytes; anything larger is not one.
 MAX_BODY_BYTES = 1024 * 1024
 MAX_TIMEOUT_SECONDS = 3600.0
+MAX_VERDICT_CHARS = 2000
+# The chart caps routing.apiPathPrefix at the same length.
+MAX_PATH_CHARS = 1024
 
 
 @dataclass(frozen=True)
@@ -59,7 +62,30 @@ class CheckError(Exception):
 
 def _one_line(value: object) -> str:
     """Remote text for the verdict line: whitespace runs (newlines included) become one space, bounded."""
-    return " ".join(str(value).split())[:80] or "unknown"
+    try:
+        text = str(value)
+    except RecursionError:  # a remote value nested deeper than str() can walk
+        return "unknown"
+    return _printable(" ".join(text.split())[:80]) or "unknown"
+
+
+def _printable(text: str) -> str:
+    """Every character a terminal or log viewer could act on (ESC, NUL, C1, bidi overrides) becomes '?'."""
+    return "".join(character if character.isprintable() else "?" for character in text)
+
+
+def _shown(value: object) -> str:
+    """A rejected value for the verdict line: its repr (control characters escaped), one line, bounded."""
+    try:
+        text = repr(value)
+    except RecursionError:  # a remote value nested deeper than repr() can walk
+        text = "<deeply nested value>"
+    return _one_line(text)
+
+
+def _verdict_line(text: str) -> str:
+    """The line automation parses: exactly one line of printable text, whatever a path or remote answer put into it."""
+    return _printable(" ".join(text.split())[:MAX_VERDICT_CHARS])
 
 
 def _load_json(text: str, source: object, what: str) -> object:
@@ -71,7 +97,7 @@ def _load_json(text: str, source: object, what: str) -> object:
 
 def _non_negative_int(value: object, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise CheckError(f"{name} must be a non-negative integer, got {value!r}")
+        raise CheckError(f"{name} must be a non-negative integer, got {_shown(value)}")
     return value
 
 
@@ -87,9 +113,22 @@ def parse_frontend_manifest(text: str, source: object) -> tuple[Supported, str, 
         _non_negative_int(supported.get("minMinor"), "supportedApiContract.minMinor"),
     )
     descriptor_path = data.get("descriptorPath", "/compatibility")
-    if not isinstance(descriptor_path, str) or not descriptor_path.startswith("/"):
-        raise CheckError(f"{source} has an invalid descriptorPath")
+    # Remote text that becomes part of the backend URL: one absolute path of unreserved characters
+    # (the shell appends the same value to its API prefix), so it cannot carry a line break, a
+    # query, another origin or a dot segment into the request or the verdict.
+    if not isinstance(descriptor_path, str) or not _is_plain_path(descriptor_path):
+        raise CheckError(f"{source} has an invalid descriptorPath: {_shown(descriptor_path)}")
     return contract, _one_line(data.get("frontendVersion", "unknown")), descriptor_path
+
+
+_PLAIN_PATH = re.compile(r"(?:/[A-Za-z0-9._~-]+)+")
+
+
+def _is_plain_path(value: str) -> bool:
+    """'/segment[/segment...]' of unreserved characters: no empty, '.' or '..' segment, no trailing slash, bounded."""
+    if len(value) > MAX_PATH_CHARS or _PLAIN_PATH.fullmatch(value) is None:
+        return False
+    return not any(segment in (".", "..") for segment in value.split("/"))
 
 
 def read_frontend_manifest(path: Path) -> tuple[Supported, str, str]:
@@ -137,9 +176,33 @@ def parse_properties(text: str, source: object = "properties") -> dict[str, str]
         match = _PROPERTY_LINE.match(line)
         if match is None or not match.group("key"):
             continue
-        key = re.sub(r"\\(.)", r"\1", match.group("key"))
-        values[key] = match.group("value")
+        _unescape(match.group("value"), source)  # Java refuses the whole file on a malformed \\uXXXX in a value too
+        values[_unescape(match.group("key"), source)] = match.group("value")
     return values
+
+
+_ESCAPE = re.compile(r"\\(u[0-9A-Fa-f]{4}|.)", re.DOTALL)
+_ESCAPED_CHARACTERS = {"t": "\t", "n": "\n", "r": "\r", "f": "\f"}
+
+
+def _unescape(raw: str, source: object) -> str:
+    """Escapes as Properties.load decodes them: \\uXXXX, \\t \\n \\r \\f, and \\x -> x for any other x.
+
+    A key written with escapes is the same key to Java (apiContract.m\\u0061jor is apiContract.major)
+    and so must be the same key here. Java throws on a malformed \\u sequence, in a key or a value,
+    and the backend then loads nothing; this check refuses the file. Values are otherwise used as
+    written: a contract number spelled with an escape is refused by the decimal check.
+    """
+
+    def decode(match: re.Match[str]) -> str:
+        escaped = match.group(1)
+        if len(escaped) == 5:
+            return chr(int(escaped[1:], 16))
+        if escaped == "u":
+            raise CheckError(f"{source} has a malformed \\uXXXX escape")
+        return _ESCAPED_CHARACTERS.get(escaped, escaped)
+
+    return _ESCAPE.sub(decode, raw)
 
 
 def _contract_number(values: dict[str, str], key: str, path: Path) -> int:
@@ -149,7 +212,7 @@ def _contract_number(values: dict[str, str], key: str, path: Path) -> int:
     # The backend trims and uses Integer.parseInt; only plain ASCII decimals mean the same to both.
     trimmed = value.strip(_JAVA_TRIM)
     if not _DECIMAL.fullmatch(trimmed) or int(trimmed) > 2**31 - 1:
-        raise CheckError(f"{path} must define {key} as a plain non-negative decimal integer, got {value!r}")
+        raise CheckError(f"{path} must define {key} as a plain non-negative decimal integer, got {_shown(value)}")
     return int(trimmed)
 
 
@@ -176,17 +239,26 @@ def parse_descriptor(body: bytes, source: str) -> tuple[Contract, str]:
 
 
 def _base_url(value: str, option: str) -> str:
-    """An http(s) base URL with a host; anything else would make urllib raise instead of a verdict."""
+    """An http(s) base URL with a host; anything else would make urllib raise instead of a verdict.
+
+    A refused value is never repeated in the message: it is the one input that can hold a secret
+    (user:token@host, ?access_token=...), and the verdict line ends up in CI logs.
+    """
+    if "@" in value:
+        # Refused before anything else: an accepted URL is printed in every verdict line.
+        raise CheckError(f"invalid {option}: credentials in the URL are not accepted (the value contains '@' and is not repeated here)")
+    if any(not 0x21 <= ord(character) <= 0x7E for character in value):
+        raise CheckError(f"invalid {option}: whitespace, a control character or a non-ASCII character in the URL")
     try:
         parts = urllib.parse.urlsplit(value)
         host = parts.hostname
         _ = parts.port  # raises ValueError for a non-numeric or out-of-range port
     except ValueError as error:
-        raise CheckError(f"invalid {option} {value!r}: {error}") from error
+        raise CheckError(f"invalid {option}: {type(error).__name__} (malformed host or port)") from error
     if parts.scheme not in ("http", "https") or not host:
-        raise CheckError(f"invalid {option} {value!r}: expected http://host[:port] or https://host[:port]")
+        raise CheckError(f"invalid {option}: expected http://host[:port] or https://host[:port]")
     if parts.query or parts.fragment or "?" in value or "#" in value:
-        raise CheckError(f"invalid {option} {value!r}: a base URL has no query or fragment")
+        raise CheckError(f"invalid {option}: a base URL has no query or fragment (the value is not repeated here)")
     return value.rstrip("/")
 
 
@@ -211,14 +283,17 @@ def _http_get(url: str, timeout: float, accept: str) -> bytes:
     except (OSError, http.client.HTTPException) as error:
         raise CheckError(f"{url} failed mid-answer: {type(error).__name__}") from error
     except ValueError as error:
-        raise CheckError(f"invalid URL {url!r}: {error}") from error
+        raise CheckError(f"invalid URL {_shown(url)}: {error}") from error
 
 
 def fetch_live_descriptor(backend_url: str, api_path_prefix: str, descriptor_path: str, timeout: float) -> tuple[Contract, str]:
-    if not api_path_prefix.startswith("/"):
-        # Appended to the base URL as written: without the slash it would extend the host name.
-        raise CheckError(f"invalid --api-path-prefix {api_path_prefix!r}: it must start with '/'")
-    url = _base_url(backend_url, "--backend-url") + api_path_prefix.rstrip("/") + descriptor_path
+    # Appended to the base URL as written: without the leading slash it would extend the host name,
+    # and a query, dot segment or control character would change which resource is asked. Same
+    # rule as the shell and the image apply to the prefix; "/" alone is a backend served at the root.
+    prefix = api_path_prefix[:-1] if api_path_prefix.endswith("/") else api_path_prefix
+    if not api_path_prefix.startswith("/") or (prefix and not _is_plain_path(prefix)):
+        raise CheckError(f"invalid --api-path-prefix {_shown(api_path_prefix)}: expected an absolute path such as /api")
+    url = _base_url(backend_url, "--backend-url") + prefix + descriptor_path
     return parse_descriptor(_http_get(url, timeout, "application/json, application/problem+json"), url)
 
 
@@ -246,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
         # An empty URL is a mistake (an unset pipeline variable), never "use the checkout instead".
         for option, value in (("--frontend-url", args.frontend_url), ("--backend-url", args.backend_url)):
             if value is not None and not value.strip():
-                raise CheckError(f"invalid {option} {value!r}: empty")
+                raise CheckError(f"invalid {option} {_shown(value)}: empty")
         if not 0 < args.timeout <= MAX_TIMEOUT_SECONDS:  # also false for nan
             raise CheckError(f"invalid --timeout {args.timeout!r}: expected seconds in (0, {MAX_TIMEOUT_SECONDS:g}]")
         if args.frontend_url:
@@ -264,11 +339,11 @@ def main(argv: list[str] | None = None) -> int:
             backend_version = "checkout"
             source = str(args.backend_contract)
     except CheckError as error:
-        print(f"INCOMPATIBLE (unverifiable): {error} [{frontend}; backend contract unknown]", file=sys.stderr)
+        print(_verdict_line(f"INCOMPATIBLE (unverifiable): {error} [{frontend}; backend contract unknown]"), file=sys.stderr)
         return 1
 
     ok, verdict = evaluate(backend, supported)
-    print(f"{verdict} [frontend {frontend_version} from {frontend_source}, backend {backend_version} from {source}]")
+    print(_verdict_line(f"{verdict} [frontend {frontend_version} from {frontend_source}, backend {backend_version} from {source}]"))
     return 0 if ok else 1
 
 

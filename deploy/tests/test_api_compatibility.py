@@ -245,6 +245,33 @@ class ApiCompatibilityCheckTest(unittest.TestCase):
                 with self.subTest(option=option, value=value):
                     err = self.assert_unverifiable(option, value, "--timeout", "1")
                     self.assertIn(f"invalid {option}", err)
+        # 119/4552568111: a credential in the URL must never reach the verdict (CI logs keep it).
+        for option in ("--backend-url", "--frontend-url"):
+            for value in ("https://u5er-marker:s3cr3t-token@127.0.0.1:9", "http://s3cr3t-token@127.0.0.1:9", "http://u5er-marker:s3cr3t-token@host:port",
+                          "http://u5er-marker:s3cr3t-token@[::1", "http://u5er-marker:s3cr3t-token@127.0.0.1:9/?x=1", "ftp://u5er-marker:s3cr3t-token@host"):
+                with self.subTest(option=option, value=value):
+                    err = self.assert_unverifiable(option, value, "--timeout", "1")
+                    self.assertIn(f"invalid {option}: credentials in the URL", err)
+                    self.assertNotIn("s3cr3t-token", err)
+                    self.assertNotIn("u5er-marker", err)
+            # A refused URL is never repeated, whatever the reason: a token can sit in the query or the host part too.
+            for value in ("https://127.0.0.1:9/?access_token=s3cr3t-token", "https://127.0.0.1:9/#s3cr3t-token", "https://?s3cr3t-token",
+                          "ftp://s3cr3t-token/", "http://s3cr3t-token:port", "http://[s3cr3t-token"):
+                with self.subTest(option=option, value=value):
+                    self.assertNotIn("s3cr3t-token", self.assert_unverifiable(option, value, "--timeout", "1"))
+        for value in ("http://127.0.0.1:9/a b", "http://127.0.0.1:9/a\nCOMPATIBLE: forged", "http://127.0.0.1:9/a\x1b[31m", "http://127.0.0.1:9/a\x00",
+                      "http://127.0.0.1:9/a\x7f", "http://127.0.0.1:9/a\x9b31m", "http://127.0.0.1:9/a\u202e"):
+            with self.subTest(value=value):
+                err = self.assert_unverifiable("--backend-url", value, "--timeout", "1")
+                self.assertIn("invalid --backend-url", err)
+                self.assertTrue(err.rstrip("\n").isprintable(), repr(err))
+        # The prefix becomes part of the URL: the same plain-path rule as the shell and the image apply.
+        for prefix in ("/a\nCOMPATIBLE: forged", "/a\x1b[31m", "/a?x=1", "/a#x", "/a/../b", "/a b", "//evil.example", "/a//", "/" + "a" * 2000):
+            with self.subTest(prefix=prefix):
+                err = self.assert_unverifiable("--backend-url", "http://127.0.0.1:9", "--api-path-prefix", prefix, "--timeout", "1")
+                self.assertIn("invalid --api-path-prefix", err)
+                self.assertTrue(err.rstrip("\n").isprintable(), repr(err))
+                self.assertLess(len(err), 700)
         for prefix in ("api", ".invalid", ""):
             with self.subTest(prefix=prefix):
                 self.assertIn("invalid --api-path-prefix", self.assert_unverifiable("--backend-url", "http://127.0.0.1:9", "--api-path-prefix", prefix, "--timeout", "1"))
@@ -274,6 +301,70 @@ class ApiCompatibilityCheckTest(unittest.TestCase):
             self.assertEqual(len(out.strip().splitlines()), 1, out)
             err = self.assert_unverifiable("--frontend-url", url, "--backend-url", "http://127.0.0.1:9", "--timeout", "1")
             self.assertIn("supports API contract 1.x", err)
+
+    def test_remote_descriptor_path_is_a_plain_path_or_the_pair_is_unverifiable(self):
+        """119/4552568047: descriptorPath is remote text that becomes part of the backend URL and of the verdict."""
+        descriptor = json.dumps({"service": "owl-mast-backend", "backendVersion": "9.1.0", "apiContract": {"major": 1, "minor": 0}}).encode()
+        for path in ("/c\nCOMPATIBLE: forged", "/c\rCOMPATIBLE: forged", "/c d", "//evil.example/x", "/a/../b", "/a/./b", "/a/..", "/a//b", "/a/",
+                     "/", "/a?x=1", "/a#x", "/a%0Ab", "/@evil.example", "compatibility", "", 7, None, ["/compatibility"]):
+            with self.subTest(path=path):
+                published = json.dumps({"frontendVersion": "7.0.0", "supportedApiContract": {"major": 1, "minMinor": 0}, "descriptorPath": path}).encode()
+                backend_paths: list[str] = []
+                with serving(200, published, served=("/api-compatibility.json",)) as frontend, \
+                        serving(200, descriptor, served=("/api/compatibility",), paths=backend_paths) as backend:
+                    err = self.assert_unverifiable("--frontend-url", frontend, "--backend-url", backend)
+                    self.assertIn("invalid descriptorPath", err)
+                    self.assertNotIn("forged failed", err)
+                    self.assertEqual(backend_paths, [], "the backend must not be asked at a refused path")
+        # The rejected value is shown escaped and shortened; an accepted one is bounded too.
+        for path in ("/c\x1b[31m" + "x" * 5000, "/" + "x" * 5000):
+            published = json.dumps({"frontendVersion": "7.0.0", "supportedApiContract": {"major": 1, "minMinor": 0}, "descriptorPath": path}).encode()
+            with serving(200, published, served=("/api-compatibility.json",)) as frontend:
+                err = self.assert_unverifiable("--frontend-url", frontend, "--backend-url", "http://127.0.0.1:9")
+                self.assertIn("invalid descriptorPath", err)
+                self.assertTrue(err.rstrip("\n").isprintable(), repr(err))
+                self.assertLess(len(err), 600)
+        with tempfile.TemporaryDirectory() as tmp:
+            fm = write(Path(tmp), "fm.json", json.dumps({"supportedApiContract": {"major": 1, "minMinor": 0}, "descriptorPath": "/c\nCOMPATIBLE: forged"}))
+            self.assertIn("invalid descriptorPath", self.assert_unverifiable("--frontend-manifest", str(fm)))
+
+    def test_rejected_remote_values_are_bounded_in_the_verdict(self):
+        """119/4552568129: a rejected value is echoed, but never at the size the remote side chose."""
+        huge = "9" * (check.MAX_BODY_BYTES - 200)
+        for body in (
+            json.dumps({"service": "owl-mast-backend", "backendVersion": "1", "apiContract": {"major": huge, "minor": 0}}),
+            json.dumps({"service": "owl-mast-backend", "backendVersion": "1", "apiContract": {"major": 1, "minor": [huge]}}),
+        ):
+            with serving(200, body.encode()) as url:
+                err = self.assert_unverifiable("--backend-url", url)
+                self.assertIn("must be a non-negative integer", err)
+                self.assertLess(len(err), 600)
+        published = json.dumps({"frontendVersion": "1", "supportedApiContract": {"major": 1, "minMinor": huge}})
+        with serving(200, published.encode()) as url:
+            err = self.assert_unverifiable("--frontend-url", url)
+            self.assertIn("supportedApiContract.minMinor", err)
+            self.assertLess(len(err), 600)
+        self.assertLessEqual(len(check._verdict_line("x " * 5000)), check.MAX_VERDICT_CHARS)
+        self.assertEqual(check._verdict_line("a\nb\r\n c\u2028d\x1b[2K\x00\x9b\u202ee"), "a b c d?[2K???e")
+        # A value nested deeper than repr()/str() can walk is still a verdict, not a traceback.
+        nested = "[" * 50_000 + "]" * 50_000
+        with serving(200, ('{"service":"owl-mast-backend","backendVersion":"1","apiContract":{"major":' + nested + ',"minor":0}}').encode()) as url:
+            self.assertIn("must be a non-negative integer", self.assert_unverifiable("--backend-url", url))
+        with serving(200, ('{"frontendVersion":' + nested + ',"supportedApiContract":{"major":1,"minMinor":0}}').encode()) as url:
+            code, out, err = self.run_verdict("--frontend-url", url)
+            self.assertEqual((code, len(out.strip().splitlines())), (0, 1), err)
+        # Remote versions and local paths cannot put a control sequence or a second line on stdout either.
+        with serving(200, json.dumps({"frontendVersion": "1\x1b[31m\nCOMPATIBLE: forged", "supportedApiContract": {"major": 1, "minMinor": 0}}).encode()) as url:
+            code, out, err = self.run_verdict("--frontend-url", url)
+            self.assertEqual(code, 0, err)
+            self.assertEqual(len(out.strip().splitlines()), 1, out)
+            self.assertTrue(out.rstrip("\n").isprintable(), repr(out))
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "x\nINCOMPATIBLE: forged"
+            directory.mkdir()
+            code, out, err = self.run_verdict("--frontend-manifest", str(write(directory, "fm.json", manifest(1, 0))))
+            self.assertEqual(code, 0, err)
+            self.assertEqual(len(out.strip().splitlines()), 1, out)
 
     def test_both_artifacts_are_read_from_their_own_urls(self):
         """The documented pre-rollout command: the manifest from the frontend, the descriptor from the backend, at the manifest's descriptorPath."""
@@ -306,6 +397,15 @@ class ApiCompatibilityCheckTest(unittest.TestCase):
                 ("crlf", "apiContract.major=1\r\napiContract.minor=2\r\n", check.Contract(1, 2)),
                 ("cr", "apiContract.major=1\rapiContract.minor=2\r", check.Contract(1, 2)),
                 ("escaped-backslash", "note=a\\\\\napiContract.major=1\napiContract.minor=2\n", check.Contract(1, 2)),
+                # 112/4552553468: Java decodes escapes in keys, so an escaped spelling is the same key (and wins when later).
+                ("unicode-escape-key", "apiContract.major=1\napiContract.m\\u0061jor=2\napiContract.minor=0\n", check.Contract(2, 0)),
+                ("unicode-escape-upper", "\\u0061piContract.major=3\napiContract.minor\\u003D=7\napiContract.minor=0\n", check.Contract(3, 0)),
+                ("plain-escape-key", "\\a\\p\\iContract.major=4\napiContract\\.minor=5\n", check.Contract(4, 5)),
+                ("escaped-separator-key", "apiContract.major\\=x=9\napiContract.major=1\napiContract.minor=0\n", check.Contract(1, 0)),
+                # \t \n \r \f inside a key are those characters to Java, not the letters: neither line below is the contract key.
+                ("control-escapes-are-not-letters", "apiContract.major=1\napiCon\\tract.major=2\napiCo\\ntract.major=3\napiCont\\ract.major=4\napiContract.minor=0\n", check.Contract(1, 0)),
+                ("form-feed-escape-is-not-a-letter", "apiContract.minor=0\napiContract.major=1\napiContract.mino\\fr=5\n", check.Contract(1, 0)),
+                ("escaped-control-key", "apiContract.major\\t=9\napiContract.major\\n=9\napiContract.major=1\napiContract.minor=0\n", check.Contract(1, 0)),
             ):
                 with self.subTest(name=name):
                     self.assertEqual(check.read_backend_properties(write(directory, f"{name}.properties", content)), expected)
@@ -324,6 +424,11 @@ class ApiCompatibilityCheckTest(unittest.TestCase):
                 ("nbsp", "apiContract.major=1\u00a0\napiContract.minor=0\n"),
                 # Java keeps reading the same line after NEL / FS; splitting there would invent a key.
                 ("nel-is-not-a-line-end", "note=x\u0085apiContract.major=1\napiContract.minor=0\n"),
+                # Java throws on a malformed \\uXXXX, in a key or a value; a value written with an escape is not a plain decimal.
+                ("malformed-unicode-key", "apiContract.m\\u00zzjor=1\napiContract.major=1\napiContract.minor=0\n"),
+                ("short-unicode-key", "apiContract.major=1\napiContract.minor=0\nx\\u12=1\n"),
+                ("malformed-unicode-value", "apiContract.major=1\napiContract.minor=0\nnote=\\uZZZZ\n"),
+                ("unicode-escape-value", "apiContract.major=\\u0031\napiContract.minor=0\n"),
                 # Java joins the next line to "note"; reading it as a key would judge a number the backend never loads.
                 ("continuation", "note=x\\\napiContract.major=1\napiContract.major=2\napiContract.minor=0\n"),
             ):
@@ -331,7 +436,7 @@ class ApiCompatibilityCheckTest(unittest.TestCase):
                     path = directory / f"{name}.properties"
                     path.write_bytes(content.encode("iso-8859-1", errors="replace"))
                     err = self.assert_unverifiable("--frontend-manifest", str(fm), "--backend-contract", str(path))
-                    self.assertIn("continuation" if name == "continuation" else "apiContract.major", err)
+                    self.assertIn({"continuation": "continuation", "malformed-unicode-key": "malformed", "short-unicode-key": "malformed", "malformed-unicode-value": "malformed"}.get(name, "apiContract.major"), err)
 
     def test_frontend_url_reads_the_manifest_the_deployed_artifact_publishes(self):
         """112/4551653219: the pre-rollout check must judge the artifact, not whatever checkout runs it."""
