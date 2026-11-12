@@ -1222,11 +1222,11 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
             self.assertNotIn(whole, "\n".join(r.evidence.values()))
 
     def test_hook_gone_timeout_must_be_a_whole_number(self):
-        for value in ("30s", "-1", "1.5", "abc", " "):
+        for value in ("30s", "-1", "1.5", "abc", " ", "08", "030"):
             with self.subTest(value=value):
                 r = self.step("bundled-bundled", HOOK_GONE_TIMEOUT=value)
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-                self.assertIn(f"REFUSED: HOOK_GONE_TIMEOUT must be a whole number of seconds (digits only), got '{value}'", r.stderr)
+                self.assertIn(f"REFUSED: HOOK_GONE_TIMEOUT must be a whole number of seconds (digits only, no leading zero), got '{value}'", r.stderr)
                 self.assertEqual(r.calls, "")
 
     def test_the_script_reads_no_hook_object_the_chart_deletes_on_success(self):

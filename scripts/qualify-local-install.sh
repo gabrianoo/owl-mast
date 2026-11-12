@@ -518,7 +518,7 @@ verify_backend_image() { # verify_backend_image <name>: the running backend is e
 #    recreated role or database gets a new oid), read as the Keycloak principal itself, so the login still works;
 #  - both hook objects are gone afterwards, which is the delete policy applied.
 HOOK_GONE_TIMEOUT="${HOOK_GONE_TIMEOUT:-30}"   # seconds to wait for Helm's hook deletion to be visible
-[[ "$HOOK_GONE_TIMEOUT" =~ ^[0-9]+$ ]] || { echo "REFUSED: HOOK_GONE_TIMEOUT must be a whole number of seconds (digits only), got '$HOOK_GONE_TIMEOUT'" >&2; exit 2; }
+[[ "$HOOK_GONE_TIMEOUT" =~ ^(0|[1-9][0-9]*)$ ]] || { echo "REFUSED: HOOK_GONE_TIMEOUT must be a whole number of seconds (digits only, no leading zero), got '$HOOK_GONE_TIMEOUT'" >&2; exit 2; }
 KEYCLOAK_IDENTITY_RE='^role=[0-9]+ database=[0-9]+ owner=[0-9]+$'
 keycloak_db_identity() { # keycloak_db_identity <namespace> <deployment>: one line `role=<oid> database=<oid> owner=<oid>`
   pg_exec "$1" "$2" OWLMAST_KEYCLOAK keycloak "select 'role='||r.oid||' database='||d.oid||' owner='||d.datdba from pg_roles r cross join pg_database d where r.rolname = current_user and d.datname = current_database()"

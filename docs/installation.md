@@ -512,7 +512,11 @@ unlabelled Secret and an existing Secret is never overwritten), installs all fou
 uninstall retention, reinstall with the existing claim and upgrade, and exercises the failure paths
 (Secret missing a key, non-existent realm). The provisioning hook is proven without reading its Job: Helm
 deletes the hook Job and its ConfigMap once the hook succeeded, so their status and log no longer exist after a
-successful upgrade. For a provisioning upgrade on an initialised volume (the `bundled-bundled` step and the
+successful upgrade. Instead, after every provisioning upgrade (the `bundled-bundled` step and both `first-enable`
+upgrades) the script reads the release record with `helm status -o json` and requires the deployed revision to list
+the hook Job `<fullname>-postgresql-provision-keycloak` for `pre-upgrade` with `last_run.phase` `Succeeded` and a
+`last_run.started_at` no earlier than the start of that upgrade; this is what shows the hook was rendered and run,
+since every other check below also passes when no hook ran. For a provisioning upgrade on an initialised volume (the `bundled-bundled` step and the
 `first-enable` retry) the script records `pg_roles.oid` of the Keycloak role and `pg_database.oid` and owner of
 the Keycloak database before the upgrade, read as the Keycloak principal, and requires the same values after it
 (a dropped and recreated role or database gets a new oid). It also requires that `helm upgrade --wait` returned
