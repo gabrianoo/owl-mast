@@ -55,3 +55,66 @@ Verification at `785194f`:
 - Mutation 1: the script from `6d36856` with the new tests and stub world: 7 of the 10 new tests fail (12 failures with subtests). The output shows `FAIL provision-keycloak-job` and `FAIL fe2-hook-job`, the V5 failure. The 38 older tests pass.
 - Mutation 2: the new script with the identity comparison disabled: 4 failures (the three changed-identifier subtests and the first-enable retry test).
 - Not run: the script on a cluster. The owner reruns the qualification.
+
+## Cycle-8 finding: the proof never showed that the hook ran
+
+Review: https://github.com/gabrianoo/owl-mast/pull/116#pullrequestreview-5871692033 at `36ce4214e11739eb617358168094a86defbcdf28`, one inline comment on `reprovision_keeps_keycloak`.
+
+- Scope note. The owner delegated the fix in full, so no planning checkpoint was held. This session is the implementation sub-agent, so it started no sub-agents: the Blind Hunter review layer was skipped, and the diff was self-reviewed.
+- Fix commit: `574f0d534bae82dd4e95c70a83b12ee29da1463e`. Files: `scripts/qualify-local-install.sh`, `deploy/tests/test_qualify_script.py`. The chart and `docs/` were not changed. The Kind cluster `owl-mast-om0102` was not touched and the script was not run against it.
+
+The finding, confirmed:
+- `bundled-bundled` and the first-enable retry (fe3) passed when no hook ran. The upgrade result, the new revision, the unchanged oids, the absent hook objects and the schema are all equally true without a hook.
+
+What the script does now:
+- New helper `hook_ran_succeeded`. After the upgrade it runs `helm status <release> -n <ns> -o json` and checks the record with an inline `python3` program (`HOOK_RUN_CHECK`), the tool the script already uses for JSON.
+- It requires all of these:
+  - the record's `version` equals the deployed revision read just before;
+  - exactly one `hooks[]` entry of kind `Job` named `<release>-postgresql-provision-keycloak`;
+  - that entry has the event `pre-upgrade`;
+  - `last_run.phase` is `Succeeded`;
+  - `last_run.started_at` is not earlier than a timestamp the script takes just before the upgrade (`date -u +%s`);
+  - `last_run.completed_at` is not earlier than `started_at`.
+- The timestamp is stricter than the previous revision's `info.last_deployed`. Both sides use this host's clock, because Helm stamps `started_at` in the client process the script starts.
+- A failed `helm status`, output that is not JSON, or any other shape fails the check.
+- Only a projection goes to evidence: release name, revision, and one line per hook with kind, name, events, phase and times. The whole record (chart, values, manifests, live objects) is not written.
+- The check runs in `reprovision_keeps_keycloak` (`bundled-bundled` and fe3) and in the first enable (fe2), as the review suggested.
+- `assert_revision_advanced` now logs `revision <a> -> <b>, deployed` and no longer says that the hook succeeded. The `provision-keycloak-idempotent` and `fe3-retry-no-op` lines say "hook run recorded as Succeeded".
+- `HOOK_GONE_TIMEOUT` must be digits only. Anything else is refused with exit 2 before any cluster call.
+- Not done: the fe3 retry still does not show that the grants were re-applied. No cheap proof was found; a privilege query shows that grants exist, not that the retry applied them.
+
+Helm 4.3.1 release record, verified:
+- Source at the commit of the vendored binary (`c0d08d0d6d9424d4a14febb5e8a3e51b0dd00dff`, `helm version` of `tools/helm`):
+  - `pkg/release/v1/release.go`: top-level keys `name`, `info`, `chart`, `config`, `manifest`, `hooks`, `version`, `namespace`, `apply_method`. `hooks` has `omitempty`.
+  - `pkg/release/v1/hook.go`: a hook has `name`, `kind`, `path`, `manifest`, `events`, `last_run`, `weight`, `delete_policies`. `last_run` has `started_at`, `completed_at` and `phase`; zero times are omitted. Phases: `Unknown`, `Running`, `Succeeded`, `Failed`.
+  - `pkg/action/hooks.go`: Helm sets `last_run` on the hook in the release when it runs it, and the deletion by policy does not clear it. `pkg/action/upgrade.go` stores the release after the hooks.
+  - `pkg/cmd/status.go`: `-o json` prints the whole release.
+- Binary: `tools/helm install --dry-run=client -o json` on a scratch chart with the two hooks printed the same keys. A hook that was not run has `"last_run": {"phase": ""}`.
+- Run: a small Go program against the module `helm.sh/helm/v4 v4.3.1` ran a real install and upgrade (memory storage, fake Kubernetes client) with a pre-upgrade Job hook that has the chart's delete policy. The stored record of revision 2 had, for the Job: `"last_run": {"started_at": "2026-11-12T10:01:50.545521982+01:00", "completed_at": "2026-11-12T10:01:50.545522612+01:00", "phase": "Succeeded"}`. So `last_run` survives the hook deletion, and `started_at` is later than the revision's `info.last_deployed`.
+- Time format: RFC 3339 with up to nine fractional digits and the local offset (or `Z`).
+- Not verified: a hook run on a real cluster. The owner's rerun covers it.
+
+Stub world and tests:
+- The helm stub answers `status -o json` with a record in that shape. It keeps the hooks of the current revision per release.
+- New `STUB_HOOK` outcomes, all with a successful upgrade, a new revision and no hook object:
+  - `skipped`: the record has no hooks;
+  - `not-run`: the hook is listed with `last_run` `{"phase":""}`, as after `helm upgrade --no-hooks`;
+  - `stale`: Succeeded, but started before the upgrade;
+  - `phase-failed` and `phase-running`.
+- `STUB_HOOK_<n>` overrides the outcome of the n-th provisioning upgrade, so the retry can differ from the first enable.
+- `STUB_STATUS_JSON` = `error`, `malformed` or `old-revision` for a record that cannot be used.
+- 7 new tests in `ProvisioningHookEvidenceTests` (17 in the class):
+  - `bundled-bundled` fails in each of the five outcomes;
+  - the fe3 retry fails in each of them, after fe2 passed;
+  - fe2 fails when its hook was skipped;
+  - an unreadable, malformed or old-revision record fails;
+  - 23 cases on the evaluator alone, with time formats and wrong shapes;
+  - the record is not written to evidence whole;
+  - `HOOK_GONE_TIMEOUT` values that are not digits are refused before any call.
+
+Verification at `574f0d5`:
+- `scripts/verify-install-package.sh`: exit code 0, 204 tests OK, none skipped (197 before; `test_qualify_script` 48 → 55).
+- `bash -n scripts/qualify-local-install.sh`: ok.
+- shellcheck 0.11.0 (through `uvx --from shellcheck-py`): the same counts as at `36ce421` (3 warnings, 20 SC2015 notes, 6 SC2016 notes). No new finding.
+- Mutation: with both `hook_ran_succeeded` calls removed, 7 tests of the class fail (16 failures and 1 error with subtests). That includes all five outcomes for `bundled-bundled` and for the fe3 retry, `skipped` among them. The other 48 tests pass.
+- Not run: the script on a cluster.
