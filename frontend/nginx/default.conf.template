@@ -4,12 +4,28 @@
 # deployed with (env OWLMAST_API_PATH_PREFIX, chart `routing.apiPathPrefix`) as /owlmast-config.json.
 # The prefix is validated and normalised before this template is rendered
 # (docker-entrypoint.d/16-owlmast-api-prefix.envsh), so it is safe inside the strings below.
+
+# Cache policy of /assets/ by answer status. Only an answer that carries the hashed file (200, or the
+# 304 that revalidates it) is immutable for a year. Anything else is not stored:
+# during a rolling update an old pod answers 404 for the new build's hashed name, and a 404 kept as
+# immutable would break that URL in the browser or a shared cache until it is purged.
+map $status $owlmast_asset_cache_control {
+    volatile;
+    default "no-store";
+    200 "public, max-age=31536000, immutable";
+    304 "public, max-age=31536000, immutable";
+}
+
 server {
     listen 8080;
     server_name _;
     root /usr/share/nginx/html;
     index index.html;
     server_tokens off;
+    # No range answers. nginx evaluates add_header before the range filter and again for the error
+    # answer, so an unsatisfiable range (416) would carry every header twice, and under /assets/
+    # both cache policies. The shell's files are small and are always sent whole.
+    max_ranges 0;
 
     location = /owlmast-config.json {
         include /etc/nginx/owlmast-headers.conf;
@@ -43,7 +59,7 @@ server {
 
     location /assets/ {
         include /etc/nginx/owlmast-headers.conf;
-        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        add_header Cache-Control $owlmast_asset_cache_control always;
         try_files $uri =404;
     }
 

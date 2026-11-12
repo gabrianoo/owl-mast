@@ -14,7 +14,9 @@
 # the two endpoints the template defines and everything that exists under the web root, at the
 # prefix itself or at any parent of it (/index.html, /theme-boot.js, /owl-mark.svg, /assets/...):
 # a 404 at /index.html would answer every app route with 404, because nginx redirects `index` and
-# the SPA fallback into that location.
+# the SPA fallback into that location. The shell's client-side routes are refused as well: they are
+# no files (the SPA fallback serves them), so the web-root walk cannot see them, and a 404 at /usage
+# would break a reload of, or a deep link to, that page.
 
 owlmast_api_prefix="${OWLMAST_API_PATH_PREFIX:-}"
 
@@ -41,6 +43,18 @@ case "$owlmast_api_prefix" in
     /assets | /assets/* | /owlmast-config.json | /api-compatibility.json)
         owlmast_refuse_api_prefix "it collides with a path this image serves itself" ;;
 esac
+# The shell's destinations (frontend/src/app/destinations.ts), by first path segment, so a later
+# child route below one of them is covered too. This image has no copy of that module:
+# src/app/destinations.test.ts fails when this list and DESTINATIONS differ.
+owlmast_shell_routes="focus knowledge connections usage preferences"
+owlmast_api_prefix_part="${owlmast_api_prefix#/}"
+owlmast_api_prefix_part="${owlmast_api_prefix_part%%/*}"
+for owlmast_shell_route in $owlmast_shell_routes; do
+    if [ "$owlmast_api_prefix_part" = "$owlmast_shell_route" ]; then
+        owlmast_refuse_api_prefix "it collides with a page of the shell (/$owlmast_shell_route)"
+    fi
+done
+unset owlmast_shell_routes owlmast_shell_route
 # Every file and directory of the build output (the template's `root`), without a list to keep in
 # step with it. The loop walks the prefix and its parents, so a prefix below an existing directory
 # is refused whether or not that exact path exists today (the 404 location would shadow whatever a

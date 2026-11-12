@@ -65,15 +65,34 @@ has_headers() {
   done
   [ "$(grep -ci '^content-security-policy:' <<<"$headers")" = 1 ] || { echo "      $1 answers with more than one Content-Security-Policy"; return 1; }
 }
+IMMUTABLE='cache-control: public, max-age=31536000, immutable'
 HASHED_ASSET="$(curl -fsS "$BASE/" | grep -o '/assets/[^"]*\.js' | head -n1)"
 check "the shell references a hashed asset" test -n "$HASHED_ASSET"
 for path in / /focus /owlmast-config.json /api-compatibility.json "$PREFIX" "$PREFIX/compatibility" "$PREFIX/deeper/path" "$HASHED_ASSET" /assets/missing.js; do
   case "$path" in
-    /assets/*) check "security headers on $path" has_headers "$BASE$path" ;;
+    "$HASHED_ASSET") check "security headers and the immutable policy on $path" has_headers "$BASE$path" "$IMMUTABLE" ;;
     *) check "security headers and no-store on $path" has_headers "$BASE$path" 'cache-control: no-store' ;;
   esac
 done
-check "hashed assets served with immutable caching" bash -c "asset=\$(curl -fsS '$BASE/' | grep -o '/assets/[^\"]*\\.js' | head -n1); curl -fsSI \"$BASE\$asset\" | grep -qi 'immutable'"
+# Only an answer that carries the hashed file is immutable. A missing asset (an old pod asked for
+# the new build's name during a rolling update) must not be kept for a year; the 304 that
+# revalidates the file replaces the stored headers, so it repeats the policy of the 200.
+# Prints "<status> <Cache-Control value>" once per Cache-Control header of one answer, so a second
+# header or another status cannot pass.
+status_and_cache() { curl -sS -o /dev/null -D - "$@" | tr -d '\r' | awk 'NR==1 { status=$2 } tolower($1)=="cache-control:" { sub(/^[^:]*: /, ""); print status, $0 }'; }
+IMMUTABLE_VALUE="${IMMUTABLE#cache-control: }"
+check "a missing asset is 404 and not cacheable (exactly no-store)" test "$(status_and_cache "$BASE/assets/missing.js")" = '404 no-store'
+check "a missing path below /assets/ is not cacheable either" test "$(status_and_cache "$BASE/assets/a/b.css")" = '404 no-store'
+check "the hashed asset is immutable for a year (exact value)" test "$(status_and_cache "$BASE$HASHED_ASSET")" = "200 $IMMUTABLE_VALUE"
+ETAG="$(curl -sSI "$BASE$HASHED_ASSET" | tr -d '\r' | sed -n 's/^[Ee][Tt]ag: //p' || true)"
+check "the hashed asset has an ETag" test -n "$ETAG"
+check "a 304 for the hashed asset repeats the immutable policy" test "$(status_and_cache -H "If-None-Match: ${ETAG:-\"none\"}" "$BASE$HASHED_ASSET")" = "304 $IMMUTABLE_VALUE"
+# Ranges are off (max_ranges 0): nginx adds the headers before the range filter and again for a 416,
+# which would answer an unsatisfiable range with both cache policies and every security header twice.
+check "a range request for the hashed asset is answered whole, with one policy" test "$(status_and_cache -H 'Range: bytes=0-9' "$BASE$HASHED_ASSET")" = "200 $IMMUTABLE_VALUE"
+check "an unsatisfiable range on the hashed asset is no 416 with two policies" test "$(status_and_cache -H 'Range: bytes=999999999-' "$BASE$HASHED_ASSET")" = "200 $IMMUTABLE_VALUE"
+check "an unsatisfiable range on the shell is no 416 with every header twice" test "$(status_and_cache -H 'Range: bytes=999999999-' "$BASE/")" = '200 no-store'
+check "container variables named like nginx variables do not reach the template (status, uri)" bash -c "docker run --rm -e status=200 -e uri=/index.html '$IMAGE' nginx -T 2>/dev/null | grep -qF 'map \$status \$owlmast_asset_cache_control' && docker run --rm -e status=200 -e uri=/index.html '$IMAGE' nginx -T 2>/dev/null | grep -qF 'try_files \$uri /index.html'"
 check "no JDK in the image" bash -c "! docker run --rm --entrypoint sh '$IMAGE' -c 'command -v java'"
 check "no backend jar in the image" bash -c "! docker run --rm --entrypoint sh '$IMAGE' -c 'find / -name \"*.jar\" 2>/dev/null | grep -q .'"
 check "a request below the API prefix is 404, never the shell (misrouted API fails closed)" bash -c "[ \"\$(curl -s -o \"$TMP/misrouted\" -w '%{http_code}' '$BASE$PREFIX/compatibility')\" = 404 ] && ! grep -q '<div id=\"root\">' \"$TMP/misrouted\""
@@ -95,10 +114,11 @@ refuses_prefix() {
   grep -q 'OWLMAST_API_PATH_PREFIX' <<<"$out" || { echo "      no diagnostic for '$1': $out"; return 1; }
 }
 for bad in "/a'b" '/a$b' '/a"b' '/a b' '/a%2Fb' '/a;b' '//evil.example' '/a//b' '/a/../b' '/a/./b' '/a/..' 'api' '' '/' '//' '/assets' '/assets/x' '/owlmast-config.json' '/api-compatibility.json' \
-  '/index.html' '/theme-boot.js' '/owl-mark.svg' '/index.html/' '/index.html/x' '/theme-boot.js/x'; do
+  '/index.html' '/theme-boot.js' '/owl-mark.svg' '/index.html/' '/index.html/x' '/theme-boot.js/x' \
+  '/focus' '/knowledge' '/connections' '/usage' '/preferences' '/usage/' '/focus/x' '/preferences/api'; do
   check "start-up refuses OWLMAST_API_PATH_PREFIX='$bad'" refuses_prefix "$bad"
 done
-check "a prefix that only shares a string prefix with an own path still starts (/assetsx, /index.htmlx, /api)" bash -c "for ok in /assetsx /index.htmlx /api /owl/index.html; do docker run --rm -e OWLMAST_API_PATH_PREFIX=\$ok '$IMAGE' nginx -t >/dev/null 2>&1 || { echo \"      refused \$ok\"; exit 1; }; done"
+check "a prefix that only shares a string prefix with an own path or a shell page still starts (/assetsx, /index.htmlx, /api, /usagex, /owl/usage; /Usage, as the router matches case)" bash -c "for ok in /assetsx /index.htmlx /api /owl/index.html /usagex /owl/usage /Usage; do docker run --rm -e OWLMAST_API_PATH_PREFIX=\$ok '$IMAGE' nginx -t >/dev/null 2>&1 || { echo \"      refused \$ok\"; exit 1; }; done"
 check "a trailing slash is normalised before the template is rendered" bash -c "docker run --rm -e OWLMAST_API_PATH_PREFIX=/owl/api/ '$IMAGE' nginx -T 2>/dev/null | grep -qF '{\"apiPathPrefix\":\"/owl/api\"}'"
 
 # The chart runs the shell as UID/GID 101 on a read-only root with emptyDirs at /tmp and /etc/nginx/conf.d

@@ -127,7 +127,8 @@ test.describe('built frontend image in Chromium (production CSP, nginx template,
       [prefix, 404, 'no-store'],
       [`${prefix}/compatibility`, 404, 'no-store'],
       [asset, 200, 'public, max-age=31536000, immutable'],
-      ['/assets/missing.js', 404, 'public, max-age=31536000, immutable'],
+      // Not the asset policy: a 404 kept for a year would outlive the rolling update that caused it.
+      ['/assets/missing.js', 404, 'no-store'],
     ];
     for (const [path, status, cacheControl] of expected) {
       const answer = await page.request.get(path);
