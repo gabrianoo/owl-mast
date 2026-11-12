@@ -5,6 +5,8 @@ import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Set;
+import lombok.AccessLevel;
+import lombok.NoArgsConstructor;
 
 /**
  * Bounded, secret-free description of a failure for logs and diagnostics (NFR-6). Only exception
@@ -12,11 +14,10 @@ import java.util.Set;
  * never included because drivers and SDKs put connection strings, credentials and payload fragments
  * into them.
  */
+@NoArgsConstructor(access = AccessLevel.PRIVATE)
 public final class SafeFailure {
 
   static final int MAX_DEPTH = 5;
-
-  private SafeFailure() {}
 
   /** For example {@code IllegalStateException <- PSQLException}. */
   public static String describe(Throwable failure) {

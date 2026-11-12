@@ -1,0 +1,199 @@
+{
+ "active_task": null,
+ "approved_sha": null,
+ "authorizations": [
+  {
+   "bound_at": "2026-11-06T22:48:39Z",
+   "id": "eng01-trusted-20261106:OM-99.01:1",
+   "issued_at": "2026-11-06T22:47:14Z",
+   "purpose": "implementation",
+   "reason": null,
+   "role": "implementer",
+   "round": null,
+   "sha": null,
+   "status": "consumed",
+   "task_id": "node:delegated-task:command%3Amcp%3Af7c3c131-c18d-4868-98ee-f6b69abfd21c%3Adelegate-task%3Aowl-unattended-foundation-implementation-20261106"
+  },
+  {
+   "bound_at": "2026-11-06T22:55:27Z",
+   "id": "eng01-trusted-20261106:OM-99.01:2",
+   "issued_at": "2026-11-06T22:54:57Z",
+   "purpose": "review",
+   "reason": null,
+   "role": "reviewer",
+   "round": null,
+   "sha": "92c42d51832607fb96f30df36467902f28246033",
+   "status": "consumed",
+   "task_id": "node:delegated-task:command%3Amcp%3A0d7d9dec-9525-40a0-aded-fc80430b6e0f%3Adelegate-task%3Aeng01-trusted-review-92c42d5"
+  },
+  {
+   "id": "eng01-trusted-20261106:OM-99.01:3",
+   "issued_at": "2026-11-06T22:58:39Z",
+   "purpose": "repair",
+   "reason": "story cancelled requested: qualification stopped: resumed repair lacks fresh T3 taskId; repair run terminal independently confirmed; authorization cannot truthfully be resolved by no-launch",
+   "revoked_at": "2026-11-06T23:06:16Z",
+   "role": "implementer",
+   "round": 1,
+   "sha": null,
+   "status": "revoked",
+   "task_id": null
+  }
+ ],
+ "blocked": null,
+ "checks": [
+  {
+   "at": "2026-11-06T22:54:57Z",
+   "clean_after": true,
+   "clean_before": true,
+   "commands": [
+    {
+     "command": "python3 -m unittest discover -s automation/tests -t .",
+     "returncode": 0,
+     "stderr_tail": "............................/usr/lib/python3.12/tempfile.py:1075: ResourceWarning: Implicitly cleaning up <TemporaryDirectory '/tmp/tmplliawce6'>\n  _warnings.warn(warn_message, ResourceWarning)\n......../usr/lib/python3.12/tempfile.py:1075: ResourceWarning: Implicitly cleaning up <TemporaryDirectory '/tmp/tmp8ct5gvzm'>\n  _warnings.warn(warn_message, ResourceWarning)\n......../usr/lib/python3.12/tempfile.py:1075: ResourceWarning: Implicitly cleaning up <TemporaryDirectory '/tmp/tmp_qv75z3r'>\n  _warnings.warn(warn_message, ResourceWarning)\n.........../usr/lib/python3.12/tempfile.py:1075: ResourceWarning: Implicitly cleaning up <TemporaryDirectory '/tmp/tmpb4nidhho'>\n  _warnings.warn(warn_message, ResourceWarning)\n.............................................................................usage: python3 -m automation.tests.lifecycle_smoke bind [-h] --receipt RECEIPT\n                                                        [--worktree WORKTREE]\n                                                        [--branch BRANCH]\n                                                        [--authorization AUTHORIZATION]\n                                                        --source\n                                                        {real,fixture}\npython3 -m automation.tests.lifecycle_smoke bind: error: the following arguments are required: --source\n.............................................../usr/lib/python3.12/tempfile.py:1075: ResourceWarning: Implicitly cleaning up <TemporaryDirectory '/tmp/tmp6i172rvi'>\n  _warnings.warn(warn_message, ResourceWarning)\n........................................\n----------------------------------------------------------------------\nRan 219 tests in 11.324s\n\nOK\n",
+     "stdout_tail": ""
+    }
+   ],
+   "dirt_after": "",
+   "executed": true,
+   "head_after": "92c42d51832607fb96f30df36467902f28246033",
+   "head_before": "92c42d51832607fb96f30df36467902f28246033",
+   "passed": true,
+   "sha": "92c42d51832607fb96f30df36467902f28246033"
+  }
+ ],
+ "claim": {
+  "baseline_sha": "93df46e0833c26c035d38b706b0586013d7e0d8e",
+  "branch": "t3/unattended-execution-foundation",
+  "claimed_at": "2026-11-06T22:48:39Z",
+  "reserved_at": "2026-11-06T22:47:14Z",
+  "scope": "dispatchable",
+  "worktree_path": "/home/operator/.t3/worktrees/owlmast/t3-08a6bd98"
+ },
+ "head_sha": "92c42d51832607fb96f30df36467902f28246033",
+ "implementer_receipts": [
+  {
+   "authorization": "eng01-trusted-20261106:OM-99.01:1",
+   "isolation": "worktree",
+   "model": "claude-fable-5-1",
+   "options": {
+    "effort": "high"
+   },
+   "providerInstanceId": "claudeAgent",
+   "role": "implementer",
+   "taskId": "node:delegated-task:command%3Amcp%3Af7c3c131-c18d-4868-98ee-f6b69abfd21c%3Adelegate-task%3Aowl-unattended-foundation-implementation-20261106",
+   "title": ""
+  }
+ ],
+ "intents": [
+  {
+   "body": "<!-- unattended kind=claim op=claim run=eng01-trusted-20261106 story=OM-99.01 -->\nUnattended reservation by run `eng01-trusted-20261106` from `93df46e0833c26c035d38b706b0586013d7e0d8e` (scope: dispatchable). An implementer task is delegated only after this reservation; its receipt is bound to the reservation. Project Status is owner-maintained; completion still requires checks, independent review and owner acceptance.",
+   "comment_id": 1000,
+   "completed_at": "2026-11-06T22:47:14Z",
+   "created_at": "2026-11-06T22:47:14Z",
+   "kind": "claim",
+   "marker": {
+    "kind": "claim",
+    "op": "claim",
+    "run": "eng01-trusted-20261106",
+    "story": "OM-99.01"
+   },
+   "op": "claim",
+   "preconditions": {
+    "revisions": {
+     "E99": {
+      "body_sha256": "df557a11bc82de5910d1fb7f7fe453b80b1344cf5918946183384a1ec368b554",
+      "issue_updated_at": "2026-11-06T10:00:00Z",
+      "item_id": "PVTI_9900",
+      "item_updated_at": "2026-11-06T13:00:01Z",
+      "state": "OPEN",
+      "state_reason": null,
+      "status": "Backlog"
+     },
+     "OM-99.01": {
+      "body_sha256": "efeaf3eb8f13d41e065045571dcb8887eecfc57a53071a35d6e6eb095813429d",
+      "issue_updated_at": "2026-11-06T10:00:00Z",
+      "item_id": "PVTI_9901",
+      "item_updated_at": "2026-11-06T13:00:02Z",
+      "state": "OPEN",
+      "state_reason": null,
+      "status": "Ready"
+     }
+    }
+   },
+   "reason": null,
+   "status": "done"
+  }
+ ],
+ "issue": 9901,
+ "item_id": "PVTI_9901",
+ "phase": "repair-authorized",
+ "proposal": null,
+ "repair_rounds": 1,
+ "reviewer_receipts": [
+  {
+   "authorization": "eng01-trusted-20261106:OM-99.01:2",
+   "isolation": "",
+   "model": "gpt-6-astra",
+   "options": {
+    "reasoningEffort": "high",
+    "serviceTier": "default"
+   },
+   "providerInstanceId": "codex",
+   "role": "reviewer",
+   "sha": "92c42d51832607fb96f30df36467902f28246033",
+   "taskId": "node:delegated-task:command%3Amcp%3A0d7d9dec-9525-40a0-aded-fc80430b6e0f%3Adelegate-task%3Aeng01-trusted-review-92c42d5",
+   "title": ""
+  }
+ ],
+ "reviews": [
+  {
+   "at": "2026-11-06T22:58:39Z",
+   "regression": false,
+   "report": "Fresh Astra review: atomic transport persistence/landed effect; bound worktree checks; documented CLI syntax",
+   "sha": "92c42d51832607fb96f30df36467902f28246033",
+   "verdict": "changes-requested"
+  }
+ ],
+ "revisions": {
+  "E99": {
+   "body_sha256": "df557a11bc82de5910d1fb7f7fe453b80b1344cf5918946183384a1ec368b554",
+   "issue_updated_at": "2026-11-06T10:00:00Z",
+   "item_id": "PVTI_9900",
+   "item_updated_at": "2026-11-06T13:00:01Z",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Backlog"
+  },
+  "OM-99.01": {
+   "body_sha256": "efeaf3eb8f13d41e065045571dcb8887eecfc57a53071a35d6e6eb095813429d",
+   "issue_updated_at": "2026-11-06T10:00:00Z",
+   "item_id": "PVTI_9901",
+   "item_updated_at": "2026-11-06T13:00:02Z",
+   "state": "OPEN",
+   "state_reason": null,
+   "status": "Ready"
+  }
+ },
+ "run_id": "eng01-trusted-20261106",
+ "schema": 3,
+ "story": "OM-99.01",
+ "task_history": [
+  {
+   "at": "2026-11-06T22:54:45Z",
+   "authorization": "eng01-trusted-20261106:OM-99.01:1",
+   "operation": "record-head",
+   "role": "implementer",
+   "status": "completed",
+   "taskId": "node:delegated-task:command%3Amcp%3Af7c3c131-c18d-4868-98ee-f6b69abfd21c%3Adelegate-task%3Aowl-unattended-foundation-implementation-20261106"
+  },
+  {
+   "at": "2026-11-06T22:58:39Z",
+   "authorization": "eng01-trusted-20261106:OM-99.01:2",
+   "operation": "record-review",
+   "role": "reviewer",
+   "status": "completed",
+   "taskId": "node:delegated-task:command%3Amcp%3A0d7d9dec-9525-40a0-aded-fc80430b6e0f%3Adelegate-task%3Aeng01-trusted-review-92c42d5"
+  }
+ ],
+ "updated_at": "2026-11-06T23:06:16Z"
+}

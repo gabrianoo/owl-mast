@@ -28,6 +28,7 @@ spec:
                 name: {{ include "owl-mast.backend.fullname" . }}
                 port:
                   name: http
+          {{- if .Values.routing.exposeActuator }}
           - path: {{ .Values.routing.actuatorPathPrefix }}
             pathType: Prefix
             backend:
@@ -35,6 +36,7 @@ spec:
                 name: {{ include "owl-mast.backend.fullname" . }}
                 port:
                   name: http
+          {{- end }}
           {{- if .Values.frontend.enabled }}
           - path: {{ .Values.routing.frontendPathPrefix }}
             pathType: Prefix

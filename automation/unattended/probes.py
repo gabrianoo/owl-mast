@@ -34,10 +34,14 @@ def run_commands(commands: list[str], cwd: str | None, timeout: int, runner: Run
     deterministic checks run the full set so the record shows every command."""
     results = []
     for command in commands:
-        argv = shlex.split(command)
         try:
+            argv = shlex.split(command) if isinstance(command, str) else []
+            if not argv:
+                raise ValueError("empty command")
             proc = runner(argv, cwd, timeout)
             results.append({"command": command, "returncode": proc.returncode, "stdout_tail": _tail(proc.stdout), "stderr_tail": _tail(proc.stderr)})
+        except ValueError as exc:  # shlex: unbalanced quotes; or nothing to run
+            results.append({"command": command, "returncode": -1, "error": f"command cannot be parsed: {exc}"})
         except subprocess.TimeoutExpired:
             results.append({"command": command, "returncode": -1, "error": f"timeout after {timeout}s"})
         except OSError as exc:
@@ -45,6 +49,16 @@ def run_commands(commands: list[str], cwd: str | None, timeout: int, runner: Run
         if fail_fast and results[-1]["returncode"] != 0:
             break
     return results
+
+
+def _guarded(runner: Runner, argv: list[str], timeout: int, report: dict) -> subprocess.CompletedProcess:
+    """Run ``gh`` for a permission observation; a missing binary or a hang is a recorded
+    problem (a failed observation, exit -1), never an exception out of the probe."""
+    try:
+        return runner(argv, None, timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        report["problems"].append(f"{' '.join(argv[:3])} could not be observed: {exc}")
+        return subprocess.CompletedProcess(argv, -1, "", str(exc))
 
 
 def check_permissions(owner: str, repo: str, project_owner: str, project_number: int, runner: Runner = default_runner) -> dict:
@@ -62,11 +76,11 @@ def check_permissions(owner: str, repo: str, project_owner: str, project_number:
         },
         "observed": {}, "problems": [], "excess": [], "bounded_reasons": [],
     }
-    auth = runner(["gh", "auth", "status"], None, 60)
+    auth = _guarded(runner, ["gh", "auth", "status"], 60, report)
     report["observed"]["gh_auth_status_exit"] = auth.returncode
     if auth.returncode != 0:
         report["problems"].append("gh is not authenticated")
-    headers = runner(["gh", "api", "-i", f"repos/{owner}/{repo}"], None, 60)
+    headers = _guarded(runner, ["gh", "api", "-i", f"repos/{owner}/{repo}"], 60, report)
     scopes: list[str] | None = None
     if headers.returncode == 0:
         m = re.search(r"^x-oauth-scopes:\s*(.*)$", headers.stdout, re.I | re.M)
@@ -96,10 +110,11 @@ def check_permissions(owner: str, repo: str, project_owner: str, project_number:
             report["bounded_reasons"].append(f"excess scopes beyond the minimum: {report['excess']}")
         if "repo" in scopes:
             report["bounded_reasons"].append("classic `repo` grants full repository access and manages user-owned Projects (write), whatever other scopes accompany it; scope names cannot prove a bounded credential")
-    project = runner(["gh", "api", "graphql", "-f", f'query={{ user(login:"{project_owner}"){{ projectV2(number:{project_number}){{ id title viewerCanUpdate }} }} }}'], None, 60)
+    # repositoryOwner resolves a user or an organization (both implement ProjectV2Owner)
+    project = _guarded(runner, ["gh", "api", "graphql", "-f", f'query={{ repositoryOwner(login:"{project_owner}"){{ ... on ProjectV2Owner{{ projectV2(number:{project_number}){{ id title viewerCanUpdate }} }} }} }}'], 60, report)
     if project.returncode == 0:
         try:
-            node = json.loads(project.stdout)["data"]["user"]["projectV2"]
+            node = json.loads(project.stdout)["data"]["repositoryOwner"]["projectV2"]
         except (KeyError, json.JSONDecodeError, TypeError):
             node = None
         report["observed"]["project"] = node
@@ -130,9 +145,11 @@ def write_probe(transport: Transport, issue_number: int, run_id: str, now: str) 
     if "engineering-automation" not in issue.labels or any(l in issue.labels for l in STORY_LABELS):
         raise Refused(f"issue #{issue_number} is not an engineering-automation issue; write probes never touch backlog issues")
     marker = {"kind": "probe", "run": run_id, "story": f"ENG-{issue_number}", "op": "probe"}
-    before = [c for c in transport.list_comments(issue_number) if c.marker == marker]
+    body = f"{render_marker(**marker)}\nWrite probe from run `{run_id}` at {now}: verifies idempotent marker comments on the engineering issue only; no Project Status or body is written."
+    author = transport.viewer_login()  # only this identity's markers count; anyone else's copy is ignored
+    before = [c for c in transport.list_comments(issue_number) if c.marker == marker and c.author == author]
     posted = None
     if not before:
-        posted = transport.post_comment(issue_number, f"{render_marker(**marker)}\nWrite probe from run `{run_id}` at {now}: verifies idempotent marker comments on the engineering issue only; no Project Status or body is written.")
-    after = [c for c in transport.list_comments(issue_number) if c.marker == marker]
-    return {"issue": issue_number, "marker": marker, "comment_existed": bool(before), "posted": posted.comment_id if posted else None, "comments_with_marker": [c.comment_id for c in after], "idempotent": len(after) == 1}
+        posted = transport.post_comment(issue_number, body)
+    after = [c for c in transport.list_comments(issue_number) if c.marker == marker and c.author == author]
+    return {"issue": issue_number, "marker": marker, "author": author, "comment_existed": bool(before), "posted": posted.comment_id if posted else None, "comments_with_marker": [c.comment_id for c in after], "idempotent": len(after) == 1}

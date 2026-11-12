@@ -3,7 +3,8 @@
 The web client is an independent artifact in `frontend/`: its own toolchain, tests, image and
 release cadence (AD-14). It is never bundled into the backend image and is not a Gradle subproject.
 The backend serves only `/api/*` and `/actuator/*`; the ingress or Gateway route (`routing.*` in the
-chart) sends `/` to the frontend image and the API paths to the backend.
+chart) sends `/` to the frontend image and `/api` to the backend. The actuator is not routed unless
+`routing.exposeActuator=true`.
 
 ## Framework decision and qualified pins (OM-01.04-T1)
 

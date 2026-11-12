@@ -9,9 +9,10 @@ whether they are *enforced* depends on the credential the operator provisions (s
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .errors import PolicyError
@@ -23,6 +24,12 @@ KNOWN_SECTIONS = {"repository", "dispatch", "budgets", "targets", "checks", "pro
 MACHINE_STATUSES = ("In progress", "In review", "Blocked")
 OWNER_STATUSES = ("Ready", "Done")
 MAX_REPAIR_ROUNDS_CEILING = 2
+# Documented ceilings: a value past them is a mistake, not a budget (and an unbounded wall clock would overflow ``timedelta``).
+MAX_WALL_CLOCK_MINUTES = 7 * 24 * 60
+MAX_CHECK_TIMEOUT_MINUTES = 24 * 60
+MAX_PROBE_TIMEOUT_SECONDS = 24 * 60 * 60
+MAX_STORIES_CEILING = 1000
+MAX_TASKS_CEILING = 10000
 
 
 @dataclass(frozen=True)
@@ -54,11 +61,21 @@ class Policy:
     check_timeout_minutes: int
     probe_commands: tuple[str, ...]
     probe_timeout_seconds: int
-    digest: str = field(default="", compare=False)
+    digest: str = field(default="", compare=False)  # sha256 of the canonical parsed policy (``canonical_digest``): comments and whitespace do not change it
+    raw_digest: str = field(default="", compare=False)  # sha256 of the file bytes: what runs created before the canonical digest recorded; recognized, never written again
 
     @property
     def repo_slug(self) -> str:
         return f"{self.owner}/{self.repo}"
+
+
+def canonical_digest(policy: "Policy") -> str:
+    """The digest a run and an activation bind: the parsed, safety-relevant content serialized
+    canonically (every field but the digests, sorted keys), so a comment-only or whitespace edit
+    of ``policy.toml`` is the same policy and strands no run, while any change to what is
+    dispatched, with which targets, budgets, checks or probes, is a different policy."""
+    content = {k: v for k, v in asdict(policy).items() if k not in ("digest", "raw_digest")}
+    return hashlib.sha256(json.dumps(content, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _walk(obj, path: str, problems: list[str]) -> None:
@@ -75,19 +92,90 @@ def _walk(obj, path: str, problems: list[str]) -> None:
         problems.append(f"value at {path!r} looks like a credential")
 
 
-def _target(raw: dict, name: str, problems: list[str]) -> Target | None:
+SECTION_KEYS = {
+    "repository": {"owner", "name", "project_owner", "project_number"},
+    "dispatch": {"allow", "include_optional_epics", "include_later_epics", "contract_design_exceptions"},
+    "budgets": {"max_stories_per_run", "max_concurrent_implementers", "max_repair_rounds", "max_delegated_tasks", "max_wall_clock_minutes"},
+    "targets": {"implementer", "reviewer"},
+    "checks": {"commands", "timeout_minutes"},
+    "probes": {"commands", "timeout_seconds"},
+    "writes": {"apply_task_checkboxes", "merge", "auto_deploy", "auto_release", "live_collection"},
+}
+
+
+def _table(raw: dict, name: str, problems: list[str]) -> dict:
+    """A section as a table with known keys only; anything else is a problem (a mistyped budget
+    key must never fall back to a default) and reads as empty."""
+    value = raw.get(name, {})
+    if not isinstance(value, dict):
+        problems.append(f"{name} must be a table, not {type(value).__name__}")
+        return {}
+    unknown = set(value) - SECTION_KEYS[name]
+    if unknown:
+        problems.append(f"{name} has unknown keys {sorted(unknown)}; known keys are {sorted(SECTION_KEYS[name])}")
+    return value
+
+
+def _bool(section: dict, path: str, key: str, default: bool, problems: list[str]) -> bool:
+    """A TOML boolean exactly; ``"false"`` (a string) or ``0`` are refused, never coerced."""
+    value = section.get(key, default)
+    if not isinstance(value, bool):
+        problems.append(f"{path}.{key} must be a boolean (true/false), not {type(value).__name__} {value!r}")
+        return default
+    return value
+
+
+def _int(section: dict, path: str, key: str, default: int, problems: list[str], lo: int | None = None, hi: int | None = None) -> int:
+    """A TOML integer exactly (``type(v) is int``: no booleans, floats or strings) within ``lo..hi``."""
+    value = section.get(key, default)
+    if type(value) is not int:
+        problems.append(f"{path}.{key} must be an integer, not {type(value).__name__} {value!r}")
+        return default
+    if (lo is not None and value < lo) or (hi is not None and value > hi):
+        bounds = f"{lo if lo is not None else ''}..{hi if hi is not None else ''}"
+        problems.append(f"{path}.{key} must be within {bounds}, not {value}")
+    return value
+
+
+def _strings(section: dict, path: str, key: str, problems: list[str]) -> tuple[str, ...]:
+    """An array of non-empty strings; a scalar (which would iterate character by character) or
+    a non-string entry is refused."""
+    value = section.get(key, [])
+    if not isinstance(value, list):
+        problems.append(f"{path}.{key} must be an array, not {type(value).__name__}")
+        return ()
+    bad = [v for v in value if not isinstance(v, str) or not v.strip()]
+    if bad:
+        problems.append(f"{path}.{key} entries must be non-empty strings; found {bad[:3]!r}")
+        return tuple(v for v in value if isinstance(v, str) and v.strip())
+    return tuple(value)
+
+
+def _target(raw, name: str, problems: list[str]) -> Target | None:
     if not isinstance(raw, dict):
         problems.append(f"targets.{name} must be a table")
         return None
     provider = raw.get("provider")
     model = raw.get("model")
     options = raw.get("options", {})
-    if not provider or not model:
-        problems.append(f"targets.{name} needs provider and model")
+    for key, value in (("provider", provider), ("model", model)):
+        if not isinstance(value, str) or not value.strip():
+            problems.append(f"targets.{name}.{key} must be a non-empty string")
     if not isinstance(options, dict) or not options:
         problems.append(f"targets.{name}.options must name at least one option (e.g. effort)")
         options = {}
-    return Target(str(provider), str(model), {str(k): str(v) for k, v in options.items()}, str(raw.get("isolation", "")))
+    elif not all(isinstance(k, str) and isinstance(v, str) and v.strip() for k, v in options.items()):
+        # the same rule as the activation loader: no coercion of numbers, booleans or tables, so the
+        # two documents compare option values under one typing rule
+        problems.append(f"targets.{name}.options must be a table of non-empty string values (no coercion of numbers, booleans or tables: write timeoutMs = \"600000\", not 600000)")
+        options = {k: v for k, v in options.items() if isinstance(k, str) and isinstance(v, str)}
+    isolation = raw.get("isolation", "")
+    if not isinstance(isolation, str):
+        problems.append(f"targets.{name}.isolation must be a string")
+        isolation = ""
+    if isolation != "worktree":
+        problems.append(f"targets.{name}.isolation must be 'worktree' (every delegated task, reviewer included, runs in its own checkout)")
+    return Target(str(provider), str(model), {str(k): str(v) for k, v in options.items()}, isolation)
 
 
 def load_policy(path: Path) -> Policy:
@@ -102,79 +190,85 @@ def load_policy(path: Path) -> Policy:
         problems.append(f"unknown sections: {sorted(unknown)}")
     _walk(raw, "", problems)
 
-    repository = raw.get("repository", {})
-    dispatch = raw.get("dispatch", {})
-    budgets = raw.get("budgets", {})
-    targets = raw.get("targets", {})
-    checks = raw.get("checks", {})
-    probes = raw.get("probes", {})
-    writes = raw.get("writes", {})
+    repository = _table(raw, "repository", problems)
+    dispatch = _table(raw, "dispatch", problems)
+    budgets = _table(raw, "budgets", problems)
+    targets = _table(raw, "targets", problems)
+    checks = _table(raw, "checks", problems)
+    probes = _table(raw, "probes", problems)
+    writes = _table(raw, "writes", problems)
 
-    for key in ("owner", "name", "project_owner", "project_number"):
-        if key not in repository:
-            problems.append(f"repository.{key} is required")
+    for key in ("owner", "name", "project_owner"):
+        if not isinstance(repository.get(key), str) or not repository[key].strip():
+            problems.append(f"repository.{key} is required and must be a non-empty string")
+    if "project_number" not in repository:
+        problems.append("repository.project_number is required")
+        project_number = 0
+    else:
+        project_number = _int(repository, "repository", "project_number", 0, problems, lo=1)
 
-    allow = tuple(str(s) for s in dispatch.get("allow", []))
+    allow = _strings(dispatch, "dispatch", "allow", problems)
     for story in allow:
         if not STORY_ID_RE.match(story):
             problems.append(f"dispatch.allow entry {story!r} is not an OM-xx.yy story id")
-    exceptions = tuple(str(s) for s in dispatch.get("contract_design_exceptions", []))
+    if len(set(allow)) != len(allow):
+        problems.append("dispatch.allow lists a story more than once")
+    exceptions = _strings(dispatch, "dispatch", "contract_design_exceptions", problems)
     for story in exceptions:
         if not STORY_ID_RE.match(story):
             problems.append(f"dispatch.contract_design_exceptions entry {story!r} is not an OM-xx.yy story id")
+    include_optional = _bool(dispatch, "dispatch", "include_optional_epics", False, problems)
+    include_later = _bool(dispatch, "dispatch", "include_later_epics", False, problems)
 
-    max_repair = int(budgets.get("max_repair_rounds", MAX_REPAIR_ROUNDS_CEILING))
-    if max_repair > MAX_REPAIR_ROUNDS_CEILING or max_repair < 0:
-        problems.append(f"budgets.max_repair_rounds must be 0..{MAX_REPAIR_ROUNDS_CEILING}")
-    concurrent = int(budgets.get("max_concurrent_implementers", 1))
-    if concurrent != 1:
-        problems.append("budgets.max_concurrent_implementers must be 1 (one active implementer per story and per run)")
-    for key in ("max_stories_per_run", "max_delegated_tasks", "max_wall_clock_minutes"):
-        if int(budgets.get(key, 1)) < 1:
-            problems.append(f"budgets.{key} must be >= 1")
+    max_repair = _int(budgets, "budgets", "max_repair_rounds", MAX_REPAIR_ROUNDS_CEILING, problems, lo=0, hi=MAX_REPAIR_ROUNDS_CEILING)
+    concurrent = _int(budgets, "budgets", "max_concurrent_implementers", 1, problems, lo=1, hi=1)
+    max_stories = _int(budgets, "budgets", "max_stories_per_run", 1, problems, lo=1, hi=MAX_STORIES_CEILING)
+    max_tasks = _int(budgets, "budgets", "max_delegated_tasks", 6, problems, lo=1, hi=MAX_TASKS_CEILING)
+    max_wall = _int(budgets, "budgets", "max_wall_clock_minutes", 240, problems, lo=1, hi=MAX_WALL_CLOCK_MINUTES)  # a huge value would overflow timedelta and crash every operation
 
     implementer = _target(targets.get("implementer"), "implementer", problems)
     reviewer = _target(targets.get("reviewer"), "reviewer", problems)
-    if implementer and implementer.isolation != "worktree":
-        problems.append("targets.implementer.isolation must be 'worktree'")
 
-    if writes.get("apply_task_checkboxes", False):
+    if _bool(writes, "writes", "apply_task_checkboxes", False, problems):
         problems.append("writes.apply_task_checkboxes must stay false: task completion is proposed, never applied by the machine")
     if writes.get("merge", "owner") != "owner":
         problems.append("writes.merge must be 'owner': the tool has no merge path")
     for key in ("auto_deploy", "auto_release", "live_collection"):
-        if writes.get(key, False):
+        if _bool(writes, "writes", key, False, problems):
             problems.append(f"writes.{key} must be false")
 
-    check_commands = tuple(str(c) for c in checks.get("commands", []))
-    probe_commands = tuple(str(c) for c in probes.get("commands", []))
+    check_commands = _strings(checks, "checks", "commands", problems)
+    probe_commands = _strings(probes, "probes", "commands", problems)
     if not check_commands:
         problems.append("checks.commands must not be empty (deterministic checks run before review)")
     if not probe_commands:
         problems.append("probes.commands must not be empty (environment probes run before dispatch)")
+    check_timeout = _int(checks, "checks", "timeout_minutes", 45, problems, lo=1, hi=MAX_CHECK_TIMEOUT_MINUTES)
+    probe_timeout = _int(probes, "probes", "timeout_seconds", 60, problems, lo=1, hi=MAX_PROBE_TIMEOUT_SECONDS)
 
     if problems:
         raise PolicyError("policy rejected: " + "; ".join(problems), problems=problems)
     assert implementer and reviewer
-    return Policy(
-        owner=str(repository["owner"]),
-        repo=str(repository["name"]),
-        project_owner=str(repository["project_owner"]),
-        project_number=int(repository["project_number"]),
+    policy = Policy(
+        owner=repository["owner"],
+        repo=repository["name"],
+        project_owner=repository["project_owner"],
+        project_number=project_number,
         allow=allow,
-        include_optional_epics=bool(dispatch.get("include_optional_epics", False)),
-        include_later_epics=bool(dispatch.get("include_later_epics", False)),
+        include_optional_epics=include_optional,
+        include_later_epics=include_later,
         contract_design_exceptions=exceptions,
-        max_stories_per_run=int(budgets.get("max_stories_per_run", 1)),
+        max_stories_per_run=max_stories,
         max_concurrent_implementers=concurrent,
         max_repair_rounds=max_repair,
-        max_delegated_tasks=int(budgets.get("max_delegated_tasks", 6)),
-        max_wall_clock_minutes=int(budgets.get("max_wall_clock_minutes", 240)),
+        max_delegated_tasks=max_tasks,
+        max_wall_clock_minutes=max_wall,
         implementer=implementer,
         reviewer=reviewer,
         check_commands=check_commands,
-        check_timeout_minutes=int(checks.get("timeout_minutes", 45)),
+        check_timeout_minutes=check_timeout,
         probe_commands=probe_commands,
-        probe_timeout_seconds=int(probes.get("timeout_seconds", 60)),
-        digest=hashlib.sha256(text).hexdigest(),
+        probe_timeout_seconds=probe_timeout,
+        raw_digest=hashlib.sha256(text).hexdigest(),
     )
+    return Policy(**{**asdict(policy), "implementer": implementer, "reviewer": reviewer, "digest": canonical_digest(policy)})

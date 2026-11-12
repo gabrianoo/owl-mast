@@ -1,5 +1,7 @@
 # Existing PostgreSQL 18 with VectorChord 1.1.1 installed (`CREATE EXTENSION vchord CASCADE` in the
 # application database), bundled Keycloak using its own database/principal on the same server.
+# sslMode `require` encrypts the connection but does not authenticate the server; `verify-ca` and `verify-full`
+# are refused until the chart mounts a CA trust (docs/installation.md).
 database:
   bundled: false
   name: owlmast

@@ -28,7 +28,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from automation.tests.fake_transport import CrashAfterEffect, issue, small_backlog
-from automation.tests.support import IMPLEMENTER, REVIEWER, Harness, failing_runner, git_commit, ok_worktree, passing_runner, receipt, write_policy
+from automation.tests.support import Harness, IMPLEMENTER, REVIEWER, REVIEW_BRANCH, REVIEW_WORKTREE, failing_runner, git_commit, ok_worktree, passing_runner, receipt, write_policy
 from automation.tests.test_final_findings import fresh, markers
 from automation.unattended import cli
 from automation.unattended.coordinator import Coordinator
@@ -224,9 +224,9 @@ class RP2F1UnresolvedAuthorizationsAreOwnershipObligations(unittest.TestCase):
             h.checks()
             h.coordinator.authorize_review(S, h.sha)
             with self.assertRaises(Refused) as ctx:  # the consumed implementation id is not the pending review authorization
-                h.coordinator.bind_receipt(S, REVIEWER, worktree_check=ok_worktree, authorization=AUTH1)
+                h.coordinator.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree, authorization=AUTH1)
             self.assertEqual((ctx.exception.code, ctx.exception.detail["expected"]), ("authorization-mismatch", "run-1:OM-01.02:2"))
-            self.assertEqual(h.coordinator.bind_receipt(S, REVIEWER, worktree_check=ok_worktree, authorization="run-1:OM-01.02:2").reviewer_receipts[-1]["sha"], h.sha)
+            self.assertEqual(h.coordinator.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree, authorization="run-1:OM-01.02:2").reviewer_receipts[-1]["sha"], h.sha)
         finally:
             h.close()
 
@@ -253,7 +253,7 @@ class RP2F1UnresolvedAuthorizationsAreOwnershipObligations(unittest.TestCase):
                 self.assertEqual(h.store.story_counts()["delegated_tasks"], 2)
                 if resolve_by == "receipt":
                     with self.assertRaises(Refused) as ctx:  # A's late receipt (with or without the id: A is the only unresolved slot) binds to A for cleanup
-                        fresh(h).bind_receipt(S, REVIEWER, worktree_check=ok_worktree, authorization=old["id"])
+                        fresh(h).bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree, authorization=old["id"])
                     self.assertEqual((ctx.exception.code, ctx.exception.detail["bound_for_cleanup"], ctx.exception.detail["sha"]), ("authorization-revoked", True, sha_a))
                     state = h.store.load_story(S)
                     self.assertEqual((state.phase, state.reviewer_receipts[-1]["sha"], state.reviewer_receipts[-1]["authorization"], state.active_task["role"], state.active_task["cleanup_only"]), ("implemented", sha_a, old["id"], "reviewer", "authorization-revoked"))
@@ -275,9 +275,9 @@ class RP2F1UnresolvedAuthorizationsAreOwnershipObligations(unittest.TestCase):
                 new = fresh(h).authorize_review(S, sha_b).pending_authorization()
                 self.assertEqual((new["id"], new["sha"]), ("run-1:OM-01.02:3", sha_b))
                 with self.assertRaises(Refused) as ctx:  # A's id can no longer bind anything, let alone B's slot
-                    fresh(h).bind_receipt(S, receipt(REVIEWER, "task-review-2"), worktree_check=ok_worktree, authorization=old["id"])
+                    fresh(h).bind_receipt(S, receipt(REVIEWER, "task-review-2"), REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree, authorization=old["id"])
                 self.assertEqual(ctx.exception.code, "authorization-mismatch")
-                state = fresh(h).bind_receipt(S, receipt(REVIEWER, "task-review-2"), worktree_check=ok_worktree, authorization=new["id"])
+                state = fresh(h).bind_receipt(S, receipt(REVIEWER, "task-review-2"), REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree, authorization=new["id"])
                 self.assertEqual((state.phase, state.reviewer_receipts[-1]["sha"], state.reviewer_receipts[-1]["authorization"]), ("review-requested", sha_b, new["id"]))
                 state = fresh(h).record_review(S, sha_b, "approved", "report for B", {"taskId": "task-review-2", "runId": "task-review-2" + ":run:1", "status": "result_available"})
                 self.assertEqual((state.phase, state.approved_sha, [r["sha"] for r in state.reviewer_receipts]), ("review-approved", sha_b, [sha_a, sha_b] if resolve_by == "receipt" else [sha_b]))
@@ -303,7 +303,7 @@ class RP2F1UnresolvedAuthorizationsAreOwnershipObligations(unittest.TestCase):
             self.assertEqual((ctx.exception.code, len(journal_events(h, "authorization-revoked"))), ("authorization-unresolved", 0))
             self.assertEqual(h.store.load_story(S).authorizations[-1]["reason"], auth["reason"])
             with self.assertRaises(Refused) as ctx:
-                fresh(h).bind_receipt(S, REVIEWER, worktree_check=ok_worktree)
+                fresh(h).bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
             self.assertEqual((ctx.exception.code, ctx.exception.detail["bound_for_cleanup"]), ("authorization-revoked", True))
             self.assertEqual(h.store.load_story(S).phase, "implemented")
             state = fresh(h).cancel(S, "stop", {"taskId": "task-review-1", "runId": "task-review-1" + ":run:1", "status": "cancelled"})
@@ -395,8 +395,8 @@ class RP2F1UnresolvedAuthorizationsAreOwnershipObligations(unittest.TestCase):
             h.close()
         h = Harness(small_backlog())
         try:
-            marker = render_marker(kind="claim", op="claim", run="run-1", story=S)
-            h.fake.comments[21] += [Comment(1, marker + "\nfirst", "x", "t"), Comment(2, marker + "\nsecond", "y", "t")]
+            marker = render_marker(kind="claim", op="claim", run="run-1", inst=h.store.load_run().instance, story=S)
+            h.fake.comments[21] += [Comment(1, marker + "\nfirst", "machine", "t"), Comment(2, marker + "\nsecond", "machine", "t")]
             with self.assertRaises(Exception):
                 h.reserve()
             self.assertEqual(h.store.load_story(S).phase, "conflict")

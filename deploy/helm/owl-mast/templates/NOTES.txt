@@ -3,10 +3,62 @@ Owl Mast {{ .Chart.Version }} ({{ .Release.Name }} in {{ .Release.Namespace }})
 Database:  {{ ternary "bundled PostgreSQL/VectorChord" (printf "external %s:%v" .Values.database.external.host .Values.database.external.port) .Values.database.bundled }} (database {{ .Values.database.name }}, Secret {{ .Values.database.existingSecret }})
 Identity:  {{ ternary "bundled Keycloak" "external issuer" .Values.identity.bundled }} -> {{ include "owl-mast.identity.issuerUri" . }}
 Frontend:  {{ ternary "enabled" "not deployed (OM-01.04 delivers the shell artifact)" .Values.frontend.enabled }}
+{{- if not .Values.backend.image.digest }}
+
+WARNING: the backend image {{ include "owl-mast.image" .Values.backend.image }} is referenced by a mutable tag;
+a re-pushed tag changes what runs without any chart change. Set backend.image.digest to the registry
+manifest digest once the image is published.
+{{- end }}
+{{- if and .Values.frontend.enabled (not .Values.frontend.image.digest) }}
+
+WARNING: the frontend image {{ include "owl-mast.image" .Values.frontend.image }} is referenced by a mutable tag;
+set frontend.image.digest for an immutable install.
+{{- end }}
+{{- if .Values.database.bundled }}
+
+NOTE: the bundled PostgreSQL has no TLS: the application and Keycloak connect with sslmode=disable, so
+credentials and data cross the pod network unencrypted. Isolation relies on the NetworkPolicy
+({{ ternary "rendered" "DISABLED by networkPolicy.enabled=false" (dig "enabled" true (.Values.networkPolicy | default dict)) }}) and on the cluster network. Where the pod network is not trusted, an
+external PostgreSQL with sslMode=require encrypts the connection but does NOT authenticate the server: an
+active interceptor can still pose as the database and collect the credentials. Server authentication
+(sslMode=verify-full with a mounted CA) is not shipped yet (deferred, docs/installation.md).
+{{- end }}
+{{- if not .Values.identity.bundled }}
+
+NOTE: the backend becomes ready only when the issuer's discovery document publishes exactly
+{{ .Values.identity.external.issuerUri }} (a trailing slash is part of the issuer). A release that was ready on chart
+0.1.0 with an issuer differing only by a trailing slash stays unready until identity.external.issuerUri
+is corrected; the backend log names the published issuer.
+{{- end }}
+{{- if and .Values.identity.bundled (not .Values.database.bundled) (eq (lower .Values.database.external.host | trimSuffix ".") (lower .Values.identity.keycloak.database.external.host | trimSuffix ".")) (eq (int .Values.database.external.port) (int .Values.identity.keycloak.database.external.port)) }}
+
+WARNING: Keycloak and the application share the external PostgreSQL {{ .Values.database.external.host }}:{{ .Values.database.external.port }}.
+The chart checks that their Secrets and database names differ, but it cannot read the usernames inside
+the Secrets and runs no script on an external server: make sure {{ .Values.database.existingSecret }} and
+{{ .Values.identity.keycloak.database.existingSecret }} hold different, unprivileged principals, each able to connect only to
+its own database (AC3; the bundled init script is the reference).
+{{- end }}
+{{- if and .Values.identity.bundled (eq (include "owl-mast.keycloak.bootstrapAdminEnabled" .) "false") .Release.IsInstall }}
+
+WARNING: identity.keycloak.bootstrapAdmin.enabled=false on an install: Keycloak starts WITHOUT a bootstrap
+administrator. That is right only when its database already holds a permanent admin (a reinstall on a
+retained volume or an external Keycloak database); otherwise upgrade with it enabled.
+{{- end }}
+{{- if and .Values.identity.bundled (eq (include "owl-mast.keycloak.bootstrapAdminEnabled" .) "true") }}
+
+NOTE: the temporary Keycloak bootstrap admin (Secret {{ .Values.identity.keycloak.bootstrapExistingSecret }}) is injected into the Keycloak
+pod. Create a permanent admin, delete the temporary one, then upgrade with
+identity.keycloak.bootstrapAdmin.enabled=false (docs/installation.md).
+{{- end }}
+{{- if .Values.database.bundled }}
+
+Bundled PostgreSQL: Deployment {{ include "owl-mast.postgresql.fullname" . }}, data claim {{ default (include "owl-mast.postgresql.dataClaim" .) .Values.postgresql.persistence.existingClaim }}
+(these are the names for the kubectl commands in docs/installation.md).
+{{- end }}
 {{- if and .Values.database.bundled (not .Values.postgresql.persistence.existingClaim) }}
 
-The PersistentVolumeClaim {{ include "owl-mast.postgresql.fullname" . }}-data is retained when this
-release is uninstalled. Reinstall with --set postgresql.persistence.existingClaim={{ include "owl-mast.postgresql.fullname" . }}-data
+The PersistentVolumeClaim {{ include "owl-mast.postgresql.dataClaim" . }} is retained when this
+release is uninstalled. Reinstall with --set postgresql.persistence.existingClaim={{ include "owl-mast.postgresql.dataClaim" . }}
 to reuse it. Snapshot cadence and provider remain an explicit operator decision.
 {{- end }}
 

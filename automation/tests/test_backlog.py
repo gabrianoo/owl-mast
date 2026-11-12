@@ -124,7 +124,7 @@ class RealBacklogNegativeMappingTests(unittest.TestCase):
 class SyntheticMappingTests(unittest.TestCase):
     def test_missing_parent_and_duplicate_task_ids_are_reported(self):
         fake = small_backlog()
-        snap = take_snapshot(fake, "x/y", "now")
+        snap = take_snapshot(fake, "gabrianoo/owl-mast", "now")
         report = verify_mapping(snap)
         self.assertFalse(report["ok"])  # the small fixture is deliberately not 19/85/340
         self.assertIn("epics: expected 19, found 4", report["problems"])
@@ -133,6 +133,6 @@ class SyntheticMappingTests(unittest.TestCase):
         self.assertEqual([t.task_id for t in broken.tasks], ["OM-01.03-T1", "OM-01.03-T2", "OM-01.03-T3", "OM-01.03-T4"])
 
     def test_round_trip_json(self):
-        snap = take_snapshot(small_backlog(), "x/y", "now")
+        snap = take_snapshot(small_backlog(), "gabrianoo/owl-mast", "now")
         again = Snapshot.from_json(snap.to_json())
         self.assertEqual(again.to_json(), snap.to_json())

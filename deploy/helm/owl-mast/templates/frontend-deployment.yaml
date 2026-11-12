@@ -23,6 +23,11 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        # The nginx-unprivileged runtime image's numeric user (frontend/Dockerfile), so admission can
+        # verify runAsNonRoot without trusting the image metadata.
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -31,6 +36,7 @@ spec:
           imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           ports:
@@ -40,14 +46,38 @@ spec:
             # Routing contract handed to the shell: where the backend API lives relative to the origin.
             - name: OWLMAST_API_PATH_PREFIX
               value: {{ .Values.routing.apiPathPrefix | quote }}
+          livenessProbe:
+            httpGet:
+              path: {{ dig "liveness" "path" "/" .Values.frontend.probes }}
+              port: http
+            periodSeconds: {{ dig "liveness" "periodSeconds" 15 .Values.frontend.probes }}
+            failureThreshold: {{ dig "liveness" "failureThreshold" 3 .Values.frontend.probes }}
+            {{- with (dig "liveness" "timeoutSeconds" 0 .Values.frontend.probes) }}
+            timeoutSeconds: {{ . }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: {{ .Values.frontend.probes.readiness.path }}
               port: http
             periodSeconds: {{ .Values.frontend.probes.readiness.periodSeconds }}
             failureThreshold: {{ .Values.frontend.probes.readiness.failureThreshold }}
+            {{- with (dig "timeoutSeconds" 0 .Values.frontend.probes.readiness) }}
+            timeoutSeconds: {{ . }}
+            {{- end }}
           resources:
             {{- toYaml .Values.frontend.resources | nindent 12 }}
+          # Read-only root: nginx writes its pid and caches under /tmp, and the image entrypoint renders
+          # /etc/nginx/templates into /etc/nginx/conf.d at start.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: conf
+              mountPath: /etc/nginx/conf.d
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: conf
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

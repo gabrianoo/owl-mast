@@ -7,7 +7,7 @@ import json
 import unittest
 
 from automation.tests.fake_transport import FakeTransport, issue, small_backlog
-from automation.tests.support import FIXTURES, IMPLEMENTER, REVIEWER, Harness, failing_runner, git_commit, ok_worktree, passing_runner, receipt
+from automation.tests.support import FIXTURES, Harness, IMPLEMENTER, REVIEWER, REVIEW_BRANCH, REVIEW_WORKTREE, failing_runner, git_commit, ok_worktree, passing_runner, receipt
 from automation.unattended.backlog import Snapshot, load_tasks_index, verify_mapping
 from automation.unattended.coordinator import Coordinator
 from automation.unattended.eligibility import decide, plan
@@ -141,7 +141,7 @@ class D1CancellationAbandonsAdvancingIntents(unittest.TestCase):
             for op in (lambda: c2.reserve("OM-01.04", h2.snapshot, "b"), lambda: c2.record_head("OM-01.02", h2.sha, h2.terminal()),
                        lambda: c2.run_checks("OM-01.02", h2.sha, str(h2.worktree), passing_runner), lambda: c2.authorize_review("OM-01.02", h2.sha),
                        lambda: c2.authorize_repair("OM-01.02"), lambda: c2.record_review("OM-01.02", h2.sha, "approved", "r"),
-                       lambda: c2.propose_evidence("OM-01.02", h2.sha, 7, [], "s"), lambda: c2.bind_receipt("OM-01.02", REVIEWER, worktree_check=ok_worktree)):
+                       lambda: c2.propose_evidence("OM-01.02", h2.sha, 7, [], "s"), lambda: c2.bind_receipt("OM-01.02", REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)):
                 with self.assertRaises(BudgetExhausted) as ctx:
                     op()
                 self.assertEqual(ctx.exception.code, "run-cancelled")
@@ -316,7 +316,7 @@ class D3ActiveTaskOwnershipIsIndependent(unittest.TestCase):
         c2.record_head("OM-01.02", self.h.sha, {"taskId": "task-impl-1", "runId": "task-impl-1" + ":run:1", "status": "result_available"})
         c2.run_checks("OM-01.02", self.h.sha, str(self.h.worktree), passing_runner)
         state = c2.authorize_review("OM-01.02", self.h.sha)
-        state = c2.bind_receipt("OM-01.02", REVIEWER, worktree_check=ok_worktree)
+        state = c2.bind_receipt("OM-01.02", REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
         self.assertEqual((state.phase, state.active_task["role"]), ("review-requested", "reviewer"))
 
     def test_legacy_story_schema_is_refused_not_reinterpreted(self):
@@ -542,10 +542,10 @@ class D6CapacityIsAuthorizedBeforeLaunch(unittest.TestCase):
             self.assertEqual(h.store.story_counts()["delegated_tasks"], 2)
             with self.assertRaises(ReceiptInvalid):
                 c.bind_receipt("OM-01.02", receipt(IMPLEMENTER, "task-impl-2"), worktree_check=ok_worktree)  # wrong role for the slot
-            state = c.bind_receipt("OM-01.02", REVIEWER, worktree_check=ok_worktree)
+            state = c.bind_receipt("OM-01.02", REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
             self.assertEqual((state.phase, state.pending_authorization(), state.authorizations[-1]["task_id"]), ("review-requested", None, "task-review-1"))
             with self.assertRaises(Refused) as ctx:
-                fresh(h).bind_receipt("OM-01.02", receipt(REVIEWER, "task-review-2"), worktree_check=ok_worktree)
+                fresh(h).bind_receipt("OM-01.02", receipt(REVIEWER, "task-review-2"), REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
             self.assertEqual(ctx.exception.code, "no-authorization")
             self.assertEqual(h.store.story_counts()["delegated_tasks"], 2)
         finally:
@@ -558,7 +558,7 @@ class D6CapacityIsAuthorizedBeforeLaunch(unittest.TestCase):
             h.claim()
             h.checks()  # checks-passed: a reviewer launch without authorize-review
             with self.assertRaises(Refused) as ctx:
-                c.bind_receipt("OM-01.02", REVIEWER, worktree_check=ok_worktree)
+                c.bind_receipt("OM-01.02", REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
             self.assertEqual(ctx.exception.code, "no-authorization")
             h.request_review()
             c.record_review("OM-01.02", h.sha, "changes-requested", "r", h.terminal())  # changes-requested: a repair launch without authorize-repair
@@ -579,7 +579,7 @@ class D6CapacityIsAuthorizedBeforeLaunch(unittest.TestCase):
             run.delegated_tasks = 0  # crash between the story save and the cache refresh, or tampering
             h.store.save_run(run)
             c2 = fresh(h)
-            c2.bind_receipt("OM-01.02", REVIEWER, worktree_check=ok_worktree)
+            c2.bind_receipt("OM-01.02", REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
             c2.record_review("OM-01.02", h.sha, "changes-requested", "r", h.terminal())
             with self.assertRaises(BudgetExhausted):
                 c2.authorize_repair("OM-01.02")

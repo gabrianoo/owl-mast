@@ -1,0 +1,8 @@
+{
+  "threadId": "thread:delegated-task:command%3Amcp%3Af7c3c131-c18d-4868-98ee-f6b69abfd21c%3Adelegate-task%3Aowl-unattended-foundation-implementation-20261106",
+  "link": "<t3-thread://v2/4dc835f5-b45a-46e2-b7c0-dcd29e46627f/thread:delegated-task:command%3Amcp%3Af7c3c131-c18d-4868-98ee-f6b69abfd21c%3Adelegate-task%3Aowl-unattended-foundation-implementation-20261106>",
+  "messageId": "message:mcp:0d7d9dec-9525-40a0-aded-fc80430b6e0f:thread-send:eng01-trusted-repair-1",
+  "runId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Af7c3c131-c18d-4868-98ee-f6b69abfd21c%253Adelegate-task%253Aowl-unattended-foundation-implementation-20261106:ordinal:5",
+  "status": "starting",
+  "delivery": "started"
+}

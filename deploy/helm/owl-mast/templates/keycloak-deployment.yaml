@@ -22,6 +22,11 @@ spec:
         {{- end }}
       annotations:
         owlmast.aisquad.com/database-mode: {{ ternary "bundled" "external" .Values.database.bundled | quote }}
+        {{- if .Values.identity.keycloak.importRealm }}
+        # The realm file only (not the ConfigMap's labels): a changed identity.realm restarts Keycloak, which
+        # imports the new realm at start; a chart version bump alone does not.
+        checksum/realm: {{ (include (print $.Template.BasePath "/keycloak-realm-configmap.yaml") . | fromYaml).data | toJson | sha256sum }}
+        {{- end }}
     spec:
       securityContext:
         runAsNonRoot: true
@@ -30,6 +35,30 @@ spec:
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        # Read-only root: /opt/keycloak/lib/quarkus is an emptyDir so Keycloak can re-augment for the
+        # configured database at start; an empty mount would hide the image's build output
+        # (quarkus-application.dat) and Keycloak could not start, so it is seeded from the same image first.
+        - name: seed-quarkus-build
+          image: {{ include "owl-mast.image" .Values.identity.keycloak.image | quote }}
+          imagePullPolicy: {{ .Values.identity.keycloak.image.pullPolicy }}
+          # Contents only, no attribute preservation: the emptyDir root is not owned by the runtime user.
+          command: ["sh", "-c", "cp -R /opt/keycloak/lib/quarkus/. /seed/"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          volumeMounts:
+            - name: quarkus
+              mountPath: /seed
       containers:
         - name: keycloak
           image: {{ include "owl-mast.image" .Values.identity.keycloak.image | quote }}
@@ -41,6 +70,7 @@ spec:
             {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           ports:
@@ -63,6 +93,8 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.identity.keycloak.database.existingSecret }}
                   key: password
+            {{- if eq (include "owl-mast.keycloak.bootstrapAdminEnabled" .) "true" }}
+            # Temporary: switch identity.keycloak.bootstrapAdmin.enabled off once a permanent admin exists.
             - name: KC_BOOTSTRAP_ADMIN_USERNAME
               valueFrom:
                 secretKeyRef:
@@ -73,40 +105,59 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.identity.keycloak.bootstrapExistingSecret }}
                   key: password
+            {{- end }}
             # Cluster-local issuer; public origins and TLS termination are an OM-02.01 gate.
             - name: KC_HOSTNAME
-              value: {{ printf "http://%s:%v" (include "owl-mast.keycloak.fullname" .) .Values.identity.keycloak.service.port | quote }}
+              value: {{ include "owl-mast.keycloak.baseUrl" . | quote }}
             - name: KC_HTTP_ENABLED
               value: "true"
             - name: KC_HEALTH_ENABLED
               value: "true"
             - name: KC_HTTP_MANAGEMENT_PORT
               value: "9000"
+            {{- with .Values.identity.keycloak.proxyHeaders }}
+            # Trusted only when set explicitly: a cluster-local Keycloak has no proxy in front of it.
             - name: KC_PROXY_HEADERS
-              value: xforwarded
+              value: {{ . | quote }}
+            {{- end }}
           startupProbe:
             httpGet:
               path: /health/started
               port: management
             periodSeconds: {{ .Values.identity.keycloak.probes.startup.periodSeconds }}
             failureThreshold: {{ .Values.identity.keycloak.probes.startup.failureThreshold }}
+            {{- with (dig "timeoutSeconds" 0 .Values.identity.keycloak.probes.startup) }}
+            timeoutSeconds: {{ . }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /health/live
               port: management
             periodSeconds: {{ .Values.identity.keycloak.probes.liveness.periodSeconds }}
             failureThreshold: {{ .Values.identity.keycloak.probes.liveness.failureThreshold }}
+            {{- with (dig "timeoutSeconds" 0 .Values.identity.keycloak.probes.liveness) }}
+            timeoutSeconds: {{ . }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /health/ready
               port: management
             periodSeconds: {{ .Values.identity.keycloak.probes.readiness.periodSeconds }}
             failureThreshold: {{ .Values.identity.keycloak.probes.readiness.failureThreshold }}
+            {{- with (dig "timeoutSeconds" 0 .Values.identity.keycloak.probes.readiness) }}
+            timeoutSeconds: {{ . }}
+            {{- end }}
           resources:
             {{- toYaml .Values.identity.keycloak.resources | nindent 12 }}
+          # Read-only root: Keycloak writes its runtime data, the start-time (re)build of the Quarkus
+          # application and temporary files only to these emptyDirs.
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: data
+              mountPath: /opt/keycloak/data
+            - name: quarkus
+              mountPath: /opt/keycloak/lib/quarkus
             {{- if .Values.identity.keycloak.importRealm }}
             - name: realm
               mountPath: /opt/keycloak/data/import
@@ -115,9 +166,13 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: data
+          emptyDir: {}
+        - name: quarkus
+          emptyDir: {}
         {{- if .Values.identity.keycloak.importRealm }}
         - name: realm
           configMap:
-            name: {{ include "owl-mast.keycloak.fullname" . }}-realm
+            name: {{ include "owl-mast.keycloak.realmConfigMap" . }}
         {{- end }}
 {{- end }}

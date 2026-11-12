@@ -33,12 +33,17 @@ management:
       group:
         # Readiness refuses traffic until the schema baseline and the identity provider are proven.
         readiness:
-          include: readinessState,schemaBaseline,identityDiscovery
+          include:
+            - readinessState
+            - schemaBaseline
+            - identityDiscovery
 
 owlmast:
   identity:
     # Required: bundled Keycloak realm or a compatible external OpenID Connect issuer (AC2).
     issuer-uri: ${OWLMAST_IDENTITY_ISSUER_URI:}
+    # A plaintext http issuer is refused unless this is true (cluster-local or disposable fixtures only).
+    allow-insecure-issuer: ${OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER:false}
   blocking:
     max-concurrency: 8
     max-queued-per-thread: 16

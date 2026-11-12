@@ -8,7 +8,7 @@ Qualified on 2026-11-06 for GitHub issue #20 (story OM-01.01, epic E01). Every p
 | --- | --- | --- | --- |
 | Java language/runtime | 27 (Eclipse Temurin 27.0.1+1, `jdk-27.0.1.0.2+1`; `java.runtime.version` `27.0.1.0.2+1`) | `gradle.properties` (`owlmast.qualified.jdk.runtime`/`vendor`, enforced on daemon, compiler, test and application launchers), `gradle/gradle-daemon-jvm.properties`, `backend/build.gradle.kts` toolchain, CI `setup-java` `27.0.1` | https://api.adoptium.net/v3/info/release_versions?version=%5B27%2C28%29&release_type=ga (GA builds 27+35 and 27.0.1+1); https://api.adoptium.net/v3/assets/feature_releases/27/ga |
 | Spring Boot | 4.1.2 | `gradle/libs.versions.toml` | https://docs.spring.io/spring-boot/system-requirements.html: "Spring Boot 4.1.2 requires at least Java 17 and is compatible with versions up to and including Java 27 … Gradle 8.x (8.14 or later) and 9.x"; BOM on Maven Central (`spring-boot-dependencies/4.1.2`) |
-| Gradle | 9.8.2 wrapper, `distributionSha256Sum` 21bd5da2de49b642904077f38c0efdc7778e92b3ed0889392dca61b97e389607, wrapper jar sha256 3b8a25775a69158b5ad2b1d17a80a88dc7b40a352a73eb27d06c612a7ce68e98 | `gradle/wrapper/gradle-wrapper.properties` | https://services.gradle.org/versions/current; https://docs.gradle.org/9.8.2/release-notes.html: "Java 27 is supported for both the Gradle daemon and Java toolchains" |
+| Gradle | 9.9.0 wrapper, `distributionSha256Sum` 0b00b0ffe07c4d4789c12d4935a44a7057d55774b7540bd4a3f76f336deb177a, wrapper jar sha256 3b8a25775a69158b5ad2b1d17a80a88dc7b40a352a73eb27d06c612a7ce68e98 | `gradle/wrapper/gradle-wrapper.properties` | https://services.gradle.org/versions/current; https://docs.gradle.org/9.8.2/release-notes.html: "Java 27 is supported for both the Gradle daemon and Java toolchains" |
 | Toolchain provisioning | Foojay resolver convention plugin 1.0.0 | `settings.gradle.kts` | https://plugins.gradle.org/m2/org/gradle/toolchains/foojay-resolver-convention/…/maven-metadata.xml |
 | Lombok | 1.18.48 (managed by the Boot BOM) | BOM | https://projectlombok.org/changelog: "v1.18.48 (September 1st, 2026) PLATFORM: JDK27 support added" |
 | Formatter | Spotless Gradle plugin 8.11.0 with google-java-format 2.0.0 | `gradle/libs.versions.toml` | Spotless `plugin-gradle/CHANGES.md` 8.11.0 (2026-11-02): default google-java-format bumped to 2.0.0; https://github.com/google/google-java-format/releases/tag/v2.0.0 (2026-10-30) |
@@ -30,8 +30,8 @@ Commands are relative to the repository root unless stated. Outputs are abbrevia
 ### Gradle distribution and wrapper
 
 ```
-$ curl -sSL https://services.gradle.org/versions/current      # "version":"9.8.2","checksum":"21bd5da2…"
-$ sha256sum gradle-9.8.2-bin.zip                              # 21bd5da2de49b642904077f38c0efdc7778e92b3ed0889392dca61b97e389607
+$ curl -sSL https://services.gradle.org/versions/current      # "version":"9.9.0","checksum":"21bd5da2…"
+$ sha256sum gradle-9.8.2-bin.zip                              # 0b00b0ffe07c4d4789c12d4935a44a7057d55774b7540bd4a3f76f336deb177a
 $ sha256sum gradle/wrapper/gradle-wrapper.jar                 # 3b8a25775a69158b5ad2b1d17a80a88dc7b40a352a73eb27d06c612a7ce68e98
 $ ./gradlew --version
 Gradle 9.8.2 … Daemon JVM: Compatible with Java 27, Eclipse Temurin (from gradle/gradle-daemon-jvm.properties)

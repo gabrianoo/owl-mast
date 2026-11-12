@@ -4,6 +4,8 @@ import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.Callable;
 import java.util.concurrent.RejectedExecutionException;
+import lombok.AccessLevel;
+import lombok.AllArgsConstructor;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
@@ -13,15 +15,11 @@ import reactor.core.scheduler.Schedulers;
  * deadline (AD-5). Blocking code receives what it needs as explicit arguments; the Reactor Context
  * (including the {@code ScopeContext}) is preserved for the operators around the call.
  */
+@AllArgsConstructor(access = AccessLevel.PRIVATE)
 public final class BoundedBlocking implements AutoCloseable {
 
   private final Scheduler scheduler;
   private final BoundedBlockingProperties properties;
-
-  private BoundedBlocking(Scheduler scheduler, BoundedBlockingProperties properties) {
-    this.scheduler = scheduler;
-    this.properties = properties;
-  }
 
   public static BoundedBlocking create(BoundedBlockingProperties properties) {
     Objects.requireNonNull(properties, "properties");
@@ -46,7 +44,7 @@ public final class BoundedBlocking implements AutoCloseable {
             deadline, Mono.error(() -> new BlockingDeadlineExceededException(operation, deadline)))
         .onErrorMap(
             RejectedExecutionException.class,
-            rejected ->
+            _ ->
                 new BlockingCapacityExceededException(
                     operation, properties.maxConcurrency(), properties.maxQueuedPerThread()));
   }

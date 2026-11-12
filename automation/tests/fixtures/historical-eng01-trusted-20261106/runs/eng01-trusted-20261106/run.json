@@ -1,0 +1,12 @@
+{
+ "cancelled": true,
+ "delegated_tasks": 3,
+ "environment": "fixture",
+ "policy_digest": "473216d0629a6a5606c5d8c936c614d27cbb289eb61407b45b38e8329060d776",
+ "repair_rounds": 1,
+ "repo": "gabrianoo/owl-mast",
+ "run_id": "eng01-trusted-20261106",
+ "started_at": "2026-11-06T22:47:14Z",
+ "stop_reason": "qualification stopped: resumed repair lacks fresh T3 taskId; repair run terminal independently confirmed; authorization cannot truthfully be resolved by no-launch",
+ "stories_claimed": 1
+}
