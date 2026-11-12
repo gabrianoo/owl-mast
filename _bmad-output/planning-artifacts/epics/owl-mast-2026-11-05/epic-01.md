@@ -16,7 +16,7 @@ This is a planning draft. [Full scope and shared requirements](../../epics.md) a
 **Reconciliation of 2026-11-12 (drafted, owner decides).** After the [E01 retrospective](../../../implementation-artifacts/epic-1-retro-2026-11-12.md), two kinds of change were drafted here. Neither changes execution status, which stays in GitHub:
 
 - **E01-R-09, accepted deviations.** Where an acceptance criterion was met under an interpretation the text did not record, the criterion now states what was built. Each such criterion carries a line starting "**Accepted deviation — pending owner confirmation**" with the original wording and the reason. The owner may reject any of them; rejecting OM-01.02 AC2 changes the epic's acceptance verdict.
-- **E01-R-08, OM-01.03 review threads.** The 47 review threads left open on [PR #110](https://github.com/gabrianoo/owl-mast/pull/110) were triaged. OM-01.03's criteria and tasks below include the resulting clarifications; each states only what the merged code does and its tests show. The per-thread dispositions are in the pull request that made this edit. The threads themselves are untouched on GitHub.
+- **E01-R-08, OM-01.03 review threads.** The 47 review threads left open on [PR #110](https://github.com/gabrianoo/owl-mast/pull/110) were triaged. OM-01.03's criteria and tasks below include the resulting clarifications; each states only what the merged code does and its tests show. The proposed disposition of each thread is in [e01-r08-pr110-thread-dispositions.md](../../../implementation-artifacts/e01-r08-pr110-thread-dispositions.md). The threads themselves are untouched on GitHub.
 
 <a id="om-01-01"></a>
 

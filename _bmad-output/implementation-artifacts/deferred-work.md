@@ -7,6 +7,7 @@
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-gh-116-review-cycle-1.md`
   summary: Rerun the owner-run Kind qualification (`scripts/qualify-local-install.sh all` plus `first-enable`) against chart 0.2.0 and record the evidence, including the retirement of the Keycloak bootstrap admin (`identity.keycloak.bootstrapAdmin.enabled=false`).
+  status: partly resolved 2026-11-12 (E01-R-01). `all` passed for chart 0.2.0 three times that day: at `f188d51` (131 ok, PR #116, which this entry had not recorded), at `4fc415b` (141 ok) and at `00b4853` (145 ok, 0 FAIL), the last two with the OM-01.03 migrations applied by `owlmast_app` and durable work published by the installed backend. `first-enable` at `00b4853` passed through the retry on a fresh volume, then failed at the new bootstrap-admin retirement: the Keycloak pod rolled beside the old one and never became ready (chart defect, fixed in `31ee127`). The retirement passed when rerun on the same release with the fixed chart. Still open: one uninterrupted `first-enable` on a fresh volume with the fixed chart (the namespace's 30Gi storage quota is used up by the three retained claims; none was deleted). Details and evidence paths: `docs/installation.md`, Qualification status.
   evidence: PR #116 thread 4543777495 and PR #109 thread 4543776353. Chart 0.2.0 changes probes, NetworkPolicies, read-only roots, the backend strategy and the hook policy; only chart 0.1.0 was qualified (2026-11-07). The run mutates the retained cluster `owl-mast-om0102` and needs an owner-authorized run window, so it was not started in this cycle. `docs/installation.md` marks the 0.2.0 qualification as pending.
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-gh-116-review-cycle-1.md`
@@ -27,6 +28,7 @@
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-om-01-03-recover-background-work-and-record-mutation-evidence.md`
   summary: Layering drift from docs/engineering-conventions.md: audit.api imports jobs.api (AuditIdentifiers, AuditEnvelopeContract) and domain imports api (audit.domain.AuditRecord, jobs.domain.RetryPolicy), which the layer table does not allow and FeatureModuleRules does not check.
+  status: resolved 2026-11-12 (E01-R-10). The table was aligned with the code (api is the lowest layer and may use another feature's api; domain may use its own api values) and `FeatureModuleRules` now enforces every row, each with a negative fixture.
   evidence: Owner decision needed: either amend the layer table (api may use another feature's api; domain may use its own api values) or move the shared bounds and records; then add the rule to FeatureModuleRules.
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-om-01-03-recover-background-work-and-record-mutation-evidence.md`
@@ -92,7 +94,7 @@
 
 - source_spec: `_bmad-output/implementation-artifacts/spec-gh-112-resolve-review-findings.md`
   summary: Bring failures raised outside controllers (web filters, codecs) and authentication/authorization exceptions under the RFC 9457 envelope with their own status.
-  status: partly resolved 2026-11-12 (PR #119 round 4, walkthrough risk 6). UnhandledFailureAdvice now keeps the status of an `ErrorResponse`, a `@ResponseStatus` class and Spring Security's `AccessDeniedException`/`AuthenticationException` (by class name: 403/401). Still deferred: failures raised outside controllers (web filters, codecs), and the authentication challenge (`WWW-Authenticate`), which E02 owns. E02 must also remove the two security class names from the guard (or replace them with its own advice): a controller advice answers before Spring Security's exception translation filter sees the failure.
+  status: partly resolved 2026-11-12 (PR #119 round 4, walkthrough risk 6; E01-R-05). UnhandledFailureAdvice now keeps the status of an `ErrorResponse`, a `@ResponseStatus` class and Spring Security's `AccessDeniedException`/`AuthenticationException` (by class name: 403/401), and gives the shared kernel's own failures theirs (`OperationDeniedException` 403, bounded-blocking capacity 503 and deadline 504, scope failures 500). Still deferred: failures raised outside controllers (web filters, codecs), and the authentication challenge (`WWW-Authenticate`), which E02 owns. E02 must also remove the two security class names from the guard (or replace them with its own advice): a controller advice answers before Spring Security's exception translation filter sees the failure.
   evidence: PR #112 thread 4551653387. UnhandledFailureAdvice covers controller exceptions (500); a filter-level failure still gets Spring Boot's default application/json body, and a future AccessDeniedException would answer 500 unless mapped. No filter or security dependency exists before E02.
 
 
@@ -107,3 +109,31 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-gh-112-resolve-review-findings.md`
   summary: Generate the list of shell pages the frontend image refuses as an API prefix from one source instead of keeping a literal copy in the start-up guard.
   evidence: Owner-deferred 2026-11-12. Source: walkthrough of PR #119 at 2570202 (risk 12) and round 3 finding S2. `owlmast_shell_routes` in `frontend/docker-entrypoint.d/16-owlmast-api-prefix.envsh` repeats the first path segments of `DESTINATIONS` (`frontend/src/app/destinations.ts`); `src/app/destinations.test.ts` fails when they differ, so the copy cannot drift unnoticed. A generated list needs a second build output outside the web root that the Dockerfile copies next to the guard.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-e01-retro-remediation.md`
+  summary: A blocking call that fails after `BoundedBlocking` gave up on it at its deadline is logged by Reactor with its stack trace and message, which bypasses the rule that failures are logged as class names only.
+  evidence: Found while writing `UnhandledFailureIT` for E01-R-05: the worker thread is interrupted at the deadline, the late exception has no subscriber, and Reactor reports it through `onErrorDropped` at ERROR with the trace. No production code calls `BoundedBlocking` yet, so nothing leaks today; the first caller would. Fix in `platform/blocking/BoundedBlocking.java` (drop or `SafeFailure`-log the late failure) with a test that plants a secret in the late exception.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-e01-retro-remediation.md`
+  summary: The Kind qualification never deploys the frontend image, so the chart-routed frontend, its NetworkPolicy path and `/api/compatibility` through the route are not part of the scripted evidence.
+  evidence: Retrospective B8. `scripts/qualify-local-install.sh` installs with `frontend.enabled=false`; `docs/installation.md` calls deploying the frontend image onto the Kind target a live qualification step. The retrospective's own behaviour check ran a bundled install with the frontend once at 98496d6 in a scratch namespace (not scripted, not repeated here). Adding it means loading a frontend image into the cluster and a step that reads the shell and the compatibility endpoint through the Service.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-e01-retro-remediation.md`
+  summary: The retirement step of the Kind qualification switches off the injection of the Keycloak bootstrap admin but does not create a permanent administrator or delete the temporary user, so the documented operator procedure is proven only from the chart's side.
+  evidence: E01-R-01. `retire_bootstrap_admin` in `scripts/qualify-local-install.sh` proves that after `identity.keycloak.bootstrapAdmin.enabled=false` no Deployment or running pod names a bootstrap variable or the Secret and that Keycloak and the backend stay ready. Creating the permanent admin and deleting the temporary one are admin-console (or `kcadm`) steps on a read-only-root pod; scripting them needs a decision on how the qualification authenticates to Keycloak.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-e01-retro-remediation.md`
+  summary: Gradle 9.9.1 was released on 2026-11-10; the wrapper stays on 9.9.0, the version that was built and tested.
+  evidence: E01-R-07. `https://services.gradle.org/versions/current` on 2026-11-12. Moving means rerunning the *Gradle distribution and wrapper* section of `docs/toolchain-qualification.md` (both checksums, `--version`, clean build, gates); `GradleWrapperDocumentTest` fails until the README and the document follow the wrapper.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-e01-retro-remediation.md`
+  summary: Shell embedded in other files is not linted: the chart's ConfigMap scripts (`postgresql-init-configmap.yaml`, the provisioning Job), the Kind fixture manifest and the bash stubs inside `deploy/tests/test_qualify_script.py`.
+  evidence: E01-R-11 review. `scripts/verify-script-lint.sh` runs shellcheck over shell files only. The ConfigMap scripts run as the database superuser at first initialisation, so they are the ones a lint would matter for; linting them means extracting each block scalar from the rendered template and mapping findings back to the template line.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-e01-retro-remediation.md`
+  summary: `helm upgrade` of a release installed from chart 0.1.0 would very likely be refused, because the backend Deployment rolled in 0.1.0 and is `type: Recreate` now.
+  evidence: Kind qualification 2026-11-12. Changing the Keycloak Deployment of an existing release from the default rolling update to `type: Recreate` was refused by the API server under Helm 4's server-side apply (`spec.strategy.rollingUpdate: Forbidden: may not be specified when strategy type is 'Recreate'`), because the object still carries the rollingUpdate block the server defaulted. The backend made the same change between 0.1.0 and 0.2.0, and `docs/installation.md` says that upgrade was never run on a cluster. Not verified for the backend itself: it needs a 0.1.0 release on the target. Fix candidates: a surge-free rolling update as for Keycloak, or a documented uninstall/reinstall on the retained volume.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-e01-retro-remediation.md`
+  summary: Run one uninterrupted `first-enable` (fresh volume through the bootstrap-admin retirement) on the Kind target with the fixed chart.
+  evidence: E01-R-01. The scripted run at `00b4853` passed through the retry and failed at the retirement (chart defect); the retirement passed when rerun on the same release with the fix. A fresh run needs a fourth 10Gi claim in `owl-mast-test`, whose 30Gi storage quota is used up by `owl-mast-postgresql-data`, `owl-mast-fe-postgresql-data` and `owl-mast-fe-e01r01-postgresql-data`. Freeing one is a deletion on the retained cluster and needs the owner.

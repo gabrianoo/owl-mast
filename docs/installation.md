@@ -4,9 +4,10 @@ Owl Mast installs from the repository-owned Helm chart `deploy/helm/owl-mast` (v
 chart packages the backend image and two **independently optional** bundles: PostgreSQL 18 with
 VectorChord, and Keycloak. Disabling a bundle means supplying a compatible existing service; it never
 removes the dependency. There is no value that disables authentication. Chart 0.1.0 was qualified on
-2026-11-07 for GitHub issue #21 on a disposable local Kind target. **The Kind qualification of chart 0.2.0 is
-pending**: 0.2.0 is verified by the render, negative and Docker-backed checks listed below, not yet by a rerun
-of `scripts/qualify-local-install.sh` (see [Qualification status](#qualification-status)). The frontend shell
+2026-11-07 for GitHub issue #21 on a disposable local Kind target. Chart 0.2.0 was qualified on the same
+target on 2026-11-12, last at the head of the E01 retrospective remediation with the OM-01.03 migrations and
+durable work included (see [Qualification status](#qualification-status) for what ran, at which revision,
+and what did not). The frontend shell
 artifact and its smoke check are delivered by OM-01.04, browser realm/client/session policy by OM-02.01.
 
 ## Qualification status
@@ -18,9 +19,24 @@ artifact and its smoke check are delivered by OM-01.04, browser realm/client/ses
 | Keycloak on a read-only root against the pinned image (Docker) | not applicable | passed (CI `package-checks`) |
 | Backend image: UID, JDK, application start on a read-only root with the environment the chart renders, up to the first database connection (image-level proof; the beans created after database initialisation, migrations, the listener and runtime writes are part of the Kind run) | not checked | passed (CI `build`) |
 | NetworkPolicy enforcement on a disposable kindnet cluster | not applicable | one run on 2026-11-09, before the changes of 2026-11-11 |
-| Owner-run Kind qualification (`scripts/qualify-local-install.sh all`): four combinations, persistence, first-enable, failure paths | passed 2026-11-07 | **pending** |
+| Kind qualification (`scripts/qualify-local-install.sh all`): four combinations, persistence, failure paths | passed 2026-11-07 | passed 2026-11-12, three times: at `f188d51` (PR #116, before OM-01.03; 131 ok), at `4fc415b` (141 ok, 0 FAIL) and at `00b4853` (145 ok, 0 FAIL) |
+| Kind qualification, `first-enable`: fresh volume, identity bundle enabled through the pre-upgrade hook, retry | passed 2026-11-07 | passed 2026-11-12 at `00b4853` up to and including the retry (fresh volume `owl-mast-fe-e01r01`); the run then stopped at the retirement, see the next rows and the note below |
+| Kind qualification: every migration applied by `owlmast_app`, durable work published by the installed backend (in all four combinations and first-enable) | not applicable (no durable work before OM-01.03) | passed 2026-11-12 at `00b4853`: migrations 001–005 applied by `owlmast_app` on the bundled and the external database (V002–V005 as an upgrade of the databases the earlier runs left at V001); durable work published in bundled-bundled, bundled-external, external-bundled, external-external and first-enable |
+| Kind qualification: Keycloak bootstrap admin retired (`identity.keycloak.bootstrapAdmin.enabled=false`), chart side only | not applicable | **failed** in the scripted run at `00b4853` (`helm upgrade --wait` timed out: chart defect, fixed in `31ee127`); **passed** when rerun on the same release with the fixed chart. Not yet run as part of one complete `first-enable` on a fresh volume |
+| Frontend image deployed on the Kind target | not run | **not run** by the script (`frontend.enabled=false`); deferred |
+| `helm upgrade` of a release installed from chart 0.1.0 | not applicable | **not run** on a cluster (render support only) |
 | Gateway API: HTTPRoute accepted by an API server with the CRDs (server-side CEL) | not run | **not run** (manifest validation only) |
 | Gateway API: controller and data plane | not run | not run |
+
+**The 2026-11-12 runs, exactly.** All on the retained cluster `owl-mast-om0102` with a run-local kubeconfig; evidence in `~/.local/state/owlmast-eng01/product-runs/e01-r01-qual-20261112-0{1,2}-evidence/` (private, not in the repository).
+
+1. `all` at `4fc415b`, backend image built from that commit: exit 0, 141 ok, 0 FAIL (21:56–22:04Z).
+2. `all` at `00b4853` (after the review fixes; durable work now checked in all four combinations): exit 0, 145 ok, 0 FAIL (22:17–22:24Z).
+3. `first-enable` at `00b4853` on a fresh run-owned volume (`FE_RELEASE=owl-mast-fe-e01r01`): the fresh initialisation, the first enable through the pre-upgrade hook, the AC3 checks, durable work and the idempotent retry passed (51 ok). The last phase, the retirement of the bootstrap admin, **failed**: `helm upgrade --wait --timeout 10m` with `identity.keycloak.bootstrapAdmin.enabled=false` did not complete (22:26–22:36Z). Cause: the Keycloak Deployment rolled, so the new pod ran beside the old one, tried to join it in a cluster that the NetworkPolicy does not admit, reported `Keycloak cluster health check: DOWN` and never became ready. This was the first upgrade in any qualification that changed the Keycloak pod.
+4. The chart was fixed (`31ee127`: the Keycloak pod is replaced without surge). A first attempt, `type: Recreate`, was refused by the API server on the existing release (`spec.strategy.rollingUpdate: Forbidden: may not be specified when strategy type is 'Recreate'`), which is why the fix keeps `RollingUpdate` with `maxSurge: 0`.
+5. The stuck release was rolled back to its last deployed revision, upgraded to the fixed chart with the admin still injected, and the script's own `retire_bootstrap_admin` was run on it: **passed** (22:39–22:40Z; the upgrade completed in 40 s, no bootstrap variable and no reference to the Secret in the Deployments or running pods, Keycloak and backend ready, Keycloak role and database unchanged). The fixture was then uninstalled and its claim retained.
+
+What this does not amount to: one uninterrupted `first-enable` from a fresh volume through the retirement on the fixed chart. That needs a fourth 10 Gi claim in `owl-mast-test`, whose 30 Gi storage quota is used up by the three retained claims; nothing was deleted to make room. Step 4 also implies that `helm upgrade` from chart 0.1.0, whose backend Deployment rolled, would be refused when it meets this chart's `Recreate` backend; that upgrade has still not been run on a cluster (deferred-work ledger).
 
 ## Pins
 
@@ -61,7 +77,7 @@ master realm has no admin, and the chart injects those variables for as long as
 permanent admin, delete the temporary user, then `helm upgrade` with
 `identity.keycloak.bootstrapAdmin.enabled=false`. The Keycloak pod then no longer references the Secret (a render
 test asserts that nothing does) and the Secret can be deleted. The release NOTES repeat this while the admin is
-injected. Proving the switch-off on a cluster is part of the pending Kind qualification. Once it is retired,
+injected. The switch-off was run on the Kind target on 2026-11-12 (`first-enable` ends with it): it exposed a chart defect (the Keycloak pod rolled beside the old one and never became ready), and passed with the fix `31ee127`; see [Qualification status](#qualification-status). Once it is retired,
 `identity.keycloak.bootstrapExistingSecret` may be emptied, and a leftover value no longer takes part in the
 distinct-Secret check. `bootstrapAdmin.enabled=false` on an **install** is an explicit choice, not refused: it
 fits a reinstall on a retained volume or an external Keycloak database that already holds a permanent admin.
@@ -83,7 +99,8 @@ when a secret reference is empty, or when an unknown key (for example `auth.enab
 A "compatible" external PostgreSQL is version 17 or newer with VectorChord 1.1.1 preloaded and installed in the
 application database (the bundle is PostgreSQL 18.3). The chart cannot see the version of a server it does not
 run, so the backend checks it: the `schemaBaseline` readiness component reads `server_version_num` and stays
-DOWN below 17, with the log line `PostgreSQL <major> answered; Owl Mast requires PostgreSQL 17 or newer`.
+DOWN below 17, with the log line `PostgreSQL <major> answered; Owl Mast requires PostgreSQL 17 or newer` (once per
+process), and the durable-work scheduler claims nothing on such a server (`Durable work is not started: …`).
 Durable work bounds each handler transaction with `transaction_timeout`, which PostgreSQL 17 introduced; on an
 older server every handler would fail and audit publication would retry forever.
 
@@ -173,8 +190,8 @@ which lack every key added in 0.2.0; the templates read those keys with their 0.
 the schema requires none of them, so that upgrade renders too. A render test applies the 0.1.0 `values.yaml`
 with no new defaults. What `--reuse-values` cannot carry over are defaults that 0.2.0 refuses: a 0.1.0
 external database still has `sslMode: prefer` and is refused until the mode is set (first row below). This is
-render support; the upgrade itself has not been run on a cluster (the Kind qualification of chart 0.2.0 is
-pending).
+render support; the upgrade itself has not been run on a cluster (the Kind qualification installs chart 0.2.0
+on retained volumes; it does not upgrade a 0.1.0 release).
 
 | Change in 0.2.0 | What to set |
 | --- | --- |
@@ -195,6 +212,7 @@ pending).
 | `backend.extraEnv` refuses every `LD_*` name; `identity.keycloak.bootstrapAdmin.enabled` must be `true` or `false` (also with `--skip-schema-validation`) | Remove loader variables; write the boolean |
 | `commonLabels` are no longer copied into the PostgreSQL pod template | Nothing; select the database pod by the chart's own labels |
 | The backend Deployment uses the `Recreate` strategy (single instance) | Expect the backend to be down for the length of its restart on every rollout |
+| The bundled Keycloak pod is replaced, not rolled (`maxSurge: 0`, `maxUnavailable: 1`). Under the default rolling update the new pod waited for a cluster with the old one, which the NetworkPolicy does not allow, and never became ready, so any upgrade that changed the Keycloak pod (for example retiring the bootstrap admin) hung until `--wait` timed out. Found and fixed by the Kind qualification of 2026-11-12 | Expect sign-in and backend readiness to be down while Keycloak restarts on such an upgrade. A release stuck in that state recovers with `helm rollback` to its last deployed revision and an upgrade to this chart |
 | `frontend.containerPort` is fixed at 8080, the only port the frontend image listens on (also with `--skip-schema-validation`); any other value pointed the probes and the Service at a port without a listener | Remove an override; use `frontend.service.port` to change the Service port |
 | The backend image starts the JVM with `--enable-native-access=ALL-UNNAMED` (Netty's native libraries on JDK 24+) | Nothing. Do not try to pass it through `backend.javaToolOptions`: the allow-list refuses it, and the image already sets it |
 | The backend applies migrations V002–V005 (durable work, audit, non-blank tenant ids) and stays not ready on a PostgreSQL server older than 17 | An external PostgreSQL must be 17 or newer; the bundled one is 18 |
@@ -280,9 +298,11 @@ the backend became ready through both policies, API-server proxy reads of the ba
 succeeded, a pod outside the release got no response from PostgreSQL :5432 and was blocked on Keycloak :8080, a
 pod carrying the backend's labels reached both, and the first-enable upgrade's provisioning hook created
 Keycloak's role and database through the PostgreSQL policy. That run also caught, and the Docker test now
-reproduces, an init-container failure on a real emptyDir. That run predates the changes of 2026-11-11, and
-the owner-run Kind qualification (`scripts/qualify-local-install.sh`) has not been rerun with chart 0.2.0: the
-qualification of chart 0.2.0 is pending ([Qualification status](#qualification-status)).
+reproduces, an init-container failure on a real emptyDir. That run predates the changes of 2026-11-11. The
+Kind qualification of 2026-11-12 ([Qualification status](#qualification-status)) installed chart 0.2.0 with its
+default NetworkPolicies on the retained kindnet target: the backend reached PostgreSQL and Keycloak through
+them in every combination, and the provisioning hook reached PostgreSQL. It has no negative step (a pod
+outside the release being refused), so the denial side still rests on the 2026-11-09 run.
 
 ## Enabling the identity bundle later on an initialised bundled PostgreSQL
 
@@ -440,7 +460,8 @@ never in the URL or as an argument; they are sent over `https` or to a loopback 
 never printed.
 
 This story proves the image contract and the browser → backend path locally and in CI; deploying
-the frontend image onto the Kind target remains a live qualification step. `routing.*` defines the path
+the frontend image onto the Kind target remains a live qualification step that the script does not run
+(deferred-work ledger). `routing.*` defines the path
 contract: `/api` routes to the backend, `/` to the frontend. The chart renders no rewrite, so the
 prefixes are pinned to what the artifacts serve: `routing.apiPathPrefix` is exactly `/api` (the shell receives
 this value and calls `/api/compatibility`, the path the backend serves; a sub-path such as `/api/v1` would give
@@ -507,6 +528,10 @@ helm upgrade --install owl-mast deploy/helm/owl-mast -n owl-mast -f deploy/helm/
 
 # runtime qualification on the disposable Kind target (explicit run-local kubeconfig)
 KUBECONFIG=<run>/kubeconfig OWLMAST_HELM=<run>/helm EVIDENCE_DIR=<private> scripts/qualify-local-install.sh all
+# first-enable is not part of `all`: it needs its own identity and a release name whose volume does not exist yet;
+# it ends with the retirement of the Keycloak bootstrap admin
+KUBECONFIG=<run>/kubeconfig OWLMAST_HELM=<run>/helm EVIDENCE_DIR=<private> OWLMAST_FOLLOWUP_RUN_ID=<id> FE_RELEASE=<owl-mast-…> \
+  scripts/qualify-local-install.sh first-enable
 ```
 
 The qualification script first rejects target overrides its static manifests and the chart's
@@ -538,7 +563,18 @@ and the matching `allowInsecureTransport=true` explicitly; each Secret is create
 one `create` call, and a replicated Secret is written with `create`, never `apply`, so an interrupted run leaves no
 unlabelled Secret and an existing Secret is never overwritten), installs all four combinations sequentially, proves pod replacement,
 uninstall retention, reinstall with the existing claim and upgrade, and exercises the failure paths
-(Secret missing a key, non-existent realm). The provisioning hook is proven without reading its Job: Helm
+(Secret missing a key, non-existent realm). Since 2026-11-12 it also requires every migration of the checkout
+to be recorded as applied in `flyway_schema_history` by the application principal `owlmast_app`, and every table
+of the `jobs` and `audit` schemas to be owned by it (earlier it looked for V001 only); and in every combination
+it proves durable work on the database that backend uses: it writes a synthetic audit-publication intent and
+its `audit.publish` work item as the application principal for the tenant `qualification`, and requires the
+installed backend to claim the item under its own lease, publish the intent into `audit.event` and mark the
+item `SUCCEEDED` within `DURABLE_WORK_TIMEOUT` (120 s). Those rows are synthetic and stay in the database.
+`first-enable` ends by retiring the Keycloak bootstrap admin: the admin must be injected before; `helm upgrade
+--wait` runs with `identity.keycloak.bootstrapAdmin.enabled=false` and the Secret value pointed at a name that
+does not exist; afterwards neither Secret name occurs in the release's Deployments or running pods, Keycloak
+and the backend are ready, and the Keycloak role and database are unchanged. It does not create a permanent
+administrator or delete the temporary user. The provisioning hook is proven without reading its Job: Helm
 deletes the hook Job and its ConfigMap once the hook succeeded, so their status and log no longer exist after a
 successful upgrade. Instead, after every provisioning upgrade (the `bundled-bundled` step and both `first-enable`
 upgrades) the script reads the release record with `helm status -o json` and requires the deployed revision to list
