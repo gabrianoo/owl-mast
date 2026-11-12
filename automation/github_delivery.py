@@ -7,8 +7,10 @@ deterministic shape:
 - Ticket status: the Owl Mast engineering Project's ``Status`` field.
 - Build specs: one issue (story spec) or pull-request (fix-round spec) comment per spec key,
   marked ``<!-- bmad:spec key=... -->`` and edited in place.
-- Review rounds: one pull-request review per round, marked ``<!-- bmad:review round=N verdict=V -->``.
-- Review findings: one inline review thread per finding, marked ``<!-- bmad:finding id=... -->``.
+- Review rounds: one marked pull-request review per round, ``<!-- bmad:review round=N verdict=V -->``.
+- Review findings: one review thread per finding, marked ``<!-- bmad:finding id=... -->``: inline
+  when the line is in the reviewed diff, otherwise a file-level thread.
+- Ticket claims: a short-lived issue comment marked ``<!-- bmad:claim token=... -->``.
 
 Usage (from the repository root): ``python3 -m automation.github_delivery <command> --help``.
 Requires an authenticated ``gh`` CLI. Python 3.9+ standard library only.
@@ -22,7 +24,9 @@ import os
 import re
 import subprocess
 import sys
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -37,8 +41,11 @@ COMMENT_LIMIT = 65536
 SPEC_MARKER = re.compile(r"<!-- bmad:spec key=([A-Za-z0-9._-]+) -->")
 REVIEW_MARKER = re.compile(r"<!-- bmad:review round=(\d+) verdict=(clean|changes) -->")
 FINDING_MARKER = re.compile(r"<!-- bmad:finding id=([A-Za-z0-9._-]+) -->")
+CLAIM_MARKER = re.compile(r"<!-- bmad:claim token=([0-9a-f]{32}) -->")
+CLAIM_STALE_SECONDS = 900
 BODY_SENTINEL = "<!-- bmad:spec-body -->"
-HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+FULL_SHA = re.compile(r"[0-9a-f]{40}")
 
 Runner = Callable[[Sequence[str], Optional[str]], str]
 
@@ -100,28 +107,41 @@ def parse_spec_comment(comment: str) -> Tuple[str, str]:
 
 
 def diff_right_lines(diff_text: str) -> Dict[str, set]:
-    """Map each file in a unified diff to the new-side line numbers a review comment may anchor to."""
+    """Map each file in a unified diff to the new-side line numbers a review comment may anchor to.
+
+    File headers are read only between hunks: the ``@@`` header's line counts say how long a hunk
+    is, so an added line whose text starts with ``++ `` (it reads ``+++ ...``) stays content.
+    """
     lines: Dict[str, set] = {}
     current: Optional[str] = None
-    new_line = 0
-    for raw in diff_text.splitlines():
-        if raw.startswith("+++ "):
+    new_line = old_left = new_left = 0
+    for raw in diff_text.split("\n"):  # not splitlines(): a form feed or U+2028 in content is not a line end
+        raw = raw.rstrip("\r")
+        if old_left > 0 or new_left > 0:
+            if raw.startswith("\\"):
+                continue
+            mark = raw[:1] or " "  # a context line whose trailing blank was stripped
+            if mark == "-" and old_left > 0:
+                old_left -= 1
+                continue
+            if mark in "+ " and new_left > 0 and (mark == "+" or old_left > 0):
+                if current is not None:
+                    lines[current].add(new_line)
+                new_line += 1
+                new_left -= 1
+                old_left -= mark == " "
+                continue
+            old_left = new_left = 0  # the hunk is shorter than its header says: read the line as a header
+        hunk = HUNK.match(raw)
+        if hunk:
+            old_left = 1 if hunk.group(1) is None else int(hunk.group(1))
+            new_line = int(hunk.group(2))
+            new_left = 1 if hunk.group(3) is None else int(hunk.group(3))
+        elif raw.startswith("+++ "):
             target = raw[4:].strip()
             current = None if target == "/dev/null" else re.sub(r"^b/", "", target)
             if current is not None:
                 lines.setdefault(current, set())
-            continue
-        if raw.startswith("diff --git ") or raw.startswith("--- "):
-            continue
-        hunk = HUNK.match(raw)
-        if hunk:
-            new_line = int(hunk.group(1))
-            continue
-        if current is None or not raw or raw.startswith("\\"):
-            continue
-        if raw[0] in "+ ":
-            lines[current].add(new_line)
-            new_line += 1
     return lines
 
 
@@ -140,8 +160,15 @@ def build_review_payload(
     findings: List[Finding],
     diff_text: str,
     commit_id: str,
-) -> dict:
-    """Build the REST payload for one review round. Every finding becomes a resolvable thread."""
+) -> Tuple[dict, List[dict]]:
+    """Build one review round: (create-review payload, file-level comment payloads).
+
+    A finding on a line of the reviewed diff is an inline comment of the review. GitHub's
+    create-review endpoint has no ``subject_type``, so a finding outside the hunks, or on a file the
+    reviewed diff does not hold, is a separate ``POST pulls/{n}/comments`` payload with ``subject_type: file``
+    (each carries its ``finding_id``, which the caller removes before sending). Either way every
+    finding becomes one resolvable thread.
+    """
     if not 1 <= round_number <= MAX_REVIEW_ROUNDS:
         raise DeliveryError(f"review round must be 1..{MAX_REVIEW_ROUNDS}, got {round_number}")
     if verdict not in ("clean", "changes"):
@@ -154,7 +181,8 @@ def build_review_payload(
     if findings and not anchors:
         raise DeliveryError("the pull-request diff has no files to anchor findings to")
     fallback = sorted(anchors)[0] if anchors else None
-    comments = []
+    comments: List[dict] = []
+    file_comments: List[dict] = []
     seen = set()
     for finding in findings:
         if not FINDING_MARKER.fullmatch(f"<!-- bmad:finding id={finding.id} -->") or finding.id in seen:
@@ -165,18 +193,34 @@ def build_review_payload(
         if finding.path in anchors and finding.line in anchors[finding.path]:
             comments.append({"path": finding.path, "line": finding.line, "side": "RIGHT",
                              "body": f"{text}\n\n{finding.body}"})
-        elif finding.path in anchors:
-            comments.append({"path": finding.path, "subject_type": "file",
-                             "body": f"{text} · `{location}` (outside the diff hunks)\n\n{finding.body}"})
-        else:
-            comments.append({"path": fallback, "subject_type": "file",
-                             "body": f"{text} · `{location}` (file not changed by this PR)\n\n{finding.body}"})
+            continue
+        known = finding.path in anchors
+        why = "outside the diff hunks" if known else "file not in the reviewed diff"
+        file_comments.append({"finding_id": finding.id, "commit_id": commit_id,
+                              "path": finding.path if known else fallback, "subject_type": "file",
+                              "body": f"{text} · `{location}` ({why})\n\n{finding.body}"})
     body = f"<!-- bmad:review round={round_number} verdict={verdict} -->\n" \
            f"### bmad-review · round {round_number} of {MAX_REVIEW_ROUNDS} · {verdict}\n\n{summary.strip()}\n"
-    return {"commit_id": commit_id, "event": "COMMENT", "body": body, "comments": comments}
+    if file_comments:
+        body += "\nFile-level threads (not on a line of the reviewed diff): " \
+                + ", ".join(c["finding_id"] for c in file_comments) + "\n"
+    return {"commit_id": commit_id, "event": "COMMENT", "body": body, "comments": comments}, file_comments
 
 
 # --------------------------------------------------------------------------- GitHub client
+
+REVIEW_FIELDS = "body submittedAt url commit{ oid }"
+THREAD_FIELDS = ("id isResolved isOutdated path line "
+                 "comments(first:50){ nodes{ author{ login } body url createdAt } }")
+
+
+def _age_seconds(older: dict, newer: dict) -> float:
+    """Seconds between two comments' GitHub timestamps; 0 when either is missing or unreadable."""
+    try:
+        stamps = [datetime.fromisoformat(c["created_at"].replace("Z", "+00:00")) for c in (older, newer)]
+    except (KeyError, AttributeError, ValueError):
+        return 0.0
+    return (stamps[1] - stamps[0]).total_seconds()
 
 
 @dataclass
@@ -238,25 +282,79 @@ class GitHub:
                 return node["id"], item["id"], (item.get("status") or {}).get("name")
         return node["id"], "", None
 
-    def set_status(self, number: int, status: str, expect: Sequence[str] = ()) -> dict:
+    def set_status(self, number: int, status: str, expect: Sequence[str] = (), claim: bool = False) -> dict:
+        """Move an issue's Status. ``expect`` guards the move; ``claim`` also serializes rival moves.
+
+        GitHub has no compare-and-set for a Project field, so the guard alone is check-then-act.
+        With ``claim`` the run first posts a claim marker comment and backs off when an earlier
+        marker exists or the Status changed meanwhile (see ``_claim``).
+        """
         if status not in STATUSES:
             raise DeliveryError(f"unknown status {status!r}; choose one of {', '.join(STATUSES)}")
+        if claim and (not expect or status in expect):
+            raise DeliveryError("--claim needs at least one --expect status, and the target status cannot be one of them")
         issue_id, item_id, current = self.issue_item(number)
         if expect and current not in expect:
             raise DeliveryError(f"#{number} is {current!r}, expected one of {list(expect)}; refusing to move it to {status!r}")
         project = self.project()
-        if not item_id:
-            m = "mutation($p:ID!,$c:ID!){ addProjectV2ItemById(input:{projectId:$p,contentId:$c}){ item{ id } } }"
-            item_id = self.graphql(m, p=project["id"], c=issue_id)["addProjectV2ItemById"]["item"]["id"]
         status_field = project["fields"]["Status"]
         option = next((o["id"] for o in status_field["options"] if o["name"] == status), None)
         if option is None:
             raise DeliveryError(f"project Status has no option {status!r}")
-        if current != status:
-            m = """mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){ updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,
-                   fieldId:$f,value:{singleSelectOptionId:$o}}){ projectV2Item{ id } } }"""
-            self.graphql(m, p=project["id"], i=item_id, f=status_field["id"], o=option)
-        return {"issue": number, "from": current, "to": status}
+        marker = self._claim(number, status, expect) if claim else None
+        try:
+            if not item_id:
+                m = "mutation($p:ID!,$c:ID!){ addProjectV2ItemById(input:{projectId:$p,contentId:$c}){ item{ id } } }"
+                item_id = self.graphql(m, p=project["id"], c=issue_id)["addProjectV2ItemById"]["item"]["id"]
+            if current != status:
+                m = """mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){ updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,
+                       fieldId:$f,value:{singleSelectOptionId:$o}}){ projectV2Item{ id } } }"""
+                self.graphql(m, p=project["id"], i=item_id, f=status_field["id"], o=option)
+        finally:
+            leftover = marker is not None and not self._drop_claim(marker)
+        result = {"issue": number, "from": current, "to": status}
+        if claim:
+            result["claimed"] = True
+            if leftover:
+                result["claim_marker_left"] = marker["html_url"]
+        return result
+
+    def _claim(self, number: int, status: str, expect: Sequence[str]) -> dict:
+        """Post this run's claim marker and return it, or refuse when another run is ahead.
+
+        Comment ids only grow, so of two markers on the issue the lower id wins and the other run
+        backs off. The winner re-reads the Status after its marker is up: a rival that finished (wrote
+        the Status, removed its marker) before this marker appeared is caught there. A marker older
+        than CLAIM_STALE_SECONDS belongs to a run that died and is ignored.
+        """
+        token = uuid.uuid4().hex
+        mine = self.rest("POST", f"repos/{self.repo}/issues/{number}/comments", {"body": (
+            f"<!-- bmad:claim token={token} -->\nbmad-build is claiming this ticket "
+            "(docs/github-delivery-workflow.md). This comment is removed once the claim settles.")})
+        try:
+            for other in self.comments(number):
+                if other["id"] >= mine["id"] or not CLAIM_MARKER.match(other.get("body") or ""):
+                    continue
+                if _age_seconds(other, mine) <= CLAIM_STALE_SECONDS:
+                    raise DeliveryError(f"#{number} is being claimed by another run ({other.get('html_url')}); "
+                                        f"refusing to move it to {status!r}")
+            current = self.issue_item(number)[2]
+            if current not in expect:
+                raise DeliveryError(f"#{number} became {current!r} while it was being claimed, expected one of "
+                                    f"{list(expect)}; refusing to move it to {status!r}")
+        except BaseException as error:
+            if not self._drop_claim(mine) and isinstance(error, DeliveryError):
+                raise DeliveryError(f"{error}; this run's claim marker could not be removed, delete it by hand: "
+                                    f"{mine.get('html_url')}") from error
+            raise
+        return mine
+
+    def _drop_claim(self, marker: dict) -> bool:
+        try:
+            self.rest("DELETE", f"repos/{self.repo}/issues/comments/{marker['id']}")
+        except DeliveryError:
+            return False
+        return True
 
     def ready(self) -> List[dict]:
         """Open issues whose project Status is Ready, ordered by Priority option order, then Stable ID."""
@@ -342,23 +440,21 @@ class GitHub:
         q = """query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$number){
                number url state headRefName headRefOid baseRefName isDraft mergeable
                closingIssuesReferences(first:5){ nodes{ number } }
-               reviews(first:100){ nodes{ body submittedAt url } }
-               reviewThreads(first:100){ pageInfo{ hasNextPage } nodes{ id isResolved isOutdated path line
-                 comments(first:50){ nodes{ author{ login } body url createdAt } } } } } } }"""
+               reviews(first:100){ pageInfo{ hasNextPage endCursor } nodes{ %s } }
+               reviewThreads(first:100){ pageInfo{ hasNextPage endCursor } nodes{ %s } } } } }""" % (REVIEW_FIELDS, THREAD_FIELDS)
         pr_node = self.graphql(q, owner=self.owner, name=self.name, number=pr)["repository"]["pullRequest"]
         if not pr_node:
             raise DeliveryError(f"#{pr} is not a pull request in {self.repo}")
-        if pr_node["reviewThreads"]["pageInfo"]["hasNextPage"]:
-            raise DeliveryError(f"PR #{pr} has more than 100 review threads; this helper refuses to guess")
         rounds = []
-        for review in pr_node["reviews"]["nodes"]:
+        for review in self._all_nodes(pr, "reviews", REVIEW_FIELDS, pr_node["reviews"]):
             marker = REVIEW_MARKER.match(review.get("body") or "")
             if marker:
                 rounds.append({"round": int(marker.group(1)), "verdict": marker.group(2),
+                               "commit": (review.get("commit") or {}).get("oid"),
                                "url": review["url"], "submitted_at": review["submittedAt"]})
         rounds.sort(key=lambda r: r["round"])
         bmad, other = [], []
-        for thread in pr_node["reviewThreads"]["nodes"]:
+        for thread in self._all_nodes(pr, "reviewThreads", THREAD_FIELDS, pr_node["reviewThreads"]):
             comments = thread["comments"]["nodes"]
             marker = FINDING_MARKER.search(comments[0]["body"]) if comments else None
             entry = {
@@ -376,19 +472,77 @@ class GitHub:
             "draft": pr_node["isDraft"], "mergeable": pr_node["mergeable"],
             "issues": [n["number"] for n in pr_node["closingIssuesReferences"]["nodes"]],
             "rounds": rounds, "rounds_done": last, "next_round": last + 1, "max_rounds": MAX_REVIEW_ROUNDS,
+            "last_round_at_head": bool(rounds) and rounds[-1]["commit"] == pr_node["headRefOid"],
             "open_findings": open_bmad, "resolved_findings": len(bmad) - len(open_bmad),
+            "finding_ids": [t["finding_id"] for t in bmad],
             "other_unresolved_threads": [t for t in other if not t["resolved"]],
         }
 
-    def post_review(self, pr: int, round_number: int, verdict: str, summary: str, findings: List[Finding]) -> dict:
+    def _all_nodes(self, pr: int, connection: str, selection: str, first_page: dict) -> List[dict]:
+        """Every node of a pull-request connection: the first page plus all following pages."""
+        nodes, info = list(first_page["nodes"]), first_page["pageInfo"]
+        while info["hasNextPage"]:
+            q = """query($owner:String!,$name:String!,$number:Int!,$after:String!){ repository(owner:$owner,name:$name){
+                   pullRequest(number:$number){ %s(first:100, after:$after){ pageInfo{ hasNextPage endCursor }
+                   nodes{ %s } } } } }""" % (connection, selection)
+            page = self.graphql(q, owner=self.owner, name=self.name, number=pr,
+                                after=info["endCursor"])["repository"]["pullRequest"][connection]
+            nodes += page["nodes"]
+            info = page["pageInfo"]
+        return nodes
+
+    def post_review(self, pr: int, round_number: int, verdict: str, summary: str, findings: List[Finding],
+                    commit: str) -> dict:
+        """Post one round against ``commit``, the SHA the reviewer staged, never the head at posting time.
+
+        File-level findings go first, one comment each, and are skipped when their id already has a
+        thread; the review with the round marker goes last. So a run that failed part-way is finished
+        by running the same command again, and a round is recorded only once everything is up.
+        """
+        if not FULL_SHA.fullmatch(commit):
+            raise DeliveryError(f"--commit must be the full 40-character reviewed SHA, got {commit!r}")
         state = self.review_state(pr)
+        if state["state"] != "OPEN":
+            raise DeliveryError(f"PR #{pr} is {state['state']}; a review round needs an open pull request")
         if round_number != state["next_round"]:
-            raise DeliveryError(f"PR #{pr} is at round {state['rounds_done']}; the next review must be round {state['next_round']}")
-        diff_text = self.run(["pr", "diff", str(pr), "--repo", self.repo], None)
-        payload = build_review_payload(round_number, verdict, summary, findings, diff_text, state["head_sha"])
+            hint = ""
+            if round_number == state["rounds_done"]:
+                hint = (f". Round {round_number} is already posted ({state['rounds'][-1]['url']}): if this is a rerun "
+                        "of a post that timed out, it went through; do not post it again under the next number")
+            raise DeliveryError(f"PR #{pr} is at round {state['rounds_done']}; the next review must be round "
+                                f"{state['next_round']}{hint}")
+        if commit != state["head_sha"]:
+            try:
+                compared = self.rest("GET", f"repos/{self.repo}/compare/{commit}...{state['head_sha']}") or {}
+            except DeliveryError as error:
+                raise DeliveryError(f"reviewed commit {commit} cannot be compared with the head of PR #{pr}: {error}") from error
+            if compared.get("status") not in ("identical", "ahead"):
+                raise DeliveryError(f"reviewed commit {commit} is not in the history of PR #{pr}'s head "
+                                    f"{state['head_sha']}; review the current head again")
+            summary = f"{summary.strip()}\n\nThe PR head moved to `{state['head_sha']}` after this review."
+        summary = f"{summary.strip()}\n\nReviewed commit: `{commit}`."
+        ahead = self.rest("GET", f"repos/{self.repo}/compare/{state['base']}...{commit}") or {}
+        if not ahead.get("ahead_by"):
+            raise DeliveryError(f"reviewed commit {commit} is not ahead of {state['base']}, so it is not a commit of PR #{pr}")
+        if len(ahead.get("files") or []) >= 300:
+            raise DeliveryError(f"the diff of PR #{pr} at {commit} has 300 or more files; GitHub truncates it, "
+                                "so findings cannot be anchored reliably")
+        diff_text = self.run(["api", "-H", "Accept: application/vnd.github.diff",
+                              f"repos/{self.repo}/compare/{state['base']}...{commit}"], None)
+        payload, file_comments = build_review_payload(round_number, verdict, summary, findings, diff_text, commit)
+        if len(payload["body"]) > COMMENT_LIMIT:
+            raise DeliveryError(f"review body is {len(payload['body'])} characters; GitHub's limit is {COMMENT_LIMIT}")
+        posted = set(state["finding_ids"])
+        skipped = []
+        for comment in file_comments:
+            finding_id = comment.pop("finding_id")
+            if finding_id in posted:
+                skipped.append(finding_id)
+            else:
+                self.rest("POST", f"repos/{self.repo}/pulls/{pr}/comments", comment)
         done = self.rest("POST", f"repos/{self.repo}/pulls/{pr}/reviews", payload)
-        return {"pr": pr, "round": round_number, "verdict": verdict, "url": done.get("html_url"),
-                "findings": len(findings)}
+        return {"pr": pr, "round": round_number, "verdict": verdict, "url": done.get("html_url"), "commit": commit,
+                "findings": len(findings), "file_level": len(file_comments), "already_posted": skipped}
 
     def resolve(self, thread_ids: Sequence[str]) -> List[str]:
         m = "mutation($t:ID!){ resolveReviewThread(input:{threadId:$t}){ thread{ id isResolved } } }"
@@ -423,6 +577,8 @@ def main(argv: Optional[Sequence[str]] = None, client: Optional[GitHub] = None) 
     p.add_argument("to", choices=STATUSES)
     p.add_argument("--expect", action="append", choices=STATUSES, default=[],
                    help="refuse unless the current Status is one of these (repeatable)")
+    p.add_argument("--claim", action="store_true",
+                   help="serialize rival runs with a claim marker comment; use it when picking up a ticket")
     p = sub.add_parser("spec-pull", help="hydrate a spec file from its issue/PR comment")
     p.add_argument("number", type=int)
     p.add_argument("--key")
@@ -433,11 +589,12 @@ def main(argv: Optional[Sequence[str]] = None, client: Optional[GitHub] = None) 
     p.add_argument("--key", help="defaults to the file name without .md")
     p = sub.add_parser("spec-list", help="list spec comments on an issue/PR")
     p.add_argument("number", type=int)
-    p = sub.add_parser("review-state", help="rounds, open bmad findings and other unresolved threads of a PR")
+    p = sub.add_parser("review-state", help="head, rounds, open bmad findings and other unresolved threads of a PR")
     p.add_argument("pr", type=int)
     p = sub.add_parser("post-review", help="post one bmad-review round")
     p.add_argument("pr", type=int)
     p.add_argument("--round", type=int, required=True)
+    p.add_argument("--commit", required=True, help="full SHA of the reviewed commit (head_sha when the diff was staged)")
     p.add_argument("--verdict", choices=("clean", "changes"), required=True)
     p.add_argument("--summary-file", type=Path, required=True)
     p.add_argument("--findings-file", type=Path, help="JSON array of {id, path, line?, body}")
@@ -452,7 +609,7 @@ def main(argv: Optional[Sequence[str]] = None, client: Optional[GitHub] = None) 
         if args.command == "ready":
             result = gh.ready()
         elif args.command == "status":
-            result = gh.set_status(args.issue, args.to, args.expect)
+            result = gh.set_status(args.issue, args.to, args.expect, args.claim)
         elif args.command == "spec-pull":
             result = gh.spec_pull(args.number, args.key, args.out)
         elif args.command == "spec-push":
@@ -464,7 +621,7 @@ def main(argv: Optional[Sequence[str]] = None, client: Optional[GitHub] = None) 
         elif args.command == "post-review":
             findings = _findings(args.findings_file) if args.findings_file else []
             result = gh.post_review(args.pr, args.round, args.verdict,
-                                    args.summary_file.read_text(encoding="utf-8"), findings)
+                                    args.summary_file.read_text(encoding="utf-8"), findings, args.commit)
         elif args.command == "reply":
             result = {"url": gh.reply(args.thread_id, args.body_file.read_text(encoding="utf-8"))}
         else:
