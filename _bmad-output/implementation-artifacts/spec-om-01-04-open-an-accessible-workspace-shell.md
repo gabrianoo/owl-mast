@@ -2,7 +2,7 @@
 title: 'OM-01.04 — Open an accessible workspace shell'
 type: 'feature'
 created: '2026-11-08'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 2
 baseline_commit: 'eff1971d1d731ba352e001ba078235a950338142'

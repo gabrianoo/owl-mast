@@ -2,7 +2,7 @@
 title: 'OM-01.02 — Install optional state and identity dependencies'
 type: 'feature'
 created: '2026-11-07'
-status: 'in-progress'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 7
 baseline_commit: '3f1ef89693b5511e823d9ae5e0f93123073821bc'

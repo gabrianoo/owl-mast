@@ -2,7 +2,7 @@
 title: 'OM-01.02 review→fix loop, build cycle 1: resolve reviews 5865988027 (PR #109) and 5865989182 (PR #116)'
 type: 'bugfix'
 created: '2026-11-11'
-status: 'in-progress'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 0
 baseline_commit: '24dc0d0059f18e342e1be19cb071d14599a0c9e0'

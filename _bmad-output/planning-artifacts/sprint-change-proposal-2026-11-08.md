@@ -170,3 +170,14 @@ No PRD, architecture or UX edits are proposed.
 - `verify-mapping` still reports 19 epics, 85 stories and 340 tasks, with no TASKS.md ID mismatch.
 - Issue #22 matches the merged specification.
 - A fresh `plan` run reports OM-01.03 as dispatchable once the owner sets Ready.
+
+## 6. Errata (2026-11-12, drafted; the owner decides)
+
+Added by the E01 retrospective remediation (E01-R-08) after the 47 review threads on [PR #110](https://github.com/gabrianoo/owl-mast/pull/110) were triaged. Sections 1–5 are the proposal as it was approved and applied and are left as written: it is a point-in-time record, and the text it proposed now lives in `epic-01.md`, where the clarifications from the triage were made. Only statements of fact that the review showed to be wrong are corrected here.
+
+| Where | Statement | Correction |
+| --- | --- | --- |
+| Front matter, `status: approved` | The proposal carried `approved` inside the pull request that proposed it. | The owner approved it by merging PR #110 at 2026-11-07 23:36 UTC (2026-11-08 local time; merge commit `eff1971`), 2 min 43 s after it opened and before its review. The review followed on 2026-11-09 (review 5827052511). |
+| §2, "OM-16.01 AC1 already expects the envelope fields specified here" | Not accurate. OM-16.01's first criterion expects requested/successful/failed/unresolved outcomes, human/agent/service actors, source and recorded times, a reason, and permitted causal references. | The v1 envelope as built has a reason, both times and the correlation ID. It adds the actor kind `system` and the outcome `denied`, which OM-16.01 does not name, and it has no causal-event reference and no corrects/supersedes link. Those two are optional additions under the contract's compatibility rule and belong to OM-16.01; `epic-01.md` OM-01.03 AC3 now says so. OM-16.01 itself is not edited here. |
+| §2, "OM-18.02 AC2 and T3 already cover pod termination and stale-lease recovery, so moving the live pod-replacement proof there requires no edit to OM-18.02" | Overreaches. OM-18.02 AC2 names ingest, normalization and notification work, and T3 names stale-lease recovery; neither names unpublished audit intents. | No story yet proves recovery of unpublished audit intents after a live pod replacement. `epic-01.md` OM-01.03 AC6 now states the gap. Adding it to OM-18.02 is a separate change for the owner. |
+| §4.4, FR-3 coverage row | The row added E01 only: `E01, E05, E06, E09, E16, E17`. | `VALIDATION.md` maps FR-3 to stories in E01, E03, E05, E06, E07, E08, E09, E13, E15, E16, E17, E18 and E19. The row in `epics.md` now lists all of them. |

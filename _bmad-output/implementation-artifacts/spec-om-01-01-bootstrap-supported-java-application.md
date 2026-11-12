@@ -2,7 +2,7 @@
 title: 'OM-01.01 — Bootstrap the supported Java application'
 type: 'feature'
 created: '2026-11-06'
-status: 'in-review'
+status: 'done'
 route: 'dispatch'
 review_loop_iteration: 2
 baseline_commit: '063ad881940a1621736a842eb1c8ffe1bafb0447'
