@@ -40,6 +40,7 @@ behaviour, so `src/app/router.tsx` wraps the History API in about 100 lines.
 | Command | What it does |
 | --- | --- |
 | `npm ci` | Install the locked dependencies (Node 24.21.0 required). |
+| `npx playwright install chromium` | Download the Chromium build that the locked Playwright expects. `npm ci` does not do this, so on a fresh machine `npm run test:e2e` and `npm run test:e2e:smoke` fail with "Executable doesn't exist" until it has run once (again after a Playwright bump). On a machine without the browser's system libraries use `npx playwright install --with-deps chromium`, as CI does. |
 | `npm run dev` | Vite dev server on 5173, proxying `/api` and `/actuator` to `OWLMAST_BACKEND_URL` (default `http://127.0.0.1:8080`, e.g. `./gradlew :backend:bootTestRun --args='--server.port=8080'`). |
 | `npm run lint` / `npm run typecheck` | ESLint (strict type-checked, jsx-a11y strict, react-hooks) and `tsc` for app, config and e2e projects. |
 | `npm test` / `npm run test:coverage` | Vitest + Testing Library in jsdom: tokens against DESIGN.md, owl mark against the accepted SVG, contrast arithmetic, theme, router, primitives, connection states, preferences. |
