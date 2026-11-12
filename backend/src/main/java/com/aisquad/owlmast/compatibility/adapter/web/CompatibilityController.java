@@ -8,9 +8,10 @@ import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Mono;
 
 /**
- * {@code GET /api/compatibility}: the public descriptor an independently deployed frontend reads
- * before showing protected features, and the pre-rollout check queries against a live backend. It
- * carries no protected content and needs no scope.
+ * {@code GET /api/compatibility}: the public descriptor an independently deployed frontend reads to
+ * report whether the pair is supported, and the pre-rollout check queries against a live backend.
+ * It carries no protected content and needs no scope. The path is fixed: the chart refuses any
+ * {@code routing.apiPathPrefix} other than {@code /api} and renders no rewrite.
  */
 @RestController
 class CompatibilityController {

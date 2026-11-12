@@ -15,8 +15,10 @@ spring:
     fail-on-missing-locations: true
 
   webflux:
-    # Common error envelope (OM-01.04): RFC 9457 problem details on every error response. Never
-    # include stack traces, messages or binding errors; the frontend renders its own safe copy.
+    # Common error envelope (OM-01.04): RFC 9457 problem details for Spring's own error responses
+    # (404, 405, validation, ResponseStatusException). Exceptions that leave a controller unhandled
+    # are mapped to a 500 problem detail by platform/web/UnhandledFailureAdvice. Never include stack
+    # traces, messages or binding errors; the frontend renders its own safe copy.
     problemdetails:
       enabled: true
 
