@@ -32,6 +32,55 @@ test.describe('responsive layout, 320px reflow, 200% text zoom, 44px targets, re
     await expectControlTargets(page);
   });
 
+  for (const width of [320, 640]) {
+    test(`${width}px with 200% text: the compact menu and the scope dialog stay usable and return focus`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 800 });
+      await page.goto('/');
+      await page.evaluate(() => {
+        document.documentElement.style.fontSize = '200%';
+      });
+      await expect(page.getByRole('heading', { level: 1, name: 'Daily Work' })).toBeVisible();
+      await expect(page).toHaveTitle('Daily Work · Owl Mast');
+      await expectNoHorizontalOverflow(page);
+
+      const toggle = page.getByRole('button', { name: /Navigation.*Daily Work/ });
+      await toggle.focus();
+      await page.keyboard.press('Enter');
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      await expect(page.getByRole('link', { name: 'Knowledge' })).toBeVisible();
+      await expectNoHorizontalOverflow(page);
+      await expectControlTargets(page);
+      await page.keyboard.press('Escape');
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      await expect(toggle).toBeFocused();
+
+      const trigger = page.getByRole('button', { name: 'Change scope' });
+      await trigger.focus();
+      await page.keyboard.press('Enter');
+      const dialog = page.getByRole('dialog', { name: 'Choose an authorized project' });
+      await expect(dialog).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Choose an authorized project' })).toBeFocused();
+      const box = await dialog.boundingBox();
+      expect(box, 'dialog is laid out').not.toBeNull();
+      expect(box?.x ?? -1).toBeGreaterThanOrEqual(0);
+      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(width + 0.5);
+      const closeBox = await dialog.getByRole('button', { name: 'Close' }).boundingBox();
+      expect(closeBox?.height ?? 0).toBeGreaterThanOrEqual(43.5);
+      expect(closeBox?.width ?? 0).toBeGreaterThanOrEqual(43.5);
+      await expectNoHorizontalOverflow(page);
+      await page.keyboard.press('Escape');
+      await expect(dialog).toBeHidden();
+      await expect(trigger).toBeFocused();
+
+      // Navigation under enlarged text still moves the title and focus (AC2).
+      await toggle.click();
+      await page.getByRole('navigation', { name: 'Primary navigation' }).getByRole('link', { name: 'Focus' }).click();
+      await expect(page).toHaveTitle('Focus · Owl Mast');
+      await expect(page.getByRole('heading', { level: 1, name: 'Focus' })).toBeFocused();
+      await expectNoHorizontalOverflow(page);
+    });
+  }
+
   test('wide layout shows the persistent rail; compact layout shows the labelled menu', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto('/');

@@ -86,6 +86,68 @@ describe('workspace shell (AC2)', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Focus' })).toHaveFocus();
   });
 
+  it('closes the compact menu on Escape and returns focus to its toggle', async () => {
+    const user = userEvent.setup();
+    renderAt('/usage', false);
+    const toggle = screen.getByRole('button', { name: /Navigation.*Usage/ });
+    await user.click(toggle);
+    await user.tab();
+    expect(screen.getByRole('link', { name: 'Daily Work' })).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('link', { name: 'Daily Work' })).toBeNull();
+    expect(toggle).toHaveFocus();
+    expect(window.location.pathname).toBe('/usage');
+  });
+
+  it('closes the compact menu on Escape from outside it without taking focus', async () => {
+    const user = userEvent.setup();
+    renderAt('/usage', false);
+    const toggle = screen.getByRole('button', { name: /Navigation.*Usage/ });
+    await user.click(toggle);
+    const scope = screen.getByRole('button', { name: 'Change scope' });
+    scope.focus();
+    await user.keyboard('{Escape}');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(scope).toHaveFocus();
+  });
+
+  it('leaves the compact menu open when Escape belongs to an open dialog, a handled key or a composition', async () => {
+    const user = userEvent.setup();
+    renderAt('/usage', false);
+    const toggle = screen.getByRole('button', { name: /Navigation.*Usage/ });
+    await user.click(toggle);
+    await user.click(screen.getByRole('button', { name: 'Change scope' }));
+    expect(screen.getByRole('dialog', { name: 'Choose an authorized project' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    const handled = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    handled.preventDefault();
+    const composing = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, isComposing: true });
+    act(() => {
+      document.body.dispatchEvent(handled);
+      document.body.dispatchEvent(composing);
+    });
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+
+    await user.keyboard('{Escape}');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('closes the compact menu when the link of the page already shown is activated', async () => {
+    const user = userEvent.setup();
+    renderAt('/usage', false);
+    const toggle = screen.getByRole('button', { name: /Navigation.*Usage/ });
+    await user.click(toggle);
+    await user.click(screen.getByRole('link', { name: 'Usage' }));
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('link', { name: 'Usage' })).toBeNull();
+    expect(screen.getByRole('heading', { level: 1, name: 'Usage' })).toHaveFocus();
+  });
+
   it('opens the scope chooser as a modal and returns focus to Change scope', async () => {
     const user = userEvent.setup();
     renderAt('/', true);

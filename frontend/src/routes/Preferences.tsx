@@ -55,7 +55,7 @@ export function ThemeSettings() {
         description={`Current: ${describePreference(theme.preference, theme.resolved)}. Following the device uses your system light or dark setting; an explicit choice overrides it on this browser.`}
         validation={unsaved ? `Unsaved change: ${PREFERENCE_LABEL[draft]}. Save to apply it.` : 'No unsaved changes.'}
       >
-        <div className="choice-list" role="radiogroup" aria-label="Theme">
+        <div className="choice-list">
           {THEME_PREFERENCES.map((preference) => (
             <label key={preference} className="choice">
               <input

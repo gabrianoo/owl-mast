@@ -2,12 +2,38 @@
 # user. The image never proxies the backend: the ingress/gateway routes `/api` to the backend service
 # (chart `routing.*`; `/actuator` is routed only with `routing.exposeActuator=true`), and this template hands the shell the API path prefix it was
 # deployed with (env OWLMAST_API_PATH_PREFIX, chart `routing.apiPathPrefix`) as /owlmast-config.json.
+# The prefix is validated and normalised before this template is rendered
+# (docker-entrypoint.d/16-owlmast-api-prefix.envsh), so it is safe inside the strings below.
+
+# Cache policy of /assets/ by answer status. Only an answer that carries the hashed file (200, or the
+# 304 that revalidates it) is immutable for a year. Anything else is not stored:
+# during a rolling update an old pod answers 404 for the new build's hashed name, and a 404 kept as
+# immutable would break that URL in the browser or a shared cache until it is purged.
+map $status $owlmast_asset_cache_control {
+    volatile;
+    default "no-store";
+    200 "public, max-age=31536000, immutable";
+    304 "public, max-age=31536000, immutable";
+}
+
 server {
     listen 8080;
     server_name _;
     root /usr/share/nginx/html;
     index index.html;
     server_tokens off;
+    # Range requests are answered, except under /assets/ (see there). nginx runs add_header before
+    # the range filter and again when it sends the error answer for an unsatisfiable range, so a 416
+    # answered in the same location would carry every header twice. The 416 is therefore sent from a
+    # location that adds nothing: the answer keeps the headers the first pass wrote (the security
+    # headers and that location's Cache-Control), once each. Do not put add_header here or at
+    # server level.
+    # One range per request: a request for several is answered whole (200), so no multipart answer.
+    max_ranges 1;
+    error_page 416 @owlmast_range_not_satisfiable;
+    location @owlmast_range_not_satisfiable {
+        return 416;
+    }
 
     location = /owlmast-config.json {
         include /etc/nginx/owlmast-headers.conf;
@@ -16,9 +42,36 @@ server {
         return 200 '{"apiPathPrefix":"${OWLMAST_API_PATH_PREFIX}"}';
     }
 
-    location /assets/ {
+    # The API contract this build supports, for the pre-rollout check against the deployed artifact
+    # (scripts/check-api-compatibility.py --frontend-url). Missing means 404, never the shell.
+    location = /api-compatibility.json {
         include /etc/nginx/owlmast-headers.conf;
-        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        default_type application/json;
+        add_header Cache-Control "no-store" always;
+        try_files $uri =404;
+    }
+
+    # A request at or below the API prefix that reaches this image was misrouted: the image never serves or
+    # proxies the backend. Answer 404 (the shell reports "no descriptor", fail closed) instead of the
+    # SPA fallback, whose 200 text/html would read as a healthy backend.
+    location = ${OWLMAST_API_PATH_PREFIX} {
+        include /etc/nginx/owlmast-headers.conf;
+        add_header Cache-Control "no-store" always;
+        return 404;
+    }
+    location ^~ ${OWLMAST_API_PATH_PREFIX}/ {
+        include /etc/nginx/owlmast-headers.conf;
+        add_header Cache-Control "no-store" always;
+        return 404;
+    }
+
+    location /assets/ {
+        # No ranges here. The first pass has already written the immutable policy for the 200 it
+        # expected ($status is 200 until the range filter runs), and stock nginx cannot take a
+        # header back, so a 416 would be immutable for a year. Hashed assets are always sent whole.
+        max_ranges 0;
+        include /etc/nginx/owlmast-headers.conf;
+        add_header Cache-Control $owlmast_asset_cache_control always;
         try_files $uri =404;
     }
 

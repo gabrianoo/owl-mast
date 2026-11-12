@@ -23,10 +23,21 @@ describe('runtime config', () => {
   it('normalises the API path prefix and falls back to /api', () => {
     expect(normalizeApiPathPrefix('/api')).toBe('/api');
     expect(normalizeApiPathPrefix('/owl/api/')).toBe('/owl/api');
-    expect(normalizeApiPathPrefix('/')).toBe('/');
+    // The root is where the shell is served; the image's start-up guard refuses it too.
+    expect(normalizeApiPathPrefix('/')).toBe('/api');
+    expect(joinPath(normalizeApiPathPrefix('/'), '/compatibility')).toBe('/api/compatibility');
     expect(normalizeApiPathPrefix('api')).toBe('/api');
     expect(normalizeApiPathPrefix('/api?x=1')).toBe('/api');
     expect(normalizeApiPathPrefix(42)).toBe('/api');
+  });
+
+  it('refuses a prefix that could leave the origin or climb the path, like the chart does', () => {
+    for (const unsafe of ['//evil.example', '//evil.example/api', '/api//v1', '//', '///', '/api//', '/../x', '/api/../x', '/api/./x', '/api/..', '/api/.', '/.', "/a'b", '/a$b', '/a%2Fb']) {
+      expect(normalizeApiPathPrefix(unsafe), unsafe).toBe('/api');
+    }
+    expect(normalizeApiPathPrefix('/owl/api.v1~x_-y')).toBe('/owl/api.v1~x_-y');
+    expect(normalizeApiPathPrefix('/.well-known/owl')).toBe('/.well-known/owl');
+    expect(joinPath(normalizeApiPathPrefix('//evil.example'), '/compatibility')).toBe('/api/compatibility');
   });
 
   it('reads /owlmast-config.json without caching and tolerates its absence', async () => {
@@ -59,12 +70,23 @@ describe('api client (UX-DR26/42)', () => {
     expect(joinPath('/', '/x')).toBe('/x');
   });
 
-  it('refuses every request while offline before touching the network or a cache', async () => {
+  it('refuses a protected request while offline before touching the network or a cache', async () => {
     const fetchImpl = vi.fn();
     const client = createApiClient({ apiPathPrefix: '/api', fetchImpl, isOnline: () => false });
     expect(await client.get('/compatibility', { protected: true }, parseDescriptor)).toEqual({ kind: 'offline' });
-    expect(await client.get('/compatibility', { protected: false }, parseDescriptor)).toEqual({ kind: 'offline' });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('still attempts a public request while the browser reports offline, uncached', async () => {
+    const fetchImpl = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.cache).toBe('no-store');
+      return Promise.resolve(jsonResponse(descriptor));
+    });
+    const client = createApiClient({ apiPathPrefix: '/api', fetchImpl, isOnline: () => false });
+    expect(await client.get('/compatibility', { protected: false }, parseDescriptor)).toEqual({ kind: 'ok', value: descriptor });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const failing = createApiClient({ apiPathPrefix: '/api', fetchImpl: () => Promise.reject(new TypeError('Failed to fetch')), isOnline: () => false });
+    expect(await failing.get('/compatibility', { protected: false }, parseDescriptor)).toEqual({ kind: 'offline' });
   });
 
   it('requests JSON with no-store and same-origin credentials, and parses a good answer', async () => {

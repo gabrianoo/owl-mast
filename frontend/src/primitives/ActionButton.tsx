@@ -4,7 +4,11 @@ import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
  * action-control / action-control-dark (UX-DR27): one behaviour in both themes. While the action is
  * pending the control refuses duplicate activation, keeps its readable label and explains why; the
  * result shown afterwards is the actual outcome. A rejected action is never presented as success.
+ * An action that throws shows fixed safe copy (`failureMessage`), never the thrown text: exception
+ * messages can carry internals. Callers that want a specific failure text return `{ ok: false }`.
  */
+export const DEFAULT_FAILURE_MESSAGE = 'The action could not be completed.';
+
 export type ActionOutcome = { ok: true; message: string } | { ok: false; message: string };
 
 export interface ActionButtonProps {
@@ -14,6 +18,8 @@ export interface ActionButtonProps {
   pendingLabel?: string;
   type?: 'button' | 'submit';
   describedBy?: string;
+  /** Safe copy shown when `onAction` throws instead of returning an outcome. */
+  failureMessage?: string;
 }
 
 type Phase = { name: 'idle' } | { name: 'pending' } | { name: 'settled'; outcome: ActionOutcome };
@@ -25,6 +31,7 @@ export function ActionButton({
   pendingLabel = 'Working… the result appears here when it is known.',
   type = 'button',
   describedBy,
+  failureMessage = DEFAULT_FAILURE_MESSAGE,
 }: ActionButtonProps) {
   const [phase, setPhase] = useState<Phase>({ name: 'idle' });
   const resultId = useId();
@@ -46,7 +53,9 @@ export function ActionButton({
     try {
       outcome = await onAction();
     } catch (failure) {
-      outcome = { ok: false, message: failure instanceof Error && failure.message ? failure.message : 'The action failed.' };
+      // The thrown value stays out of the page; the console keeps it for whoever debugs the action.
+      console.error('ActionButton: the action threw', failure);
+      outcome = { ok: false, message: failureMessage };
     }
     if (mounted.current) {
       setPhase({ name: 'settled', outcome });
@@ -65,7 +74,12 @@ export function ActionButton({
         aria-disabled={pending ? 'true' : undefined}
         aria-busy={pending ? 'true' : undefined}
         aria-describedby={described}
-        onClick={() => {
+        onClick={(event) => {
+          if (pending) {
+            // aria-disabled keeps the control focusable, so the browser would still submit the form.
+            event.preventDefault();
+            return;
+          }
           void activate();
         }}
       >

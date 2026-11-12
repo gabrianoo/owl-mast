@@ -47,6 +47,47 @@ test.describe('keyboard flow, title/focus and return behaviour (AC2, UX-DR40)', 
     await expect(page.getByRole('button', { name: /Navigation.*Knowledge/ })).toHaveAttribute('aria-expanded', 'false');
   });
 
+  test('Escape closes the compact menu and returns focus to its toggle', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 700 });
+    await page.goto('/usage');
+    const toggle = page.getByRole('button', { name: /Navigation.*Usage/ });
+    await toggle.focus();
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('link', { name: 'Daily Work' })).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByRole('link', { name: 'Daily Work' })).toBeHidden();
+    await expect(toggle).toBeFocused();
+    await expect(page).toHaveURL(/\/usage$/);
+  });
+
+  test('Escape in the scope dialog closes the dialog only; the compact menu behind it stays open', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 700 });
+    await page.goto('/usage');
+    const toggle = page.getByRole('button', { name: /Navigation.*Usage/ });
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await page.getByRole('button', { name: 'Change scope' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Choose an authorized project' });
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await page.keyboard.press('Escape');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  test('activating the link of the page already shown closes the compact menu', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 700 });
+    await page.goto('/usage');
+    const toggle = page.getByRole('button', { name: /Navigation.*Usage/ });
+    await toggle.click();
+    await page.getByRole('navigation', { name: 'Primary navigation' }).getByRole('link', { name: 'Usage' }).click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByRole('heading', { level: 1, name: 'Usage' })).toBeFocused();
+  });
+
   test('the scope dialog closes on Escape and returns focus to its trigger', async ({ page }) => {
     await page.goto('/');
     const trigger = page.getByRole('button', { name: 'Change scope' });

@@ -642,6 +642,35 @@ class ReviewCycle1Test(unittest.TestCase):
         routed = [p["path"] for p in by_kind(docs, "Ingress")[0]["spec"]["rules"][0]["http"]["paths"]]
         self.assertIn(prefix, routed)
 
+    def test_a_prefix_the_frontend_image_refuses_never_reaches_it(self):
+        """PR #119 walkthrough, risk 3: the image's start-up guard refuses the root, its own paths and the shell's
+        pages; none of them may render, or the mistake would only show when the container starts."""
+        guard = (REPO / "frontend/docker-entrypoint.d/16-owlmast-api-prefix.envsh").read_text()
+        pages = re.search(r'^owlmast_shell_routes="([^"]+)"$', guard, re.M).group(1).split()
+        self.assertGreaterEqual(len(pages), 5)
+        self.assertNotIn("api", pages)  # the one prefix the chart renders must be one the image starts with
+        refused_by_the_image = [
+            "/", "/assets", "/assets/x", "/owlmast-config.json", "/api-compatibility.json", "/index.html", "/theme-boot.js",
+            "/owl-mark.svg", *(f"/{page}" for page in pages), f"/{pages[0]}/x", "//evil.example", "/a/../b", "/a//b", "api",
+        ]
+        frontend = ("frontend.enabled=true", "frontend.image.tag=x")
+        for value in refused_by_the_image:
+            for skip in ((), ("--skip-schema-validation",)):
+                err = refused(*skip, *sets(f"routing.apiPathPrefix={value}", *frontend))
+                # a malformed value is refused by the path rule, a well-formed one by the pin to /api
+                self.assertRegex(err, r"apiPathPrefix|routing path prefix", (value, skip))
+        # the one value that reaches the image is the pinned one, in every routing mode, and nothing else is passed
+        for args in (sets(*frontend), sets(*frontend, *INGRESS_ON), [*GATEWAY_API, *sets(*frontend, *GATEWAY_ON)]):
+            container = deployments_of(render(*args))["t-owl-mast-frontend"]["spec"]["template"]["spec"]["containers"][0]
+            self.assertEqual(container["env"], [{"name": "OWLMAST_API_PATH_PREFIX", "value": "/api"}])
+            self.assertNotIn("envFrom", container)
+        # there is no values path to another environment for the frontend container: the schema refuses the key, and
+        # without the schema the template still renders only the pinned prefix
+        override = ("frontend.extraEnv[0].name=OWLMAST_API_PATH_PREFIX", "frontend.extraEnv[0].value=/usage")
+        self.assertIn("extraEnv", refused(*sets(*frontend, *override)))
+        container = deployments_of(render("--skip-schema-validation", *sets(*frontend, *override)))["t-owl-mast-frontend"]["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual(container["env"], [{"name": "OWLMAST_API_PATH_PREFIX", "value": "/api"}])
+
     def test_server_verifying_ssl_modes_fail_closed_until_a_ca_mount_exists(self):
         """116/4543777472: verify-ca/verify-full rendered and then crash-looped (no CA trust is mounted)."""
         for mode in ("verify-ca", "verify-full"):

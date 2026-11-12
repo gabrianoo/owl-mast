@@ -3,6 +3,8 @@ package com.aisquad.owlmast.compatibility;
 import com.aisquad.owlmast.testing.ContainersConfiguration;
 import com.aisquad.owlmast.testing.StubIdentityConfiguration;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.info.BuildProperties;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -21,6 +23,9 @@ class CompatibilityEndpointIT {
 
   @LocalServerPort private int port;
 
+  /** The version the build stamped; asserting a literal would break this test on every bump. */
+  @Autowired private BuildProperties buildProperties;
+
   @Test
   void publishesTheCompatibilityDescriptor() {
     client()
@@ -35,7 +40,7 @@ class CompatibilityEndpointIT {
         .jsonPath("$.service")
         .isEqualTo("owl-mast-backend")
         .jsonPath("$.backendVersion")
-        .isEqualTo("0.1.0-SNAPSHOT")
+        .isEqualTo(buildProperties.getVersion())
         .jsonPath("$.apiContract.major")
         .isEqualTo(1)
         .jsonPath("$.apiContract.minor")

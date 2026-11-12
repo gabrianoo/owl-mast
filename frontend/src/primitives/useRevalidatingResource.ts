@@ -14,7 +14,9 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
  * resource (offline) raises the same floor, so outstanding responses and the pending update are
  * discarded and nothing received or held before the connection was lost can be shown until a load
  * issued after reconnecting succeeds. The value received before the connection was lost is reported
- * `stale` until a later load confirms it (an equal answer) or replaces it.
+ * `stale` until a later load confirms it (an equal answer) or replaces it. A shown value the caller
+ * does not retain (`retains`; for the connection panel: error, offline, no descriptor) is replaced
+ * by the next different answer directly, so a failure never outlives a healthy backend.
  */
 export interface RevalidatingResource<T> {
   /** The value currently shown, or undefined before the first load settles. */
@@ -48,6 +50,12 @@ export interface RevalidatingOptions<T> {
    * accepted, so only a load issued afterwards can show anything else.
    */
   invalidates?: (next: T) => boolean;
+  /**
+   * When false for the shown value, that value is not content a person is reading (an error, an
+   * offline or a "nothing published" answer): the next different answer replaces it directly
+   * instead of waiting behind "New updates". Defaults to retaining every value.
+   */
+  retains?: (shown: T) => boolean;
 }
 
 /**
@@ -135,7 +143,7 @@ export function useRevalidatingResource<T>(options: RevalidatingOptions<T>): Rev
   const runLoad = useCallback(async () => {
     if (!enabledRef.current) return;
     const token = ledger.issue();
-    const { load, isEqual, invalidates } = optionsRef.current;
+    const { load, isEqual, invalidates, retains } = optionsRef.current;
     let next: T;
     try {
       next = await load();
@@ -148,19 +156,28 @@ export function useRevalidatingResource<T>(options: RevalidatingOptions<T>): Rev
     // older than an accepted response.
     if (!ledger.accept(token, invalidating)) return;
     const shown = currentRef.current;
-    if (shown === undefined || invalidating) {
+    const show = () => {
       currentRef.current = next;
       setCurrent(next);
       setShownToken(token);
       setReceivedAt(new Date());
       setLoading(false);
       setPending(undefined);
+    };
+    if (shown === undefined || invalidating) {
+      show();
       return;
     }
     if (isEqual(shown, next)) {
       // A fresh answer equal to what is shown confirms it (clears a stale label after reconnecting).
       setShownToken(token);
       setPending(undefined);
+      return;
+    }
+    if (retains !== undefined && !retains(shown)) {
+      // Nothing a person is reading is shown (error, offline, nothing published): a pinned failure
+      // would outlive a healthy backend, so the answer replaces it at once.
+      show();
       return;
     }
     setPending({ value: next, token });

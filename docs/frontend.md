@@ -43,15 +43,15 @@ behaviour, so `src/app/router.tsx` wraps the History API in about 100 lines.
 | `npm run dev` | Vite dev server on 5173, proxying `/api` and `/actuator` to `OWLMAST_BACKEND_URL` (default `http://127.0.0.1:8080`, e.g. `./gradlew :backend:bootTestRun --args='--server.port=8080'`). |
 | `npm run lint` / `npm run typecheck` | ESLint (strict type-checked, jsx-a11y strict, react-hooks) and `tsc` for app, config and e2e projects. |
 | `npm test` / `npm run test:coverage` | Vitest + Testing Library in jsdom: tokens against DESIGN.md, owl mark against the accepted SVG, contrast arithmetic, theme, router, primitives, connection states, preferences. |
-| `npm run build` | Production bundle in `dist/`. |
-| `npm run test:e2e` | Playwright `shell` project against `vite preview`: axe WCAG 2.2 AA in light and dark at 1280 px and 320 px, keyboard flow, dialog return, 320 px reflow, 200 % text size, 44 px targets, reduced motion, every connection state (API mocked per test). |
+| `npm run build` | Production bundle in `dist/`, including `api-compatibility.json` (the contract this build supports, read by the pre-rollout check with `--frontend-url`). |
+| `npm run test:e2e` | Playwright `shell` project against `vite preview`: axe WCAG 2.2 AA in light and dark at 1280 px and 320 px, keyboard flow, dialog return, 320 px reflow, 200 % text size alone and combined with 320 px and 640 px, 44 px targets, reduced motion, every connection state including its axe scan (API mocked per test), the runtime API prefix chain and the pre-paint theme script. |
 | `npm run test:e2e:smoke` | Playwright `smoke` project: starts the real backend (`bootTestRun`, disposable VectorChord container) and checks the browser → backend path through the routing contract. Needs Docker and free ports 18080 and 4174: neither server is reused, so a leftover listener fails the run instead of testing a stale backend. Both servers stop on SIGTERM when the run ends. |
-| `scripts/verify-frontend-artifact.sh` (repo root) | Builds the image and proves its runtime contract (non-root, 8080, SPA fallback, `/owlmast-config.json`, headers, no JDK). |
-| `scripts/check-api-compatibility.py` (repo root) | Static or live frontend/backend contract check, see [api-compatibility.md](api-compatibility.md). |
+| `scripts/verify-frontend-artifact.sh` (repo root) | Builds the image and proves its runtime contract (non-root, 8080, SPA fallback, `/owlmast-config.json`, published `/api-compatibility.json`, 404 below the API prefix, start-up refusal of an `OWLMAST_API_PATH_PREFIX` that is unsafe or names a path or page of the shell, headers once on every answer including a 416, immutable caching for served hashed assets only (a missing one is `no-store`), template substitution limited to `OWLMAST_*`, no JDK). See [Image configuration](#image-configuration). With `OWLMAST_IMAGE_BROWSER_SMOKE=1` (set in CI; needs `npm ci` and `npx playwright install chromium`) it also runs Chromium against the container (`e2e/image`, `playwright.image.config.ts`): the production CSP, the nginx template and the config endpoint in a real browser. |
+| `scripts/check-api-compatibility.py` (repo root) | Frontend/backend contract check: static from the checkout, or against the artifacts with `--frontend-url` and `--backend-url`; see [api-compatibility.md](api-compatibility.md). |
 
 CI runs the same commands: job `frontend` (lint, typecheck, unit/component with coverage, build,
-browser suite, static pair check) and job `frontend-backend-smoke` (image contract and real-backend
-smoke). `scripts/verify-quality-gates.sh` additionally proves three frontend gates fail on injected
+browser suite, static pair check) and job `frontend-backend-smoke` (image contract, Chromium against the
+image, and real-backend smoke). `scripts/verify-quality-gates.sh` additionally proves three frontend gates fail on injected
 violations (jsx-a11y, type error, token drift) and that the pair check rejects an incompatible pair.
 
 ## What the shell implements (T2/T3)
@@ -65,7 +65,10 @@ violations (jsx-a11y, type error, token drift) and that the pair check rejects a
   name; `public/owl-mark.svg` is a byte-identical copy used as favicon.
 - **Theme**: follows the device; Preferences offers Follow device / Light / Dark with explicit Save
   and the real save result; the choice persists in `localStorage` (`owlmast.theme`) and is applied
-  before first paint by `public/theme-boot.js`.
+  before first paint by `public/theme-boot.js`. The script is a static file (the CSP forbids inline
+  scripts), so it repeats the storage key; `theme.test.tsx` fails if it drifts from
+  `THEME_STORAGE_KEY`, and `e2e/shell/theme.spec.ts` proves the attribute is set with the application
+  bundle blocked.
 - **Shell**: skip link, brand home link, `surface-navigation` (persistent rail ≥ 1024 px, labelled
   menu button below), `scope-bar` (project, source identity, period, "Change scope" opening a native
   modal dialog), `main` with the destination h1. Route change sets the title to `<Destination> · Owl
@@ -79,6 +82,77 @@ violations (jsx-a11y, type error, token drift) and that the pair check rejects a
   content and focuses the neutral heading; re-checks every 30 s behind "New updates".
 - **Destinations**: Daily Work, Focus, Knowledge, Connections, Usage show honest first-use states
   (no invented counts); Preferences holds theme settings and states that push is not offered.
+
+## Image configuration
+
+The runtime image renders `frontend/nginx/default.conf.template` when the container starts. This
+section is the one description of its rules; the chart, the guard and the tests refer to it.
+
+### API path prefix
+
+`OWLMAST_API_PATH_PREFIX` (image default `/api`) is published to the shell as
+`/owlmast-config.json`, and the image answers 404 at and below it (a request there was misrouted).
+The start-up guard `docker-entrypoint.d/16-owlmast-api-prefix.envsh` stops the container, with one
+line that names the variable and the reason, unless the value:
+
+1. is an absolute path of letters, digits, `.`, `_`, `~`, `-` and `/`, with no empty, `.` or `..`
+   segment (one trailing slash is dropped);
+2. is not the root `/`;
+3. is not, and does not lie below, a path the image serves itself: `/assets`,
+   `/owlmast-config.json`, `/api-compatibility.json` and every file or directory of the build output
+   (`/index.html`, `/theme-boot.js`, `/owl-mark.svg`, ...);
+4. does not start with a page of the shell: `/focus`, `/knowledge`, `/connections`, `/usage`,
+   `/preferences` (first path segment, case-sensitive; `src/app/destinations.test.ts` fails when the
+   guard's list and `DESTINATIONS` differ).
+
+A refusal under rule 1 ends with the character rule; a refusal under rules 2 to 4 names what the
+value collides with and what to choose instead. The shell applies rules 1 and 2 itself and falls back
+to `/api` (`src/api/config.ts`).
+
+Where the value can come from: the chart passes `routing.apiPathPrefix` and nothing else to the
+container, and refuses at render time every value other than exactly `/api` (the backend serves only
+`/api` and no rewrite is rendered), so a prefix the image would refuse never reaches a pod
+(`deploy/tests/test_chart_render.py`, `test_a_prefix_the_frontend_image_refuses_never_reaches_it`).
+The guard matters for a container started by hand or by another deployment tool.
+
+### Adding a templated variable
+
+The base image substitutes environment variables into the template with `envsubst`. The Dockerfile
+sets `NGINX_ENVSUBST_FILTER=^OWLMAST_`, so only variables whose names start with `OWLMAST_` are
+substituted and nginx's own variables (`$uri`, `$status`, `$owlmast_asset_cache_control`) reach nginx
+unchanged, whatever the container environment holds. To add one:
+
+1. Name it `OWLMAST_<NAME>` (upper case; nginx's own variables in the template stay lower case).
+2. Give it a default in `frontend/Dockerfile` (`ENV OWLMAST_<NAME>=...`). A variable that is not set
+   at all is not replaced by an empty string: the text stays, nginx reads it as an unknown variable of
+   its own and the container does not start. A variable set to an empty value (`-e OWLMAST_<NAME>=`)
+   is substituted as empty, so step 4 must refuse it where empty is not valid (the prefix guard does).
+3. Use it in the template as `${OWLMAST_<NAME>}`.
+4. Validate it before the template is rendered if it ends up inside an nginx string or a JSON
+   document: add a guard next to `16-owlmast-api-prefix.envsh` (the entrypoint sources `*.envsh`
+   files in order before `20-envsubst-on-templates.sh`), and copy it with `--chmod=0755`.
+5. If the chart should set it, add it to `deploy/helm/owl-mast/templates/frontend-deployment.yaml`
+   with a render test.
+
+`scripts/verify-frontend-artifact.sh` checks that every `OWLMAST_` variable the template names has a
+Dockerfile default, that the rendered configuration contains no unexpanded `${OWLMAST_...}`, that an
+unset one stops the container, and that nginx's variables survive a container environment that defines
+`status`, `uri` and `owlmast_asset_cache_control`.
+
+### Headers, caching and ranges
+
+Every location includes `nginx/owlmast-headers.conf` (nginx does not inherit `add_header` across
+levels) and sets its own `Cache-Control`: `no-store` everywhere, except that an answer under
+`/assets/` that carries the hashed file (200, 304) is immutable for a year.
+
+Range requests are answered (206), one range per request (`max_ranges 1`; a request for several is
+answered whole), except under `/assets/`. nginx adds the headers before its range
+filter runs and again when it sends the error answer, so an unsatisfiable range answered in place
+would carry every header twice. The template therefore sends the 416 from a named location that adds
+nothing: the answer keeps the headers already written, once each, with `no-store`. Under `/assets/`
+the header already written is the immutable policy, which stock nginx cannot take back, so ranges are
+off there (`max_ranges 0`) and a hashed asset is always sent whole. Do not add `add_header` to the
+named location or at server level.
 
 ## Accessibility verification (T4)
 

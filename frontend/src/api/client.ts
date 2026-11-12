@@ -1,10 +1,12 @@
 import { PROBLEM_MEDIA_TYPE, parseProblem, type ProblemDetail } from './problem.ts';
 
 /**
- * Backend client with the state vocabulary the shell renders (UX-DR26/42). Protected requests are
- * refused while offline before any network or cache access, so offline never discloses protected
- * content from a cache; every request uses `cache: 'no-store'`. 401/403 become `denied`, 404
- * `not-found`, everything else `error`. Bodies are parsed as JSON only.
+ * Backend client with the state vocabulary the shell renders (UX-DR26/42). Protected requests
+ * (`protected: true`) are refused while offline before any network or cache access, so offline never
+ * discloses protected content from a cache. Public requests (`protected: false`) are still attempted:
+ * `navigator.onLine` is advisory and a public answer discloses nothing. Every request uses
+ * `cache: 'no-store'`. 401/403 become `denied`, 404 `not-found`, everything else `error`. Bodies are
+ * parsed as JSON only.
  */
 export type ApiResult<T> =
   | { kind: 'ok'; value: T }
@@ -27,7 +29,11 @@ export interface ApiClientOptions {
 }
 
 export interface RequestOptions {
-  /** Protected content requires current authorization; it is never requested while offline. */
+  /**
+   * Protected content requires current authorization: `true` refuses the request while offline
+   * before the network or a cache is touched. `false` marks public content, which is attempted and
+   * reports `offline` or `error` when the request fails.
+   */
   protected: boolean;
   signal?: AbortSignal;
 }
@@ -46,7 +52,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
   const isOnline = options.isOnline ?? (() => typeof navigator === 'undefined' || navigator.onLine);
   return {
     async get(path, request, parse) {
-      if (!isOnline()) {
+      if (request.protected && !isOnline()) {
         return { kind: 'offline' };
       }
       let response: Response;

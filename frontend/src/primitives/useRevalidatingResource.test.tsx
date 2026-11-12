@@ -2,7 +2,7 @@ import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { useRevalidatingResource, type RevalidatingOptions } from './useRevalidatingResource.ts';
 
-type Probe = { kind: 'ok'; value: string } | { kind: 'denied' };
+type Probe = { kind: 'ok'; value: string } | { kind: 'denied' } | { kind: 'error' };
 
 interface Deferred {
   resolve: (value: Probe) => void;
@@ -287,5 +287,65 @@ describe('useRevalidatingResource while disabled (AC3: nothing new is shown whil
     });
     expect(result.current.current).toEqual({ kind: 'ok', value: 'v2' });
     expect(result.current.stale).toBe(false);
+  });
+});
+
+describe('useRevalidatingResource retention (a shown failure never outlives a healthy answer)', () => {
+  const retaining = (load: () => Promise<Probe>): RevalidatingOptions<Probe> => ({
+    ...options(load),
+    retains: (shown) => shown.kind !== 'error',
+  });
+
+  it('replaces a shown value the caller does not retain directly, without a pending update', async () => {
+    const { load, requests } = controlledLoad();
+    const { result } = renderHook((props: RevalidatingOptions<Probe>) => useRevalidatingResource(props), {
+      initialProps: retaining(load),
+    });
+    await settle(() => {
+      requests[0]?.resolve({ kind: 'error' });
+    });
+    expect(result.current.current).toEqual({ kind: 'error' });
+    await settle(() => {
+      result.current.refresh();
+    });
+    await settle(() => {
+      requests[1]?.resolve({ kind: 'ok', value: 'v1' });
+    });
+    expect(result.current.current).toEqual({ kind: 'ok', value: 'v1' });
+    expect(result.current.pendingCount).toBe(0);
+  });
+
+  it('still holds a retained value behind the pending update, and holds everything without the option', async () => {
+    const { load, requests } = controlledLoad();
+    const { result } = renderHook((props: RevalidatingOptions<Probe>) => useRevalidatingResource(props), {
+      initialProps: retaining(load),
+    });
+    await settle(() => {
+      requests[0]?.resolve({ kind: 'ok', value: 'v1' });
+    });
+    await settle(() => {
+      result.current.refresh();
+    });
+    await settle(() => {
+      requests[1]?.resolve({ kind: 'error' });
+    });
+    expect(result.current.current).toEqual({ kind: 'ok', value: 'v1' });
+    expect(result.current.pendingCount).toBe(1);
+
+    const plain = controlledLoad();
+    const held = renderHook((props: RevalidatingOptions<Probe>) => useRevalidatingResource(props), {
+      initialProps: options(plain.load),
+    });
+    await settle(() => {
+      plain.requests[0]?.resolve({ kind: 'error' });
+    });
+    await settle(() => {
+      held.result.current.refresh();
+    });
+    await settle(() => {
+      plain.requests[1]?.resolve({ kind: 'ok', value: 'v1' });
+    });
+    expect(held.result.current.current).toEqual({ kind: 'error' });
+    expect(held.result.current.pendingCount).toBe(1);
   });
 });

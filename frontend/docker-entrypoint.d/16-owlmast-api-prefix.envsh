@@ -1,0 +1,86 @@
+#!/bin/sh
+# Start-up guard for OWLMAST_API_PATH_PREFIX (sourced by the nginx image's docker-entrypoint.sh
+# before 20-envsubst-on-templates.sh renders /etc/nginx/templates/default.conf.template).
+# The rule is described once, in docs/frontend.md ("Image configuration"); keep the two in step.
+#
+# The value is substituted into an nginx string and a JSON document, and the shell fetches below it.
+# Anything outside the unreserved path characters would break the nginx directive (a quote), be read
+# by nginx as a variable ($), or be refused by the shell (src/api/config.ts), which would then fall
+# back to /api against the wrong backend path. The container refuses to start instead. Same rule as
+# the shell's normalizeApiPathPrefix (a subset of what the chart's owl-mast.validatePathPrefix allows):
+#   ^/[A-Za-z0-9._~/-]*$ with no empty, "." or ".." segment.
+# One trailing slash is dropped so the shell and the nginx locations see the same prefix. The root
+# and the image's own paths are refused: the template answers 404 at and below the prefix, which
+# must not shadow the shell or collide with a location the image already defines. "Own paths" are
+# the two endpoints the template defines and everything that exists under the web root, at the
+# prefix itself or at any parent of it (/index.html, /theme-boot.js, /owl-mark.svg, /assets/...):
+# a 404 at /index.html would answer every app route with 404, because nginx redirects `index` and
+# the SPA fallback into that location. The shell's client-side routes are refused as well: they are
+# no files (the SPA fallback serves them), so the web-root walk cannot see them, and a 404 at /usage
+# would break a reload of, or a deep link to, that page.
+
+owlmast_api_prefix="${OWLMAST_API_PATH_PREFIX:-}"
+# The value as it was given, for the diagnostics (the checks below drop one trailing slash).
+owlmast_api_prefix_given="$owlmast_api_prefix"
+
+# A malformed value: the reason, then the character-set rule.
+owlmast_refuse_api_prefix() {
+    printf '%s\n' "owlmast: OWLMAST_API_PATH_PREFIX '$owlmast_api_prefix_given' is refused: $1 (expected an absolute path of letters, digits, '.', '_', '~', '-' and '/', for example /api)" >&2
+    exit 1
+}
+
+# A well-formed value that names something this image serves: the reason and what to choose
+# instead. The character-set rule is not repeated, because the value does not break it.
+owlmast_refuse_api_prefix_collision() {
+    printf '%s\n' "owlmast: OWLMAST_API_PATH_PREFIX '$owlmast_api_prefix_given' is refused: $1. This image answers 404 at and below the API prefix, so $2" >&2
+    exit 1
+}
+
+case "$owlmast_api_prefix" in
+    /*) ;;
+    *) owlmast_refuse_api_prefix "it must start with '/'" ;;
+esac
+case "$owlmast_api_prefix" in
+    *[!A-Za-z0-9._~/-]*) owlmast_refuse_api_prefix "it contains a character outside the allowed set" ;;
+esac
+case "$owlmast_api_prefix/" in
+    *//?*) owlmast_refuse_api_prefix "it contains an empty path segment ('//')" ;;
+    */./* | */../*) owlmast_refuse_api_prefix "it contains a '.' or '..' path segment" ;;
+esac
+
+owlmast_api_prefix="${owlmast_api_prefix%/}"
+case "$owlmast_api_prefix" in
+    "") owlmast_refuse_api_prefix_collision "the API cannot be served at the root, where this image serves the shell" "the prefix needs at least one path segment, for example /api" ;;
+    /assets | /assets/* | /owlmast-config.json | /api-compatibility.json)
+        owlmast_refuse_api_prefix_collision "it collides with a path this image serves itself" "the prefix must not be /assets, /owlmast-config.json, /api-compatibility.json or a path below them" ;;
+esac
+# The shell's destinations (frontend/src/app/destinations.ts), by first path segment, so a later
+# child route below one of them is covered too. This image has no copy of that module:
+# src/app/destinations.test.ts fails when this list and DESTINATIONS differ.
+owlmast_shell_routes="focus knowledge connections usage preferences"
+owlmast_api_prefix_part="${owlmast_api_prefix#/}"
+owlmast_api_prefix_part="${owlmast_api_prefix_part%%/*}"
+for owlmast_shell_route in $owlmast_shell_routes; do
+    if [ "$owlmast_api_prefix_part" = "$owlmast_shell_route" ]; then
+        owlmast_refuse_api_prefix_collision "it collides with a page of the shell (/$owlmast_shell_route)" "its first path segment must not be one of: $owlmast_shell_routes"
+    fi
+done
+unset owlmast_shell_routes owlmast_shell_route
+# Every file and directory of the build output (the template's `root`), without a list to keep in
+# step with it. The loop walks the prefix and its parents, so a prefix below an existing directory
+# is refused whether or not that exact path exists today (the 404 location would shadow whatever a
+# later build puts there). A web root without the shell cannot be checked, so it is refused too.
+owlmast_web_root=/usr/share/nginx/html
+if [ ! -f "$owlmast_web_root/index.html" ]; then
+    printf '%s\n' "owlmast: OWLMAST_API_PATH_PREFIX '$owlmast_api_prefix_given' cannot be checked: the web root $owlmast_web_root has no index.html, so the paths this image serves are unknown and no prefix is accepted" >&2
+    exit 1
+fi
+owlmast_api_prefix_part="$owlmast_api_prefix"
+while [ -n "$owlmast_api_prefix_part" ]; do
+    if [ -e "$owlmast_web_root$owlmast_api_prefix_part" ]; then
+        owlmast_refuse_api_prefix_collision "it collides with a path this image serves itself ($owlmast_api_prefix_part)" "the prefix must not be, or lie below, a file or directory of the web root"
+    fi
+    owlmast_api_prefix_part="${owlmast_api_prefix_part%/*}"
+done
+unset owlmast_web_root owlmast_api_prefix_part owlmast_api_prefix_given
+export OWLMAST_API_PATH_PREFIX="$owlmast_api_prefix"

@@ -72,7 +72,7 @@ describe('Daily Work connection panel (AC3/AC4)', () => {
     expect(screen.queryByText('Compatible frontend and backend')).toBeNull();
   });
 
-  it('removes shown content and focuses the neutral heading when access is denied on a re-check', async () => {
+  it('removes shown content on a background denial, focuses the neutral heading, and offers a working return', async () => {
     vi.useFakeTimers();
     try {
       const { client } = clientReturning([{ kind: 'ok', value: compatible }, { kind: 'denied', status: 403 }]);
@@ -81,17 +81,336 @@ describe('Daily Work connection panel (AC3/AC4)', () => {
         await vi.advanceTimersByTimeAsync(0);
       });
       expect(screen.getByText('Compatible frontend and backend')).toBeInTheDocument();
+      const scope = screen.getByRole('button', { name: 'Change scope' });
+      scope.focus();
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1000);
       });
       expect(screen.queryByText('Compatible frontend and backend')).toBeNull();
       expect(screen.queryByText('0.1.0-SNAPSHOT')).toBeNull();
       const heading = screen.getByRole('heading', { level: 3, name: "This connection isn't available to this session" });
+      // OM-01.04 matrix row "Denied": the heading is focused, from a background check too, and the
+      // polite live region announces the state as well.
       expect(heading).toHaveFocus();
+      expect(scope).not.toHaveFocus();
+      expect(heading.closest('[role="status"]')).toHaveAttribute('aria-live', 'polite');
+      // The same denial confirmed by the next check does not take focus again.
+      scope.focus();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(scope).toHaveFocus();
       expect(screen.getByText('Unavailable')).toBeInTheDocument();
+      const back = screen.getByRole('link', { name: 'Return to Daily Work' });
+      expect(back).toHaveAttribute('href', '/');
+      await act(async () => {
+        back.click();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByRole('heading', { level: 1, name: 'Daily Work' })).toHaveFocus();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('focuses the neutral heading again when a denial returns after a recovery', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client } = clientReturning([{ kind: 'denied', status: 403 }, { kind: 'ok', value: compatible }, { kind: 'denied', status: 403 }]);
+      renderApp(client);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      const title = "This connection isn't available to this session";
+      expect(screen.getByRole('heading', { level: 3, name: title })).toHaveFocus();
+      // A denial is held against later answers: the recovery waits behind "New updates".
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      await act(async () => {
+        screen.getByRole('button', { name: 'Show 1 new update' }).click();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByText('Compatible frontend and backend')).toBeInTheDocument();
+      const scope = screen.getByRole('button', { name: 'Change scope' });
+      scope.focus();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      // The second denial is a new appearance, not the first one confirmed.
+      expect(screen.getByRole('heading', { level: 3, name: title })).toHaveFocus();
+      expect(scope).not.toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('focuses the neutral heading when the first check is denied', async () => {
+    const { client } = clientReturning([{ kind: 'denied', status: 401 }]);
+    renderApp(client);
+    const heading = await screen.findByRole('heading', { level: 3, name: "This connection isn't available to this session" });
+    expect(heading).toHaveFocus();
+    expect(heading.closest('[role="status"]')).toHaveAttribute('aria-live', 'polite');
+  });
+
+  it('moves focus to the neutral heading when a denial removes the control that held it', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client } = clientReturning([
+        { kind: 'ok', value: compatible },
+        { kind: 'ok', value: { ...compatible, backendVersion: '0.2.0' } },
+        { kind: 'denied', status: 403 },
+      ]);
+      renderApp(client);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      const show = screen.getByRole('button', { name: 'Show 1 new update' });
+      act(() => {
+        show.focus();
+      });
+      expect(show).toHaveFocus();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(screen.queryByRole('button', { name: 'Show 1 new update' })).toBeNull();
+      expect(screen.getByRole('heading', { level: 3, name: "This connection isn't available to this session" })).toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not move focus on a rollback after the person left the control (focus fell to the document)', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client } = clientReturning([
+        { kind: 'ok', value: compatible },
+        { kind: 'ok', value: { ...compatible, backendVersion: '0.2.0' } },
+        { kind: 'ok', value: { ...compatible, apiContract: { major: 2, minor: 0 } } },
+      ]);
+      renderApp(client);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      const show = screen.getByRole('button', { name: 'Show 1 new update' });
+      await act(async () => {
+        show.focus();
+        // What a click on non-focusable page text does: focus leaves with no destination.
+        show.blur();
+        await Promise.resolve();
+      });
+      expect(document.body).toHaveFocus();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(screen.getByText('Incompatible frontend and backend')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { level: 2, name: 'Workspace connection' })).not.toHaveFocus();
+      expect(document.body).toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still repairs focus when the window lost focus while the control held it (the control stays the active element)', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client } = clientReturning([
+        { kind: 'ok', value: compatible },
+        { kind: 'ok', value: { ...compatible, backendVersion: '0.2.0' } },
+        { kind: 'ok', value: { ...compatible, apiContract: { major: 2, minor: 0 } } },
+      ]);
+      renderApp(client);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      const show = screen.getByRole('button', { name: 'Show 1 new update' });
+      await act(async () => {
+        show.focus();
+        // What switching to another window does: a focusout with no destination, and the control
+        // remains document.activeElement.
+        show.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+        await Promise.resolve();
+      });
+      expect(show).toHaveFocus();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(screen.getByRole('heading', { level: 2, name: 'Workspace connection' })).toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['a different major', { kind: 'ok', value: { ...compatible, apiContract: { major: 2, minor: 0 } } }, 'Incompatible frontend and backend'],
+    ['no descriptor (404)', { kind: 'not-found' }, 'The backend did not publish a compatibility descriptor'],
+  ] as [string, ApiResult<CompatibilityDescriptor>, string][])(
+    'replaces a shown Compatible verdict at once when a re-check answers %s',
+    async (_name, downgrade, title) => {
+      vi.useFakeTimers();
+      try {
+        const { client } = clientReturning([{ kind: 'ok', value: compatible }, downgrade]);
+        renderApp(client);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        expect(screen.getByText('Compatible frontend and backend')).toBeInTheDocument();
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+        });
+        // Fail closed without a user action: no "New updates" step stands between a rollback and the verdict.
+        expect(screen.queryByText('Compatible frontend and backend')).toBeNull();
+        expect(screen.getByText(title)).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: /Show 1 new update/ })).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each([
+    ['an error', { kind: 'error', status: 503 }, 'The backend could not be reached'],
+    ['a dropped connection', { kind: 'offline' }, 'The connection dropped during the check'],
+    ['a missing descriptor', { kind: 'not-found' }, 'The backend did not publish a compatibility descriptor'],
+  ] as [string, ApiResult<CompatibilityDescriptor>, string][])(
+    'does not pin %s: the next healthy answer replaces it without "New updates"',
+    async (_name, first, title) => {
+      vi.useFakeTimers();
+      try {
+        const { client } = clientReturning([first, { kind: 'ok', value: compatible }]);
+        renderApp(client);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        expect(screen.getByText(title)).toBeInTheDocument();
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+        });
+        expect(screen.queryByText(title)).toBeNull();
+        expect(screen.getByText('Compatible frontend and backend')).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: /Show 1 new update/ })).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('moves focus to the panel heading when a rollback removes the control that held it', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client } = clientReturning([
+        { kind: 'ok', value: compatible },
+        { kind: 'ok', value: { ...compatible, backendVersion: '0.2.0' } },
+        { kind: 'ok', value: { ...compatible, apiContract: { major: 2, minor: 0 } } },
+      ]);
+      renderApp(client);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      act(() => {
+        screen.getByRole('button', { name: 'Show 1 new update' }).focus();
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(screen.getByText('Incompatible frontend and backend')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Show 1 new update' })).toBeNull();
+      expect(screen.getByRole('heading', { level: 2, name: 'Workspace connection' })).toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('replaces a shown Compatible verdict at once when the API path stops answering with a descriptor', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client } = clientReturning([{ kind: 'ok', value: compatible }, { kind: 'error', status: 200 }]);
+      renderApp(client);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(screen.queryByText('Compatible frontend and backend')).toBeNull();
+      expect(screen.getByText('The answer was not a compatibility descriptor')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Show 1 new update/ })).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('holds a recovery from Incompatible behind "New updates": only failing closed is automatic', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client } = clientReturning([
+        { kind: 'ok', value: { ...compatible, apiContract: { major: 2, minor: 0 } } },
+        { kind: 'ok', value: compatible },
+      ]);
+      renderApp(client);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(screen.getByText('Incompatible frontend and backend')).toBeInTheDocument();
+      expect(screen.queryByText('Compatible frontend and backend')).toBeNull();
+      expect(screen.getByRole('button', { name: 'Show 1 new update' })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['an error', { kind: 'error', status: 503 }],
+    ['a dropped connection', { kind: 'offline' }],
+    ['a denial', { kind: 'denied', status: 403 }],
+  ] as [string, ApiResult<CompatibilityDescriptor>][])(
+    'offline after %s shows one offline message and points at no values',
+    async (_name, first) => {
+      vi.useFakeTimers();
+      try {
+        const { client } = clientReturning([first]);
+        renderApp(client);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        vi.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(false);
+        act(() => {
+          window.dispatchEvent(new Event('offline'));
+        });
+        const panel = screen.getByRole('region', { name: 'Workspace connection' });
+        expect(within(panel).getAllByText('Offline')).toHaveLength(1);
+        expect(within(panel).getByText('You are offline')).toBeInTheDocument();
+        expect(within(panel).queryByText('The connection dropped during the check')).toBeNull();
+        expect(within(panel).queryByText(/values below/)).toBeNull();
+        expect(within(panel).queryByText('Last known values')).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('reports a successful answer that is not a descriptor as unverifiable, never as "status 200"', async () => {
+    const { client } = clientReturning([{ kind: 'error', status: 200 }]);
+    renderApp(client);
+    expect(await screen.findByText('The answer was not a compatibility descriptor')).toBeInTheDocument();
+    expect(screen.getByText(/treated as unsupported/)).toBeInTheDocument();
+    expect(screen.queryByText(/status 200/)).toBeNull();
+    expect(screen.queryByText('The backend could not be reached')).toBeNull();
   });
 
   it('while offline requests nothing, shows the offline state and labels earlier values stale; reconnecting re-checks', async () => {
@@ -286,6 +605,17 @@ describe('Preferences (UX-DR25/27, AC1 override)', () => {
     expect(document.documentElement.getAttribute(THEME_ATTRIBUTE)).toBe('dark');
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe('dark');
     expect(screen.getByText(/Current: Dark/)).toBeInTheDocument();
+  });
+
+  it('names the theme group once and ties the unsaved-change text to it', async () => {
+    const user = userEvent.setup();
+    const { client } = clientReturning([{ kind: 'ok', value: compatible }]);
+    renderApp(client, '/preferences');
+    expect(screen.queryByRole('radiogroup')).toBeNull();
+    const group = screen.getByRole('group', { name: 'Theme' });
+    expect(within(group).getAllByRole('radio')).toHaveLength(3);
+    await user.click(screen.getByRole('radio', { name: 'Dark' }));
+    expect(group).toHaveAccessibleDescription(/Unsaved change: Dark/);
   });
 
   it('keeps the unsaved choice visible and shows a failure when storage refuses', async () => {

@@ -154,14 +154,16 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Container runtime
         run: docker version
-      - name: Independent frontend image (non-root nginx on 8080, SPA fallback, config endpoint, no JDK)
-        run: scripts/verify-frontend-artifact.sh
       - name: Install locked dependencies
         run: npm ci
         working-directory: frontend
       - name: Qualified Chromium for Playwright
         run: npx playwright install --with-deps chromium
         working-directory: frontend
+      - name: Independent frontend image (non-root nginx on 8080, SPA fallback, config endpoint, prefix guard, published contract, no JDK) and Chromium against it (production CSP)
+        run: scripts/verify-frontend-artifact.sh
+        env:
+          OWLMAST_IMAGE_BROWSER_SMOKE: '1'
       - name: Loopback name resolution (the preview servers bind 127.0.0.1 explicitly)
         run: getent ahosts localhost
         working-directory: frontend

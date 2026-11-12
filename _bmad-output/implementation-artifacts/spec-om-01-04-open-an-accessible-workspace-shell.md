@@ -99,7 +99,7 @@ context:
 - `python3 -m unittest discover -s automation/tests -t .` -- expected: unchanged, passes.
 - `cd frontend && npm ci && npm run lint && npm run typecheck && npm test && npm run build` -- expected: 0 lint errors, 0 type errors, all unit/component tests pass, `dist/` produced.
 - `cd frontend && npx playwright test --project=shell` -- expected: accessibility, keyboard, reflow, state tests pass in Chromium.
-- `cd frontend && npx playwright test --project=smoke` -- expected: real backend (`bootTestRun`) answers `/api/compatibility`, the shell shows "Compatible".
+- `cd frontend && npm run test:e2e:smoke` (`npx playwright test -c playwright.smoke.config.ts`; the `smoke` project is not in the default config) -- expected: real backend (`bootTestRun`) answers `/api/compatibility`, the shell shows "Compatible".
 - `scripts/verify-frontend-artifact.sh` -- expected: image builds, serves `/`, `/focus`, `/owlmast-config.json` on 8080 as UID 101, contains no Java.
 - `scripts/check-api-compatibility.py` -- expected: static pair compatible, exit 0.
 
