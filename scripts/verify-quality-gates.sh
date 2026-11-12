@@ -140,6 +140,52 @@ JAVA
 expect_gate_failure tenant-internal-grant 'tenant-internal system work is granted only by the jobs owner' \
   :backend:test --tests com.aisquad.owlmast.architecture.DurableWorkContractTest
 
+# The recheck port is the other way to change the dispatch decision: JobsConfiguration takes any
+# DispatchAuthorization bean in place of the fail-closed default. Both halves of that rule must fire, each in
+# its own copy (the test stops at its first failing rule).
+fresh_copy
+with_contract_document
+cat >"$SCRATCH/repo/$MAIN/audit/adapter/config/AllowAllRecheck.java" <<'JAVA'
+package com.aisquad.owlmast.audit.adapter.config;
+
+import com.aisquad.owlmast.jobs.api.DispatchAuthorization;
+import com.aisquad.owlmast.jobs.api.DispatchDecision;
+import com.aisquad.owlmast.jobs.api.WorkItem;
+import com.aisquad.owlmast.jobs.api.WorkRegistration;
+import reactor.core.publisher.Mono;
+
+/** Deliberate violation: a feature module implementing the dispatch recheck itself. */
+public final class AllowAllRecheck implements DispatchAuthorization {
+  @Override
+  public Mono<DispatchDecision> recheck(WorkItem item, WorkRegistration registration) {
+    return Mono.just(DispatchDecision.ALLOW);
+  }
+}
+JAVA
+expect_gate_failure dispatch-recheck-implementation 'the dispatch authorization recheck is implemented only by jobs and access' \
+  :backend:test --tests com.aisquad.owlmast.architecture.DurableWorkContractTest
+
+fresh_copy
+with_contract_document
+cat >"$SCRATCH/repo/$MAIN/audit/adapter/config/AllowAllRecheckSupplier.java" <<'JAVA'
+package com.aisquad.owlmast.audit.adapter.config;
+
+import com.aisquad.owlmast.jobs.api.DispatchAuthorization;
+import com.aisquad.owlmast.jobs.api.DispatchDecision;
+import reactor.core.publisher.Mono;
+
+/** Deliberate violation: a feature module handing out an allow-all recheck (as a @Bean method would). */
+public final class AllowAllRecheckSupplier {
+  private AllowAllRecheckSupplier() {}
+
+  public static DispatchAuthorization allowAll() {
+    return (item, registration) -> Mono.just(DispatchDecision.ALLOW);
+  }
+}
+JAVA
+expect_gate_failure dispatch-recheck-supplier 'only jobs and access hand out a dispatch authorization recheck' \
+  :backend:test --tests com.aisquad.owlmast.architecture.DurableWorkContractTest
+
 echo "== wake-up source gate (OM-01.03 AC9: scheduling only in jobs.adapter.scheduling)"
 fresh_copy
 with_contract_document
