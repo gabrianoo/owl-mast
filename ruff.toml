@@ -1,0 +1,21 @@
+# Python lint gate (E01-R-11, scripts/verify-script-lint.sh, CI job script-lint). Scope: the repository's
+# own Python (scripts/, deploy/tests/, automation/); the vendored BMAD tooling is not ours to lint.
+# The rule set is correctness only: syntax errors (E9), pyflakes (F: undefined and
+# unused names, unused imports and variables, redefinitions) and bugbear's likely-bug checks (B). Style
+# and formatting rules are deliberately not selected: the code base was written without a formatter and
+# a formatting gate would rewrite most of it without finding a defect.
+target-version = "py312"
+line-length = 200
+extend-exclude = [".agents", ".claude", ".codex", "_bmad", "_bmad-output", "frontend", "backend"]
+
+[lint]
+select = ["E9", "F", "B"]
+
+[lint.per-file-ignores]
+# B023 (a function defined in a loop reads the loop variable): the tests pass such lambdas to
+# assertRaises or call them inside the same iteration, where late binding cannot change the result.
+# The rule stays on for the tools themselves.
+"automation/tests/*" = ["B023"]
+# The GraphQL pagers hand a lambda over the current page to a shape check that calls it at once.
+"automation/unattended/github.py" = ["B023"]
+"deploy/tests/*" = ["B023"]

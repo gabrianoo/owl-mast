@@ -21,7 +21,7 @@ from automation.tests.test_enabling_repair_1 import EXPIRED, POLICY, claimed, re
 from automation.unattended import cli
 from automation.unattended.activation import Activation, ActivationError, activation_use, ledger_path, load_activation, load_clearance
 from automation.unattended.coordinator import Coordinator
-from automation.unattended.errors import PolicyError, UnattendedError
+from automation.unattended.errors import PolicyError
 from automation.unattended.github import GhCliTransport
 from automation.unattended.policy import load_policy
 from automation.unattended.state import Store

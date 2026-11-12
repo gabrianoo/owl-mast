@@ -20,7 +20,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from automation.tests.support import IMPLEMENTER, REVIEWER, controlled_cli_clock, ok_worktree, passing_runner
+from automation.tests.support import controlled_cli_clock, ok_worktree, passing_runner
 from automation.tests.test_activation import S, T0, LiveHarness, activation_text
 from automation.tests.test_enabling_repair_1 import claimed, refuses
 from automation.unattended import cli
@@ -114,7 +114,7 @@ class Final1StaleCreationObjectTests(unittest.TestCase):
     def test_cli_creation_with_an_altered_source_refuses_without_state_or_calls(self):
         from automation.unattended.github import GhCliTransport
 
-        for how, code in self.EXPECTED.items():
+        for how in self.EXPECTED:
             h = LiveHarness()
             calls = []
             original = GhCliTransport._run

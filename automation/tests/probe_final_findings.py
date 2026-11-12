@@ -7,7 +7,7 @@ Every scenario uses the in-memory GitHub transport and a real local git worktree
 touches live GitHub or T3."""
 
 from automation.tests.fake_transport import issue, small_backlog
-from automation.tests.support import IMPLEMENTER, REVIEWER, Harness, ok_worktree, receipt
+from automation.tests.support import IMPLEMENTER, Harness, ok_worktree, receipt
 from automation.unattended.coordinator import Coordinator
 from automation.unattended.eligibility import decide
 from automation.unattended.errors import Outage, UnattendedError

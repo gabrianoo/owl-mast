@@ -18,19 +18,19 @@ from pathlib import Path
 from unittest import mock
 
 from automation.tests.fake_transport import FakeTransport, issue, small_backlog
-from automation.tests.support import FIXTURES, IMPLEMENTER, REVIEW_BRANCH, REVIEW_WORKTREE, REVIEWER, Harness, ok_worktree, passing_runner, receipt, write_policy
+from automation.tests.fake_transport import CrashAfterEffect
+from automation.tests.support import FIXTURES, IMPLEMENTER, REVIEW_BRANCH, REVIEW_WORKTREE, REVIEWER, Harness, ok_worktree, write_policy
 from automation.unattended import cli
 from automation.unattended import coordinator as coordinator_module
-from automation.unattended import state as state_module
 from automation.unattended.backlog import take_snapshot, verify_mapping
 from automation.unattended.coordinator import Coordinator, git_clean
 from automation.unattended.eligibility import decide
-from automation.unattended.errors import Conflict, Outage, PermissionDenied, PolicyError, ReceiptInvalid, Refused, TransportError, UnattendedError
+from automation.unattended.errors import Conflict, Outage, PermissionDenied, PolicyError, ReceiptInvalid, Refused, TransportError
 from automation.unattended.github import Comment, GhCliTransport, classify, render_marker
 from automation.unattended.policy import Target, canonical_digest, load_policy
 from automation.unattended.probes import check_permissions
 from automation.unattended.receipts import validate_receipt
-from automation.unattended.state import Store, StoryState, validate_run_id
+from automation.unattended.state import Store, validate_run_id
 
 S = "OM-01.02"
 REPO = "gabrianoo/owl-mast"
@@ -179,7 +179,7 @@ class ClaimRaceDurabilityTests(unittest.TestCase):
         h = Harness(small_backlog())
         try:
             h.fake.crash_after_post = True
-            with self.assertRaises(Exception):
+            with self.assertRaises(CrashAfterEffect):
                 h.reserve()
             self.assertEqual(h.store.load_story(S).phase, "claim-incomplete")
             resumed = fresh(h).resume(S, ok_worktree)
@@ -196,7 +196,7 @@ class ClaimRaceDurabilityTests(unittest.TestCase):
                 h.reserve()
             self.assertEqual(h.store.load_story(S).phase, "claim-incomplete")  # the claim intent is pending, nothing landed
             h.fake.crash_after_post = True
-            with self.assertRaises(Exception):
+            with self.assertRaises(CrashAfterEffect):
                 fresh(h).resume(S, ok_worktree)  # the replayed post lands, the process dies before the settle
             state = h.store.load_story(S)
             self.assertEqual((state.phase, state.claim["race_settled"]), ("claim-incomplete", False))  # the post landed, nothing was checkpointed

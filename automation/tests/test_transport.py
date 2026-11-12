@@ -216,7 +216,7 @@ class CoordinatorOverTransportTests(unittest.TestCase):
 
     def test_live_transport_flag_blocks_admission_before_any_call(self):
         self.t.live = True
-        snap = take_snapshot(self.t, "gabrianoo/owl-mast", "now")
+        take_snapshot(self.t, "gabrianoo/owl-mast", "now")
         before = len(self.gh.calls)
         with self.assertRaises(Refused) as ctx:
             Coordinator(self.t, self.policy, Store(Path(self.tmp.name) / "runs", "run-live"), live=True)

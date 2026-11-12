@@ -152,12 +152,12 @@ def scenarios() -> dict[str, tuple[str, callable]]:
     out = {}
     for st in STATUSES:
         out[f"implementer-{st}-head-recorded"] = (f"implementer released as {st}, head recorded by the baseline (bug for unsuccessful)", lambda h, st=st: h.implementer_terminal_then_head(st))
-        out[f"implementer-{st}-checks-passed"] = (f"…then the baseline ran passing checks", lambda h, st=st: (h.implementer_terminal_then_head(st), h.checks()))
-        out[f"implementer-{st}-checks-failed"] = (f"…then the baseline ran failing checks", lambda h, st=st: (h.implementer_terminal_then_head(st), h.checks(failing_runner)))
-        out[f"implementer-{st}-review-approved"] = (f"…checks passed, a completed reviewer approved", lambda h, st=st: (h.implementer_terminal_then_head(st), h.checks(), h.review("completed")))
-        out[f"implementer-{st}-pending-proposal"] = (f"…approved, proposal POST failed once (pending intent, nothing landed)", lambda h, st=st: (h.implementer_terminal_then_head(st), h.checks(), h.review("completed"), h.pending_proposal()))
-        out[f"implementer-{st}-landed-proposal"] = (f"…approved, proposal landed, crash before checkpoint (pending intent, marker on the issue)", lambda h, st=st: (h.implementer_terminal_then_head(st), h.checks(), h.review("completed"), h.landed_proposal()))
-        out[f"implementer-{st}-done-proposal"] = (f"…approved and proposed (done); LABELLED SYNTHETIC MUTATION: phase reset to review-approved (transition not persisted)", lambda h, st=st: (h.implementer_terminal_then_head(st), h.checks(), h.review("completed"), h.done_proposal()))
+        out[f"implementer-{st}-checks-passed"] = ("…then the baseline ran passing checks", lambda h, st=st: (h.implementer_terminal_then_head(st), h.checks()))
+        out[f"implementer-{st}-checks-failed"] = ("…then the baseline ran failing checks", lambda h, st=st: (h.implementer_terminal_then_head(st), h.checks(failing_runner)))
+        out[f"implementer-{st}-review-approved"] = ("…checks passed, a completed reviewer approved", lambda h, st=st: (h.implementer_terminal_then_head(st), h.checks(), h.review("completed")))
+        out[f"implementer-{st}-pending-proposal"] = ("…approved, proposal POST failed once (pending intent, nothing landed)", lambda h, st=st: (h.implementer_terminal_then_head(st), h.checks(), h.review("completed"), h.pending_proposal()))
+        out[f"implementer-{st}-landed-proposal"] = ("…approved, proposal landed, crash before checkpoint (pending intent, marker on the issue)", lambda h, st=st: (h.implementer_terminal_then_head(st), h.checks(), h.review("completed"), h.landed_proposal()))
+        out[f"implementer-{st}-done-proposal"] = ("…approved and proposed (done); LABELLED SYNTHETIC MUTATION: phase reset to review-approved (transition not persisted)", lambda h, st=st: (h.implementer_terminal_then_head(st), h.checks(), h.review("completed"), h.done_proposal()))
         out[f"reviewer-{st}-review-approved"] = (f"completed implementer, reviewer released as {st}, approval recorded by the baseline (bug for unsuccessful)", lambda h, st=st: (h.implementer_terminal_then_head("completed"), h.checks(), h.review(st)))
         out[f"reviewer-{st}-pending-proposal"] = (f"…approval over a {st} reviewer, proposal POST failed once (pending intent)", lambda h, st=st: (h.implementer_terminal_then_head("completed"), h.checks(), h.review(st), h.pending_proposal()))
         out[f"reviewer-{st}-landed-proposal"] = (f"…approval over a {st} reviewer, proposal landed, crash before checkpoint", lambda h, st=st: (h.implementer_terminal_then_head("completed"), h.checks(), h.review(st), h.landed_proposal()))

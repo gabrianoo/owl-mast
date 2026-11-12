@@ -60,8 +60,35 @@ fi
 "$OWLMAST_KUBECTL" version --client
 "$OWLMAST_HELM" version
 [ "${OWLMAST_VERIFY_TOOLS_ONLY:-}" = 1 ] && exit 0
-python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check 'PyYAML>=6,<7'
-# The Gateway API schema tests validate rendered HTTPRoutes against the pinned upstream schema offline.
-python3 -c 'import jsonschema' 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check 'jsonschema>=4,<5'
+# The deploy tests need PyYAML and jsonschema (the Gateway API schema tests validate rendered HTTPRoutes
+# against the pinned upstream schema offline). Both are pinned, with their dependencies and hashes, in
+# deploy/tests/requirements.txt (generated from requirements.in). When the interpreter already has exactly
+# the two pinned versions nothing is installed; otherwise the pinned set is installed with hash checking, so
+# a floating range can no longer change what the suite runs against (E01-R-11).
+REQUIREMENTS="$ROOT/deploy/tests/requirements.txt"
+pins_installed() {
+  python3 - "$REQUIREMENTS" <<'PY'
+import re, sys
+from importlib import metadata
+wanted = {}
+for line in open(sys.argv[1], encoding="utf-8"):
+    match = re.match(r"^(pyyaml|jsonschema)==(\S+)", line.strip(), re.IGNORECASE)
+    if match:
+        wanted[match.group(1).lower()] = match.group(2)
+if set(wanted) != {"pyyaml", "jsonschema"}:
+    sys.exit("verify-install-package: deploy/tests/requirements.txt must pin PyYAML and jsonschema")
+for name, version in wanted.items():
+    try:
+        found = metadata.version(name)
+    except metadata.PackageNotFoundError:
+        sys.exit(1)
+    if found != version:
+        sys.exit(1)
+PY
+}
+if ! pins_installed; then
+  python3 -m pip install --quiet --disable-pip-version-check --require-hashes -r "$REQUIREMENTS"
+  pins_installed || { echo "verify-install-package: the pinned PyYAML/jsonschema of deploy/tests/requirements.txt are not the ones python3 imports" >&2; exit 1; }
+fi
 cd "$ROOT"
 python3 -m unittest discover -s deploy/tests -t . -v

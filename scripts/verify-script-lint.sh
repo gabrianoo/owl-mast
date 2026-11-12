@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Shell and Python lint gate (E01-R-11): the repository's own scripts and Python had no static check in CI.
+#   - shellcheck v0.11.0 over every tracked shell script (scripts/*.sh, the frontend image's entrypoint
+#     fragment), at severity `warning`: errors and warnings fail; `info` and `style` notes do not (the scripts
+#     use `A && B || C` and single-quoted psql/jsonpath text deliberately).
+#   - ruff (version pinned with hashes in scripts/lint-requirements.txt) over scripts/, deploy/ and automation/
+#     with the rule set in ruff.toml (syntax errors, pyflakes, bugbear).
+# The vendored BMAD tooling (.agents, .claude, _bmad) and the Gradle wrapper script are not ours and are not
+# linted. Tools: OWLMAST_SHELLCHECK / OWLMAST_RUFF name binaries to use as given; otherwise shellcheck is
+# fetched (linux-x86_64 release archive, sha256 verified, re-extracted on every run) into OWLMAST_TOOLS_DIR
+# or a scratch directory, and ruff is taken from PATH when it is exactly the pinned version or installed
+# from the hashed requirements into a scratch virtual environment.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SHELLCHECK_VERSION=v0.11.0
+SHELLCHECK_SHA256=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+RUFF_VERSION="$(sed -n 's/^ruff==\([^ ]*\).*/\1/p' "$ROOT/scripts/lint-requirements.txt")"
+[ -n "$RUFF_VERSION" ] || { echo "verify-script-lint: scripts/lint-requirements.txt does not pin ruff" >&2; exit 1; }
+cd "$ROOT"
+
+TOOLS="${OWLMAST_TOOLS_DIR:-}"
+scratch_tools() {
+  if [ -z "$TOOLS" ]; then
+    TOOLS="$(mktemp -d "${TMPDIR:-/tmp}/owlmast-lint.XXXXXX")"
+    trap 'rm -rf "$TOOLS"' EXIT
+  fi
+  mkdir -p "$TOOLS"
+}
+
+if [ -z "${OWLMAST_SHELLCHECK:-}" ]; then
+  platform="$(uname -s)-$(uname -m)"
+  if [ "$platform" != "Linux-x86_64" ]; then
+    echo "verify-script-lint: the pinned shellcheck download is linux-x86_64 only; this host is $platform. Set OWLMAST_SHELLCHECK to shellcheck $SHELLCHECK_VERSION." >&2
+    exit 1
+  fi
+  scratch_tools
+  archive="$TOOLS/shellcheck-$SHELLCHECK_VERSION.tar.xz"
+  if ! echo "$SHELLCHECK_SHA256  $archive" | sha256sum -c --status - >/dev/null 2>&1; then
+    curl -fsSL -o "$archive" "https://github.com/koalaman/shellcheck/releases/download/$SHELLCHECK_VERSION/shellcheck-$SHELLCHECK_VERSION.linux.x86_64.tar.xz"
+  fi
+  echo "$SHELLCHECK_SHA256  $archive" | sha256sum -c -
+  rm -f "$TOOLS/shellcheck"
+  tar -xJf "$archive" -C "$TOOLS" --strip-components=1 "shellcheck-$SHELLCHECK_VERSION/shellcheck"
+  OWLMAST_SHELLCHECK="$TOOLS/shellcheck"
+fi
+shellcheck_version="$("$OWLMAST_SHELLCHECK" --version | sed -n 's/^version: //p')"
+[ "v$shellcheck_version" = "$SHELLCHECK_VERSION" ] || { echo "verify-script-lint: $OWLMAST_SHELLCHECK is shellcheck $shellcheck_version, not $SHELLCHECK_VERSION" >&2; exit 1; }
+
+if [ -z "${OWLMAST_RUFF:-}" ]; then
+  if command -v ruff >/dev/null 2>&1 && [ "$(ruff --version)" = "ruff $RUFF_VERSION" ]; then
+    OWLMAST_RUFF="$(command -v ruff)"
+  else
+    scratch_tools
+    python3 -m venv "$TOOLS/ruff-venv"
+    "$TOOLS/ruff-venv/bin/python" -m pip install --quiet --disable-pip-version-check --require-hashes -r scripts/lint-requirements.txt
+    OWLMAST_RUFF="$TOOLS/ruff-venv/bin/ruff"
+  fi
+fi
+[ "$("$OWLMAST_RUFF" --version)" = "ruff $RUFF_VERSION" ] || { echo "verify-script-lint: $OWLMAST_RUFF is $("$OWLMAST_RUFF" --version), not ruff $RUFF_VERSION" >&2; exit 1; }
+
+# Every tracked shell script of the repository itself. A new script is picked up without editing this file.
+mapfile -t shell_files < <(git ls-files -- 'scripts/*.sh' 'frontend/docker-entrypoint.d/*' 'deploy/**/*.sh' 'backend/**/*.sh' | sort)
+[ "${#shell_files[@]}" -gt 0 ] || { echo "verify-script-lint: no shell scripts found (run inside the repository checkout)" >&2; exit 1; }
+
+failures=0
+echo "== shellcheck $SHELLCHECK_VERSION (severity warning) over ${#shell_files[@]} file(s): ${shell_files[*]}"
+if "$OWLMAST_SHELLCHECK" --severity=warning "${shell_files[@]}"; then
+  echo "ok   [shellcheck]"
+else
+  echo "FAIL [shellcheck]"; failures=$((failures + 1))
+fi
+
+echo "== ruff $RUFF_VERSION (ruff.toml) over scripts deploy automation"
+if "$OWLMAST_RUFF" check --no-cache scripts deploy automation; then
+  echo "ok   [ruff]"
+else
+  echo "FAIL [ruff]"; failures=$((failures + 1))
+fi
+
+if [ "$failures" -ne 0 ]; then
+  echo "$failures lint gate(s) failed"
+  exit 1
+fi
+echo "shell and Python lint gates pass"

@@ -1,0 +1,3 @@
+# Python linter of scripts/verify-script-lint.sh (CI job script-lint). Regenerate the hashed pin after a bump:
+#   uv pip compile --universal --python-version 3.12 --generate-hashes scripts/lint-requirements.in -o scripts/lint-requirements.txt
+ruff==0.16.9

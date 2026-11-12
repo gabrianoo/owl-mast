@@ -15,14 +15,14 @@ from pathlib import Path
 from unittest import mock
 
 from automation.tests.fake_transport import FakeTransport, issue, small_backlog
-from automation.tests.support import FIXTURES, IMPLEMENTER, REVIEWER, Harness, ok_worktree, passing_runner, write_policy
+from automation.tests.support import FIXTURES, Harness, ok_worktree, passing_runner, write_policy
 from automation.unattended import cli
 from automation.unattended import coordinator as coordinator_module
 from automation.unattended.backlog import take_snapshot
 from automation.unattended.coordinator import Coordinator
 from automation.unattended.eligibility import decide
 from automation.unattended.errors import Conflict, NotFound, Outage, PermissionDenied, PolicyError, ReceiptInvalid, Refused, TransportError, UnattendedError
-from automation.unattended.github import Comment, GhCliTransport, PullRequestRecord, parse_marker, render_marker
+from automation.unattended.github import GhCliTransport, PullRequestRecord, parse_marker, render_marker
 from automation.unattended.policy import load_policy
 from automation.unattended.probes import check_permissions, run_commands, write_probe
 from automation.unattended.state import Store

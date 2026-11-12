@@ -32,7 +32,7 @@ from automation.tests.support import Harness, IMPLEMENTER, REVIEWER, REVIEW_BRAN
 from automation.tests.test_final_findings import fresh, markers
 from automation.unattended import cli
 from automation.unattended.coordinator import Coordinator
-from automation.unattended.errors import BudgetExhausted, Outage, PermissionDenied, ReceiptInvalid, Refused, StaleRevision
+from automation.unattended.errors import BudgetExhausted, Conflict, Outage, PermissionDenied, ReceiptInvalid, Refused, StaleRevision
 from automation.unattended.github import Comment, PullRequestRecord, render_marker
 from automation.unattended.state import Store
 
@@ -89,7 +89,7 @@ class RP2F1UnresolvedAuthorizationsAreOwnershipObligations(unittest.TestCase):
             try:
                 h.reserve()
                 op = getattr(h.coordinator, terminal)
-                for attempt in range(2):  # idempotent: the second refusal changes nothing more
+                for _attempt in range(2):  # idempotent: the second refusal changes nothing more
                     with self.assertRaises(Refused) as ctx:
                         op(S, "stop after launch before receipt")
                     self.assertEqual((ctx.exception.code, ctx.exception.detail["authorization"], ctx.exception.detail["role"], ctx.exception.detail["task_id"]), ("authorization-unresolved", AUTH1, "implementer", None))
@@ -397,7 +397,7 @@ class RP2F1UnresolvedAuthorizationsAreOwnershipObligations(unittest.TestCase):
         try:
             marker = render_marker(kind="claim", op="claim", run="run-1", inst=h.store.load_run().instance, story=S)
             h.fake.comments[21] += [Comment(1, marker + "\nfirst", "machine", "t"), Comment(2, marker + "\nsecond", "machine", "t")]
-            with self.assertRaises(Exception):
+            with self.assertRaises(Conflict):
                 h.reserve()
             self.assertEqual(h.store.load_story(S).phase, "conflict")
             state = fresh(h).cancel(S, "duplicate marker")

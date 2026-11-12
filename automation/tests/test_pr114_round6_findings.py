@@ -27,7 +27,6 @@ from automation.unattended import cli as cli_module
 from automation.unattended import state as state_module
 from automation.unattended.activation import Activation, _retryable_creation, abort_activation_use, activation_use, confirm_activation_use, ledger_path, record_activation_use, use_refusal
 from automation.unattended.coordinator import Coordinator
-from automation.unattended.errors import Refused
 from automation.unattended.policy import load_policy
 from automation.unattended.state import Store
 

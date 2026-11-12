@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from automation.tests.fake_transport import FakeTransport, small_backlog
+from automation.tests.fake_transport import CrashAfterEffect
 from automation.tests.support import IMPLEMENTER, REVIEW_BRANCH, REVIEW_WORKTREE, REVIEWER, Harness, git_commit, ok_worktree, write_policy
 from automation.tests import test_activation as activation_tests
 from automation.tests import test_pr115_review_findings as prior
@@ -23,7 +24,6 @@ from automation.unattended.activation import load_activation
 from automation.unattended.coordinator import Coordinator
 from automation.unattended.errors import BudgetExhausted, Conflict, Refused
 from automation.unattended.github import Comment, render_marker
-from automation.unattended.policy import load_policy
 from automation.unattended.state import Store
 
 S = "OM-01.02"
@@ -80,7 +80,7 @@ class CrossStoryClaimRaceTests(unittest.TestCase):
         h = two_story_harness()
         try:
             h.fake.crash_after_post = True
-            with self.assertRaises(Exception):
+            with self.assertRaises(CrashAfterEffect):
                 h.reserve()  # claim landed, nothing checkpointed
             h.fake.comments[23].append(Comment(9, render_marker(kind="claim", run="run-other", story=OTHER, op="claim") + "\nother machine", "machine", EARLY))
             with self.assertRaises(Conflict) as ctx:  # our claim landed: earliest wins, and the other one is earlier
@@ -93,7 +93,7 @@ class CrossStoryClaimRaceTests(unittest.TestCase):
         h = two_story_harness()
         try:
             h.fake.crash_after_post = True
-            with self.assertRaises(Exception):
+            with self.assertRaises(CrashAfterEffect):
                 h.reserve()
             h.fake.comments[23].append(Comment(9, render_marker(kind="claim", run="run-other", story=OTHER, op="claim") + "\nother machine", "machine", "2026-11-06T13:59:59Z"))
             self.assertEqual(fresh(h).resume(S, ok_worktree).phase, "reserved")  # our landed claim is earlier: it wins, nothing is cancelled on our side
