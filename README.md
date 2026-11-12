@@ -12,7 +12,7 @@ Prerequisites: a JDK 17+ to start the Gradle wrapper (it provisions the pinned T
 curl http://localhost:8080/actuator/health        # {"status":"UP"}
 ```
 
-Details, environment variables for an external database and CI parity: [docs/development.md](docs/development.md). Conventions enforced by the build: [docs/engineering-conventions.md](docs/engineering-conventions.md). Pinned toolchain and the evidence behind each pin: [docs/toolchain-qualification.md](docs/toolchain-qualification.md).
+Details, environment variables for an external database and CI parity: [docs/development.md](docs/development.md). Conventions enforced by the build: [docs/engineering-conventions.md](docs/engineering-conventions.md). Pinned toolchain and the evidence behind each pin: [docs/toolchain-qualification.md](docs/toolchain-qualification.md). Durable background work and the audit envelope that later features build on: [docs/durable-work-and-audit-contract.md](docs/durable-work-and-audit-contract.md).
 
 The web client is a separate artifact in `frontend/` (Node 24.21.0, React + TypeScript + Vite):
 

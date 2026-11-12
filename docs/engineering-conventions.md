@@ -16,7 +16,16 @@ Root package: `com.aisquad.owlmast`. Every feature is a direct child package (`b
 
 `platform` is the shared kernel (scope, bounded blocking, scoped transactions). It never depends on a feature. Cross-feature code only touches another feature's `api`; feature packages must be free of cycles. The owning feature alone creates and migrates its schema objects; the bootstrap migration `V001__bootstrap_infrastructure.sql` owns only the `bootstrap` schema and the VectorChord extension requirement.
 
-Gate: `FeatureModuleRulesTest` (ArchUnit, runs in `./gradlew :backend:test`). Its rules live in `FeatureModuleRules` and are also evaluated against deliberately broken fixtures in `FeatureModuleRulesNegativeTest`.
+Gate: `FeatureModuleRulesTest` (ArchUnit, runs in `./gradlew :backend:test`). Its rules live in `FeatureModuleRules` and are also evaluated against deliberately broken fixtures in `FeatureModuleRulesNegativeTest`. `DurableWorkContractTest` adds the OM-01.03 rules: scheduling annotations only in `jobs.adapter.scheduling`, no broker/scheduler/workflow-engine client on the classpath or in the lockfile, and the contract document in step with the published types.
+
+## Durable work and audit
+
+Implement AD-6 only through the owner APIs documented in [durable-work-and-audit-contract.md](durable-work-and-audit-contract.md):
+
+- Follow-up work goes through `jobs.api.WorkEnqueue` inside the same `ScopedTransactions.inTransaction` call as the business change, so both commit or roll back together. Handlers implement `jobs.api.WorkHandler`, are registered as Spring beans, deduplicate external effects with `WorkItem.idempotencyKey()` or return `EffectOutcome.uncertain`, signal a failure no retry can cure with `jobs.api.NonRetryableWorkException`, and never put content or secrets into payloads.
+- Covered mutations go through `audit.api.AuditedMutations`; the `SUCCEEDED` publication intent commits with the business row and the `audit.publish` work item publishes it idempotently. Failed and denied attempts are recorded by the same call through a separate `REQUIRES_NEW` transaction with the exception class chain as the only reason; a denial is signalled with `platform.authorization.OperationDeniedException` and a kebab-case reason code.
+- Processors run as `ServiceIdentity.BACKEND` inside `ServiceIdentity.backendScope(tenant)`. Every jobs/audit statement filters on the transaction-bound tenant setting, never on a parameter. Until OM-02.04, only handlers registered as tenant-internal system work are dispatched (`TenantInternalOnlyDispatchAuthorization`).
+- Wake-ups are in-process Spring scheduling only (`WorkScheduler`); do not add brokers, external schedulers or worker services.
 
 ## Reactive rules
 

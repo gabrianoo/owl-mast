@@ -35,12 +35,12 @@ class BootstrapMigrationIT {
             .block();
 
     assertThat(history)
-        .singleElement()
-        .satisfies(row -> {
-          assertThat(row).containsEntry("version", "001");
-          assertThat(row).containsEntry("description", "bootstrap infrastructure");
-          assertThat(row).containsEntry("success", true);
-        });
+        .extracting(
+            row -> row.get("version") + " " + row.get("description") + " " + row.get("success"))
+        .containsExactly(
+            "001 bootstrap infrastructure true",
+            "002 jobs infrastructure true",
+            "003 audit infrastructure true");
   }
 
   @Test
@@ -80,9 +80,11 @@ class BootstrapMigrationIT {
 
   /**
    * Extension-owned relations (pg_depend deptype e) belong to VectorChord, not to the bootstrap.
+   * Besides the bootstrap baseline only the jobs- and audit-owned infrastructure tables of OM-01.03
+   * exist; feature schemas arrive with their owning stories (AD-2).
    */
   @Test
-  void onlyBootstrapOwnedObjectsExist() {
+  void onlyStoryOwnedInfrastructureObjectsExist() {
     List<String> tables =
         databaseClient
             .sql(
@@ -98,6 +100,12 @@ class BootstrapMigrationIT {
             .collectList()
             .block();
 
-    assertThat(tables).containsExactly("bootstrap.schema_baseline", "public.flyway_schema_history");
+    assertThat(tables)
+        .containsExactly(
+            "audit.event",
+            "audit.publication_intent",
+            "bootstrap.schema_baseline",
+            "jobs.work_item",
+            "public.flyway_schema_history");
   }
 }

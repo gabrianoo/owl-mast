@@ -1,0 +1,164 @@
+# work-item contract version 1, audit-envelope contract version 1
+# Frozen published shape of jobs.api and audit.api (DurableWorkContractTest), one line per member.
+# Never edit or remove a line within v1: a removal, rename or retype needs a new contract version and a
+# new file. Additions within v1 (absence-preserving meaning, see docs/durable-work-and-audit-contract.md)
+# are appended as new lines in the same change.
+# Added within v1 by OM-01.03 R4: EnqueueRequest component 3 maxAttempts, its 3-argument compatibility
+# constructor and EnqueueRequest.withMaxAttempts.
+# Added within v1 by OM-01.03 R5: NonRetryableWorkException (a handler's terminal-failure signal),
+# WorkItemContract.DEFAULT_INITIAL_DELAY and AuditEnvelopeContract.MAX_FIELD_LENGTH.
+# Changed before v1 was first released (OM-01.03 R9, owner decision 2026-11-12; nothing outside the story
+# had read it): AuditEnvelopeContract.PUBLISH_MAX_ATTEMPTS removed. The unlimited attempt limit is now a
+# handler's registration (WorkRegistration component 2 unlimitedAttempts, its 2-argument compatibility
+# constructor stays, WorkRegistration.tenantInternalRetriedWithoutLimit, WorkItemContract.UNLIMITED_ATTEMPTS)
+# and a request's own limit is capped (WorkItemContract.MAX_ATTEMPTS_PER_ITEM).
+class com.aisquad.owlmast.audit.api.AuditEnvelopeContract
+class com.aisquad.owlmast.jobs.api.WorkItemContract
+constant com.aisquad.owlmast.audit.api.AuditEnvelopeContract.PAYLOAD_EVENT_ID = eventId
+constant com.aisquad.owlmast.audit.api.AuditEnvelopeContract.PUBLISH_WORK_TYPE = WorkType[value=audit.publish]
+constant com.aisquad.owlmast.audit.api.AuditEnvelopeContract.VERSION = 1
+constant com.aisquad.owlmast.jobs.api.WorkItemContract.DEFAULT_BACKOFF_BASE = PT1S
+constant com.aisquad.owlmast.jobs.api.WorkItemContract.DEFAULT_BACKOFF_CAP = PT5M
+constant com.aisquad.owlmast.jobs.api.WorkItemContract.DEFAULT_CLAIM_BATCH_SIZE = 10
+constant com.aisquad.owlmast.jobs.api.WorkItemContract.DEFAULT_LEASE_DURATION = PT30S
+constant com.aisquad.owlmast.jobs.api.WorkItemContract.DEFAULT_MAX_ATTEMPTS = 5
+constant com.aisquad.owlmast.jobs.api.WorkItemContract.DEFAULT_POLL_INTERVAL = PT1S
+constant com.aisquad.owlmast.jobs.api.WorkItemContract.MAX_CORRELATION_ID_LENGTH = 256
+constant com.aisquad.owlmast.jobs.api.WorkItemContract.MAX_EFFECT_REFERENCE_LENGTH = 256
+constant com.aisquad.owlmast.jobs.api.WorkItemContract.MAX_PAYLOAD_ENTRIES = 32
+constant com.aisquad.owlmast.jobs.api.WorkItemContract.MAX_PAYLOAD_KEY_LENGTH = 64
+constant com.aisquad.owlmast.jobs.api.WorkItemContract.MAX_PAYLOAD_VALUE_LENGTH = 512
+constant com.aisquad.owlmast.jobs.api.WorkItemContract.MAX_WORK_TYPE_LENGTH = 100
+constant com.aisquad.owlmast.jobs.api.WorkItemContract.VERSION = 1
+constructor com.aisquad.owlmast.audit.api.AuditActor(com.aisquad.owlmast.audit.api.ActorKind, java.util.Optional<java.lang.String>)
+constructor com.aisquad.owlmast.audit.api.AuditEnvelope(int, java.util.UUID, com.aisquad.owlmast.audit.api.AuditActor, com.aisquad.owlmast.platform.scope.TenantId, java.util.Optional<java.lang.String>, java.lang.String, java.util.Optional<java.lang.String>, java.util.Optional<java.lang.String>, java.lang.String, com.aisquad.owlmast.audit.api.AuditOutcome, java.util.Optional<java.lang.String>, java.time.OffsetDateTime, java.time.OffsetDateTime, java.lang.String)
+constructor com.aisquad.owlmast.audit.api.AuditedMutation(com.aisquad.owlmast.audit.api.AuditActor, java.util.Optional<java.lang.String>, java.lang.String, java.util.Optional<java.lang.String>, java.lang.String, java.lang.String, java.util.function.Function<com.aisquad.owlmast.platform.scope.ScopeContext, reactor.core.publisher.Mono<com.aisquad.owlmast.audit.api.MutationOutcome<T>>>)
+constructor com.aisquad.owlmast.audit.api.AuditedResult(T, java.util.UUID)
+constructor com.aisquad.owlmast.audit.api.MutationOutcome(T, java.lang.String, java.lang.String)
+constructor com.aisquad.owlmast.jobs.api.EffectOutcome$Applied(java.lang.String)
+constructor com.aisquad.owlmast.jobs.api.EffectOutcome$Uncertain(java.lang.String)
+constructor com.aisquad.owlmast.jobs.api.EnqueueRequest(com.aisquad.owlmast.jobs.api.WorkType, java.util.Map<java.lang.String, java.lang.String>, java.util.Optional<java.lang.String>)
+constructor com.aisquad.owlmast.jobs.api.EnqueueRequest(com.aisquad.owlmast.jobs.api.WorkType, java.util.Map<java.lang.String, java.lang.String>, java.util.Optional<java.lang.String>, java.util.OptionalInt)
+constructor com.aisquad.owlmast.jobs.api.FailedWorkItem(java.util.UUID, com.aisquad.owlmast.platform.scope.TenantId, com.aisquad.owlmast.jobs.api.WorkType, com.aisquad.owlmast.jobs.api.WorkStatus, int, java.util.Optional<java.lang.String>, java.time.OffsetDateTime)
+constructor com.aisquad.owlmast.jobs.api.WorkItem(java.util.UUID, com.aisquad.owlmast.platform.scope.TenantId, com.aisquad.owlmast.jobs.api.WorkType, int, java.util.Map<java.lang.String, java.lang.String>, int, int, java.util.Optional<java.lang.String>)
+constructor com.aisquad.owlmast.jobs.api.WorkRegistration(com.aisquad.owlmast.jobs.api.WorkType, boolean)
+constructor com.aisquad.owlmast.jobs.api.WorkType(java.lang.String)
+enum com.aisquad.owlmast.audit.api.ActorKind constant 0 HUMAN
+enum com.aisquad.owlmast.audit.api.ActorKind constant 1 AGENT
+enum com.aisquad.owlmast.audit.api.ActorKind constant 2 SERVICE
+enum com.aisquad.owlmast.audit.api.ActorKind constant 3 SYSTEM
+enum com.aisquad.owlmast.audit.api.AuditOutcome constant 0 REQUESTED
+enum com.aisquad.owlmast.audit.api.AuditOutcome constant 1 SUCCEEDED
+enum com.aisquad.owlmast.audit.api.AuditOutcome constant 2 FAILED
+enum com.aisquad.owlmast.audit.api.AuditOutcome constant 3 DENIED
+enum com.aisquad.owlmast.audit.api.AuditOutcome constant 4 UNRESOLVED
+enum com.aisquad.owlmast.jobs.api.DispatchDecision constant 0 ALLOW
+enum com.aisquad.owlmast.jobs.api.DispatchDecision constant 1 DENY
+enum com.aisquad.owlmast.jobs.api.DispatchDecision constant 2 UNDECIDED
+enum com.aisquad.owlmast.jobs.api.WorkStatus constant 0 PENDING
+enum com.aisquad.owlmast.jobs.api.WorkStatus constant 1 RUNNING
+enum com.aisquad.owlmast.jobs.api.WorkStatus constant 2 SUCCEEDED
+enum com.aisquad.owlmast.jobs.api.WorkStatus constant 3 FAILED
+enum com.aisquad.owlmast.jobs.api.WorkStatus constant 4 DENIED
+enum com.aisquad.owlmast.jobs.api.WorkStatus constant 5 OUTCOME_UNCERTAIN
+interface com.aisquad.owlmast.audit.api.AuditHistoryQuery
+interface com.aisquad.owlmast.audit.api.AuditedMutations
+interface com.aisquad.owlmast.jobs.api.DispatchAuthorization
+interface com.aisquad.owlmast.jobs.api.EffectOutcome
+interface com.aisquad.owlmast.jobs.api.FailedWorkQuery
+interface com.aisquad.owlmast.jobs.api.WorkEnqueue
+interface com.aisquad.owlmast.jobs.api.WorkHandler
+method com.aisquad.owlmast.audit.api.AuditActor isUnknown(): boolean
+method com.aisquad.owlmast.audit.api.AuditActor static agent(com.aisquad.owlmast.platform.scope.PrincipalId): com.aisquad.owlmast.audit.api.AuditActor
+method com.aisquad.owlmast.audit.api.AuditActor static backendService(): com.aisquad.owlmast.audit.api.AuditActor
+method com.aisquad.owlmast.audit.api.AuditActor static human(com.aisquad.owlmast.platform.scope.PrincipalId): com.aisquad.owlmast.audit.api.AuditActor
+method com.aisquad.owlmast.audit.api.AuditActor static of(com.aisquad.owlmast.audit.api.ActorKind, java.lang.String): com.aisquad.owlmast.audit.api.AuditActor
+method com.aisquad.owlmast.audit.api.AuditActor static unknown(com.aisquad.owlmast.audit.api.ActorKind): com.aisquad.owlmast.audit.api.AuditActor
+method com.aisquad.owlmast.audit.api.AuditHistoryQuery countUnpublishedIntents(): reactor.core.publisher.Mono<java.lang.Long>
+method com.aisquad.owlmast.audit.api.AuditHistoryQuery find(java.util.UUID): reactor.core.publisher.Mono<com.aisquad.owlmast.audit.api.AuditEnvelope>
+method com.aisquad.owlmast.audit.api.AuditHistoryQuery listByObject(java.lang.String, java.lang.String, int): reactor.core.publisher.Flux<com.aisquad.owlmast.audit.api.AuditEnvelope>
+method com.aisquad.owlmast.audit.api.AuditOutcome separateOutcomePath(): boolean
+method com.aisquad.owlmast.audit.api.AuditedMutation static changing(com.aisquad.owlmast.audit.api.AuditActor, java.lang.String, java.lang.String, java.lang.String, java.lang.String, java.util.function.Function<com.aisquad.owlmast.platform.scope.ScopeContext, reactor.core.publisher.Mono<com.aisquad.owlmast.audit.api.MutationOutcome<T>>>): com.aisquad.owlmast.audit.api.AuditedMutation<T>
+method com.aisquad.owlmast.audit.api.AuditedMutation static creating(com.aisquad.owlmast.audit.api.AuditActor, java.lang.String, java.lang.String, java.lang.String, java.util.function.Function<com.aisquad.owlmast.platform.scope.ScopeContext, reactor.core.publisher.Mono<com.aisquad.owlmast.audit.api.MutationOutcome<T>>>): com.aisquad.owlmast.audit.api.AuditedMutation<T>
+method com.aisquad.owlmast.audit.api.AuditedMutations execute(com.aisquad.owlmast.audit.api.AuditedMutation<T>): reactor.core.publisher.Mono<com.aisquad.owlmast.audit.api.AuditedResult<T>>
+method com.aisquad.owlmast.jobs.api.DispatchAuthorization recheck(com.aisquad.owlmast.jobs.api.WorkItem, com.aisquad.owlmast.jobs.api.WorkRegistration): reactor.core.publisher.Mono<com.aisquad.owlmast.jobs.api.DispatchDecision>
+method com.aisquad.owlmast.jobs.api.EffectOutcome reference(): java.lang.String
+method com.aisquad.owlmast.jobs.api.EffectOutcome static applied(java.lang.String): com.aisquad.owlmast.jobs.api.EffectOutcome$Applied
+method com.aisquad.owlmast.jobs.api.EffectOutcome static uncertain(java.lang.String): com.aisquad.owlmast.jobs.api.EffectOutcome$Uncertain
+method com.aisquad.owlmast.jobs.api.EnqueueRequest static of(com.aisquad.owlmast.jobs.api.WorkType, java.util.Map<java.lang.String, java.lang.String>): com.aisquad.owlmast.jobs.api.EnqueueRequest
+method com.aisquad.owlmast.jobs.api.EnqueueRequest static of(com.aisquad.owlmast.jobs.api.WorkType, java.util.Map<java.lang.String, java.lang.String>, java.lang.String): com.aisquad.owlmast.jobs.api.EnqueueRequest
+method com.aisquad.owlmast.jobs.api.EnqueueRequest withMaxAttempts(int): com.aisquad.owlmast.jobs.api.EnqueueRequest
+method com.aisquad.owlmast.jobs.api.FailedWorkQuery listTerminalFailures(int): reactor.core.publisher.Flux<com.aisquad.owlmast.jobs.api.FailedWorkItem>
+method com.aisquad.owlmast.jobs.api.WorkEnqueue enqueue(com.aisquad.owlmast.jobs.api.EnqueueRequest): reactor.core.publisher.Mono<java.util.UUID>
+method com.aisquad.owlmast.jobs.api.WorkHandler handle(com.aisquad.owlmast.jobs.api.WorkItem): reactor.core.publisher.Mono<com.aisquad.owlmast.jobs.api.EffectOutcome>
+method com.aisquad.owlmast.jobs.api.WorkHandler registration(): com.aisquad.owlmast.jobs.api.WorkRegistration
+method com.aisquad.owlmast.jobs.api.WorkItem idempotencyKey(): java.lang.String
+method com.aisquad.owlmast.jobs.api.WorkItem lastAttempt(): boolean
+method com.aisquad.owlmast.jobs.api.WorkRegistration static requiresAuthorization(com.aisquad.owlmast.jobs.api.WorkType): com.aisquad.owlmast.jobs.api.WorkRegistration
+method com.aisquad.owlmast.jobs.api.WorkRegistration static tenantInternal(com.aisquad.owlmast.jobs.api.WorkType): com.aisquad.owlmast.jobs.api.WorkRegistration
+method com.aisquad.owlmast.jobs.api.WorkStatus terminal(): boolean
+method com.aisquad.owlmast.jobs.api.WorkType static of(java.lang.String): com.aisquad.owlmast.jobs.api.WorkType
+record com.aisquad.owlmast.audit.api.AuditActor component 0 kind: com.aisquad.owlmast.audit.api.ActorKind
+record com.aisquad.owlmast.audit.api.AuditActor component 1 id: java.util.Optional<java.lang.String>
+record com.aisquad.owlmast.audit.api.AuditEnvelope component 0 envelopeVersion: int
+record com.aisquad.owlmast.audit.api.AuditEnvelope component 1 eventId: java.util.UUID
+record com.aisquad.owlmast.audit.api.AuditEnvelope component 10 reason: java.util.Optional<java.lang.String>
+record com.aisquad.owlmast.audit.api.AuditEnvelope component 11 occurredAt: java.time.OffsetDateTime
+record com.aisquad.owlmast.audit.api.AuditEnvelope component 12 recordedAt: java.time.OffsetDateTime
+record com.aisquad.owlmast.audit.api.AuditEnvelope component 13 correlationId: java.lang.String
+record com.aisquad.owlmast.audit.api.AuditEnvelope component 2 actor: com.aisquad.owlmast.audit.api.AuditActor
+record com.aisquad.owlmast.audit.api.AuditEnvelope component 3 tenant: com.aisquad.owlmast.platform.scope.TenantId
+record com.aisquad.owlmast.audit.api.AuditEnvelope component 4 project: java.util.Optional<java.lang.String>
+record com.aisquad.owlmast.audit.api.AuditEnvelope component 5 objectType: java.lang.String
+record com.aisquad.owlmast.audit.api.AuditEnvelope component 6 objectId: java.util.Optional<java.lang.String>
+record com.aisquad.owlmast.audit.api.AuditEnvelope component 7 objectVersion: java.util.Optional<java.lang.String>
+record com.aisquad.owlmast.audit.api.AuditEnvelope component 8 action: java.lang.String
+record com.aisquad.owlmast.audit.api.AuditEnvelope component 9 outcome: com.aisquad.owlmast.audit.api.AuditOutcome
+record com.aisquad.owlmast.audit.api.AuditedMutation component 0 actor: com.aisquad.owlmast.audit.api.AuditActor
+record com.aisquad.owlmast.audit.api.AuditedMutation component 1 project: java.util.Optional<java.lang.String>
+record com.aisquad.owlmast.audit.api.AuditedMutation component 2 objectType: java.lang.String
+record com.aisquad.owlmast.audit.api.AuditedMutation component 3 objectId: java.util.Optional<java.lang.String>
+record com.aisquad.owlmast.audit.api.AuditedMutation component 4 action: java.lang.String
+record com.aisquad.owlmast.audit.api.AuditedMutation component 5 correlationId: java.lang.String
+record com.aisquad.owlmast.audit.api.AuditedMutation component 6 business: java.util.function.Function<com.aisquad.owlmast.platform.scope.ScopeContext, reactor.core.publisher.Mono<com.aisquad.owlmast.audit.api.MutationOutcome<T>>>
+record com.aisquad.owlmast.audit.api.AuditedResult component 0 value: T
+record com.aisquad.owlmast.audit.api.AuditedResult component 1 eventId: java.util.UUID
+record com.aisquad.owlmast.audit.api.MutationOutcome component 0 value: T
+record com.aisquad.owlmast.audit.api.MutationOutcome component 1 objectId: java.lang.String
+record com.aisquad.owlmast.audit.api.MutationOutcome component 2 objectVersion: java.lang.String
+record com.aisquad.owlmast.jobs.api.EffectOutcome$Applied component 0 reference: java.lang.String
+record com.aisquad.owlmast.jobs.api.EffectOutcome$Uncertain component 0 reference: java.lang.String
+record com.aisquad.owlmast.jobs.api.EnqueueRequest component 0 type: com.aisquad.owlmast.jobs.api.WorkType
+record com.aisquad.owlmast.jobs.api.EnqueueRequest component 1 payload: java.util.Map<java.lang.String, java.lang.String>
+record com.aisquad.owlmast.jobs.api.EnqueueRequest component 2 correlationId: java.util.Optional<java.lang.String>
+record com.aisquad.owlmast.jobs.api.EnqueueRequest component 3 maxAttempts: java.util.OptionalInt
+record com.aisquad.owlmast.jobs.api.FailedWorkItem component 0 id: java.util.UUID
+record com.aisquad.owlmast.jobs.api.FailedWorkItem component 1 tenant: com.aisquad.owlmast.platform.scope.TenantId
+record com.aisquad.owlmast.jobs.api.FailedWorkItem component 2 type: com.aisquad.owlmast.jobs.api.WorkType
+record com.aisquad.owlmast.jobs.api.FailedWorkItem component 3 status: com.aisquad.owlmast.jobs.api.WorkStatus
+record com.aisquad.owlmast.jobs.api.FailedWorkItem component 4 attemptCount: int
+record com.aisquad.owlmast.jobs.api.FailedWorkItem component 5 safeReason: java.util.Optional<java.lang.String>
+record com.aisquad.owlmast.jobs.api.FailedWorkItem component 6 finishedAt: java.time.OffsetDateTime
+record com.aisquad.owlmast.jobs.api.WorkItem component 0 id: java.util.UUID
+record com.aisquad.owlmast.jobs.api.WorkItem component 1 tenant: com.aisquad.owlmast.platform.scope.TenantId
+record com.aisquad.owlmast.jobs.api.WorkItem component 2 type: com.aisquad.owlmast.jobs.api.WorkType
+record com.aisquad.owlmast.jobs.api.WorkItem component 3 contractVersion: int
+record com.aisquad.owlmast.jobs.api.WorkItem component 4 payload: java.util.Map<java.lang.String, java.lang.String>
+record com.aisquad.owlmast.jobs.api.WorkItem component 5 attempt: int
+record com.aisquad.owlmast.jobs.api.WorkItem component 6 maxAttempts: int
+record com.aisquad.owlmast.jobs.api.WorkItem component 7 correlationId: java.util.Optional<java.lang.String>
+record com.aisquad.owlmast.jobs.api.WorkRegistration component 0 type: com.aisquad.owlmast.jobs.api.WorkType
+record com.aisquad.owlmast.jobs.api.WorkRegistration component 1 tenantInternalSystemWork: boolean
+record com.aisquad.owlmast.jobs.api.WorkType component 0 value: java.lang.String
+sealed com.aisquad.owlmast.jobs.api.EffectOutcome permits com.aisquad.owlmast.jobs.api.EffectOutcome$Applied
+sealed com.aisquad.owlmast.jobs.api.EffectOutcome permits com.aisquad.owlmast.jobs.api.EffectOutcome$Uncertain
+class com.aisquad.owlmast.jobs.api.NonRetryableWorkException
+constructor com.aisquad.owlmast.jobs.api.NonRetryableWorkException(java.lang.String)
+constructor com.aisquad.owlmast.jobs.api.NonRetryableWorkException(java.lang.String, java.lang.Throwable)
+constant com.aisquad.owlmast.jobs.api.WorkItemContract.DEFAULT_INITIAL_DELAY = PT0S
+constant com.aisquad.owlmast.audit.api.AuditEnvelopeContract.MAX_FIELD_LENGTH = 256
+constant com.aisquad.owlmast.jobs.api.WorkItemContract.MAX_ATTEMPTS_PER_ITEM = 100
+constant com.aisquad.owlmast.jobs.api.WorkItemContract.UNLIMITED_ATTEMPTS = 2147483647
+constructor com.aisquad.owlmast.jobs.api.WorkRegistration(com.aisquad.owlmast.jobs.api.WorkType, boolean, boolean)
+method com.aisquad.owlmast.jobs.api.WorkRegistration static tenantInternalRetriedWithoutLimit(com.aisquad.owlmast.jobs.api.WorkType): com.aisquad.owlmast.jobs.api.WorkRegistration
+record com.aisquad.owlmast.jobs.api.WorkRegistration component 2 unlimitedAttempts: boolean

@@ -48,3 +48,21 @@ owlmast:
     max-concurrency: 8
     max-queued-per-thread: 16
     deadline: 10s
+  jobs:
+    # Durable work (OM-01.03, docs/durable-work-and-audit-contract.md). Values restate the
+    # work-item contract v1 defaults; durations are ISO-8601.
+    max-attempts: 5
+    backoff-base: PT1S
+    backoff-cap: PT5M
+    lease-duration: PT30S
+    claim-batch-size: 10
+    poll-interval: PT1S
+    initial-delay: PT0S
+    # handler-deadline: absent means nine tenths of lease-duration; must stay shorter than the lease.
+    # instance-id: names this instance in lease_owner; absent means the host name (the pod name).
+    scheduler:
+      # In-process Spring scheduling is the only wake-up source; tests may drive the processor.
+      enabled: true
+  audit:
+    # Bound of one separate (failed/denied/unresolved) outcome write; ISO-8601.
+    outcome-write-deadline: PT5S
