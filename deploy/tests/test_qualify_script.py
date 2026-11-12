@@ -192,8 +192,46 @@ fi
 if [[ "$args" == *"--field-selector=status.phase=Running"* ]]; then printf '%b' "${STUB_BACKEND_PODS:-}"; exit 0; fi
 if [[ "$args" == *"].image} {.status.containerStatuses[0].imageID}"* ]]; then printf 'docker.io/owl-mast/backend:stub %s\n' "${STUB_IMAGE_ID:-}"; exit 0; fi
 if [[ "$args" == *"{.status.containerStatuses[0].imageID}"* ]]; then printf '%s' "${STUB_IMAGE_ID:-}"; exit 0; fi
+# The provisioning hook Job as the cluster serves it: the chart's delete policy (before-hook-creation,hook-succeeded) removes
+# the Job and its ConfigMap once the hook succeeded, so a direct read after a successful upgrade is NotFound. The world holds
+# a `job` line only for a hook that failed or was kept (the helm stub writes it, see STUB_HOOK).
+if [[ "$args" == *" get job "* ]]; then
+  job="$(sed -E 's/.* get job ([^ ]+).*/\1/' <<<"$args")"
+  if [ "$(state_of job "$ns" "$job")" = absent ]; then echo "Error from server (NotFound): jobs.batch \"$job\" not found" >&2; exit 1; fi
+  printf '1 \n'; exit 0
+fi
+if [[ "$args" == *" logs job/"* ]]; then
+  job="$(sed -E 's/.* logs job\/([^ ]+).*/\1/' <<<"$args")"
+  if [ "$(state_of job "$ns" "$job")" = absent ]; then echo "error: error from server (NotFound): jobs.batch \"$job\" not found" >&2; exit 1; fi
+  printf 'GRANT\n'; exit 0
+fi
+# Runtime answers for whole-step runs (STUB_RUNTIME=1): what a healthy install returns to the script's observations.
+if [ "${STUB_RUNTIME:-}" = 1 ]; then
+  if [[ "$args" == *" get --raw /api/v1/namespaces/"* ]]; then
+    svc="$(sed -E 's/.*\/services\/([^:\/]+).*/\1/' <<<"$args")"
+    if [[ "$args" == *"openid-configuration"* ]]; then printf '{"issuer":"http://%s:8080/realms/owl-mast"}\n' "$svc"; else printf '{"status":"UP"}\n'; fi
+    exit 0
+  fi
+  if [[ "$args" == *" get pods "* && "$args" == *"READY:.status.containerStatuses[0].ready"* ]]; then printf 'NAME READY RESTARTS\npostgresql-abc12-xyz   true   0\n'; exit 0; fi
+  if [[ "$args" == *" logs deploy/"* ]]; then printf 'identity bundle disabled; no Keycloak database or principal provisioned\nPostgreSQL init process complete; ready for start up.\n'; exit 0; fi
+  if [[ "$args" == *" get pvc "* && "$args" == *"{.metadata.uid}"* ]]; then
+    if [[ "$args" == *"metadata.labels"* ]]; then printf 'pvc-uid-1 Bound %s\n' "${STUB_FE_RUN_ID:-}"; elif [[ "$args" == *"{.status.phase}"* ]]; then printf 'pvc-uid-1 Bound\n'; else printf 'pvc-uid-1'; fi
+    exit 0
+  fi
+  if [[ "$args" == *" exec "* && "$args" == *"from pg_database where datname="* ]]; then printf '0\n0\n'; exit 0; fi
+  if [[ "$args" == *" exec "* && "$args" == *"qualification_marker"* ]]; then printf 'before-enable\n'; exit 0; fi
+fi
 if [[ "$args" == *" exec "* ]]; then
   db="$(sed -E "s/.* -d '([^']+)'.*/\1/" <<<"$args")"
+  # The Keycloak role/database identifiers (keycloak_db_identity). STUB_KC_IDENTITY_<n> is the answer after n successful
+  # provisioning upgrades (counted by the helm stub); unset = the same identifiers every time; empty = the read fails.
+  if [[ "$args" == *"'role='||r.oid"* ]]; then
+    n=0; [ -e "$STUB_WORLD.provisioned" ] && n="$(grep -c . "$STUB_WORLD.provisioned")"
+    var="STUB_KC_IDENTITY_$n"; identity="${!var-role=16385 database=16386 owner=16385}"
+    if [ -z "$identity" ]; then printf 'psql: error: connection to server at "127.0.0.1", port 5432 failed: FATAL:  password authentication failed for user "keycloak_app"\ncommand terminated with exit code 2\n'; exit 2; fi
+    printf '%s\n' "$identity"; exit 0
+  fi
+  if [ -n "${STUB_KC_SCHEMA:-}" ] && [[ "$args" == *"information_schema.tables"* ]]; then printf '%s\n' "$STUB_KC_SCHEMA"; exit 0; fi
   if [ "${STUB_EXEC_MODE:-}" = ac3 ]; then
     # Every AC3 observation of check_shared_postgres succeeds; only the CONNECT attempts follow STUB_AC3_CONNECT
     # (denied: the intended denial for the other database; allowed: both principals connect everywhere;
@@ -250,14 +288,38 @@ if [[ "$args" == *" template "* && "$args" == *"backend-deployment.yaml"* ]]; th
   if [[ "$rel" == *owl-mast* ]]; then full="$rel"; else full="$rel-owl-mast"; fi
   printf 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: %s-backend\n' "$full"; exit 0
 fi
+rev_file() { printf '%s.rev.%s' "$STUB_WORLD" "$1"; }
 if [[ "$args" == *" status "* ]]; then
   rel="$(sed -E 's/.* status ([^ ]+).*/\1/' <<<"$args")"
   state="$(awk -v m="$rel" '$1=="release" && $3==m {print $4; found=1} END {if (!found) print "absent"}' "$STUB_WORLD")"
   case "$state" in
     absent) echo "Error: release: not found" >&2; exit 1 ;;
     error) echo "Error: Kubernetes cluster unreachable" >&2; exit 1 ;;
-    *) echo "STATUS: deployed"; exit 0 ;;
+    *) rev=1; [ -e "$(rev_file "$rel")" ] && rev="$(grep -c . "$(rev_file "$rel")")"
+       printf 'NAME: %s\nSTATUS: deployed\nREVISION: %s\n' "$rel" "$rev"; exit 0 ;;
   esac
+fi
+# An upgrade records the release and a new revision. A provisioning upgrade (postgresql.provisionKeycloakDatabase=true) runs the
+# pre-upgrade hook as Helm does, by STUB_HOOK: succeeded (default) = Helm deleted the hook Job and ConfigMap (hook-succeeded);
+# failed = the upgrade fails and the failed Job stays for diagnosis; kept = the upgrade succeeds but the hook objects remain
+# (a delete policy that did not apply). STUB_HELM_NO_NEW_REVISION=1 = a provisioning upgrade that records no new revision.
+if [[ "$args" == *" upgrade "* ]]; then
+  rel="$(sed -E 's/.* upgrade (--install )?([^ ]+).*/\2/' <<<"$args")"; ns="$(sed -E 's/.* -n ([^ ]+).*/\1/' <<<"$args")"
+  job="job $ns $rel-postgresql-provision-keycloak"; cm="configmap $ns $rel-postgresql-provision-scripts"
+  if [[ "$args" == *"provisionKeycloakDatabase=true"* ]]; then
+    grep -vE "^($job|$cm) " "$STUB_WORLD" > "$STUB_WORLD.tmp" || true; mv "$STUB_WORLD.tmp" "$STUB_WORLD"   # before-hook-creation
+    case "${STUB_HOOK:-succeeded}" in
+      failed) printf '%s owned\n%s owned\n' "$job" "$cm" >> "$STUB_WORLD"
+              echo "Error: UPGRADE FAILED: pre-upgrade hooks failed: 1 error occurred: * job $rel-postgresql-provision-keycloak failed: BackoffLimitExceeded" >&2; exit 1 ;;
+      kept) printf '%s owned\n%s owned\n' "$job" "$cm" >> "$STUB_WORLD" ;;
+    esac
+    echo "$rel" >> "$STUB_WORLD.provisioned"
+    [ "${STUB_HELM_NO_NEW_REVISION:-}" = 1 ] && { echo "stub helm ok"; exit 0; }
+  fi
+  if grep -q "^release - $rel " "$STUB_WORLD"; then [ -e "$(rev_file "$rel")" ] || echo "$rel" >> "$(rev_file "$rel")"   # a release the world started with is at revision 1
+  else printf 'release - %s owned\n' "$rel" >> "$STUB_WORLD"; fi
+  echo "$rel" >> "$(rev_file "$rel")"
+  echo "stub helm ok"; exit 0
 fi
 echo "stub helm ok"
 '''
@@ -874,6 +936,145 @@ class ReviewFindingsTests(unittest.TestCase):
             self.assertEqual(h.mutating_calls(), [])
         finally:
             h.close()
+
+
+class ProvisioningHookEvidenceTests(unittest.TestCase):
+    """V5 (owner's Kind qualification of PR #116, 2026-11-12): the script read the provisioning hook Job's status and log after
+    `helm upgrade --wait`, but the chart deletes the Job and its ConfigMap once the hook succeeded (hook-delete-policy
+    before-hook-creation,hook-succeeded), so the read was NotFound and the run stopped at `provision-keycloak-job`. The stub world
+    now deletes the hook objects on success like Helm does, and the script proves the hook from what outlives it."""
+
+    RUNTIME = {"STUB_RUNTIME": "1", "STUB_EXEC_MODE": "ac3", "STUB_BACKEND_PODS": "owl-mast-backend-new   <none>\n",
+               "STUB_IMAGE_ID": "docker.io/owl-mast/backend@sha256:import", "HOOK_GONE_TIMEOUT": "0"}
+    FE_RUN_ID = "om-01-02-followup-stub-01"
+
+    def direct_hook_reads(self, calls):  # the ownership query (--ignore-not-found, absence is an answer) is not a read of the Job's status
+        return [c for c in calls.splitlines() if " logs job/" in c or (" get job " in c and "--ignore-not-found" not in c)]
+
+    def step(self, step, **extra):
+        h = Harness(BASE_WORLD)
+        try:
+            r = h.run(step, **{**self.RUNTIME, **extra})
+            r.calls = h.calls.read_text()
+            r.world = h.world.read_text()
+            runtime = h.evidence / "runtime"
+            r.evidence = {p.stem: p.read_text() for p in runtime.glob("*.txt")} if runtime.exists() else {}
+            return r
+        finally:
+            h.close()
+
+    def first_enable(self, **extra):
+        return self.step("first-enable", OWLMAST_FOLLOWUP_RUN_ID=self.FE_RUN_ID, STUB_FE_RUN_ID=self.FE_RUN_ID, **extra)
+
+    def test_bundled_bundled_passes_when_the_succeeded_hook_job_is_gone(self):
+        r = self.step("bundled-bundled")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for line in ("ok   provision-keycloak-upgrade", "ok   provision-keycloak-revision (revision 1 -> 2, deployed",
+                     "ok   provision-keycloak-identity-unchanged (role=16385 database=16386 owner=16385)",
+                     "ok   provision-keycloak-hook-removed (hook Job and ConfigMap absent after success",
+                     "ok   provision-keycloak-idempotent", "qualification steps complete: bundled-bundled"):
+            self.assertIn(line, r.stdout)
+        self.assertNotIn("FAIL", r.stdout)
+        # the world really has no hook Job after the successful upgrade, and the script never reads it or its log directly
+        self.assertNotIn("job owl-mast-test owl-mast-postgresql-provision-keycloak", r.world)
+        self.assertEqual(self.direct_hook_reads(r.calls), [])
+        self.assertEqual(r.evidence["provision-keycloak-identity-before"].splitlines()[-1], r.evidence["provision-keycloak-identity-after"].splitlines()[-1])
+        self.assertEqual(r.evidence["provision-keycloak-hook-removed"].splitlines(),
+                         ["job owl-mast-test/owl-mast-postgresql-provision-keycloak absent", "configmap owl-mast-test/owl-mast-postgresql-provision-scripts absent"])
+        # the identifiers are read before the upgrade and again after it
+        calls = r.calls.splitlines()
+        upgrade = next(i for i, c in enumerate(calls) if "provisionKeycloakDatabase=true" in c)
+        reads = [i for i, c in enumerate(calls) if "'role='||r.oid" in c]
+        self.assertEqual(len(reads), 2, reads); self.assertLess(reads[0], upgrade); self.assertGreater(reads[1], upgrade)
+
+    def test_a_direct_read_of_the_succeeded_hook_job_is_not_found_in_the_stub_world(self):
+        """What made the old script fail on the cluster, reproduced by the stub: the Job read and the log read are NotFound."""
+        h = Harness(BASE_WORLD)
+        try:
+            body = ('h upgrade owl-mast "$CHART" -n "$NS" --wait --set postgresql.provisionKeycloakDatabase=true >/dev/null; '
+                    'k -n "$NS" get job owl-mast-postgresql-provision-keycloak -o jsonpath="{.status.succeeded}" && echo get=0 || echo get=1; '
+                    'k -n "$NS" logs job/owl-mast-postgresql-provision-keycloak && echo logs=0 || echo logs=1')
+            r = h.source(body)
+            self.assertIn("get=1", r.stdout); self.assertIn("logs=1", r.stdout)
+            self.assertEqual(r.stderr.count('(NotFound): jobs.batch "owl-mast-postgresql-provision-keycloak" not found'), 2, r.stderr)
+            r = h.source(body.replace(">/dev/null;", ">/dev/null 2>&1 || true;"), STUB_HOOK="failed")  # a failed hook Job stays for diagnosis
+            self.assertIn("get=0", r.stdout); self.assertIn("logs=0", r.stdout)
+        finally:
+            h.close()
+
+    def test_changed_or_unreadable_identifiers_fail_the_step(self):
+        for after, message in (("role=16999 database=16386 owner=16999", "FAIL provision-keycloak-identity: provisioning dropped or recreated an existing role or database"),
+                               ("role=16385 database=17001 owner=16385", "FAIL provision-keycloak-identity: provisioning dropped or recreated an existing role or database"),
+                               ("role=16385 database=16386 owner=10", "FAIL provision-keycloak-identity: provisioning dropped or recreated an existing role or database"),
+                               ("", "FAIL provision-keycloak-identity-after"),
+                               ("stub ok", "FAIL provision-keycloak-identity-after: the Keycloak role/database identifiers were not read")):
+            with self.subTest(after=after):
+                r = self.step("bundled-bundled", STUB_KC_IDENTITY_1=after)
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn(message, r.stdout)
+                self.assertNotIn("ok   provision-keycloak-idempotent", r.stdout)
+                self.assertNotIn("qualification steps complete", r.stdout)
+        r = self.step("bundled-bundled", STUB_KC_IDENTITY_0="")  # unreadable before the upgrade: the upgrade is never started
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL provision-keycloak-identity-before", r.stdout)
+        self.assertNotIn("provisionKeycloakDatabase=true", r.calls)
+
+    def test_a_failed_hook_fails_the_step_at_the_upgrade(self):
+        r = self.step("bundled-bundled", STUB_HOOK="failed")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL provision-keycloak-upgrade", r.stdout)
+        self.assertIn("pre-upgrade hooks failed", r.evidence["provision-keycloak-upgrade"])
+        for later in ("provision-keycloak-revision-after", "provision-keycloak-identity-after", "provision-keycloak-idempotent"):
+            self.assertNotIn(later, r.stdout)
+
+    def test_a_hook_job_that_outlives_its_success_fails_the_step(self):
+        r = self.step("bundled-bundled", STUB_HOOK="kept")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL provision-keycloak-hook-removed: hook job owl-mast-test/owl-mast-postgresql-provision-keycloak is not absent after the successful upgrade (owned)", r.stdout)
+        self.assertNotIn("ok   provision-keycloak-idempotent", r.stdout)
+
+    def test_an_upgrade_without_a_new_deployed_revision_fails_the_step(self):
+        r = self.step("bundled-bundled", STUB_HELM_NO_NEW_REVISION="1")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL provision-keycloak-revision: the upgrade left no new deployed revision (before 1, after 1)", r.stdout)
+
+    def test_the_schema_check_is_kept(self):
+        r = self.step("bundled-bundled", STUB_KC_SCHEMA="f")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL keycloak schema", r.stdout)
+        self.assertNotIn("ok   provision-keycloak-idempotent", r.stdout)
+
+    def test_first_enable_passes_when_the_succeeded_hook_job_is_gone(self):
+        r = self.first_enable()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for line in ("ok   fe2-revision (revision 1 -> 2, deployed", "ok   fe2-hook-removed",
+                     "ok   fe2-first-enable-provisioned (role and database absent before, present after the pre-upgrade hook: role=16385 database=16386 owner=16385)",
+                     "ok   fe3-revision (revision 2 -> 3, deployed", "ok   fe3-identity-unchanged", "ok   fe3-hook-removed", "ok   fe3-retry-no-op", "ok   fe3-keycloak-schema-intact",
+                     "qualification steps complete: first-enable"):
+            self.assertIn(line, r.stdout)
+        self.assertNotIn("FAIL", r.stdout)
+        self.assertEqual(self.direct_hook_reads(r.calls), [])
+
+    def test_first_enable_fails_when_the_role_is_missing_after_the_hook_or_recreated_by_the_retry(self):
+        r = self.first_enable(STUB_KC_IDENTITY_1="")  # the Keycloak principal cannot log in after the first enable
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL fe2-keycloak-identity", r.stdout)
+        self.assertNotIn("ok   fe2-first-enable-provisioned", r.stdout)
+        r = self.first_enable(STUB_KC_IDENTITY_2="role=16385 database=17001 owner=16385")  # the retry recreated the database
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL fe3-identity: provisioning dropped or recreated an existing role or database", r.stdout)
+        self.assertNotIn("ok   fe3-retry-no-op", r.stdout)
+        r = self.first_enable(STUB_HOOK="failed")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL fe2-enable-upgrade", r.stdout)
+
+    def test_the_script_reads_no_hook_object_the_chart_deletes_on_success(self):
+        """The delete policy the script depends on is the chart's, and no step reads the hook Job, its log or its ConfigMap directly."""
+        hook = (CHART / "templates" / "postgresql-provision-keycloak-job.yaml").read_text()
+        self.assertEqual(hook.count("helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded"), 2)
+        text = "\n".join(l for l in SCRIPT.read_text().splitlines() if not l.lstrip().startswith("#"))
+        for pattern in (r"\bget job\b", r"\blogs\s+\"?job/", r"get configmap\b.*provision-scripts", r"hook-log", r"hook-job"):
+            self.assertIsNone(re.search(pattern, text), pattern)
 
 
 if __name__ == "__main__":

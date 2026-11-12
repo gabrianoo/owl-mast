@@ -505,6 +505,68 @@ verify_backend_image() { # verify_backend_image <name>: the running backend is e
   fi
 }
 
+# -- provisioning hook evidence ------------------------------------------------------------------------
+# The pre-upgrade provisioning hook Job and its ConfigMap carry `hook-delete-policy: before-hook-creation,hook-succeeded`:
+# Helm deletes both as soon as the hook succeeded, so neither the Job's status nor its log can be read after a
+# successful upgrade. The hook is therefore proven from what outlives it:
+#  - `helm upgrade --wait` returned 0 (Helm fails the upgrade when a pre-upgrade hook fails) and the release shows a
+#    higher revision in status `deployed`;
+#  - the Keycloak role and database carry the same PostgreSQL object identifiers before and after (a dropped and
+#    recreated role or database gets a new oid), read as the Keycloak principal itself, so the login still works;
+#  - both hook objects are gone afterwards, which is the delete policy applied.
+HOOK_GONE_TIMEOUT="${HOOK_GONE_TIMEOUT:-30}"   # seconds to wait for Helm's hook deletion to be visible
+KEYCLOAK_IDENTITY_RE='^role=[0-9]+ database=[0-9]+ owner=[0-9]+$'
+keycloak_db_identity() { # keycloak_db_identity <namespace> <deployment>: one line `role=<oid> database=<oid> owner=<oid>`
+  pg_exec "$1" "$2" OWLMAST_KEYCLOAK keycloak "select 'role='||r.oid||' database='||d.oid||' owner='||d.datdba from pg_roles r cross join pg_database d where r.rolname = current_user and d.datname = current_database()"
+}
+record_keycloak_identity() { # record_keycloak_identity <name> <namespace> <deployment>: exactly one well-formed line, or the check fails
+  record "$1" keycloak_db_identity "$2" "$3" || return 1
+  [ "$(grep -cE "$KEYCLOAK_IDENTITY_RE" "$OUT/$1.txt")" -eq 1 ] || { log "FAIL $1: the Keycloak role/database identifiers were not read as one 'role=<oid> database=<oid> owner=<oid>' line (not evidence)"; return 1; }
+}
+keycloak_identity_of() { grep -E "$KEYCLOAK_IDENTITY_RE" "$OUT/$1.txt"; }   # keycloak_identity_of <name>
+record_release_revision() { # record_release_revision <name> <release>: the release must be `deployed` with a numeric revision
+  record "$1" h status "$2" -n "$NS" || return 1
+  grep -qx 'STATUS: deployed' "$OUT/$1.txt" && grep -qE '^REVISION: [0-9]+$' "$OUT/$1.txt" \
+    || { log "FAIL $1: release $2 is not reported as deployed with a revision"; return 1; }
+}
+release_revision_of() { sed -n 's/^REVISION: \([0-9][0-9]*\)$/\1/p' "$OUT/$1.txt" | head -1; }   # release_revision_of <name>
+assert_revision_advanced() { # assert_revision_advanced <label> <before-name> <after-name>
+  local before after; before="$(release_revision_of "$2")"; after="$(release_revision_of "$3")"
+  [ "$after" -gt "$before" ] || { log "FAIL $1: the upgrade left no new deployed revision (before $before, after $after)"; return 1; }
+  log "ok   $1 (revision $before -> $after, deployed; helm upgrade --wait returned 0, so the pre-upgrade hook succeeded)"
+}
+hook_objects_removed() { # hook_objects_removed <name> <release>: the hook Job and ConfigMap are absent after a successful hook
+  # Absence is the expected outcome here, never a failure. A hook object that is still present after the
+  # bounded wait, or whose state cannot be read, fails the check: the delete policy did not apply or is unproven.
+  local name="$1" rel="$2" pair kind obj state file="$OUT/$1.txt" deadline=$((SECONDS + HOOK_GONE_TIMEOUT))
+  : >"$file"
+  for pair in "job:$rel-postgresql-provision-keycloak" "configmap:$rel-postgresql-provision-scripts"; do
+    kind="${pair%%:*}"; obj="${pair#*:}"
+    while :; do
+      state="$(resource_state "$NS" "$kind" "$obj")"
+      if [ "$state" = absent ] || [ "$SECONDS" -ge "$deadline" ]; then break; fi
+      sleep 2
+    done
+    printf '%s %s/%s %s\n' "$kind" "$NS" "$obj" "$state" >>"$file"
+    [ "$state" = absent ] || { log "FAIL $name: hook $kind $NS/$obj is not absent after the successful upgrade ($state); expected hook-succeeded to delete it"; return 1; }
+  done
+  log "ok   $name (hook Job and ConfigMap absent after success: hook-succeeded applied)"
+}
+reprovision_keeps_keycloak() { # reprovision_keeps_keycloak <prefix> <release> <upgrade-evidence-name> <helm upgrade args...>
+  # A provisioning upgrade on a volume that already has Keycloak's role and database: nothing may be dropped or recreated.
+  local prefix="$1" rel="$2" upgrade="$3" before after; shift 3
+  record_keycloak_identity "$prefix-identity-before" "$NS" "$rel-postgresql" || return 1
+  record_release_revision "$prefix-revision-before" "$rel" || return 1
+  record "$upgrade" h upgrade "$rel" "$CHART" -n "$NS" --wait "$@" || return 1
+  record_release_revision "$prefix-revision-after" "$rel" || return 1
+  assert_revision_advanced "$prefix-revision" "$prefix-revision-before" "$prefix-revision-after" || return 1
+  record_keycloak_identity "$prefix-identity-after" "$NS" "$rel-postgresql" || return 1
+  before="$(keycloak_identity_of "$prefix-identity-before")"; after="$(keycloak_identity_of "$prefix-identity-after")"
+  [ "$before" = "$after" ] || { log "FAIL $prefix-identity: provisioning dropped or recreated an existing role or database (before '$before', after '$after')"; return 1; }
+  log "ok   $prefix-identity-unchanged ($after)"
+  hook_objects_removed "$prefix-hook-removed" "$rel" || return 1
+}
+
 # -- steps -------------------------------------------------------------------------------------------
 step_prepare() {
   log "== prepare target (cluster/context $CONTEXT)"
@@ -590,13 +652,10 @@ step_bundled_bundled() {
   check_bundled_keycloak
   check_shared_postgres "$NS" "$RELEASE-postgresql"
   # Explicit re-provisioning on an already initialised volume (R2): idempotent, nothing dropped, Keycloak schema intact.
-  record provision-keycloak-upgrade h upgrade "$RELEASE" "$CHART" -n "$NS" --wait --timeout 10m --reuse-values --set postgresql.provisionKeycloakDatabase=true
-  record provision-keycloak-job k -n "$NS" get job "$RELEASE-postgresql-provision-keycloak" -o jsonpath='{.status.succeeded} {.status.failed}{"\n"}'
-  grep -q '^1 ' "$OUT/provision-keycloak-job.txt" || { log "FAIL provisioning job did not succeed exactly once"; return 1; }
-  record provision-keycloak-job-log k -n "$NS" logs "job/$RELEASE-postgresql-provision-keycloak"
-  grep -qiE 'CREATE ROLE|CREATE DATABASE' "$OUT/provision-keycloak-job-log.txt" && { log "FAIL provisioning recreated an existing role or database"; return 1; }
+  # The hook Job is deleted on success, so it is proven by the upgrade result, the unchanged identifiers and its absence.
+  reprovision_keeps_keycloak provision-keycloak "$RELEASE" provision-keycloak-upgrade --timeout 10m --reuse-values --set postgresql.provisionKeycloakDatabase=true || return 1
   record provision-keycloak-schema-intact pg_exec "$NS" "$RELEASE-postgresql" OWLMAST_KEYCLOAK keycloak "select count(*) > 10 from information_schema.tables where table_schema='public'"
-  grep -qx 't' "$OUT/provision-keycloak-schema-intact.txt" && log "ok   provision-keycloak-idempotent (existing role/database kept, grants re-applied, schema intact)" || { log "FAIL keycloak schema after provisioning"; return 1; }
+  grep -qx 't' "$OUT/provision-keycloak-schema-intact.txt" && log "ok   provision-keycloak-idempotent (hook succeeded, existing role/database kept by oid, schema intact)" || { log "FAIL keycloak schema after provisioning"; return 1; }
 }
 
 step_persistence() {
@@ -707,13 +766,16 @@ step_first_enable() {
   record fe1-app-marker k -n "$NS" exec "deploy/$FE_RELEASE-postgresql" -- sh -c 'PGPASSWORD="$OWLMAST_APP_PASSWORD" psql -v ON_ERROR_STOP=1 -U "$OWLMAST_APP_USERNAME" -h 127.0.0.1 -d owlmast -Atc "create table if not exists qualification_marker(v text primary key); insert into qualification_marker values ('"'"'before-enable'"'"') on conflict do nothing; select v from qualification_marker"'
   grep -q before-enable "$OUT/fe1-app-marker.txt" || { log "FAIL marker"; return 1; }
   log "== enable the identity bundle with the pre-upgrade provisioning hook (helm upgrade --wait)"
+  record_release_revision fe2-revision-before "$FE_RELEASE" || return 1
   record fe2-enable-upgrade h upgrade "$FE_RELEASE" "$CHART" -n "$NS" --wait --timeout 10m "${common[@]}" \
     --set identity.bundled=true --set postgresql.provisionKeycloakDatabase=true
-  record fe2-hook-job k -n "$NS" get job "$FE_RELEASE-postgresql-provision-keycloak" -o jsonpath='{.status.succeeded} {.status.failed}{"\n"}'
-  grep -q '^1 ' "$OUT/fe2-hook-job.txt" || { log "FAIL provisioning hook did not succeed exactly once"; return 1; }
-  record fe2-hook-log k -n "$NS" logs "job/$FE_RELEASE-postgresql-provision-keycloak"
-  grep -q 'CREATE ROLE' "$OUT/fe2-hook-log.txt" && grep -q 'CREATE DATABASE' "$OUT/fe2-hook-log.txt" && grep -q 'GRANT' "$OUT/fe2-hook-log.txt" \
-    && log "ok   fe2-first-enable-provisioned (role and database created by the pre-upgrade hook)" || { log "FAIL first-enable hook log"; return 1; }
+  # The hook Job and its log are deleted on success (hook-succeeded). The role and database were absent before
+  # (fe1-no-keycloak-role); now the Keycloak principal logs in to its own database and both carry identifiers.
+  record_release_revision fe2-revision-after "$FE_RELEASE" || return 1
+  assert_revision_advanced fe2-revision fe2-revision-before fe2-revision-after || return 1
+  record_keycloak_identity fe2-keycloak-identity "$NS" "$FE_RELEASE-postgresql" || return 1
+  hook_objects_removed fe2-hook-removed "$FE_RELEASE" || return 1
+  log "ok   fe2-first-enable-provisioned (role and database absent before, present after the pre-upgrade hook: $(keycloak_identity_of fe2-keycloak-identity))"
   record fe2-keycloak-ready proxy_get "$NS" "$FE_RELEASE-keycloak:management" /health/ready
   record fe2-keycloak-discovery proxy_get "$NS" "$FE_RELEASE-keycloak:http" /realms/owl-mast/.well-known/openid-configuration
   grep -q "\"issuer\":\"http://$FE_RELEASE-keycloak:8080/realms/owl-mast\"" "$OUT/fe2-keycloak-discovery.txt" || { log "FAIL bundled issuer after enable"; return 1; }
@@ -728,15 +790,14 @@ step_first_enable() {
   check_shared_postgres "$NS" "$FE_RELEASE-postgresql" || { RELEASE="$saved_release"; return 1; }
   RELEASE="$saved_release"
   log "== retry the same transition: idempotent no-op"
-  record fe3-retry-upgrade h upgrade "$FE_RELEASE" "$CHART" -n "$NS" --wait --timeout 10m "${common[@]}" \
-    --set identity.bundled=true --set postgresql.provisionKeycloakDatabase=true
-  record fe3-hook-log k -n "$NS" logs "job/$FE_RELEASE-postgresql-provision-keycloak"
-  grep -q 'GRANT' "$OUT/fe3-hook-log.txt" && ! grep -qE 'CREATE ROLE|CREATE DATABASE' "$OUT/fe3-hook-log.txt" \
-    && log "ok   fe3-retry-no-op (grants re-applied, nothing recreated)" || { log "FAIL retry was not a no-op"; return 1; }
+  reprovision_keeps_keycloak fe3 "$FE_RELEASE" fe3-retry-upgrade --timeout 10m "${common[@]}" \
+    --set identity.bundled=true --set postgresql.provisionKeycloakDatabase=true || return 1
+  [ "$(keycloak_identity_of fe3-identity-after)" = "$(keycloak_identity_of fe2-keycloak-identity)" ] \
+    && log "ok   fe3-retry-no-op (hook succeeded again, role and database are the ones the first enable created)" || { log "FAIL retry was not a no-op"; return 1; }
   record fe3-app-marker k -n "$NS" exec "deploy/$FE_RELEASE-postgresql" -- sh -c 'PGPASSWORD="$OWLMAST_APP_PASSWORD" psql -v ON_ERROR_STOP=1 -U "$OWLMAST_APP_USERNAME" -h 127.0.0.1 -d owlmast -Atc "select v from qualification_marker"'
   grep -q before-enable "$OUT/fe3-app-marker.txt" || { log "FAIL app data after retry"; return 1; }
   record fe3-keycloak-schema k -n "$NS" exec "deploy/$FE_RELEASE-postgresql" -- sh -c 'PGPASSWORD="$OWLMAST_KEYCLOAK_PASSWORD" psql -U "$OWLMAST_KEYCLOAK_USERNAME" -h 127.0.0.1 -d keycloak -Atc "select count(*) > 10 from information_schema.tables where table_schema='"'"'public'"'"'"'
-  grep -qx t "$OUT/fe3-keycloak-schema.txt" || { log "FAIL keycloak schema after retry"; return 1; }
+  grep -qx t "$OUT/fe3-keycloak-schema.txt" && log "ok   fe3-keycloak-schema-intact" || { log "FAIL keycloak schema after retry"; return 1; }
   record fe4-uninstall h uninstall "$FE_RELEASE" -n "$NS" --wait
   record fe4-retained-claim k get pvc "$FE_RELEASE-postgresql-data" -n "$NS" -o jsonpath='{.metadata.uid} {.status.phase} {.metadata.labels.owlmast\.aisquad\.com/run}{"\n"}'
   grep -q "$fe_pvc_uid Bound $FE_RUN_ID" "$OUT/fe4-retained-claim.txt" && log "ok   fe4-fixture-claim-retained (owned by $FE_RUN_ID, not deleted)" || { log "FAIL fixture claim"; return 1; }

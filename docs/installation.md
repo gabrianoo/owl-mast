@@ -510,7 +510,18 @@ and the matching `allowInsecureTransport=true` explicitly; each Secret is create
 one `create` call, and a replicated Secret is written with `create`, never `apply`, so an interrupted run leaves no
 unlabelled Secret and an existing Secret is never overwritten), installs all four combinations sequentially, proves pod replacement,
 uninstall retention, reinstall with the existing claim and upgrade, and exercises the failure paths
-(Secret missing a key, non-existent realm). The backend image identity is read from the one Running,
+(Secret missing a key, non-existent realm). The provisioning hook is proven without reading its Job: Helm
+deletes the hook Job and its ConfigMap once the hook succeeded, so their status and log no longer exist after a
+successful upgrade. For a provisioning upgrade on an initialised volume (the `bundled-bundled` step and the
+`first-enable` retry) the script records `pg_roles.oid` of the Keycloak role and `pg_database.oid` and owner of
+the Keycloak database before the upgrade, read as the Keycloak principal, and requires the same values after it
+(a dropped and recreated role or database gets a new oid). It also requires that `helm upgrade --wait` returned
+0 (Helm fails the upgrade when a pre-upgrade hook fails), that `helm status` shows a higher revision as
+`deployed`, that the Keycloak schema is still present, and that the hook Job and ConfigMap are absent
+afterwards. An unreadable identifier, or a hook object that is still present, fails the step. On the first enable
+the role and database are absent before the upgrade and readable by the Keycloak principal after it. The retry no
+longer shows from a Job log that the grants were re-applied; the privilege and CONNECT checks run after the first
+enable. The backend image identity is read from the one Running,
 non-terminating backend pod, and an empty `imageID` fails the check. AC3 checks fail the step even when the
 caller runs them under `||` (first-enable). Isolation evidence requires the PostgreSQL CONNECT denial
 for the other database together with a successful same-principal control connection; transport or
