@@ -359,6 +359,18 @@ class R2dbcWorkRepository implements WorkRepository {
         transaction -> limitStatementTime(statementLimit).thenMany(dueTenants(limit, types)));
   }
 
+  /**
+   * A PostgreSQL regular expression for what {@link TenantId} refuses as blank: empty, or only
+   * characters {@link Character#isWhitespace(int)} accepts ({@code String.isBlank}). Written out
+   * because PostgreSQL's {@code [[:space:]]}, which V004 uses, follows the database's character
+   * classification: it leaves out U+001C to U+001F and, under some collations, the Unicode
+   * separators, so such ids would sort among the real tenants, take slots of the limit and then be
+   * skipped.
+   */
+  static final String JAVA_BLANK =
+      "^[\\t\\n\\u000b\\f\\r\\u001c-\\u001f \\u1680\\u2000-\\u2006\\u2008-\\u200a"
+          + "\\u2028\\u2029\\u205f\\u3000]*$";
+
   private Flux<TenantId> dueTenants(int limit, Set<WorkType> types) {
     return databaseClient
         .sql(
@@ -367,7 +379,9 @@ class R2dbcWorkRepository implements WorkRepository {
                 + CLAIMABLE
                 // A tenant id no scope can be bound to sorts last, so such rows take a slot of
                 // the limit only when fewer real tenants are due and never starve one.
-                + " group by tenant_id order by (tenant_id ~ '^[[:space:]]*$'),"
+                + " group by tenant_id order by (tenant_id ~ '"
+                + JAVA_BLANK
+                + "'),"
                 + " min(case when status = 'PENDING' then next_attempt_at else lease_expires_at"
                 + " end), tenant_id limit :limit")
         .bind("limit", (long) limit)

@@ -1649,6 +1649,42 @@ class DurableWorkIT {
     }
   }
 
+  /**
+   * Review 5883535263: the skip alone does not keep blank rows from starving real tenants, because
+   * the limit is applied before it. Discovery sorts every id {@code TenantId} refuses after the
+   * real tenants, including the ones PostgreSQL's {@code [[:space:]]} (and so V004) lets through:
+   * U+001F and the Unicode separators.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = {"repeat(' ', 3)", "chr(9)", "chr(31)", "chr(8232)", "chr(12288)"})
+  void aBlankTenantNeverTakesTheLastSlotOfABoundedDiscovery(String blankTenant) {
+    createNote(TENANT_A, Failure.NONE);
+    createNote(TENANT_B, Failure.NONE);
+    db.runSql("alter table jobs.work_item drop constraint work_item_tenant_id_not_blank");
+    try {
+      db.runSql(
+          "update jobs.work_item set tenant_id = "
+              + blankTenant
+              + ", next_attempt_at = next_attempt_at - interval '1 hour'"
+              + " where tenant_id = 'tenant-a'");
+      assertThat(db.count("select count(*) from jobs.work_item where tenant_id = " + blankTenant))
+          .isEqualTo(1L);
+
+      assertThat(
+              repository
+                  .tenantsWithDueWork(1, registry.types(), policy.stepTimeout())
+                  .collectList()
+                  .block())
+          .as("the blank row waited longest, yet the only slot goes to the real tenant")
+          .containsExactly(TENANT_B.tenant());
+    } finally {
+      db.runSql("delete from jobs.work_item where tenant_id not in ('tenant-a', 'tenant-b')");
+      db.runSql(
+          "alter table jobs.work_item add constraint work_item_tenant_id_not_blank"
+              + " check (tenant_id !~ '^[[:space:]]*$')");
+    }
+  }
+
   /** E01-R-04: V004 and V005 reject a blank tenant id on the jobs and audit tables. */
   @ParameterizedTest
   @ValueSource(
