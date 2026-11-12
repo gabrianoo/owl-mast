@@ -80,6 +80,13 @@ On a fresh database Keycloak then starts without any administrator, and the rele
 when a secret reference is empty, or when an unknown key (for example `auth.enabled`) is passed
 (`values.schema.json` rejects unknown top-level keys).
 
+A "compatible" external PostgreSQL is version 17 or newer with VectorChord 1.1.1 preloaded and installed in the
+application database (the bundle is PostgreSQL 18.3). The chart cannot see the version of a server it does not
+run, so the backend checks it: the `schemaBaseline` readiness component reads `server_version_num` and stays
+DOWN below 17, with the log line `PostgreSQL <major> answered; Owl Mast requires PostgreSQL 17 or newer`.
+Durable work bounds each handler transaction with `transaction_timeout`, which PostgreSQL 17 introduced; on an
+older server every handler would fail and audit publication would retry forever.
+
 Transport to external dependencies fails closed. `identity.external.issuerUri` must be an `https://` URL whose
 host is a DNS name or IPv4 address with an optional numeric port, and with no query, fragment or user info (the
 backend refuses a query, fragment or user info as well, naming `owlmast.identity.issuer-uri`); a plaintext `http://` issuer renders only with
@@ -188,6 +195,9 @@ pending).
 | `backend.extraEnv` refuses every `LD_*` name; `identity.keycloak.bootstrapAdmin.enabled` must be `true` or `false` (also with `--skip-schema-validation`) | Remove loader variables; write the boolean |
 | `commonLabels` are no longer copied into the PostgreSQL pod template | Nothing; select the database pod by the chart's own labels |
 | The backend Deployment uses the `Recreate` strategy (single instance) | Expect the backend to be down for the length of its restart on every rollout |
+| `frontend.containerPort` is fixed at 8080, the only port the frontend image listens on (also with `--skip-schema-validation`); any other value pointed the probes and the Service at a port without a listener | Remove an override; use `frontend.service.port` to change the Service port |
+| The backend image starts the JVM with `--enable-native-access=ALL-UNNAMED` (Netty's native libraries on JDK 24+) | Nothing. Do not try to pass it through `backend.javaToolOptions`: the allow-list refuses it, and the image already sets it |
+| The backend applies migrations V002–V005 (durable work, audit, non-blank tenant ids) and stays not ready on a PostgreSQL server older than 17 | An external PostgreSQL must be 17 or newer; the bundled one is 18 |
 | The bundled PostgreSQL pod is recreated once by this upgrade (probe commands, `fsGroupChangePolicy`, script-only checksum) | Plan the database restart; later chart bumps no longer recreate it |
 | The backend refuses a plaintext issuer unless told otherwise; the issuer is compared exactly | Nothing for chart installs (the chart sets the flag for the bundled Keycloak and for `allowInsecureIssuer=true`). A release that was ready on 0.1.0 with an issuer differing from the published one only by a trailing slash becomes unready after the upgrade, with no error at render: a trailing slash is part of the issuer. Compare `identity.external.issuerUri` with the `issuer` of the provider's discovery document before upgrading; afterwards the backend log names the published value (health detail `publishedIssuer`) |
 | Service and container ports must be integers 1–65535; database names at most 63 characters; `backend.image.tag` or `digest` required | Correct the values |
@@ -391,7 +401,9 @@ not decided here**: local node storage is disposable, and no backup is implied.
 ## Frontend and routing values (T2/T4)
 
 `frontend.*` deploys the independent shell artifact delivered by OM-01.04 (`frontend.image.*`;
-disabled by default, and enabling without a tag or digest fails rendering). Build the image from
+disabled by default, and enabling without a tag or digest fails rendering). `frontend.containerPort` is fixed
+at 8080: the image's nginx listens there and reads no other port, so the schema and the templates refuse any
+other value; `frontend.service.port` (default 80) is the port to change. Build the image from
 `frontend/Dockerfile` (Node 24.21.0 build stage, `nginxinc/nginx-unprivileged:1.31.7-alpine` runtime,
 port 8080, UID 101) and verify its contract with `scripts/verify-frontend-artifact.sh`:
 

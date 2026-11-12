@@ -21,6 +21,8 @@ backend:
     digest: ""
     pullPolicy: IfNotPresent
   replicas: 1
+  # Fixed at 8080, the port the frontend image's nginx listens on; any other value is refused, because the
+  # probes and the Service would point at a port nothing listens on. The Service port is frontend.service.port.
   containerPort: 8080
   service:
     type: ClusterIP
@@ -80,6 +82,8 @@ frontend:
     digest: ""
     pullPolicy: IfNotPresent
   replicas: 1
+  # Fixed at 8080, the port the frontend image's nginx listens on; any other value is refused, because the
+  # probes and the Service would point at a port nothing listens on. The Service port is frontend.service.port.
   containerPort: 8080
   service:
     type: ClusterIP

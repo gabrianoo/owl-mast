@@ -7,6 +7,9 @@
 #   - `docker build` succeeds (the Temurin tarball checksum is verified inside the build);
 #   - the image runs as UID/GID 10001, the identity the chart's backend Deployment enforces;
 #   - the JVM is the qualified Temurin 27.0.1 and starts on a read-only root with /tmp as tmpfs;
+#   - the entrypoint passes --enable-native-access=ALL-UNNAMED (Netty's native libraries on JDK 24+); the option
+#     is the image's own because the chart's backend.javaToolOptions allow-list refuses it, and no start prints
+#     the JDK's native-access warning;
 #   - the application jar is present at /app/owl-mast.jar and is a Spring Boot executable archive;
 #   - the APPLICATION starts on that read-only root as the chart runs it (UID/GID, no capabilities, no new
 #     privileges, /tmp the only writable path): the image's own entrypoint launches Spring Boot with the
@@ -70,7 +73,10 @@ java_version="$(run --entrypoint java "$IMAGE" -version 2>&1)"
 check "qualified JVM (Temurin 27.0.1) starts on a read-only root" grep -q 'Temurin-27.0.1' <<<"$java_version"
 check "application jar present at /app/owl-mast.jar" run --entrypoint test "$IMAGE" -f /app/owl-mast.jar
 check "application jar is a Spring Boot executable archive" bash -c "docker run --rm --network none --entrypoint sh '$IMAGE' -c 'cd /tmp && jar tf /app/owl-mast.jar 2>/dev/null || unzip -l /app/owl-mast.jar' | grep 'BOOT-INF/lib/' >/dev/null"
-check "entrypoint runs the application jar" bash -c "[ \"\$(docker image inspect -f '{{json .Config.Entrypoint}}' '$IMAGE')\" = '[\"java\",\"-jar\",\"/app/owl-mast.jar\"]' ]"
+check "entrypoint runs the application jar with native access enabled for Netty" bash -c "[ \"\$(docker image inspect -f '{{json .Config.Entrypoint}}' '$IMAGE')\" = '[\"java\",\"--enable-native-access=ALL-UNNAMED\",\"-jar\",\"/app/owl-mast.jar\"]' ]"
+# The native-access option must be the image's own: the chart's JAVA_TOOL_OPTIONS allow-list refuses it.
+check "the chart's javaToolOptions allow-list does not admit --enable-native-access (so the image must set it)" bash -c '! grep -q "enable-native-access" deploy/helm/owl-mast/values.schema.json deploy/helm/owl-mast/templates/_helpers.tpl'
+
 
 # The application itself, started by the image's own entrypoint exactly as the chart's pod runs it, with the
 # variables the chart's backend Deployment renders (deploy/tests compares the names and the URL forms with a
@@ -100,6 +106,7 @@ smoke_checks() { # smoke_checks <label> <issuer> <allow-insecure-issuer>: a star
   check "$label: no configuration-binding refusal" bash -c '! grep -Eq "owlmast\.identity\.|Failed to bind properties|ConfigurationPropertiesBindException" <<<"$1"' _ "$smoke_log"
   check "$label: bean creation reached the actuator endpoints" grep -Eq "Exposing [0-9]+ endpoints? beneath base path '/actuator'" <<<"$smoke_log"
   check "$label: startup stopped at the first database connection (Flyway initializer, connection refused)" bash -c 'grep -q "flywayInitializer" <<<"$1" && grep -q "Connection to 127.0.0.1:1 refused" <<<"$1"' _ "$smoke_log"
+  check "$label: the JVM printed no native-access warning (the image passes --enable-native-access)" bash -c '! grep -Eqi "restricted method|enable-native-access|System::load has been called" <<<"$1"' _ "$smoke_log"
   check "$label: no filesystem, launcher or class-loading failure on the read-only root up to that point" bash -c '! grep -Eqi "Read-only file system|Permission denied|AccessDeniedException|ClassNotFoundException|NoClassDefFoundError|Unable to access jarfile|no main manifest attribute|UnsatisfiedLinkError" <<<"$1"' _ "$smoke_log"
   if [ "$failures" -ne "$before" ]; then echo "---- application output of '$label' (last 40 lines)"; tail -n 40 <<<"$smoke_log"; fi
 }

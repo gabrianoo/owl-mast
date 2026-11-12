@@ -1819,6 +1819,24 @@ class ReviewCycle6Test(unittest.TestCase):
             self.assertNotIn("keycloak.service.port", text)
         self.assertEqual(helpers.count("keycloak.service.port"), 1)
 
+    def test_the_frontend_container_port_is_fixed_at_the_port_the_image_listens_on(self):
+        """E01-R-06 (retro B6): any port was accepted, but the image's nginx listens on 8080 only, so the probes failed."""
+        listen = (REPO / "frontend" / "nginx" / "default.conf.template").read_text()
+        self.assertRegex(listen, r"(?m)^\s*listen\s+8080;")
+        frontend = ("frontend.enabled=true", "frontend.image.tag=0.0.1-shell")
+        for value in ("8081", "80", "8443"):
+            self.assertIn("schema", refused(*sets(*frontend, f"frontend.containerPort={value}")).lower(), value)
+            err = refused("--skip-schema-validation", *sets(*frontend, f"frontend.containerPort={value}"))
+            self.assertIn(f"frontend.containerPort {value} is refused", err, value)
+            self.assertIn("listens on 8080 only", err, value)
+        # Refused with the frontend disabled too: the value is wrong whenever it is enabled later.
+        self.assertIn("schema", refused(*sets("frontend.containerPort=8081")).lower())
+        docs = render(*sets(*frontend, "frontend.containerPort=8080", "frontend.service.port=8088"))
+        container = deployments_of(docs)["t-owl-mast-frontend"]["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual(container["ports"], [{"name": "http", "containerPort": 8080}])
+        service = next(d for d in by_kind(docs, "Service") if d["metadata"]["name"] == "t-owl-mast-frontend")
+        self.assertEqual(service["spec"]["ports"][0]["port"], 8088)
+
     def test_the_keycloak_network_policy_admits_the_container_port_whatever_the_service_port(self):
         """4545058435: a NetworkPolicy port is the pod's port; the Service port must not leak into it."""
         docs = render(*sets("identity.keycloak.service.port=80"))
