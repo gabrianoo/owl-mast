@@ -397,19 +397,28 @@ port 8080, UID 101) and verify its contract with `scripts/verify-frontend-artifa
 
 ```sh
 docker build -t owl-mast/frontend:0.1.0 frontend
-scripts/verify-frontend-artifact.sh                      # non-root, SPA fallback, /owlmast-config.json, no JDK
+scripts/verify-frontend-artifact.sh                      # non-root, SPA fallback, /owlmast-config.json, prefix guard, no JDK
 helm upgrade --install owl-mast deploy/helm/owl-mast --set frontend.enabled=true --set frontend.image.tag=0.1.0 …
 ```
 
 The container receives `OWLMAST_API_PATH_PREFIX` (= `routing.apiPathPrefix`) and republishes it to
 the shell as `/owlmast-config.json`; the shell then calls `GET <prefix>/compatibility` on the same
-origin, so the route for `routing.apiPathPrefix` must reach the backend's `/api`. Before enabling or
-upgrading the frontend, run the pre-rollout pair check against the deployed backend
-([api-compatibility.md](api-compatibility.md)):
+origin, so the route for `routing.apiPathPrefix` must reach the backend's `/api`. The container refuses
+to start when the prefix is not an absolute path of letters, digits, `.`, `_`, `~`, `-` and `/` without
+empty, `.` or `..` segments, and it answers 404 below the prefix: a request that reaches the frontend
+there was misrouted, and the shell then reports that no descriptor was published instead of a healthy
+backend. Before enabling or upgrading the frontend, run the pre-rollout pair check against the artifacts
+being rolled out ([api-compatibility.md](api-compatibility.md)). `--frontend-url` reads the contract the
+frontend image publishes at `/api-compatibility.json`; without it the script reads the manifest of the
+checkout it runs from, which says nothing about an image built from another commit:
 
 ```sh
-scripts/check-api-compatibility.py --backend-url https://<public-origin>   # exit 1 = do not roll out
+scripts/check-api-compatibility.py --frontend-url <candidate-frontend> --backend-url <candidate-or-deployed-backend>   # exit 1 = do not roll out
 ```
+
+`<candidate-frontend>` is the image about to be rolled out, not the public origin, which still serves the
+previous frontend (for example `docker run --rm -p 127.0.0.1:8081:8080 <image>` and
+`http://127.0.0.1:8081`); [api-compatibility.md](api-compatibility.md) has the details.
 
 This story proves the image contract and the browser → backend path locally and in CI; deploying
 the frontend image onto the Kind target remains a live qualification step. `routing.*` defines the path

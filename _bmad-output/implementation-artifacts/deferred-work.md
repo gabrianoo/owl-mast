@@ -81,3 +81,16 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-om-01-03-recover-background-work-and-record-mutation-evidence.md`
   summary: Tenant discovery ranks a tenant's expired leases by `lease_expires_at`, while the claim inside a tenant orders every due item by `next_attempt_at`, so the item that made a tenant first in the wake-up is not necessarily the one claimed first.
   evidence: Owner-deferred 2026-11-12. Source: walkthrough of PR #111 at 285d862 and the spec's "Independent review of d3b985d (R4)" (B8; `R2dbcWorkRepository.dueTenants` `order by min(case when status = 'PENDING' then next_attempt_at else lease_expires_at end)` against the claim's `order by next_attempt_at, created_at`). Both orders are fair on their own and no due item becomes unclaimable; the mismatch only changes the order inside one tenant when an expired lease and older pending items coexist. Aligning them means choosing one waiting-time definition for both queries and re-pinning `anExpiredLeaseCountsAsWaitingSinceItsLeaseRanOut`.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-gh-112-resolve-review-findings.md`
+  summary: Gate protected features on the compatibility verdict: expose the verdict to the API client (for example a provider) and refuse protected requests unless the pair is Compatible.
+  evidence: PR #112 thread 4551653214. The verdict is computed and displayed in ConnectionPanel only; no protected feature exists yet, so docs/api-compatibility.md now says "displayed only". Belongs to the first story that adds a protected fetch (E02).
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-gh-112-resolve-review-findings.md`
+  summary: Run the pre-rollout API compatibility check automatically (Helm pre-upgrade hook or pipeline step) against the candidate frontend and backend artifacts.
+  evidence: PR #112 thread 4551653219. The image now publishes /api-compatibility.json and the script has --frontend-url, but running it is still an operator step; a hook needs egress to both artifacts, an image for the check and an owner decision on failure policy.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-gh-112-resolve-review-findings.md`
+  summary: Bring failures raised outside controllers (web filters, codecs) and authentication/authorization exceptions under the RFC 9457 envelope with their own status.
+  evidence: PR #112 thread 4551653387. UnhandledFailureAdvice covers controller exceptions (500); a filter-level failure still gets Spring Boot's default application/json body, and a future AccessDeniedException would answer 500 unless mapped. No filter or security dependency exists before E02.
+

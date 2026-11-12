@@ -43,15 +43,15 @@ behaviour, so `src/app/router.tsx` wraps the History API in about 100 lines.
 | `npm run dev` | Vite dev server on 5173, proxying `/api` and `/actuator` to `OWLMAST_BACKEND_URL` (default `http://127.0.0.1:8080`, e.g. `./gradlew :backend:bootTestRun --args='--server.port=8080'`). |
 | `npm run lint` / `npm run typecheck` | ESLint (strict type-checked, jsx-a11y strict, react-hooks) and `tsc` for app, config and e2e projects. |
 | `npm test` / `npm run test:coverage` | Vitest + Testing Library in jsdom: tokens against DESIGN.md, owl mark against the accepted SVG, contrast arithmetic, theme, router, primitives, connection states, preferences. |
-| `npm run build` | Production bundle in `dist/`. |
-| `npm run test:e2e` | Playwright `shell` project against `vite preview`: axe WCAG 2.2 AA in light and dark at 1280 px and 320 px, keyboard flow, dialog return, 320 px reflow, 200 % text size, 44 px targets, reduced motion, every connection state (API mocked per test). |
+| `npm run build` | Production bundle in `dist/`, including `api-compatibility.json` (the contract this build supports, read by the pre-rollout check with `--frontend-url`). |
+| `npm run test:e2e` | Playwright `shell` project against `vite preview`: axe WCAG 2.2 AA in light and dark at 1280 px and 320 px, keyboard flow, dialog return, 320 px reflow, 200 % text size alone and combined with 320 px and 640 px, 44 px targets, reduced motion, every connection state including its axe scan (API mocked per test), the runtime API prefix chain and the pre-paint theme script. |
 | `npm run test:e2e:smoke` | Playwright `smoke` project: starts the real backend (`bootTestRun`, disposable VectorChord container) and checks the browser → backend path through the routing contract. Needs Docker and free ports 18080 and 4174: neither server is reused, so a leftover listener fails the run instead of testing a stale backend. Both servers stop on SIGTERM when the run ends. |
-| `scripts/verify-frontend-artifact.sh` (repo root) | Builds the image and proves its runtime contract (non-root, 8080, SPA fallback, `/owlmast-config.json`, headers, no JDK). |
-| `scripts/check-api-compatibility.py` (repo root) | Static or live frontend/backend contract check, see [api-compatibility.md](api-compatibility.md). |
+| `scripts/verify-frontend-artifact.sh` (repo root) | Builds the image and proves its runtime contract (non-root, 8080, SPA fallback, `/owlmast-config.json`, published `/api-compatibility.json`, 404 below the API prefix, start-up refusal of an unsafe `OWLMAST_API_PATH_PREFIX`, headers, no JDK). With `OWLMAST_IMAGE_BROWSER_SMOKE=1` (set in CI; needs `npm ci` and `npx playwright install chromium`) it also runs Chromium against the container (`e2e/image`, `playwright.image.config.ts`): the production CSP, the nginx template and the config endpoint in a real browser. |
+| `scripts/check-api-compatibility.py` (repo root) | Frontend/backend contract check: static from the checkout, or against the artifacts with `--frontend-url` and `--backend-url`; see [api-compatibility.md](api-compatibility.md). |
 
 CI runs the same commands: job `frontend` (lint, typecheck, unit/component with coverage, build,
-browser suite, static pair check) and job `frontend-backend-smoke` (image contract and real-backend
-smoke). `scripts/verify-quality-gates.sh` additionally proves three frontend gates fail on injected
+browser suite, static pair check) and job `frontend-backend-smoke` (image contract, Chromium against the
+image, and real-backend smoke). `scripts/verify-quality-gates.sh` additionally proves three frontend gates fail on injected
 violations (jsx-a11y, type error, token drift) and that the pair check rejects an incompatible pair.
 
 ## What the shell implements (T2/T3)
@@ -65,7 +65,10 @@ violations (jsx-a11y, type error, token drift) and that the pair check rejects a
   name; `public/owl-mark.svg` is a byte-identical copy used as favicon.
 - **Theme**: follows the device; Preferences offers Follow device / Light / Dark with explicit Save
   and the real save result; the choice persists in `localStorage` (`owlmast.theme`) and is applied
-  before first paint by `public/theme-boot.js`.
+  before first paint by `public/theme-boot.js`. The script is a static file (the CSP forbids inline
+  scripts), so it repeats the storage key; `theme.test.tsx` fails if it drifts from
+  `THEME_STORAGE_KEY`, and `e2e/shell/theme.spec.ts` proves the attribute is set with the application
+  bundle blocked.
 - **Shell**: skip link, brand home link, `surface-navigation` (persistent rail ≥ 1024 px, labelled
   menu button below), `scope-bar` (project, source identity, period, "Change scope" opening a native
   modal dialog), `main` with the destination h1. Route change sets the title to `<Destination> · Owl

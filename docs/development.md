@@ -25,8 +25,8 @@ No other tool is installed globally. Pins and the evidence behind them are in [t
 | `./gradlew :backend:dependencies --write-locks` | Refresh `backend/gradle.lockfile` after changing pins. |
 | `cd frontend && npm ci && npm run lint && npm run typecheck && npm test && npm run build` | Frontend gates and unit/component suite ([frontend.md](frontend.md)). |
 | `cd frontend && npm run test:e2e` / `npm run test:e2e:smoke` | Browser accessibility/state suite with a mocked API; browser → real backend smoke (starts `bootTestRun`, needs Docker). |
-| `scripts/verify-frontend-artifact.sh` | Build the frontend image and prove its runtime contract (non-root 8080, SPA fallback, config endpoint, no JDK). |
-| `scripts/check-api-compatibility.py [--backend-url URL]` | Frontend/backend API contract check ([api-compatibility.md](api-compatibility.md)). |
+| `scripts/verify-frontend-artifact.sh` | Build the frontend image and prove its runtime contract (non-root 8080, SPA fallback, config endpoint, published API contract, 404 below the API prefix, prefix guard, no JDK); `OWLMAST_IMAGE_BROWSER_SMOKE=1` adds Chromium against the container. |
+| `scripts/check-api-compatibility.py [--frontend-url URL] [--backend-url URL]` | Frontend/backend API contract check ([api-compatibility.md](api-compatibility.md)). |
 
 ## Running against your own PostgreSQL
 
