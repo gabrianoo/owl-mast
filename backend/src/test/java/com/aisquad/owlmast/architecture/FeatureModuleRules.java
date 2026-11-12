@@ -80,12 +80,42 @@ public final class FeatureModuleRules {
             .should()
             .dependOnClassesThat()
             .resideInAPackage(root + "..adapter..")
-            .as("application/port must not depend on adapters"));
+            .as("application/port must not depend on adapters"),
+        // The layering table of docs/engineering-conventions.md, row by row (E01-R-10). `api` is
+        // the lowest layer of a feature: published values and interfaces that other features
+        // compile against, so nothing internal may appear in them.
+        noClasses()
+            .that()
+            .resideInAPackage(root + "..api..")
+            .should()
+            .dependOnClassesThat()
+            .resideInAnyPackage(root + "..application..", root + "..domain..", root + "..port..")
+            .as("api must not depend on application, domain or port"),
+        noClasses()
+            .that()
+            .resideInAPackage(root + "..domain..")
+            .should()
+            .dependOnClassesThat()
+            .resideInAnyPackage(root + "..application..", root + "..port..")
+            .as("domain must not depend on application or port"),
+        noClasses()
+            .that()
+            .resideInAPackage(root + "..port..")
+            .should()
+            .dependOnClassesThat()
+            .resideInAPackage(root + "..application..")
+            .as("port must not depend on application"));
   }
 
-  /** Each feature's non-api internals are private to that feature. */
+  /**
+   * Per feature: its non-api internals are private to it, and its domain uses nothing of another
+   * feature (not even that feature's api; cross-feature composition belongs to application).
+   */
   public List<ArchRule> featureIsolationRules(JavaClasses classes) {
-    return features(classes).stream().map(this::featureInternalsPrivate).toList();
+    return features(classes).stream()
+        .sorted()
+        .flatMap(feature -> Stream.of(featureInternalsPrivate(feature), domainStaysLocal(feature)))
+        .toList();
   }
 
   /** Every rule evaluated separately, keyed by its description, so each report stays readable. */
@@ -107,6 +137,20 @@ public final class FeatureModuleRules {
         .should()
         .dependOnClassesThat(resideInAPackage(featurePkg).and(not(resideInAPackage(apiPkg))))
         .as("only '" + feature + ".api' may be used outside feature '" + feature + "'");
+  }
+
+  private ArchRule domainStaysLocal(String feature) {
+    return noClasses()
+        .that()
+        .resideInAPackage(pkg(feature, ".domain.."))
+        .should()
+        .dependOnClassesThat(
+            resideInAPackage(root + "..")
+                .and(not(resideInAPackage(pkg(feature, ".."))))
+                .and(not(resideInAPackage(pkg(PLATFORM, "..")))))
+        .as("domain of '" + feature + "' must not depend on another feature")
+        // A feature without a domain package has nothing to check.
+        .allowEmptyShould(true);
   }
 
   Set<String> features(JavaClasses classes) {
