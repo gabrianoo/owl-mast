@@ -30,7 +30,7 @@ export function SettingsField({ id, label, description, children, validation, gr
   );
   if (group) {
     return (
-      <fieldset className="settings-field" id={id} aria-describedby={descriptionId}>
+      <fieldset className="settings-field" id={id} aria-describedby={`${descriptionId} ${validationId}`}>
         <legend className="settings-field__label">{label}</legend>
         {content}
       </fieldset>

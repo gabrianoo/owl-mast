@@ -24,13 +24,101 @@ test.describe('connection states: loading, compatible, incompatible, unsupported
     await expect(page.getByText('The backend did not publish a compatibility descriptor')).toBeVisible();
   });
 
-  test('denied access shows neutral copy and moves focus to it', async ({ page }) => {
+  test('denied access shows neutral copy with a working return and leaves focus where it was', async ({ page }) => {
     await mockDescriptor(page, { status: 403 });
     await page.goto('/');
     const heading = page.getByRole('heading', { level: 3, name: "This connection isn't available to this session" });
     await expect(heading).toBeVisible();
-    await expect(heading).toBeFocused();
+    // First paint is not a user action: focus stays at the document start (no unexpected context change).
+    await expect(heading).not.toBeFocused();
+    expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
     await expect(page.getByText('mocked')).toHaveCount(0);
+    await page.getByRole('link', { name: 'Return to Daily Work' }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Daily Work' })).toBeFocused();
+  });
+
+  test('a background denial removes the values without taking focus from the control in use', async ({ page }) => {
+    let status = 200;
+    await page.route('**/api/compatibility', (route) =>
+      status === 200
+        ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(compatibleDescriptor) })
+        : route.fulfill({ status, contentType: 'application/problem+json', body: JSON.stringify({ status, title: 'Forbidden' }) }),
+    );
+    await page.clock.install();
+    await page.goto('/');
+    await expect(page.getByText('Compatible frontend and backend')).toBeVisible();
+    const scope = page.getByRole('button', { name: 'Change scope' });
+    await scope.focus();
+    status = 403;
+    await page.clock.runFor(31_000);
+    await expect(page.getByRole('heading', { level: 3, name: "This connection isn't available to this session" })).toBeVisible();
+    await expect(page.getByText('0.1.0-SNAPSHOT')).toHaveCount(0);
+    await expect(scope).toBeFocused();
+  });
+
+  test('a denial that removes the focused control moves focus to the neutral heading instead of dropping it', async ({ page }) => {
+    let answer: 'v1' | 'v2' | 'denied' = 'v1';
+    await page.route('**/api/compatibility', (route) =>
+      answer === 'denied'
+        ? route.fulfill({ status: 403, contentType: 'application/problem+json', body: JSON.stringify({ status: 403, title: 'Forbidden' }) })
+        : route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({ ...compatibleDescriptor, backendVersion: answer === 'v1' ? '0.1.0-SNAPSHOT' : '0.2.0' }),
+          }),
+    );
+    await page.clock.install();
+    await page.goto('/');
+    await expect(page.getByText('0.1.0-SNAPSHOT')).toBeVisible();
+    answer = 'v2';
+    await page.clock.runFor(31_000);
+    const show = page.getByRole('button', { name: 'Show 1 new update' });
+    await show.focus();
+    await expect(show).toBeFocused();
+    answer = 'denied';
+    await page.clock.runFor(31_000);
+    await expect(show).toHaveCount(0);
+    await expect(page.getByRole('heading', { level: 3, name: "This connection isn't available to this session" })).toBeFocused();
+  });
+
+  test('a backend rollback replaces the Compatible verdict without any user action', async ({ page }) => {
+    let contract = { major: 1, minor: 0 };
+    await page.route('**/api/compatibility', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...compatibleDescriptor, apiContract: contract }) }),
+    );
+    await page.clock.install();
+    await page.goto('/');
+    await expect(page.getByText('Compatible frontend and backend')).toBeVisible();
+    contract = { major: 2, minor: 0 };
+    await page.clock.runFor(31_000);
+    await expect(page.getByText('Incompatible frontend and backend')).toBeVisible();
+    await expect(page.getByText('Compatible frontend and backend', { exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /Show 1 new update/ })).toHaveCount(0);
+  });
+
+  test('an initial error does not pin the panel: the next healthy check replaces it', async ({ page }) => {
+    let healthy = false;
+    await page.route('**/api/compatibility', (route) =>
+      healthy
+        ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(compatibleDescriptor) })
+        : route.fulfill({ status: 503, contentType: 'application/problem+json', body: JSON.stringify({ status: 503, title: 'Service Unavailable' }) }),
+    );
+    await page.clock.install();
+    await page.goto('/');
+    await expect(page.getByText('The backend could not be reached')).toBeVisible();
+    healthy = true;
+    await page.clock.runFor(31_000);
+    await expect(page.getByText('Compatible frontend and backend')).toBeVisible();
+    await expect(page.getByText('The backend could not be reached')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /Show 1 new update/ })).toHaveCount(0);
+  });
+
+  test('an API path answered by something that is not the backend is unverifiable, not "status 200"', async ({ page }) => {
+    await mockDescriptor(page, { status: 200, contentType: 'text/html', body: '<!doctype html><div id="root"></div>' });
+    await page.goto('/');
+    await expect(page.getByText('The answer was not a compatibility descriptor')).toBeVisible();
+    await expect(page.getByText(/status 200/)).toHaveCount(0);
+    await expect(page.getByText('Compatible frontend and backend')).toHaveCount(0);
   });
 
   test('a server error is a distinct problem state without invented values', async ({ page }) => {

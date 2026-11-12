@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode, type RefObject } from 'react';
 
 /**
  * state-message (UX-DR26): distinct loading / empty / error / offline / denied / stale /
@@ -29,9 +29,11 @@ export interface StateMessageProps {
   /** Heading level for the title; defaults to a paragraph so lists of states do not fight the page outline. */
   as?: 'h2' | 'h3' | 'p';
   id?: string;
+  /** Receives the title element and makes it programmatically focusable, for callers that manage focus themselves. */
+  titleRef?: RefObject<HTMLElement | null>;
 }
 
-export function StateMessage({ kind, title, children, action, focusOnMount = false, as: Title = 'p', id }: StateMessageProps) {
+export function StateMessage({ kind, title, children, action, focusOnMount = false, as: Title = 'p', id, titleRef: callerTitleRef }: StateMessageProps) {
   const titleRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -45,9 +47,10 @@ export function StateMessage({ kind, title, children, action, focusOnMount = fal
       <p className="state-message__kind">{STATE_KIND_LABEL[kind]}</p>
       <Title
         className="state-message__title"
-        tabIndex={focusOnMount ? -1 : undefined}
+        tabIndex={focusOnMount || callerTitleRef ? -1 : undefined}
         ref={(node: HTMLElement | null) => {
           titleRef.current = node;
+          if (callerTitleRef) callerTitleRef.current = node;
         }}
       >
         {title}

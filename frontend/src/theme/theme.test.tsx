@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { readFrontendFile } from '../testing/planning.ts';
 import { ThemeProvider, useTheme } from './ThemeProvider.tsx';
 import {
   THEME_ATTRIBUTE,
@@ -106,5 +107,44 @@ describe('ThemeProvider', () => {
     });
     expect(document.documentElement.hasAttribute(THEME_ATTRIBUTE)).toBe(false);
     setItem.mockRestore();
+  });
+});
+
+describe('pre-paint theme boot script (public/theme-boot.js)', () => {
+  const source = readFrontendFile('public/theme-boot.js');
+  const boot = () => {
+    // The script is a classic, dependency-free IIFE served as a static file; run it as the browser does.
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    (new Function(source) as () => void)();
+  };
+
+  it('reads the same storage key and attribute as the theme provider', () => {
+    expect(source).toContain(`getItem('${THEME_STORAGE_KEY}')`);
+    expect(source).toContain(`setAttribute('${THEME_ATTRIBUTE}'`);
+  });
+
+  it('applies a saved explicit theme before React mounts and ignores anything else', () => {
+    document.documentElement.removeAttribute(THEME_ATTRIBUTE);
+    window.localStorage.setItem(THEME_STORAGE_KEY, 'dark');
+    boot();
+    expect(document.documentElement.getAttribute(THEME_ATTRIBUTE)).toBe('dark');
+
+    document.documentElement.removeAttribute(THEME_ATTRIBUTE);
+    window.localStorage.setItem(THEME_STORAGE_KEY, 'purple');
+    boot();
+    expect(document.documentElement.hasAttribute(THEME_ATTRIBUTE)).toBe(false);
+
+    window.localStorage.removeItem(THEME_STORAGE_KEY);
+    boot();
+    expect(document.documentElement.hasAttribute(THEME_ATTRIBUTE)).toBe(false);
+  });
+
+  it('follows the device theme when storage is unavailable', () => {
+    document.documentElement.removeAttribute(THEME_ATTRIBUTE);
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    expect(boot).not.toThrow();
+    expect(document.documentElement.hasAttribute(THEME_ATTRIBUTE)).toBe(false);
   });
 });

@@ -2,7 +2,7 @@ import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { ActionButton } from './ActionButton.tsx';
+import { ActionButton, DEFAULT_FAILURE_MESSAGE } from './ActionButton.tsx';
 import { ExternalLink } from './ExternalLink.tsx';
 import { ModalDialog } from './ModalDialog.tsx';
 import { NewUpdates } from './NewUpdates.tsx';
@@ -66,7 +66,44 @@ describe('action-control (UX-DR27)', () => {
     await vi.waitFor(() => {
       expect(screen.getByRole('status')).toHaveAttribute('data-outcome', 'failed');
     });
-    expect(screen.getByRole('status')).toHaveTextContent('Storage unavailable');
+    expect(screen.getByRole('status')).toHaveTextContent(DEFAULT_FAILURE_MESSAGE);
+    expect(screen.getByRole('status')).not.toHaveTextContent('Storage unavailable');
+  });
+
+  it('shows the caller\'s safe failure copy, never the thrown text', async () => {
+    const user = userEvent.setup();
+    render(
+      <ActionButton failureMessage="The alias could not be saved." onAction={() => Promise.reject(new DOMException('jdbc://user:secret@host', 'NetworkError'))}>
+        Save
+      </ActionButton>,
+    );
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await vi.waitFor(() => {
+      expect(screen.getByRole('status')).toHaveTextContent('The alias could not be saved.');
+    });
+    expect(document.body).not.toHaveTextContent('secret');
+  });
+
+  it('does not submit the form again while a submit action is pending', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn((event: { preventDefault: () => void }) => {
+      event.preventDefault();
+    });
+    const onAction = vi.fn(() => new Promise<{ ok: true; message: string }>(() => undefined));
+    render(
+      <form onSubmit={onSubmit}>
+        <ActionButton type="submit" onAction={onAction}>
+          Save
+        </ActionButton>
+      </form>,
+    );
+    const button = screen.getByRole('button', { name: 'Save' });
+    await user.click(button);
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    await user.click(button);
+    await user.keyboard('{Enter}');
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onAction).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -99,6 +136,15 @@ describe('settings-field (UX-DR25)', () => {
       </SettingsField>,
     );
     expect(screen.getByRole('group', { name: 'Theme' })).toBeInTheDocument();
+  });
+
+  it('ties a group to both its description and its validation text', () => {
+    render(
+      <SettingsField id="theme" group label="Theme" description="Pick one." validation="Unsaved change: Dark.">
+        <input type="radio" name="t" aria-label="Light" />
+      </SettingsField>,
+    );
+    expect(screen.getByRole('group', { name: 'Theme' })).toHaveAccessibleDescription('Pick one. Unsaved change: Dark.');
   });
 });
 

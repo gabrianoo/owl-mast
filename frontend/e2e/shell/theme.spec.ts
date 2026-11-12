@@ -31,6 +31,19 @@ test.describe('system theme with explicit override (AC1, UX-DR01)', () => {
     await expect(page.getByText(/Current: Light/)).toBeVisible();
   });
 
+  test('the boot script applies a saved override before the application script runs', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'light' });
+    await page.addInitScript(() => {
+      window.localStorage.setItem('owlmast.theme', 'dark');
+    });
+    // The application bundle never arrives, so only /theme-boot.js can have set the attribute.
+    await page.route('**/assets/*.js', (route) => route.abort());
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('html')).toHaveAttribute('data-owl-theme', 'dark');
+    await expect(page.locator('#root')).toBeEmpty();
+    await expect(page.locator('body')).toHaveCSS('color-scheme', 'dark');
+  });
+
   test('switching back to Follow device removes the override', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'light' });
     await page.goto('/preferences');
