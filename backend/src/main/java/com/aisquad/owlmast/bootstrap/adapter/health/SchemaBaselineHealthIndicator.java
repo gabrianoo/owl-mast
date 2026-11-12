@@ -10,7 +10,12 @@ import org.springframework.boot.health.contributor.ReactiveHealthIndicator;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
-/** Reports whether the bootstrap schema baseline (VectorChord plus pgvector) is in place. */
+/**
+ * Reports whether the bootstrap schema baseline (VectorChord plus pgvector) is in place on a
+ * supported PostgreSQL server. An older server than {@link SchemaBaseline#MINIMUM_POSTGRESQL_MAJOR}
+ * keeps readiness DOWN, so the instance takes no traffic instead of failing every piece of durable
+ * work at run time.
+ */
 @Component("schemaBaseline")
 @RequiredArgsConstructor
 @Slf4j
@@ -22,7 +27,7 @@ class SchemaBaselineHealthIndicator implements ReactiveHealthIndicator {
   public Mono<Health> health() {
     return query
         .current()
-        .map(SchemaBaselineHealthIndicator::up)
+        .map(baseline -> baseline.serverIsSupported() ? up(baseline) : unsupportedServer(baseline))
         .defaultIfEmpty(Health.down().withDetail("reason", "schema baseline not recorded").build())
         .onErrorResume(failure -> {
           // Diagnostic safety (NFR-6): log bounded class names only, never the message or cause
@@ -33,8 +38,22 @@ class SchemaBaselineHealthIndicator implements ReactiveHealthIndicator {
         });
   }
 
+  private static Health unsupportedServer(SchemaBaseline baseline) {
+    log.warn(
+        "PostgreSQL {} answered; Owl Mast requires PostgreSQL {} or newer",
+        baseline.postgresqlMajor(),
+        SchemaBaseline.MINIMUM_POSTGRESQL_MAJOR);
+    return Health.down()
+        .withDetail(
+            "reason",
+            "PostgreSQL " + SchemaBaseline.MINIMUM_POSTGRESQL_MAJOR + " or newer is required")
+        .withDetail("postgresqlMajor", baseline.postgresqlMajor())
+        .build();
+  }
+
   private static Health up(SchemaBaseline baseline) {
     return Health.up()
+        .withDetail("postgresqlMajor", baseline.postgresqlMajor())
         .withDetail("vchord", baseline.vchordVersion())
         .withDetail("vector", baseline.vectorVersion())
         .withDetail("appliedAt", baseline.appliedAt().toString())

@@ -364,8 +364,27 @@ class R2dbcWorkRepository implements WorkRepository {
         .bind("limit", (long) limit)
         .bind("types", typeValues(types))
         .bind("version", WorkItemContract.VERSION)
-        .map(row -> new TenantId(row.get("tenant_id", String.class)))
-        .all();
+        .map(row -> Optional.ofNullable(row.get("tenant_id", String.class)))
+        .all()
+        .flatMap(R2dbcWorkRepository::decodeTenant);
+  }
+
+  /**
+   * A stored tenant that cannot become a {@link TenantId} (blank; V004 rejects new ones, a row from
+   * before it or a hand-edited one may remain) is skipped with a warning, so one such row does not
+   * end the wake-up for every other tenant. Its work stays where it is: no tenant scope can be
+   * bound for it, so nothing can claim it, and an operator has to correct or remove the row.
+   */
+  private static Flux<TenantId> decodeTenant(Optional<String> stored) {
+    try {
+      return Flux.just(new TenantId(stored.orElse(null)));
+    } catch (IllegalArgumentException undecodable) {
+      log.warn(
+          "Due work is stored under a tenant id that is not a valid tenant ({}); it is skipped and"
+              + " stays unclaimed until the row is corrected",
+          stored.map(value -> "blank, " + value.length() + " characters").orElse("null"));
+      return Flux.empty();
+    }
   }
 
   @Override

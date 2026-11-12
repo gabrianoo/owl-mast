@@ -61,6 +61,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
@@ -1541,6 +1543,73 @@ class DurableWorkIT {
     assertThat(output.getAll())
         .contains("Processing work for tenant tenant-a failed: IllegalStateException")
         .doesNotContain("fixture: tenant-level fault");
+  }
+
+  /**
+   * E01-R-04 (retro B1): a row stored under a blank tenant id used to fail tenant discovery, so no
+   * tenant was processed on any wake-up. V004 rejects such rows; one from before it (or written
+   * while the constraint is absent, as here) is skipped with a log line and the others proceed.
+   */
+  @Test
+  void aBlankTenantRowIsSkippedAndTheOtherTenantsAreStillProcessed(CapturedOutput output) {
+    createNote(TENANT_A, Failure.NONE);
+    createNote(TENANT_B, Failure.NONE);
+    db.runSql("alter table jobs.work_item drop constraint work_item_tenant_id_not_blank");
+    try {
+      // The oldest due item, so discovery reaches it first.
+      db.runSql(
+          "update jobs.work_item set tenant_id = '   ',"
+              + " next_attempt_at = next_attempt_at - interval '1 hour'"
+              + " where tenant_id = 'tenant-a'");
+
+      assertThat(processor.runOnce().block()).isEqualTo(1L);
+
+      assertThat(db.workItems())
+          .filteredOn(row -> row.tenant().equals("tenant-b"))
+          .singleElement()
+          .satisfies(row -> assertThat(row.status()).isEqualTo("SUCCEEDED"));
+      assertThat(db.workItems())
+          .filteredOn(row -> row.tenant().isBlank())
+          .singleElement()
+          .satisfies(row -> {
+            assertThat(row.status()).isEqualTo("PENDING");
+            assertThat(row.attempts()).isZero();
+          });
+      assertThat(output.getAll())
+          .contains("Due work is stored under a tenant id that is not a valid tenant (blank, 3")
+          .contains("it is skipped and stays unclaimed until the row is corrected");
+    } finally {
+      db.runSql("delete from jobs.work_item where tenant_id ~ '^[[:space:]]*$'");
+      db.runSql(
+          "alter table jobs.work_item add constraint work_item_tenant_id_not_blank"
+              + " check (tenant_id !~ '^[[:space:]]*$')");
+    }
+  }
+
+  /** E01-R-04: V004 and V005 reject a blank tenant id on the jobs and audit tables. */
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "insert into jobs.work_item (id, tenant_id, work_type, contract_version, status,"
+            + " max_attempts, next_attempt_at, enqueued_by) values (gen_random_uuid(), ' ',"
+            + " 'fixture.follow-up', 1, 'PENDING', 3, now(), 'person-a')",
+        "insert into audit.publication_intent (event_id, envelope_version, tenant_id, actor_kind,"
+            + " object_type, action, outcome, occurred_at, correlation_id) values"
+            + " (gen_random_uuid(), 1, '', 'SERVICE', 'note', 'create', 'SUCCEEDED', now(), 'c-1')",
+        "insert into audit.event (event_id, envelope_version, tenant_id, actor_kind, object_type,"
+            + " action, outcome, occurred_at, recorded_at, correlation_id) values"
+            + " (gen_random_uuid(), 1, E'\\t', 'SERVICE', 'note', 'create', 'FAILED', now(), now(),"
+            + " 'c-1')"
+      })
+  void aBlankTenantIdIsRejectedByTheDatabase(String insert) {
+    assertThatThrownBy(() -> db.runSql(insert)).hasStackTraceContaining("tenant_id_not_blank");
+    assertThat(
+            db.count(
+                "select (select count(*) from pg_constraint where conname in"
+                    + " ('work_item_tenant_id_not_blank', 'publication_intent_tenant_id_not_blank',"
+                    + " 'event_tenant_id_not_blank') and convalidated)"))
+        .as("all three checks are validated on a database without blank rows")
+        .isEqualTo(3L);
   }
 
   @Test

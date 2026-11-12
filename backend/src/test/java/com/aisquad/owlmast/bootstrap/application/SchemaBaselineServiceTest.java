@@ -10,7 +10,7 @@ class SchemaBaselineServiceTest {
 
   @Test
   void exposesTheRepositoryAnswerThroughThePublicApi() {
-    SchemaBaseline baseline = new SchemaBaseline("1.1.1", "0.8.2", Instant.EPOCH);
+    SchemaBaseline baseline = new SchemaBaseline("1.1.1", "0.8.2", Instant.EPOCH, 180_003);
 
     StepVerifier.create(new SchemaBaselineService(() -> Mono.just(baseline)).current())
         .expectNext(baseline)
