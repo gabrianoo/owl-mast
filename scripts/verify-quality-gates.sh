@@ -147,7 +147,9 @@ export function AccessibilityViolation() {
   return <img src="/owl-mark.svg" />;
 }
 TSX
-expect_frontend_failure frontend-a11y-lint 'AccessibilityViolation\.tsx[^\n]*|jsx-a11y/alt-text' npm run lint
+# The rule id alone: ESLint prints the file name on its own line, so matching the file would accept
+# any failure in the fixture (a parse error, an unrelated rule) even with jsx-a11y removed.
+expect_frontend_failure frontend-a11y-lint 'jsx-a11y/alt-text' npm run lint
 
 echo "== frontend type gate (tsc strict)"
 fresh_frontend
