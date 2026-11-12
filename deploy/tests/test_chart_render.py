@@ -1334,6 +1334,9 @@ class ReviewCycle3Test(unittest.TestCase):
                 ('[{"ipBlock":{"cidr":"::/1"}}]', "prefix of at least /32"),
                 ('[{"ipBlock":{"cidr":"2001:db8::/31"}}]', "prefix of at least /32"),
                 ('[{"ipBlock":{"cidr":"0.0.0.0/00"}}]', "prefix of at least /8"),
+                ('[{"ipBlock":{"cidr":"::ffff:0.0.0.0/96"}}]', "must not embed a dotted IPv4 address"),
+                ('[{"ipBlock":{"cidr":"::ffff:0:0/96"}}]', "must not be an IPv4-mapped"),
+                ('[{"ipBlock":{"cidr":"::ffff:10.0.0.0/104"}}]', "must not embed a dotted IPv4 address"),
                 ('[{"ipBlock":{"cidr":"10.0.0.1"}}]', "in CIDR form"),
                 ('[{"ipBlock":{"cidr":"10.0.0.0/8/0"}}]', "in CIDR form")):
             err = refused(*peers(value))
@@ -1606,6 +1609,140 @@ class ReviewCycle3Test(unittest.TestCase):
         self.assertIn(f"Deployment {deployment}", printed)
         err = refused(*sets(f"fullnameOverride={long}", "postgresql.provisionKeycloakDatabase=true", "postgresql.persistence.existingClaim=prior"))
         self.assertIn(f"kubectl exec deploy/{deployment} ", err)
+
+
+class ReviewCycle4Test(unittest.TestCase):
+    """2026-11-12 review 5867158649 (PR #116 at 689e692): one test per finding, named by comment id."""
+
+    PROXY = ReviewCycle2Test.PROXY
+
+    def test_proxy_headers_ip_block_cannot_embed_an_ipv4_range(self):
+        """4544747310: ::ffff:0.0.0.0/96 met the IPv6 /32 floor, and Go's net.ParseCIDR reads it as 0.0.0.0/0. An IPv6 range
+        that embeds an IPv4 address is refused in every spelling, whatever its prefix."""
+        def peers(*cidrs):
+            value = "[" + ",".join(f'{{"ipBlock":{{"cidr":"{cidr}"}}}}' for cidr in cidrs) + "]"
+            return ["--set-json", f"networkPolicy.keycloak.extraFrom={value}", *sets(*self.PROXY)]
+        mapped = ("::ffff:0:0/96", "::FFFF:0:0/96", "::fFfF:0:0/96", "0:0:0:0:0:ffff:0:0/96", "0:0:0:0:0:FFFF:0:0/96",
+                  "0000:0000:0000:0000:0000:ffff:0000:0000/96", "0000:0000:0000:0000:0000:FFFF:0000:0000/96", "0::ffff:0:0/96",
+                  "::0:ffff:0:0/96", "0:0::ffff:0:0/96", "0:0:0:0:0:ffff::/96", "::ffff:a00:0/104", "::ffff:0a00:0000/104",
+                  "::ffff:c0a8:709/128", "::ffff:0:0/128",
+                  # IPv4-compatible (deprecated): the same embedding without the ffff group
+                  "::a00:0/104", "::/96", "0:0:0:0:0:0:a00:0/104", "::1/128")
+        for cidr in mapped:
+            for skip in ([], ["--skip-schema-validation"]):
+                err = refused(*skip, *peers(cidr))
+                self.assertIn(f'extraFrom[0].ipBlock.cidr "{cidr}" is refused', err, cidr)
+                self.assertIn("must not be an IPv4-mapped (::ffff:0:0/96) or IPv4-compatible (::/96) one", err, cidr)
+                self.assertIn("write the proxy's IPv4 range itself", err, cidr)
+                self.assertIn("identity.keycloak.proxyHeaders=xforwarded", err, cidr)
+        dotted = ("::ffff:0.0.0.0/96", "::FFFF:0.0.0.0/96", "0:0:0:0:0:ffff:0.0.0.0/96", "0000:0000:0000:0000:0000:FFFF:0.0.0.0/96",
+                  "::ffff:10.0.0.0/104", "::ffff:192.168.7.9/128", "::0.0.0.0/96", "::10.0.0.0/104", "64:ff9b::10.0.0.0/104")
+        for cidr in dotted:
+            err = refused(*peers(cidr))
+            self.assertIn(f'extraFrom[0].ipBlock.cidr "{cidr}" is refused', err, cidr)
+            self.assertIn("must not embed a dotted IPv4 address", err, cidr)
+            self.assertIn("write the proxy's IPv4 range itself", err, cidr)
+        # the entry is named by its index, next to a valid one
+        self.assertIn('extraFrom[1].ipBlock.cidr "::ffff:0:0/96" is refused', refused(*peers("10.1.2.0/24", "::ffff:0:0/96")))
+        # the prefix floor still answers first for a wide block
+        self.assertIn("prefix of at least /32", refused(*peers("::ffff:0:0/24")))
+        # an address that cannot be read group by group is refused, not guessed at
+        for cidr in ("1::2::3/64", "1:2:3:4:5:6:7:8:9/64", "12345::/64", ":1::/64", "1:2:3:4:5:6:7::8/64", "1:2:3/64", "2001:db8:::/64",
+                     "2001:db8::1:/64"):
+            self.assertIn("not an IPv6 address of eight hexadecimal groups", refused(*peers(cidr)), cidr)
+        # real IPv6 ranges, including ones that merely contain an ffff group or leading zero groups elsewhere
+        for cidr in ("2001:db8:1234::/48", "fd00:10:244::/56", "2001:DB8::1/128", "2001:db8:0:0:0:ffff:0:0/96", "0:0:0:0:1:ffff:0:0/96",
+                     "0:0:0:1:0:ffff:0:0/96", "1:2:3:4:5:6:7:8/128", "ffff::/32", "10.1.2.0/24", "192.168.7.9/32"):
+            docs = render(*peers(cidr))
+            self.assertEqual(env_of(deployments_of(docs)["t-owl-mast-keycloak"])["KC_PROXY_HEADERS"]["value"], "xforwarded", cidr)
+            policy = [d for d in by_kind(docs, "NetworkPolicy") if d["metadata"]["name"] == "t-owl-mast-keycloak"][0]
+            self.assertIn({"ipBlock": {"cidr": cidr}}, policy["spec"]["ingress"][0]["from"], cidr)
+        # without proxyHeaders the peers stay the operator's own policy choice
+        render("--set-json", 'networkPolicy.keycloak.extraFrom=[{"ipBlock":{"cidr":"::ffff:0.0.0.0/96"}}]')
+        doc = " ".join((REPO / "docs" / "installation.md").read_text().split())
+        self.assertIn("IPv4-mapped", doc)
+
+    def test_notes_print_the_postgresql_claim_the_release_uses(self):
+        """4544747330: only the Deployment half of the "Bundled PostgreSQL" line was asserted. The claim name, the existingClaim
+        choice and the bundled-only guard were free to regress, and docs/installation.md sends operators to that line."""
+        def line(*args):
+            printed = [l for l in notes(*args).splitlines() if l.startswith("Bundled PostgreSQL:")]
+            self.assertEqual(len(printed), 1, printed)
+            return printed[0]
+        def rendered(*args):
+            docs = render(*args)
+            pg = [d for d in by_kind(docs, "Deployment") if d["metadata"]["labels"]["app.kubernetes.io/component"] == "postgresql"][0]
+            mounted = [v["persistentVolumeClaim"]["claimName"] for v in pg["spec"]["template"]["spec"]["volumes"] if "persistentVolumeClaim" in v]
+            self.assertEqual(len(mounted), 1, mounted)
+            return pg["metadata"]["name"], mounted[0], [d["metadata"]["name"] for d in by_kind(docs, "PersistentVolumeClaim")]
+        # default: the chart's own claim, which is the one rendered and mounted
+        deployment, mounted, claims = rendered()
+        self.assertEqual((deployment, mounted, claims), ("t-owl-mast-postgresql", "t-owl-mast-postgresql-data", ["t-owl-mast-postgresql-data"]))
+        self.assertEqual(line(), "Bundled PostgreSQL: Deployment t-owl-mast-postgresql, data claim t-owl-mast-postgresql-data")
+        # existingClaim: the release's own claim is printed, never the chart's default name, and no claim is rendered
+        existing = sets("postgresql.persistence.existingClaim=prior-data")
+        deployment, mounted, claims = rendered(*existing)
+        self.assertEqual((mounted, claims), ("prior-data", []))
+        self.assertEqual(line(*existing), f"Bundled PostgreSQL: Deployment {deployment}, data claim prior-data")
+        self.assertNotIn("t-owl-mast-postgresql-data", notes(*existing))
+        self.assertNotIn("is retained when this", notes(*existing))
+        # a shortened, hashed fullname: both names are the rendered ones
+        long = sets("fullnameOverride=" + "f" * 60)
+        deployment, mounted, claims = rendered(*long)
+        self.assertNotEqual(deployment, "f" * 60 + "-postgresql"); self.assertEqual(claims, [mounted])
+        self.assertEqual(line(*long), f"Bundled PostgreSQL: Deployment {deployment}, data claim {mounted}")
+        deployment, mounted, _ = rendered(*long, *existing)
+        self.assertEqual(line(*long, *existing), f"Bundled PostgreSQL: Deployment {deployment}, data claim prior-data")
+        # an external database: no bundled Deployment and no claim, so no such line (and nothing about a retained claim)
+        for combination in ("external-bundled", "external-external"):
+            printed = notes(*COMBINATIONS[combination])
+            self.assertNotIn("Bundled PostgreSQL:", printed, combination)
+            self.assertNotIn("data claim", printed, combination)
+            self.assertNotIn("PersistentVolumeClaim", printed, combination)
+            self.assertNotIn("t-owl-mast-postgresql", printed, combination)
+        # the line is not tied to the identity bundle
+        self.assertEqual(line(*COMBINATIONS["bundled-external"]), "Bundled PostgreSQL: Deployment t-owl-mast-postgresql, data claim t-owl-mast-postgresql-data")
+
+    def test_every_schema_copy_of_the_ipv4_pattern_is_the_helpers(self):
+        """4544747354: the Gateway hostname copy of the IPv4 pattern was not compared with owl-mast.ipv4Pattern, so an edit to one
+        copy could make the schema and the template disagree."""
+        import json
+        text = (CHART / "templates" / "_helpers.tpl").read_text()
+        helper = re.search(r'define "owl-mast.ipv4Pattern" -}}\n(.*)\n', text).group(1)
+        schema = json.loads((CHART / "values.schema.json").read_text())
+        hostnames = schema["properties"]["routing"]["properties"]["gateway"]["properties"]["hostnames"]["items"]
+        self.assertEqual(hostnames["not"]["pattern"], helper)
+        self.assertEqual(schema["$defs"]["ingressHost"]["not"]["pattern"], helper)
+        # every "not an address" rule in the schema is that expression: a third copy cannot be added without the helper
+        found = []
+        def walk(node, path):
+            if isinstance(node, dict):
+                if isinstance(node.get("not"), dict) and "pattern" in node["not"]:
+                    found.append((path, node["not"]["pattern"]))
+                for key, value in node.items():
+                    walk(value, f"{path}/{key}")
+            elif isinstance(node, list):
+                for index, value in enumerate(node):
+                    walk(value, f"{path}/{index}")
+        walk(schema, "")
+        addresses = [(path, pattern) for path, pattern in found if "25[0-5]" in pattern]
+        self.assertEqual(sorted(path for path, _ in addresses), ["/$defs/ingressHost", "/properties/routing/properties/gateway/properties/hostnames/items"])
+        for path, pattern in addresses:
+            self.assertEqual(pattern, helper, path)
+        # and the template reads the helper for both, with no literal copy of its own
+        self.assertEqual(text.count('include "owl-mast.ipv4Pattern"'), 2)
+        self.assertEqual(text.count("25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}0*"), 1)
+        # the two rules agree, with and without the schema, on spellings on either side of the pattern
+        for host, address in (("0.0.0.0", True), ("255.255.255.255", True), ("0255.1.1.1", True), ("1.1.1.0255", True), ("00.00.00.00", True),
+                              ("256.1.1.1", False), ("1.1.1.256", False), ("1.1.1", False), ("1.1.1.1.1", False), ("2550.1.1.1", False)):
+            gw = [*GATEWAY_API, "--set-string", f"routing.gateway.hostnames[0]={host}", *sets("routing.gateway.enabled=true", "routing.gateway.parentRefs[0].name=gw")]
+            ing = [*sets("routing.ingress.enabled=true"), "--set-string", f"routing.ingress.host={host}"]
+            for args in (gw, ing):
+                if address:
+                    self.assertIn("schema", refused(*args).lower(), host)
+                    self.assertIn("is an IP address", refused("--skip-schema-validation", *args), host)
+                else:
+                    render(*args); render("--skip-schema-validation", *args)
 
 
 def notes_for(release, *args):

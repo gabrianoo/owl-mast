@@ -253,7 +253,8 @@ identity:
     # proxy that overwrites these headers is the only path to Keycloak (the OM-02.01 public-origin gate).
     # Rendering then requires networkPolicy.enabled=true and networkPolicy.keycloak.extraFrom naming the proxy:
     # every entry must select it (a matchLabels entry or a matchExpressions term with operator In; Exists,
-    # NotIn and DoesNotExist terms alone are refused; an ipBlock of at least /8 for IPv4 or /32 for IPv6).
+    # NotIn and DoesNotExist terms alone are refused; an ipBlock of at least /8 for IPv4 or /32 for IPv6, and never
+    # an IPv6 range that embeds an IPv4 address: ::ffff:0.0.0.0/96 is read as 0.0.0.0/0).
     proxyHeaders: ""
     database:
       name: keycloak

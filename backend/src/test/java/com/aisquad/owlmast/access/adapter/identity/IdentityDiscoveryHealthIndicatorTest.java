@@ -4,6 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.aisquad.owlmast.testing.StubIdentityProvider;
 import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.health.contributor.Health;
@@ -12,11 +15,43 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.web.reactive.function.client.WebClient;
+import reactor.test.scheduler.VirtualTimeScheduler;
 
 @ExtendWith(OutputCaptureExtension.class)
 class IdentityDiscoveryHealthIndicatorTest {
 
   private static final String MISMATCH_WARNING = "Identity discovery: the published issuer [";
+
+  /** Real-time bound for one answer of the local stub; never part of a timing assertion. */
+  private static final Duration ANSWER = Duration.ofSeconds(30);
+
+  /**
+   * An indicator whose cache interval is measured and expired on {@code time} alone: the test moves
+   * the clock, so the age of a result does not depend on the speed of the machine.
+   */
+  private static IdentityDiscoveryHealthIndicator onVirtualTime(
+      StubIdentityProvider provider, Duration ttl, VirtualTimeScheduler time) {
+    return new IdentityDiscoveryHealthIndicator(
+        WebClient.create(),
+        new IdentityProperties(provider.issuerUri(), true),
+        ttl,
+        () -> time.now(TimeUnit.NANOSECONDS),
+        time);
+  }
+
+  /** Waits (real time, bounded) until the provider has received {@code count} requests. */
+  private static void awaitRequests(StubIdentityProvider provider, int count)
+      throws InterruptedException {
+    long deadline = System.nanoTime() + ANSWER.toNanos();
+    while (provider.discoveryRequests() < count && System.nanoTime() < deadline) {
+      Thread.sleep(5);
+    }
+    assertThat(provider.discoveryRequests()).isEqualTo(count);
+  }
+
+  private static List<String> mismatchWarnings(CapturedOutput output) {
+    return output.getAll().lines().filter(line -> line.contains(MISMATCH_WARNING)).toList();
+  }
 
   private static Health check(String configuredIssuer) {
     IdentityDiscoveryHealthIndicator indicator =
@@ -79,21 +114,21 @@ class IdentityDiscoveryHealthIndicatorTest {
   }
 
   @Test
-  void aDownResultIsCachedTooAndRefreshedAfterTheInterval() throws InterruptedException {
+  void aDownResultIsCachedTooAndRefreshedAfterTheInterval() {
+    VirtualTimeScheduler time = VirtualTimeScheduler.create();
     try (StubIdentityProvider provider =
         StubIdentityProvider.start("owl-mast", "https://other.example/realms/owl-mast")) {
       Duration ttl = Duration.ofMillis(300);
-      IdentityDiscoveryHealthIndicator indicator =
-          new IdentityDiscoveryHealthIndicator(
-              WebClient.create(), new IdentityProperties(provider.issuerUri(), true), ttl);
+      IdentityDiscoveryHealthIndicator indicator = onVirtualTime(provider, ttl, time);
       for (int i = 0; i < 10; i++) {
-        assertThat(indicator.health().block(Duration.ofSeconds(10)).getStatus())
-            .isEqualTo(Status.DOWN);
+        assertThat(indicator.health().block(ANSWER).getStatus()).isEqualTo(Status.DOWN);
       }
       assertThat(provider.discoveryRequests()).isEqualTo(1);
-      Thread.sleep(ttl.toMillis() * 3);
-      assertThat(indicator.health().block(Duration.ofSeconds(10)).getStatus())
-          .isEqualTo(Status.DOWN);
+      time.advanceTimeBy(ttl.minusMillis(1));
+      assertThat(indicator.health().block(ANSWER).getStatus()).isEqualTo(Status.DOWN);
+      assertThat(provider.discoveryRequests()).isEqualTo(1);
+      time.advanceTimeBy(Duration.ofMillis(1));
+      assertThat(indicator.health().block(ANSWER).getStatus()).isEqualTo(Status.DOWN);
       assertThat(provider.discoveryRequests()).isEqualTo(2);
     }
   }
@@ -180,27 +215,83 @@ class IdentityDiscoveryHealthIndicatorTest {
   }
 
   @Test
-  void theMismatchWarningIsLoggedOncePerPublishedValue(CapturedOutput output)
-      throws InterruptedException {
+  void theMismatchWarningIsLoggedOncePerPublishedValue(CapturedOutput output) {
     // A mismatch can last indefinitely (a trailing slash after an upgrade): every cache refresh
     // keeps the DOWN detail, but the log names the published issuer once.
+    VirtualTimeScheduler time = VirtualTimeScheduler.create();
     try (StubIdentityProvider provider =
         StubIdentityProvider.start("owl-mast", "https://other.example/realms/owl-mast")) {
       Duration ttl = Duration.ofMillis(100);
-      IdentityDiscoveryHealthIndicator indicator =
-          new IdentityDiscoveryHealthIndicator(
-              WebClient.create(), new IdentityProperties(provider.issuerUri(), true), ttl);
+      IdentityDiscoveryHealthIndicator indicator = onVirtualTime(provider, ttl, time);
       for (int i = 0; i < 4; i++) {
-        Health health = indicator.health().block(Duration.ofSeconds(10));
+        Health health = indicator.health().block(ANSWER);
         assertThat(health.getStatus()).isEqualTo(Status.DOWN);
         assertThat(health.getDetails())
             .containsEntry("publishedIssuer", "https://other.example/realms/owl-mast");
-        Thread.sleep(ttl.toMillis() * 3);
+        time.advanceTimeBy(ttl);
       }
       assertThat(provider.discoveryRequests()).isEqualTo(4);
-      assertThat(output.getAll().lines().filter(line -> line.contains(MISMATCH_WARNING)))
+      assertThat(mismatchWarnings(output))
           .hasSize(1)
           .allMatch(line -> line.contains("[https://other.example/realms/owl-mast] differs"))
+          .allMatch(line -> line.contains("WARN"));
+    }
+  }
+
+  @Test
+  void theMismatchWarningIsLoggedAgainWhenThePublishedValueChanges(CapturedOutput output) {
+    // A zero interval: every evaluation asks the provider, so each one sees the current value.
+    String first = "https://first.example/realms/owl-mast";
+    String second = "https://second.example/realms/owl-mast";
+    try (StubIdentityProvider provider = StubIdentityProvider.start("owl-mast", first)) {
+      IdentityDiscoveryHealthIndicator indicator =
+          new IdentityDiscoveryHealthIndicator(
+              WebClient.create(),
+              new IdentityProperties(provider.issuerUri(), true),
+              Duration.ZERO);
+      for (String published : List.of(first, first, second, second, first)) {
+        provider.publish(published);
+        Health health = indicator.health().block(ANSWER);
+        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+        assertThat(health.getDetails()).containsEntry("publishedIssuer", published);
+      }
+      assertThat(provider.discoveryRequests()).isEqualTo(5);
+      // One line per CHANGE of the published value, in order: a repeated value adds none, a new
+      // value is reported, and so is the first value when it comes back.
+      List<String> warnings = mismatchWarnings(output);
+      assertThat(warnings).hasSize(3);
+      assertThat(warnings.get(0)).contains("[" + first + "] differs");
+      assertThat(warnings.get(1)).contains("[" + second + "] differs");
+      assertThat(warnings.get(2)).contains("[" + first + "] differs");
+    }
+  }
+
+  @Test
+  void theMismatchWarningIsLoggedAgainAfterTheIssuerMatchedInBetween(CapturedOutput output) {
+    String wrong = "https://other.example/realms/owl-mast";
+    try (StubIdentityProvider provider = StubIdentityProvider.start("owl-mast", wrong)) {
+      IdentityDiscoveryHealthIndicator indicator =
+          new IdentityDiscoveryHealthIndicator(
+              WebClient.create(),
+              new IdentityProperties(provider.issuerUri(), true),
+              Duration.ZERO);
+      assertThat(indicator.health().block(ANSWER).getStatus()).isEqualTo(Status.DOWN);
+      assertThat(indicator.health().block(ANSWER).getStatus()).isEqualTo(Status.DOWN);
+      assertThat(mismatchWarnings(output)).hasSize(1);
+
+      // The provider is corrected: the issuer matches, readiness is UP, nothing is logged.
+      provider.publish(null);
+      assertThat(indicator.health().block(ANSWER).getStatus()).isEqualTo(Status.UP);
+      assertThat(mismatchWarnings(output)).hasSize(1);
+
+      // The SAME wrong value comes back: a new incident, so it is reported again, once.
+      provider.publish(wrong);
+      assertThat(indicator.health().block(ANSWER).getStatus()).isEqualTo(Status.DOWN);
+      assertThat(indicator.health().block(ANSWER).getStatus()).isEqualTo(Status.DOWN);
+      assertThat(provider.discoveryRequests()).isEqualTo(5);
+      assertThat(mismatchWarnings(output))
+          .hasSize(2)
+          .allMatch(line -> line.contains("[" + wrong + "] differs"))
           .allMatch(line -> line.contains("WARN"));
     }
   }
@@ -214,27 +305,55 @@ class IdentityDiscoveryHealthIndicatorTest {
   }
 
   @Test
-  void theCacheIntervalIsCountedFromTheStartOfTheDiscoveryRequest() throws InterruptedException {
+  void theCacheIntervalIsCountedFromTheStartOfTheDiscoveryRequest() throws Exception {
     // A provider that takes 1.5 s to answer, and a 2 s interval. Counted from the answer, the
-    // result would be served until 3.5 s after the first request; counted from the request it
-    // expires at 2 s, so an evaluation 2.4 s after the first one starts a new request. That is
-    // what makes "a probe period greater than CACHE_TTL" sufficient for a fresh result per probe.
-    try (StubIdentityProvider provider =
-        StubIdentityProvider.startSlow("owl-mast", Duration.ofMillis(1500))) {
+    // result would be served until 3.5 s after the request; counted from the request it expires at
+    // 2 s. That is what makes "a probe period greater than CACHE_TTL" sufficient for a fresh
+    // result per probe. Time is virtual: the provider holds its answer until the test has moved
+    // the clock, so no margin depends on how fast this machine connects or answers.
+    VirtualTimeScheduler time = VirtualTimeScheduler.create();
+    try (StubIdentityProvider provider = StubIdentityProvider.start("owl-mast")) {
       IdentityDiscoveryHealthIndicator indicator =
-          new IdentityDiscoveryHealthIndicator(
-              WebClient.create(),
-              new IdentityProperties(provider.issuerUri(), true),
-              Duration.ofSeconds(2));
-      long started = System.nanoTime();
-      assertThat(indicator.health().block(Duration.ofSeconds(10)).getStatus()).isEqualTo(Status.UP);
-      // Still inside the interval: the answer is shared, no second request.
-      assertThat(indicator.health().block(Duration.ofSeconds(10)).getStatus()).isEqualTo(Status.UP);
+          onVirtualTime(provider, Duration.ofSeconds(2), time);
+      provider.holdAnswers();
+      CompletableFuture<Health> first = indicator.health().toFuture();
+      awaitRequests(provider, 1);
+      time.advanceTimeBy(Duration.ofMillis(1500));
+      assertThat(first).isNotDone();
+      provider.releaseAnswers();
+      assertThat(first.get(ANSWER.toSeconds(), TimeUnit.SECONDS).getStatus()).isEqualTo(Status.UP);
+
+      // 1.5 s after the request: inside the interval, the answer is shared.
+      assertThat(indicator.health().block(ANSWER).getStatus()).isEqualTo(Status.UP);
       assertThat(provider.discoveryRequests()).isEqualTo(1);
-      long elapsedMillis = Duration.ofNanos(System.nanoTime() - started).toMillis();
-      Thread.sleep(Math.max(0, 2400 - elapsedMillis));
-      assertThat(indicator.health().block(Duration.ofSeconds(10)).getStatus()).isEqualTo(Status.UP);
+      // 1 ms before the interval ends, still counted from the request.
+      time.advanceTimeBy(Duration.ofMillis(499));
+      assertThat(indicator.health().block(ANSWER).getStatus()).isEqualTo(Status.UP);
+      assertThat(provider.discoveryRequests()).isEqualTo(1);
+      // 2 s after the request (0.5 s after the answer): expired, a new request.
+      time.advanceTimeBy(Duration.ofMillis(1));
+      assertThat(indicator.health().block(ANSWER).getStatus()).isEqualTo(Status.UP);
       assertThat(provider.discoveryRequests()).isEqualTo(2);
+    }
+  }
+
+  @Test
+  void anAnswerThatTookTheWholeIntervalIsDeliveredButNotKept() throws Exception {
+    VirtualTimeScheduler time = VirtualTimeScheduler.create();
+    try (StubIdentityProvider provider = StubIdentityProvider.start("owl-mast")) {
+      IdentityDiscoveryHealthIndicator indicator =
+          onVirtualTime(provider, Duration.ofSeconds(2), time);
+      for (int i = 1; i <= 3; i++) {
+        provider.holdAnswers();
+        CompletableFuture<Health> evaluation = indicator.health().toFuture();
+        awaitRequests(provider, i);
+        // exactly the interval on the first round, more than it afterwards
+        time.advanceTimeBy(Duration.ofSeconds(2).plusMillis(i - 1));
+        provider.releaseAnswers();
+        assertThat(evaluation.get(ANSWER.toSeconds(), TimeUnit.SECONDS).getStatus())
+            .isEqualTo(Status.UP);
+      }
+      assertThat(provider.discoveryRequests()).isEqualTo(3);
     }
   }
 

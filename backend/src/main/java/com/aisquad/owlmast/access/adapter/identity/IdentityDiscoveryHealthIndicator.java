@@ -4,6 +4,7 @@ import com.aisquad.owlmast.platform.diagnostics.SafeFailure;
 import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
 import lombok.NonNull;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.health.contributor.Health;
@@ -11,6 +12,8 @@ import org.springframework.boot.health.contributor.ReactiveHealthIndicator;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Scheduler;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * Readiness contribution proving the configured issuer is reachable and is the issuer it claims to
@@ -50,10 +53,11 @@ final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator 
 
   private final WebClient client;
   private final IdentityProperties properties;
+  private final LongSupplier nanoTime;
   private final Mono<Health> cached;
   private final AtomicReference<String> lastWarnedIssuer = new AtomicReference<>();
 
-  /** A result with the instant ({@link System#nanoTime()}) its discovery request was started. */
+  /** A result with the instant (on the injected nano clock) its discovery request was started. */
   private record Timed(Health health, long startedNanos) {}
 
   IdentityDiscoveryHealthIndicator(WebClient client, IdentityProperties properties) {
@@ -62,26 +66,42 @@ final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator 
 
   IdentityDiscoveryHealthIndicator(
       WebClient client, IdentityProperties properties, Duration cacheTtl) {
+    this(client, properties, cacheTtl, System::nanoTime, Schedulers.parallel());
+  }
+
+  /**
+   * The cache interval is measured with {@code nanoTime} and expired by {@code timer}. Production
+   * uses {@link System#nanoTime()} and the parallel scheduler; a test passes one virtual clock for
+   * both, so that the age of a result does not depend on how fast the test machine is.
+   */
+  IdentityDiscoveryHealthIndicator(
+      WebClient client,
+      IdentityProperties properties,
+      Duration cacheTtl,
+      LongSupplier nanoTime,
+      Scheduler timer) {
     this.client = client;
     this.properties = properties;
+    this.nanoTime = nanoTime;
     // discover() never errors and is never empty, so only the value's interval matters. What is
     // left of the interval after the answer arrived is how long the answer is kept: zero or less
     // means it is delivered to the waiting evaluations and the next one starts a new request.
     this.cached =
         Mono.defer(
                 () -> {
-                  long started = System.nanoTime();
+                  long started = nanoTime.getAsLong();
                   return discover().map(health -> new Timed(health, started));
                 })
             .cache(
                 timed -> remaining(cacheTtl, timed.startedNanos()),
                 failure -> Duration.ZERO,
-                () -> Duration.ZERO)
+                () -> Duration.ZERO,
+                timer)
             .map(Timed::health);
   }
 
-  private static Duration remaining(Duration cacheTtl, long startedNanos) {
-    Duration left = cacheTtl.minusNanos(System.nanoTime() - startedNanos);
+  private Duration remaining(Duration cacheTtl, long startedNanos) {
+    Duration left = cacheTtl.minusNanos(nanoTime.getAsLong() - startedNanos);
     return left.isNegative() ? Duration.ZERO : left;
   }
 

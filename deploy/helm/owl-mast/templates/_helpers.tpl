@@ -231,6 +231,35 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- if lt (int (regexFind "[0-9]+$" $cidr)) $minPrefix -}}
 {{- fail (printf "networkPolicy.keycloak.extraFrom[%d].ipBlock.cidr %q is refused: with identity.keycloak.proxyHeaders=%s it must be the proxy's own address range, with a prefix of at least /%d (/8 for IPv4, /32 for IPv6). A wider block, alone (/0) or combined with another (0.0.0.0/1 and 128.0.0.0/1), admits every address" $i $cidr $v.identity.keycloak.proxyHeaders $minPrefix) -}}
 {{- end -}}
+{{- /* An IPv6 range is read group by group. One that embeds an IPv4 address is refused whatever its prefix: Go's */ -}}
+{{- /* net.ParseCIDR reads ::ffff:0.0.0.0/96 as 0.0.0.0/0, so the IPv6 floor would admit every IPv4 address. */ -}}
+{{- if contains ":" $cidr -}}
+{{- $address := lower (regexReplaceAll "/[0-9]+$" $cidr "") -}}
+{{- if contains "." $address -}}
+{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].ipBlock.cidr %q is refused: with identity.keycloak.proxyHeaders=%s an IPv6 range must not embed a dotted IPv4 address. An IPv4-mapped range such as ::ffff:0.0.0.0/96 is read as the IPv4 range 0.0.0.0/0, which admits every address; write the proxy's IPv4 range itself (for example 10.1.2.0/24)" $i $cidr $v.identity.keycloak.proxyHeaders) -}}
+{{- end -}}
+{{- $halves := splitList "::" $address -}}
+{{- $groups := compact (splitList ":" (index $halves 0)) -}}
+{{- $wellFormed := and (le (len $halves) 2) (not (regexMatch "(^:[^:]|[^:]:$|:::)" $address)) -}}
+{{- if eq (len $halves) 2 -}}
+{{- $tail := compact (splitList ":" (index $halves 1)) -}}
+{{- if gt (add (len $groups) (len $tail)) 7 -}}{{- $wellFormed = false -}}{{- end -}}
+{{- range until (int (max 0 (sub 8 (add (len $groups) (len $tail))))) -}}{{- $groups = append $groups "0" -}}{{- end -}}
+{{- $groups = concat $groups $tail -}}
+{{- end -}}
+{{- if ne (len $groups) 8 -}}{{- $wellFormed = false -}}{{- end -}}
+{{- $normal := list -}}
+{{- range $group := $groups -}}
+{{- if not (regexMatch "^[0-9a-f]{1,4}$" $group) -}}{{- $wellFormed = false -}}{{- end -}}
+{{- $normal = append $normal (regexReplaceAll "^0+([0-9a-f])" $group "${1}") -}}
+{{- end -}}
+{{- if not $wellFormed -}}
+{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].ipBlock.cidr %q is refused: with identity.keycloak.proxyHeaders=%s it must be the proxy's own address range in CIDR form (address/prefix), and this is not an IPv6 address of eight hexadecimal groups (one \"::\" may stand for the zero groups)" $i $cidr $v.identity.keycloak.proxyHeaders) -}}
+{{- end -}}
+{{- if regexMatch "^0:0:0:0:0:(ffff|0):" (join ":" $normal) -}}
+{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].ipBlock.cidr %q is refused: with identity.keycloak.proxyHeaders=%s an IPv6 range must not be an IPv4-mapped (::ffff:0:0/96) or IPv4-compatible (::/96) one. An IPv4-mapped range is read as an IPv4 range (::ffff:0:0/96 is 0.0.0.0/0), which admits every address; write the proxy's IPv4 range itself (for example 10.1.2.0/24)" $i $cidr $v.identity.keycloak.proxyHeaders) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
