@@ -59,6 +59,16 @@ commits. An image that does not publish the manifest answers 404 and the check e
 `--frontend-url` or `--backend-url` (an unset pipeline variable) is refused, never read as "use the
 checkout".
 
+Both URLs are printed in the verdict line, which CI logs keep. A URL that contains `@`
+(`https://user:token@host`) is therefore refused, and a refused URL is never repeated in the
+message. The script has no way to authenticate: run it where the two endpoints need no credentials
+(a port-forward, the cluster network). The base URLs are printable ASCII without a query or fragment.
+The manifest's `descriptorPath` and `--api-path-prefix` are appended to the backend URL, so each must
+be a plain absolute path of at most 1024 characters: segments of letters, digits, `.`, `_`, `~` and
+`-`, with no empty or dot segment, no percent-escape and, for `descriptorPath`, no trailing slash.
+Anything else is unverifiable. The verdict is always one printable line of at most 2000 characters;
+a rejected value is shown as its first 80 characters, and non-printable characters as `?`.
+
 The manifest path shares the string prefix `/api` with the backend's API path. The chart's routes match
 by path segment (`pathType: Prefix`, `PathPrefix`), so `/api-compatibility.json` reaches the frontend. A
 router that matches by string prefix would send it to the backend; the check then reports the manifest
@@ -78,9 +88,11 @@ Backend error responses are RFC 9457 problem details (`application/problem+json`
 - `spring.webflux.problemdetails.enabled=true` covers Spring's own error responses (unknown path 404,
   405, 415, validation, `ResponseStatusException`); verified by `CompatibilityEndpointIT` and
   `UnhandledFailureIT`.
-- `platform/web/UnhandledFailureAdvice` covers an exception that leaves a controller unhandled: status
-  500 with no message, class name, cause or trace (the log names the exception classes only); verified by
-  `UnhandledFailureIT`.
+- `platform/web/UnhandledFailureAdvice` covers what a controller throws or signals and nobody
+  handled, a `java.lang.Error` such as `AssertionError` included: status 500 with no message, class
+  name, cause or trace (the log names the exception classes only); verified by `UnhandledFailureIT`.
+  An error Reactor treats as fatal inside an operator (`VirtualMachineError`, `LinkageError`) is
+  rethrown by Reactor and reaches no handler.
 
 Not covered:
 

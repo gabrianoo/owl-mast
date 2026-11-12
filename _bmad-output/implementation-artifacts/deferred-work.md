@@ -94,3 +94,7 @@
   summary: Bring failures raised outside controllers (web filters, codecs) and authentication/authorization exceptions under the RFC 9457 envelope with their own status.
   evidence: PR #112 thread 4551653387. UnhandledFailureAdvice covers controller exceptions (500); a filter-level failure still gets Spring Boot's default application/json body, and a future AccessDeniedException would answer 500 unless mapped. No filter or security dependency exists before E02.
 
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-gh-112-resolve-review-findings.md`
+  summary: Decide whether the frontend image should ship the nginx base image's `50x.html`, and clear the web root before copying the build output if not.
+  evidence: PR #119 round 2 self-review (2B12). The Dockerfile copies `dist` over `/usr/share/nginx/html` without clearing it, so the base image's `50x.html` is served at `/50x.html`; no error_page refers to it. Pre-existing since OM-01.04.
