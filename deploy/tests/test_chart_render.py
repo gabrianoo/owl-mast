@@ -947,10 +947,15 @@ class ReviewCycle1Test(unittest.TestCase):
         """109/4543776435, 4543776449, 4543776321, 116/4543777495: documented limits, kept in step with the chart."""
         doc = " ".join((REPO / "docs" / "installation.md").read_text().split())
         for phrase in ("fixed at first initialisation", "`ALTER ROLE", "are immutable on the existing claim", "has no TLS",
-                       "qualification of chart 0.2.0 is pending", "`routing.exposeActuator`", "`routing.gateway.allowAllListenerHostnames`",
+                       "`routing.exposeActuator`", "`routing.gateway.allowAllListenerHostnames`",
                        "`identity.keycloak.bootstrapAdmin.enabled=false`"):
             self.assertIn(phrase, doc, phrase)
         self.assertNotIn("Qualified on 2026-11-07 for GitHub issue #21 on a disposable local Kind target;", doc)  # that was chart 0.1.0
+        # E01-R-01: the qualification status is stated as it is, per revision, including what failed and what was not run.
+        self.assertNotIn("qualification of chart 0.2.0 is pending", doc)
+        for phrase in ("**The 2026-11-12 runs, exactly.**", "What this does not amount to:", "**not run** on a cluster (render support only)",
+                       "**not run** by the script (`frontend.enabled=false`)"):
+            self.assertIn(phrase, doc, phrase)
 
 
 ISSUER_REASONS = ("host", "port", "userinfo", "query")  # the refusal reasons a sample line may name (IdentityPropertiesTest.REASONS)
