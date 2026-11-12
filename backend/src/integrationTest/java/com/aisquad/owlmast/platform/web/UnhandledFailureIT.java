@@ -432,7 +432,16 @@ class UnhandledFailureIT {
                   "occupying",
                   () -> {
                     occupied.countDown();
-                    return release.await(5, TimeUnit.SECONDS);
+                    // The clean-up below disposes this call, which interrupts the thread, and may
+                    // do so before the latch is seen. Returning normally keeps a late exception
+                    // out of Reactor's onErrorDropped log (with its stack trace), which made this
+                    // case fail now and then.
+                    try {
+                      return release.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException cancelled) {
+                      Thread.currentThread().interrupt();
+                      return false;
+                    }
                   })
               .subscribe();
       return Mono.fromCallable(() -> occupied.await(5, TimeUnit.SECONDS))
