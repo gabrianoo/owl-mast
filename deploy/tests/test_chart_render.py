@@ -645,9 +645,10 @@ class ReviewCycle1Test(unittest.TestCase):
     def test_server_verifying_ssl_modes_fail_closed_until_a_ca_mount_exists(self):
         """116/4543777472: verify-ca/verify-full rendered and then crash-looped (no CA trust is mounted)."""
         for mode in ("verify-ca", "verify-full"):
-            # the schema no longer offers the modes (cycle 2, 4544181137); the template refuses on its own and names the deferral
-            self.assertIn("schema", refused(*sets(*self.EXTERNAL_DB, f"database.external.sslMode={mode}")).lower())
-            self.assertIn("schema", refused(*sets(*self.EXTERNAL_DB, f"identity.keycloak.database.external.sslMode={mode}")).lower())
+            # the template refuses with or without the schema and names the deferral (cycle 3, 4544473172: the schema lets
+            # the modes through so that this message, not a bare enum error, is what a normal render prints)
+            self.assertIn(f"database.external.sslMode={mode} is refused", refused(*sets(*self.EXTERNAL_DB, f"database.external.sslMode={mode}")))
+            self.assertIn(f"identity.keycloak.database.external.sslMode={mode} is refused", refused(*sets(*self.EXTERNAL_DB, f"identity.keycloak.database.external.sslMode={mode}")))
             err = refused("--skip-schema-validation", *sets(*self.EXTERNAL_DB, f"database.external.sslMode={mode}"))
             self.assertIn(f"database.external.sslMode={mode} is refused", err); self.assertIn("CA trust", err)
             err = refused("--skip-schema-validation", *sets(*self.EXTERNAL_DB, f"identity.keycloak.database.external.sslMode={mode}"))
@@ -923,10 +924,24 @@ class ReviewCycle1Test(unittest.TestCase):
         self.assertNotIn("Qualified on 2026-11-07 for GitHub issue #21 on a disposable local Kind target;", doc)  # that was chart 0.1.0
 
 
+ISSUER_REASONS = ("host", "port", "userinfo", "query")  # the refusal reasons a sample line may name (IdentityPropertiesTest.REASONS)
+
+
+def parse_issuer_sample(line):
+    """One line of the sample file as (kind, reason, issuer); the reason is '' for a line that is accepted."""
+    head, sep, issuer = line.partition(" ")
+    kind, colon, reason = head.partition(":")
+    refusal = kind in ("refuse", "refuse-insecure")
+    if not sep or not issuer or issuer.startswith(" ") or kind not in ("accept", "refuse", "chart-refuse", "accept-insecure", "refuse-insecure") \
+            or refusal != (reason in ISSUER_REASONS) or (not refusal and colon):
+        raise AssertionError(f"malformed sample line: {line}")
+    return kind, reason, issuer
+
+
 def issuer_samples():
-    """(kind, issuer) pairs of the sample file the backend's IdentityPropertiesTest reads as well."""
+    """(kind, reason, issuer) triples of the sample file the backend's IdentityPropertiesTest reads as well."""
     lines = (REPO / "backend" / "src" / "test" / "resources" / "identity" / "issuer-samples.txt").read_text().splitlines()
-    return [tuple(line.split(" ", 1)) for line in lines if line and not line.startswith("#")]
+    return [parse_issuer_sample(line) for line in lines if line.strip() and not line.startswith("#")]
 
 
 @unittest.skipIf(HELM is None, "helm binary required (OWLMAST_HELM)")
@@ -987,18 +1002,17 @@ class ReviewCycle2Test(unittest.TestCase):
     def test_issuer_host_is_what_the_backend_parses(self):
         """4544181050 (re-raised PRRT_kwDOVjxExc62YN_3): idp.123, 1.2.3.999 and similar hosts rendered, and the backend then
         refused them at startup. The samples are the ones IdentityPropertiesTest runs through the backend."""
-        samples = issuer_samples()
-        self.assertGreaterEqual(len([k for k, _ in samples if k == "refuse"]), 15); self.assertGreaterEqual(len([k for k, _ in samples if k == "accept"]), 10)
-        for kind, issuer in samples:
+        samples = [s for s in issuer_samples() if s[0] in ("accept", "refuse", "chart-refuse")]  # the plaintext kinds: ReviewCycle3Test
+        self.assertGreaterEqual(len([s for s in samples if s[0] == "refuse"]), 15); self.assertGreaterEqual(len([s for s in samples if s[0] == "accept"]), 10)
+        for kind, _, issuer in samples:
             args = ["--set-string", f"identity.external.issuerUri={issuer}", *sets("identity.bundled=false")]
             if kind == "accept":
                 backend = deployments_of(render(*args))["t-owl-mast-backend"]
                 self.assertEqual(env_of(backend)["OWLMAST_IDENTITY_ISSUER_URI"]["value"], issuer)
             else:
-                self.assertIn(kind, ("refuse", "chart-refuse"))
                 self.assertIn("identity.external.issuerUri", refused(*args), issuer)
         for issuer in ("https://idp.123/realms/x", "https://1.2.3.999/realms/x", "https://idp.example.1/realms/x", "https://a.b-c.9z/realms/x"):
-            self.assertIn(("refuse", issuer), samples)  # the four reviewed issuers
+            self.assertIn(("refuse", "host", issuer), samples)  # the four reviewed issuers
         java_test = (REPO / "backend/src/test/java/com/aisquad/owlmast/access/adapter/identity/IdentityPropertiesTest.java").read_text()
         self.assertIn("identity/issuer-samples.txt", java_test)  # the backend half of the comparison exists
 
@@ -1092,7 +1106,8 @@ class ReviewCycle2Test(unittest.TestCase):
         self.assertNotIn("not", schema)  # no deny-list left: what is not named is refused
         self.assertNotIn("[A-Za-z0-9]+=", helper); self.assertNotIn("[+-][A-Za-z0-9]+", helper)  # no open -XX form
         comment = (CHART / "values.yaml").read_text()
-        valued, flags = re.search(r"XX:\(([A-Za-z0-9|]+)\)=", helper).group(1), re.search(r"XX:\[\+-\]\(([A-Za-z0-9|]+)\)", helper).group(1)
+        # three valued groups since cycle 3 (4544473258): sizes, percentages, counts
+        valued, flags = "|".join(re.findall(r"XX:\(([A-Za-z0-9|]+)\)=", helper)), re.search(r"XX:\[\+-\]\(([A-Za-z0-9|]+)\)", helper).group(1)
         self.assertIn("MaxRAMPercentage", valued); self.assertIn("UseZGC", flags)
         for name in (valued + "|" + flags).split("|"):
             self.assertIn(name, comment, name)  # every accepted option is listed for the operator
@@ -1172,14 +1187,16 @@ class ReviewCycle2Test(unittest.TestCase):
         doc = " ".join((REPO / "docs" / "installation.md").read_text().split())
         self.assertIn("`--reuse-values`", doc); self.assertIn("`--reset-then-reuse-values`", doc)
 
-    def test_schema_offers_only_the_ssl_modes_the_chart_accepts(self):
-        """4544181137: the schema still listed verify-ca and verify-full, which the template always refuses."""
+    def test_schema_says_which_ssl_modes_the_chart_refuses(self):
+        """4544181137: the schema listed verify-ca and verify-full without saying that the template always refuses them.
+        Cycle 3 (4544473172) keeps them in the enum on purpose, so that the template's explanation is what the operator
+        reads; the description states it, and an unknown mode is still a schema error."""
         import json
         schema = json.loads((CHART / "values.schema.json").read_text())
-        self.assertEqual(schema["$defs"]["sslMode"]["enum"], ["disable", "allow", "prefer", "require"])
+        self.assertEqual(schema["$defs"]["sslMode"]["enum"], ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"])
         self.assertIn("CA trust", schema["$defs"]["sslMode"]["description"])
-        for mode in ("verify-ca", "verify-full", "bogus"):
-            self.assertIn("schema", refused(*sets(*self.EXTERNAL_DB, f"database.external.sslMode={mode}")).lower())
+        self.assertIn("listed only so that the templates can refuse them with the reason", schema["$defs"]["sslMode"]["description"])
+        self.assertIn("schema", refused(*sets(*self.EXTERNAL_DB, "database.external.sslMode=bogus")).lower())
         self.assertIn("must be one of disable, allow, prefer, require", refused("--skip-schema-validation", *sets(*self.EXTERNAL_DB, "database.external.sslMode=bogus")))
 
     def test_ingress_hosts_refuse_ip_addresses(self):
@@ -1267,6 +1284,328 @@ class ReviewCycle2Test(unittest.TestCase):
         flat = " ".join(doc.split())
         for phrase in ("deliberately named after another release's shortened name", "a trailing slash is part of the issuer", "publishedIssuer"):
             self.assertIn(phrase, flat, phrase)
+
+
+@unittest.skipIf(HELM is None, "helm binary required (OWLMAST_HELM)")
+class ReviewCycle3Test(unittest.TestCase):
+    """2026-11-12 review 5866834124 (PR #116 at f52b3de): one test per finding, named by comment id."""
+
+    EXTERNAL_DB = ReviewFindingsTest.EXTERNAL_DB
+    EXTERNAL_ID = ReviewCycle1Test.EXTERNAL_ID
+    PROXY = ReviewCycle2Test.PROXY
+    container = staticmethod(ReviewCycle2Test.container)
+    chart_with_0_1_0_values = ReviewCycle2Test.chart_with_0_1_0_values
+
+    def test_readiness_period_rule_rests_on_a_cache_counted_from_the_request(self):
+        """4544473160: the cache interval started when discovery ANSWERED (up to 3 s later), so a period of 6-8 s could read
+        one cached result twice. The backend now counts the interval from the start of the request, which makes 'period
+        greater than CACHE_TTL' sufficient; the chart rule is unchanged and its wording says what it rests on."""
+        source = (IDENTITY_JAVA / "IdentityDiscoveryHealthIndicator.java").read_text()
+        ttl = int(re.search(r"Duration CACHE_TTL = Duration\.ofSeconds\((\d+)\)", source).group(1))
+        self.assertIn("remaining(cacheTtl, timed.startedNanos())", source)  # the interval left after the answer arrived
+        self.assertNotIn(".cache(cacheTtl)", source)                        # not the answer-time interval
+        java_test = (REPO / "backend/src/test/java/com/aisquad/owlmast/access/adapter/identity/IdentityDiscoveryHealthIndicatorTest.java").read_text()
+        self.assertIn("void theCacheIntervalIsCountedFromTheStartOfTheDiscoveryRequest()", java_test)
+        self.assertIn("StubIdentityProvider.startSlow(", java_test)
+        err = refused("--skip-schema-validation", *sets(f"backend.probes.readiness.periodSeconds={ttl}"))
+        self.assertIn("counted from the start of the discovery request", err)
+        self.assertIn("two consecutive probes never read the result of the same request", err)
+        self.assertEqual(self.container(render(*sets(f"backend.probes.readiness.periodSeconds={ttl + 1}")), "t-owl-mast-backend")["readinessProbe"]["periodSeconds"], ttl + 1)
+        self.assertIn("counted from the", (CHART / "values.yaml").read_text())
+
+    def test_proxy_headers_peer_must_name_the_proxy_positively(self):
+        """4544473165: a namespaceSelector of key Exists selects every namespace, and 0.0.0.0/1 with 128.0.0.0/1 every IPv4
+        address; both satisfied the guard."""
+        def peers(value):
+            return ["--set-json", f"networkPolicy.keycloak.extraFrom={value}", *sets(*self.PROXY)]
+        exists = '{"matchExpressions":[{"key":"kubernetes.io/metadata.name","operator":"Exists"}]}'
+        for value, named in (
+                (f'[{{"namespaceSelector":{exists}}}]', "extraFrom[0].namespaceSelector names nothing"),
+                (f'[{{"podSelector":{exists}}}]', "extraFrom[0].podSelector names nothing"),
+                ('[{"podSelector":{"matchExpressions":[{"key":"app","operator":"NotIn","values":["x"]}]}}]', "extraFrom[0].podSelector names nothing"),
+                ('[{"podSelector":{"matchExpressions":[{"key":"app","operator":"DoesNotExist"}]}}]', "extraFrom[0].podSelector names nothing"),
+                ('[{"podSelector":{"matchExpressions":[{"key":"app","operator":"In","values":[]}]}}]', "extraFrom[0].podSelector names nothing"),
+                ('[{"podSelector":{"matchExpressions":[{"key":"a","operator":"Exists"},{"key":"b","operator":"NotIn","values":["x"]}]}}]', "extraFrom[0].podSelector names nothing"),
+                (f'[{{"podSelector":{{"matchLabels":{{"app":"gw"}}}},"namespaceSelector":{exists}}}]', "extraFrom[0].namespaceSelector names nothing"),
+                (f'[{{"podSelector":{{"matchLabels":{{"app":"gw"}}}}}},{{"namespaceSelector":{exists}}}]', "extraFrom[1].namespaceSelector names nothing"),
+                ('[{"ipBlock":{"cidr":"0.0.0.0/1"}},{"ipBlock":{"cidr":"128.0.0.0/1"}}]', 'extraFrom[0].ipBlock.cidr "0.0.0.0/1" is refused'),
+                ('[{"ipBlock":{"cidr":"10.1.2.0/24"}},{"ipBlock":{"cidr":"128.0.0.0/1"}}]', 'extraFrom[1].ipBlock.cidr "128.0.0.0/1" is refused'),
+                ('[{"ipBlock":{"cidr":"10.0.0.0/7"}}]', "prefix of at least /8"),
+                ('[{"ipBlock":{"cidr":"::/1"}}]', "prefix of at least /32"),
+                ('[{"ipBlock":{"cidr":"2001:db8::/31"}}]', "prefix of at least /32"),
+                ('[{"ipBlock":{"cidr":"0.0.0.0/00"}}]', "prefix of at least /8"),
+                ('[{"ipBlock":{"cidr":"10.0.0.1"}}]', "in CIDR form"),
+                ('[{"ipBlock":{"cidr":"10.0.0.0/8/0"}}]', "in CIDR form")):
+            err = refused(*peers(value))
+            self.assertIn(named, err, value)
+            self.assertIn("identity.keycloak.proxyHeaders=xforwarded", err, value)
+        for value in ('[{"podSelector":{"matchExpressions":[{"key":"app","operator":"In","values":["gw"]},{"key":"tier","operator":"Exists"}]}}]',
+                      '[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"gateway-system"},"matchExpressions":[{"key":"x","operator":"DoesNotExist"}]}}]',
+                      '[{"ipBlock":{"cidr":"10.0.0.0/8"}}]', '[{"ipBlock":{"cidr":"192.168.7.9/32"}}]', '[{"ipBlock":{"cidr":"2001:db8::/32"}}]',
+                      '[{"ipBlock":{"cidr":"fd00:1::/64","except":["fd00:1::1/128"]}}]'):
+            docs = render(*peers(value))
+            self.assertEqual(env_of(deployments_of(docs)["t-owl-mast-keycloak"])["KC_PROXY_HEADERS"]["value"], "xforwarded", value)
+        # without proxyHeaders the peers stay the operator's own policy choice
+        render("--set-json", f'networkPolicy.keycloak.extraFrom=[{{"namespaceSelector":{exists}}},{{"ipBlock":{{"cidr":"0.0.0.0/1"}}}}]')
+        self.assertIn("Exists", " ".join((REPO / "docs" / "installation.md").read_text().split()))
+
+    def test_ssl_mode_refusal_explains_itself_on_a_normal_render(self):
+        """4544473172: with verify-ca/verify-full out of the schema enum, a normal render (or a --reuse-values upgrade of a 0.1.0
+        release that used verify-full) printed only Helm's enum error; the explanation needed --skip-schema-validation."""
+        for path, extra in (("database.external", []), ("identity.keycloak.database.external", [])):
+            for mode in ("verify-ca", "verify-full"):
+                for skip in ([], ["--skip-schema-validation"]):
+                    err = refused(*skip, *sets(*self.EXTERNAL_DB, f"{path}.sslMode={mode}", *extra))
+                    self.assertIn(f"{path}.sslMode={mode} is refused: it needs a CA trust the chart does not mount yet", err, (path, mode, skip))
+                    self.assertIn("Use require", err)
+                    self.assertNotIn("values don't meet the specifications of the schema", err)
+        # the upgrade the comment names: 0.1.0 values that carry verify-full, rendered as --reuse-values does
+        chart = self.chart_with_0_1_0_values()
+        result = helm("template", "t", str(chart), *UPGRADE, *sets("database.bundled=false", "database.external.host=pg.example", "database.external.sslMode=verify-full"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("database.external.sslMode=verify-full is refused: it needs a CA trust", result.stderr)
+        doc = " ".join((REPO / "docs" / "installation.md").read_text().split())
+        self.assertIn("names the mode and the reason", doc)
+
+    def test_image_smoke_run_uses_the_environment_the_chart_renders(self):
+        """4544473182, 4544473187, 4544473197: the smoke run set database URLs without the sslMode parameter the chart always
+        renders and never the default (http issuer, opt-in true); its binding check only looked for absent lines, its endpoint
+        check for a fixed count, and its header claimed every bean."""
+        script = (REPO / "scripts" / "verify-backend-image.sh").read_text()
+        function = script.split("smoke() {", 1)[1].split("\n}\n", 1)[0]
+        set_by_script = dict(re.findall(r'-e "?([A-Z0-9_]+)=([^" ]*)"?', function))
+        backend = deployments_of(render())["t-owl-mast-backend"]
+        rendered = env_of(backend)
+        self.assertEqual(set(set_by_script), set(rendered))  # exactly the variables of the default Deployment, no more, no fewer
+        self.assertEqual(set_by_script["SERVER_PORT"], rendered["SERVER_PORT"]["value"])
+        self.assertEqual(set_by_script["JAVA_TOOL_OPTIONS"], rendered["JAVA_TOOL_OPTIONS"]["value"])
+        for name in ("OWLMAST_DATABASE_R2DBC_URL", "OWLMAST_DATABASE_JDBC_URL"):
+            shape = lambda url: re.sub(r"//[^/]+/", "//HOST/", url)  # the host and port differ by design (closed loopback port)
+            self.assertEqual(shape(set_by_script[name]), shape(rendered[name]["value"]), name)
+        self.assertTrue(set_by_script["OWLMAST_DATABASE_R2DBC_URL"].endswith("?sslMode=disable"))
+        self.assertTrue(set_by_script["OWLMAST_DATABASE_JDBC_URL"].endswith("?sslmode=disable"))
+        # the default bundled install: an http issuer to the cluster-local Keycloak, with the opt-in
+        issuer, allow = rendered["OWLMAST_IDENTITY_ISSUER_URI"]["value"], rendered["OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER"]["value"]
+        self.assertTrue(issuer.startswith("http://")); self.assertEqual(allow, "true")
+        starts = re.findall(r"^smoke (\S+) (true|false)$", script, re.M)
+        self.assertEqual([(i.split(":")[0], a) for i, a in starts], [("https", "false"), ("http", "true"), ("http", "false")])
+        self.assertEqual(starts[1][0].rsplit("/realms/", 1)[1], issuer.rsplit("/realms/", 1)[1])
+        # a positive marker, logged by the identity configuration, and a control that the marker's absence is detectable
+        marker = re.search(r'grep -qF "(Identity issuer \$2 \(plaintext issuer accepted: \$3\))"', script)
+        self.assertIsNotNone(marker)
+        configuration = (IDENTITY_JAVA / "IdentityConfiguration.java").read_text()
+        self.assertIn('"Identity issuer {} (plaintext issuer accepted: {})"', configuration)
+        self.assertIn("owlmast.identity.issuer-uri must use https", script)
+        self.assertIn("Exposing [0-9]+ endpoints? beneath base path", script); self.assertNotIn("Exposing 1 endpoint", script)
+        # the header claims what the run proves
+        flat = " ".join(line.lstrip("# ") for line in script.splitlines())
+        self.assertIn("creates the beans that PRECEDE database initialisation", flat)
+        self.assertIn("NOT proven here (image-level proof, not runtime qualification): the beans Spring Boot creates only after database initialisation", flat)
+        self.assertNotIn("creates its beans and stops", flat)
+        ci = (REPO / ".github" / "workflows" / "ci.yml").read_text()
+        self.assertIn("read-only-root start with the chart's environment, up to the first database connection", ci)
+
+    def test_plaintext_issuer_samples_agree_with_the_backend(self):
+        """4544473213, 4544473219: no shared sample covered the http branch, a refusal's reason was not checked, and a
+        malformed line failed with an unrelated error."""
+        samples = issuer_samples()
+        insecure = [s for s in samples if s[0] == "accept-insecure"]; refuse_insecure = [s for s in samples if s[0] == "refuse-insecure"]
+        self.assertGreaterEqual(len(insecure), 3); self.assertGreaterEqual(len(refuse_insecure), 4)
+        malformed = "must be an absolute https:// URL with a host the backend can parse"
+        for kind, reason, issuer in samples:
+            base = ["--set-string", f"identity.external.issuerUri={issuer}", *sets("identity.bundled=false")]
+            opted = [*base, *sets("identity.external.allowInsecureIssuer=true")]
+            if kind == "accept-insecure":
+                self.assertTrue(issuer.startswith("http://"), issuer)
+                env = env_of(deployments_of(render(*opted))["t-owl-mast-backend"])
+                self.assertEqual(env["OWLMAST_IDENTITY_ISSUER_URI"]["value"], issuer)
+                self.assertEqual(env["OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER"]["value"], "true")
+                err = refused(*base)  # the same issuer without the opt-in: the plaintext refusal, not the malformed one
+                self.assertIn("uses plaintext http", err, issuer); self.assertNotIn(malformed, err, issuer)
+            elif kind == "refuse-insecure":
+                self.assertTrue(issuer.startswith("http://"), issuer)
+                for args in (opted, base):  # malformed with or without the opt-in, and never mistaken for a plaintext refusal
+                    err = refused(*args)
+                    self.assertIn(malformed, err, issuer); self.assertNotIn("uses plaintext http", err, issuer)
+            elif kind == "refuse":
+                err = refused(*base)  # the chart has one message for every malformed issuer; the backend names the reason
+                self.assertIn(malformed, err, issuer); self.assertIn(reason, ISSUER_REASONS)
+        self.assertEqual({r for k, r, _ in samples if k == "refuse"}, set(ISSUER_REASONS))  # every reason has a sample
+        java_test = (REPO / "backend/src/test/java/com/aisquad/owlmast/access/adapter/identity/IdentityPropertiesTest.java").read_text()
+        for reason in ISSUER_REASONS:
+            self.assertIn(f'"{reason}", "owlmast.identity.issuer-uri', java_test)  # the backend half checks the reason's message
+        for kind in ("accept-insecure", "refuse-insecure"):
+            self.assertIn(f'case "{kind}"', java_test)
+        for line in ("accept", "accepthttps://idp.example", "refuse https://idp.123/x", "refuse:nonsense x", "accept:host https://idp.example",
+                     "accept  https://idp.example", "accept ", "sometimes https://idp.example", "refuse:insecure http://idp.example"):
+            with self.assertRaises(AssertionError) as raised:
+                parse_issuer_sample(line)
+            self.assertEqual(str(raised.exception), f"malformed sample line: {line}")
+        self.assertEqual(parse_issuer_sample("refuse:port https://idp.example:0/x"), ("refuse", "port", "https://idp.example:0/x"))
+
+    def test_bootstrap_admin_flag_is_true_or_false(self):
+        """4544473231: with --skip-schema-validation the string False matched neither branch: no bootstrap admin, no Secret
+        requirement and no NOTES warning."""
+        for value in ("False", "TRUE", "no", "0", "yes", " false"):
+            args = ["--skip-schema-validation", "--set-string", f"identity.keycloak.bootstrapAdmin.enabled={value}"]
+            self.assertIn(f'identity.keycloak.bootstrapAdmin.enabled "{value}" must be a boolean: true or false', refused(*args), value)
+            self.assertIn("schema", refused("--set-string", f"identity.keycloak.bootstrapAdmin.enabled={value}").lower(), value)
+        # the two accepted spellings behave as the booleans do, also as strings
+        for value, present in (("true", True), ("false", False)):
+            for args in (sets(f"identity.keycloak.bootstrapAdmin.enabled={value}"), ["--skip-schema-validation", "--set-string", f"identity.keycloak.bootstrapAdmin.enabled={value}"]):
+                env = env_of(deployments_of(render(*args))["t-owl-mast-keycloak"])
+                self.assertEqual("KC_BOOTSTRAP_ADMIN_PASSWORD" in env, present, (value, args))
+        # not evaluated where no Keycloak is rendered
+        render("--skip-schema-validation", "--set-string", "identity.keycloak.bootstrapAdmin.enabled=False", *sets(*self.EXTERNAL_ID))
+
+    def test_extra_env_refuses_every_dynamic_loader_variable(self):
+        """4544473238: LD_AUDIT loads a library into java just as LD_PRELOAD does, and was not on the list."""
+        for name in ("LD_AUDIT", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_DEBUG", "LD_BIND_NOW", "ld_audit", "Ld_Preload"):
+            args = sets(f"backend.extraEnv[0].name={name}", "backend.extraEnv[0].value=x")
+            self.assertIn("schema", refused(*args).lower(), name)
+            err = refused("--skip-schema-validation", *args)
+            self.assertIn(f'backend.extraEnv[0].name "{name}" is refused', err, name); self.assertIn("every LD_* variable", err)
+        for name in ("LDAP_URL", "OLD_VALUE", "TZ", "FIELD_LD"):  # not loader variables
+            for skip in ([], ["--skip-schema-validation"]):
+                env = self.container(render(*skip, *sets(f"backend.extraEnv[0].name={name}", "backend.extraEnv[0].value=x")), "t-owl-mast-backend")["env"]
+                self.assertEqual(env[-1], {"name": name, "value": "x"})
+        self.assertIn("`LD_*`", (REPO / "docs" / "installation.md").read_text())
+
+    def test_frontend_probe_timeouts_are_rendered(self):
+        """4544473245: the shared probe schema accepted frontend timeoutSeconds, and the template dropped them."""
+        on = sets("frontend.enabled=true", "frontend.image.tag=x")
+        c = self.container(render(*on), "t-owl-mast-frontend")
+        self.assertNotIn("timeoutSeconds", c["livenessProbe"]); self.assertNotIn("timeoutSeconds", c["readinessProbe"])
+        c = self.container(render(*on, *sets("frontend.probes.readiness.timeoutSeconds=9", "frontend.probes.liveness.timeoutSeconds=4")), "t-owl-mast-frontend")
+        self.assertEqual(c["readinessProbe"]["timeoutSeconds"], 9); self.assertEqual(c["livenessProbe"]["timeoutSeconds"], 4)
+        c = self.container(render(*on, *sets("frontend.probes.readiness.timeoutSeconds=9")), "t-owl-mast-frontend")
+        self.assertEqual(c["readinessProbe"]["timeoutSeconds"], 9); self.assertNotIn("timeoutSeconds", c["livenessProbe"])
+        self.assertIn("schema", refused(*on, *sets("frontend.probes.readiness.timeoutSeconds=0")).lower())
+        # a 0.1.0 release has no liveness block and no timeouts: nothing is rendered for them
+        chart = self.chart_with_0_1_0_values()
+        result = helm("template", "t", str(chart), *UPGRADE, *on)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        old = self.container([d for d in yaml.safe_load_all(result.stdout) if d], "t-owl-mast-frontend")
+        self.assertNotIn("timeoutSeconds", old["livenessProbe"]); self.assertNotIn("timeoutSeconds", old["readinessProbe"])
+
+    def test_numeric_labels_that_are_not_an_address_are_dns_names(self):
+        """4544473250: ^[0-9]+(\\.[0-9]+){3}$ also refused 999.1.1.1 and 256.0.0.1, which the API server takes as DNS names, and
+        called them IP addresses."""
+        import json
+        helper = re.search(r'define "owl-mast.ipv4Pattern" -}}\n(.*)\n', (CHART / "templates" / "_helpers.tpl").read_text()).group(1)
+        schema = json.loads((CHART / "values.schema.json").read_text())
+        self.assertEqual(schema["$defs"]["ingressHost"]["not"]["pattern"], helper)
+        self.assertNotIn("[0-9]+(\\\\.[0-9]+){3}", (CHART / "values.schema.json").read_text())  # no second, looser copy
+        self.assertNotIn('"^[0-9]+', (CHART / "templates" / "_helpers.tpl").read_text())
+        for host in ("999.1.1.1", "256.0.0.1", "1.2.3.256", "300.300.300.300", "1.2.3.4.5", "1.2.3"):
+            for skip in ([], ["--skip-schema-validation"]):
+                docs = render(*skip, *sets("routing.ingress.enabled=true", f"routing.ingress.host={host}"))
+                self.assertEqual(by_kind(docs, "Ingress")[0]["spec"]["rules"][0]["host"], host)
+                docs = render(*skip, *GATEWAY_API, "--set-string", f"routing.gateway.hostnames[0]={host}", *sets("routing.gateway.enabled=true", "routing.gateway.parentRefs[0].name=gw"))
+                self.assertEqual(by_kind(docs, "HTTPRoute")[0]["spec"]["hostnames"], [host])
+        # addresses, in every spelling the API server's parser reads as one (leading zeros included)
+        for host in ("10.0.0.1", "255.255.255.255", "0.0.0.0", "010.0.0.1", "1.2.3.04", "001.002.003.004"):
+            args = sets("routing.ingress.enabled=true", f"routing.ingress.host={host}")
+            self.assertIn("schema", refused(*args).lower(), host)
+            self.assertIn(f'routing.ingress.host "{host}" is an IP address', refused("--skip-schema-validation", *args))
+            gw = [*GATEWAY_API, "--set-string", f"routing.gateway.hostnames[0]={host}", *sets("routing.gateway.enabled=true", "routing.gateway.parentRefs[0].name=gw")]
+            self.assertIn("schema", refused(*gw).lower(), host)
+            self.assertIn("is an IP address", refused("--skip-schema-validation", *gw), host)
+
+    def test_java_tool_options_take_the_value_form_the_jvm_takes(self):
+        """4544473258: every valued option took a decimal and a size suffix, so -XX:MaxRAMPercentage=75m rendered and the JVM
+        then exited with 'Improperly specified VM option'."""
+        bad = ("-XX:ParallelGCThreads=1.5g", "-XX:ActiveProcessorCount=2k", "-XX:MaxRAMPercentage=75m", "-XX:MaxRAMPercentage=75g", "-XX:InitialRAMPercentage=1.5k",
+               "-XX:MinRAMPercentage=50M", "-XX:MaxMetaspaceSize=1.5g", "-XX:MaxDirectMemorySize=0.5g", "-XX:NewSize=1.5m", "-XX:MaxRAM=1.5g", "-XX:ParallelGCThreads=1.5",
+               "-XX:MaxGCPauseMillis=200m", "-XX:NewRatio=2.5", "-XX:TieredStopAtLevel=1k", "-XX:ConcGCThreads=2G", "-XX:MaxRAMPercentage=75.", "-XX:MaxRAMPercentage=.5",
+               "-XX:MaxRAMPercentage=75 -XX:ParallelGCThreads=1.5g")
+        for value in bad:
+            self.assertIn("schema", refused("--set-string", f"backend.javaToolOptions={value}").lower(), value)
+            err = refused("--skip-schema-validation", "--set-string", f"backend.javaToolOptions={value}")
+            self.assertIn("backend.javaToolOptions", err, value); self.assertIn("the value form the JVM takes", err, value)
+        for value in ("-XX:MaxRAMPercentage=75", "-XX:MaxRAMPercentage=75.5 -XX:InitialRAMPercentage=50.0 -XX:MinRAMPercentage=25",
+                      "-XX:MaxMetaspaceSize=256m -XX:MetaspaceSize=96M -XX:MaxDirectMemorySize=1g -XX:ReservedCodeCacheSize=240m -XX:G1HeapRegionSize=4m",
+                      "-XX:SoftMaxHeapSize=2G -XX:MaxNewSize=512m -XX:NewSize=268435456 -XX:MaxRAM=4g",
+                      "-XX:ActiveProcessorCount=2 -XX:ParallelGCThreads=4 -XX:ConcGCThreads=1 -XX:MaxGCPauseMillis=200 -XX:InitiatingHeapOccupancyPercent=45",
+                      "-XX:MaxHeapFreeRatio=70 -XX:MinHeapFreeRatio=40 -XX:NewRatio=2 -XX:SurvivorRatio=8 -XX:TieredStopAtLevel=1"):
+            backend = deployments_of(render("--set-string", f"backend.javaToolOptions={value}"))["t-owl-mast-backend"]
+            self.assertEqual(env_of(backend)["JAVA_TOOL_OPTIONS"]["value"], value)
+        helper = re.search(r'define "owl-mast.javaToolOptionsPattern" -}}\n(.*)\n', (CHART / "templates" / "_helpers.tpl").read_text()).group(1)
+        sizes, percentages, counts = re.findall(r"XX:\(([A-Za-z0-9|]+)\)=", helper)
+        self.assertIn("MaxMetaspaceSize", sizes.split("|")); self.assertEqual(set(percentages.split("|")), {"MaxRAMPercentage", "InitialRAMPercentage", "MinRAMPercentage"})
+        self.assertIn("ParallelGCThreads", counts.split("|")); self.assertFalse(set(sizes.split("|")) & set(counts.split("|")))
+
+    def test_keycloak_probe_timeouts_land_on_their_own_probe(self):
+        """4544473263: only the readiness passthrough was tested; a dropped or mis-nested startup or liveness block passed."""
+        kc = self.container(render(), "t-owl-mast-keycloak")
+        for probe in ("startupProbe", "livenessProbe", "readinessProbe"):
+            self.assertNotIn("timeoutSeconds", kc[probe], probe)  # nothing by default: the kubelet default applies
+        kc = self.container(render(*sets("identity.keycloak.probes.startup.timeoutSeconds=3", "identity.keycloak.probes.liveness.timeoutSeconds=7",
+                                         "identity.keycloak.probes.readiness.timeoutSeconds=9")), "t-owl-mast-keycloak")
+        self.assertEqual([kc[p]["timeoutSeconds"] for p in ("startupProbe", "livenessProbe", "readinessProbe")], [3, 7, 9])
+        for one, value in (("startup", 3), ("liveness", 7), ("readiness", 9)):
+            kc = self.container(render(*sets(f"identity.keycloak.probes.{one}.timeoutSeconds={value}")), "t-owl-mast-keycloak")
+            for probe in ("startup", "liveness", "readiness"):
+                self.assertEqual(kc[f"{probe}Probe"].get("timeoutSeconds"), value if probe == one else None, (one, probe))
+
+    def test_notes_state_the_exact_issuer_rule_for_an_external_issuer(self):
+        """4544473269: no test rendered the external-issuer NOTES block."""
+        text = " ".join(notes(*sets(*self.EXTERNAL_ID)).split())
+        self.assertIn("NOTE: the backend becomes ready only when the issuer's discovery document publishes exactly https://idp.example/realms/x (a trailing slash is part of the issuer)", text)
+        self.assertIn("the backend log names the published issuer", text)
+        other = " ".join(notes(*sets("identity.bundled=false", "identity.external.issuerUri=https://sso.example:8443/realms/owl-mast/")).split())
+        self.assertIn("publishes exactly https://sso.example:8443/realms/owl-mast/ (a trailing slash", other)
+        for bundled in (notes(), notes(*sets(*self.EXTERNAL_DB))):
+            self.assertNotIn("publishes exactly", bundled); self.assertNotIn("the backend log names the published issuer", bundled)
+
+    def test_reuse_values_fallback_defaults_are_the_documented_ones(self):
+        """4544473275: the 0.1.0-fixture test checked only the frontend liveness path and the PostgreSQL readiness timeout."""
+        chart = self.chart_with_0_1_0_values()
+        old = yaml.safe_load((chart / "values.yaml").read_text())
+        self.assertNotIn("liveness", old["frontend"]["probes"])  # the keys really are absent from the 0.1.0 values
+        for probe in ("startup", "liveness", "readiness"):
+            self.assertNotIn("timeoutSeconds", old["postgresql"]["probes"][probe])
+        result = helm("template", "t", str(chart), *UPGRADE, *sets("frontend.enabled=true", "frontend.image.tag=x"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        docs = [d for d in yaml.safe_load_all(result.stdout) if d]
+        frontend = self.container(docs, "t-owl-mast-frontend")["livenessProbe"]
+        self.assertEqual((frontend["httpGet"]["path"], frontend["periodSeconds"], frontend["failureThreshold"]), ("/", 15, 3))
+        pg = self.container(docs, "t-owl-mast-postgresql")
+        self.assertEqual([pg[p]["timeoutSeconds"] for p in ("startupProbe", "livenessProbe", "readinessProbe")], [5, 5, 5])
+        # the same numbers are what the current values.yaml ships, so an upgraded and a fresh release agree
+        new = yaml.safe_load((CHART / "values.yaml").read_text())
+        self.assertEqual((new["frontend"]["probes"]["liveness"]["periodSeconds"], new["frontend"]["probes"]["liveness"]["failureThreshold"]), (15, 3))
+        fresh = self.container(render(), "t-owl-mast-postgresql")
+        self.assertEqual([fresh[p]["timeoutSeconds"] for p in ("startupProbe", "livenessProbe", "readinessProbe")], [5, 5, 5])
+
+    def test_fullname_definition_covers_name_override_and_shortened_names(self):
+        """4544473225: the <fullname> definition left out nameOverride, and for long fullnames the documented commands name
+        objects that do not exist (the Deployment and the claim are shortened, hashed names)."""
+        def names(release, *args):
+            result = helm("template", release, str(CHART), *args)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            docs = [d for d in yaml.safe_load_all(result.stdout) if d]
+            pg = [d for d in by_kind(docs, "Deployment") if d["metadata"]["labels"]["app.kubernetes.io/component"] == "postgresql"][0]
+            return pg["metadata"]["name"], by_kind(docs, "PersistentVolumeClaim")[0]["metadata"]["name"]
+        # the definition, case by case, against what the chart renders
+        self.assertEqual(names("r", *sets("fullnameOverride=fo"))[0], "fo-postgresql")
+        self.assertEqual(names("r", *sets("nameOverride=app"))[0], "r-app-postgresql")
+        self.assertEqual(names("my-app", *sets("nameOverride=app"))[0], "my-app-postgresql")  # the release name contains the name
+        self.assertEqual(names("my-owl-mast")[0], "my-owl-mast-postgresql")
+        self.assertEqual(names("r")[0], "r-owl-mast-postgresql")
+        doc = " ".join((REPO / "docs" / "installation.md").read_text().split())
+        for phrase in ("`<release>-<nameOverride>`", "the release name when it contains that name", "longer than 52 characters",
+                       "use the Deployment and claim names that `NOTES` prints"):
+            self.assertIn(phrase, doc, phrase)
+        # a long fullname: the real names are not <fullname>-postgresql, and NOTES and the refusal print them
+        long = "f" * 60
+        deployment, claim = names("t", *sets(f"fullnameOverride={long}"))
+        self.assertNotEqual(deployment, f"{long}-postgresql"); self.assertEqual(claim, f"{deployment}-data")
+        printed = " ".join(notes(*sets(f"fullnameOverride={long}")).split())
+        self.assertIn(f"The PersistentVolumeClaim {claim} is retained", printed); self.assertIn(f"existingClaim={claim}", printed)
+        self.assertIn(f"Deployment {deployment}", printed)
+        err = refused(*sets(f"fullnameOverride={long}", "postgresql.provisionKeycloakDatabase=true", "postgresql.persistence.existingClaim=prior"))
+        self.assertIn(f"kubectl exec deploy/{deployment} ", err)
 
 
 def notes_for(release, *args):

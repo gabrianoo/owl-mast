@@ -34,10 +34,11 @@ backend:
       memory: 1Gi
   # A named allow-list of JVM memory and tuning options, separated by whitespace:
   #   -Xms/-Xmx/-Xmn/-Xss<size>
-  #   -XX:<Name>=<number, optional k/m/g> for MaxRAMPercentage, InitialRAMPercentage, MinRAMPercentage, MaxRAM,
-  #     MaxMetaspaceSize, MetaspaceSize, MaxDirectMemorySize, ReservedCodeCacheSize, ActiveProcessorCount,
-  #     MaxHeapFreeRatio, MinHeapFreeRatio, MaxGCPauseMillis, G1HeapRegionSize, ParallelGCThreads,
-  #     ConcGCThreads, InitiatingHeapOccupancyPercent, SoftMaxHeapSize, MaxNewSize, NewSize, NewRatio,
+  #   -XX:<Name>=<whole number, optional k/m/g> for the sizes MaxRAM, MaxMetaspaceSize, MetaspaceSize,
+  #     MaxDirectMemorySize, ReservedCodeCacheSize, G1HeapRegionSize, SoftMaxHeapSize, MaxNewSize, NewSize
+  #   -XX:<Name>=<number, no suffix> for the percentages MaxRAMPercentage, InitialRAMPercentage, MinRAMPercentage
+  #   -XX:<Name>=<whole number> for the counts ActiveProcessorCount, MaxHeapFreeRatio, MinHeapFreeRatio,
+  #     MaxGCPauseMillis, ParallelGCThreads, ConcGCThreads, InitiatingHeapOccupancyPercent, NewRatio,
   #     SurvivorRatio, TieredStopAtLevel
   #   -XX:+<Flag> / -XX:-<Flag> for UseG1GC, UseZGC, UseSerialGC, UseParallelGC, UseShenandoahGC,
   #     UseContainerSupport, UseStringDeduplication, AlwaysPreTouch, ExitOnOutOfMemoryError, UseCompressedOops,
@@ -56,8 +57,9 @@ backend:
       failureThreshold: 3
     readiness:
       path: /actuator/health/readiness
-      # Must be greater than 5: the backend caches its identity readiness result for 5 s, and a shorter
-      # period would let consecutive probes read one cached result (refused at render).
+      # Must be greater than 5: the backend keeps its identity readiness result for 5 s, counted from the
+      # start of the discovery request, and a shorter or equal period would let two consecutive probes read
+      # the result of one request (refused at render).
       periodSeconds: 10
       failureThreshold: 3
       # Longer than the backend's 3 s identity-discovery timeout, so a slow issuer is reported by the
@@ -250,7 +252,8 @@ identity:
     # Trust X-Forwarded-* / Forwarded headers ("xforwarded" | "forwarded"). Leave empty unless a trusted
     # proxy that overwrites these headers is the only path to Keycloak (the OM-02.01 public-origin gate).
     # Rendering then requires networkPolicy.enabled=true and networkPolicy.keycloak.extraFrom naming the proxy:
-    # every entry must select it (non-empty matchLabels or matchExpressions; an ipBlock narrower than /0).
+    # every entry must select it (a matchLabels entry or a matchExpressions term with operator In; Exists,
+    # NotIn and DoesNotExist terms alone are refused; an ipBlock of at least /8 for IPv4 or /32 for IPv6).
     proxyHeaders: ""
     database:
       name: keycloak

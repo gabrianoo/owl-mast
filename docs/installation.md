@@ -16,7 +16,7 @@ artifact and its smoke check are delivered by OM-01.04, browser realm/client/ses
 | Render, lint, negative validation (`scripts/verify-install-package.sh`) | passed | passed (CI `package-checks`) |
 | PostgreSQL initialisation, provisioning and probe commands against the pinned image (Docker) | passed | passed (CI `package-checks`) |
 | Keycloak on a read-only root against the pinned image (Docker) | not applicable | passed (CI `package-checks`) |
-| Backend image: UID, JDK, application start on a read-only root up to the first database connection (image-level proof; migrations, the listener and runtime writes are part of the Kind run) | not checked | passed (CI `build`) |
+| Backend image: UID, JDK, application start on a read-only root with the environment the chart renders, up to the first database connection (image-level proof; the beans created after database initialisation, migrations, the listener and runtime writes are part of the Kind run) | not checked | passed (CI `build`) |
 | NetworkPolicy enforcement on a disposable kindnet cluster | not applicable | one run on 2026-11-09, before the changes of 2026-11-11 |
 | Owner-run Kind qualification (`scripts/qualify-local-install.sh all`): four combinations, persistence, first-enable, failure paths | passed 2026-11-07 | **pending** |
 | Gateway API: HTTPRoute accepted by an API server with the CRDs (server-side CEL) | not run | **not run** (manifest validation only) |
@@ -112,15 +112,22 @@ identifiers). External hosts are bare DNS names (RFC 1123 labels
 separated by single dots, optional trailing dot) or IPv4 addresses (no port, path or query: they are spliced
 into the JDBC/R2DBC URLs). `backend.extraEnv` refuses
 names that would override the validated configuration (`OWLMAST_*`, `SPRING_*`, `MANAGEMENT_*`, `SERVER_*`,
-the Spring Boot launcher's `LOADER_*`, the JVM option variables, `CLASSPATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`)
+the Spring Boot launcher's `LOADER_*`, the JVM option variables, `CLASSPATH`, and every dynamic-loader variable
+`LD_*`, such as `LD_PRELOAD`, `LD_AUDIT` and `LD_LIBRARY_PATH`)
 as well as credential-like names, in the schema and again in the templates, so `--skip-schema-validation` does
 not reopen it; `commonLabels` refuses keys under `app.kubernetes.io/` and `helm.sh/`, which
 the selectors own, and values that are not valid Kubernetes label values (at most 63 characters, alphanumeric
 at both ends). `commonLabels` reach every rendered object and the backend, Keycloak, frontend and provisioning
 pods, so editing them restarts those pods. The PostgreSQL pod template carries no `commonLabels`: with the
 `Recreate` strategy a label edit would otherwise stop the database, and the backend and Keycloak with it.
-In this document `<fullname>` is `fullnameOverride` when set, the release name when it contains `owl-mast`, and
-`<release>-owl-mast` otherwise. Generated names stay within 63 characters for any
+In this document `<fullname>` is `fullnameOverride` when set. Otherwise the chart's name is `nameOverride`, or
+`owl-mast` when that is empty, and `<fullname>` is the release name when it contains that name and
+`<release>-<nameOverride>` (by default `<release>-owl-mast`) otherwise. The commands below spell object names
+as `<fullname>-postgresql` and `<fullname>-postgresql-data`. That holds for a `<fullname>` of at most 52
+characters. For a `<fullname>` longer than 52 characters the PostgreSQL Deployment gets a shortened, hashed
+name and the claim is that name plus `-data`, so use the Deployment and claim names that `NOTES` prints after
+the install or upgrade (the render refusals print the same names); `kubectl get deploy,pvc -l
+app.kubernetes.io/instance=<release>,app.kubernetes.io/component=postgresql` lists them too. Generated names stay within 63 characters for any
 release name or `fullnameOverride`: the base is shortened before each suffix is appended, and a shortened base
 carries a 6-character hash of the release name and full name, so two long-named releases in one namespace do not
 render the same name by accident (names that fit are unchanged). The hash is not a guard against intent: a
@@ -135,12 +142,14 @@ document whose `issuer` equals the configured value exactly (OpenID Connect Disc
 one trailing slash is a mismatch, because tokens carry the published value); the backend's readiness group
 includes that check (`identityDiscovery`) together with the schema baseline, so a misconfigured or unreachable
 identity provider keeps the backend unready while liveness stays up. On a mismatch the backend logs a warning
-naming the configured value and the value the provider published, and the health detail carries both (`issuer`
-and `publishedIssuer`, shortened to 200 printable characters; health details are not shown over HTTP by
-default). The discovery outcome is cached for 5 s, so
+naming the configured value and the value the provider published, once per published value (not on every
+readiness evaluation; again when the value changes or after the issuer matched in between), and the health
+detail carries both on every evaluation (`issuer` and `publishedIssuer`, shortened to 200 printable characters;
+health details are not shown over HTTP by default). The discovery outcome is kept for 5 s, counted from the
+start of the discovery request and not from its answer (which can take up to 3 s), so
 the identity provider receives at most one discovery request per 5 s however often readiness is evaluated;
-`backend.probes.readiness.periodSeconds` must therefore be greater than 5, so that every probe observes a
-current result (smaller values are refused at render).
+`backend.probes.readiness.periodSeconds` must therefore be greater than 5, so that two consecutive probes never
+read the result of the same request (smaller values are refused at render).
 
 ## Upgrading a release installed from chart 0.1.0
 
@@ -169,10 +178,11 @@ pending).
 | The actuator is no longer routed by the Ingress or HTTPRoute | Only to publish it on purpose: `routing.exposeActuator=true` |
 | An HTTPRoute needs `routing.gateway.hostnames` (DNS names, no IP addresses) | List the hostnames, or acknowledge every listener hostname with `routing.gateway.allowAllListenerHostnames=true` |
 | Every `routing.ingress.tls` entry needs `secretName`; host labels are at most 63 characters; `routing.ingress.host` and the TLS hosts are DNS names, not IP addresses (the API server rejects an IP address) | Name the TLS Secret; use a DNS name |
-| `sslMode=verify-ca` and `verify-full` are refused | Use `require` until the CA trust mount ships |
-| `backend.javaToolOptions` accepts a named allow-list of JVM memory and tuning options only | Move application settings out of JVM options; drop `-XX` options that are not listed in `values.yaml` |
-| `identity.keycloak.proxyHeaders` needs `networkPolicy.enabled=true` and `networkPolicy.keycloak.extraFrom` entries that select the proxy; an empty peer, an empty `podSelector` or `namespaceSelector`, and an `ipBlock` of `/0` are refused | Name the proxy's pods or namespace by label, or its address range |
+| `sslMode=verify-ca` and `verify-full` are refused. The refusal names the mode and the reason (no CA trust is mounted yet), also on a `--reuse-values` upgrade of a release that used one of them | Use `require` until the CA trust mount ships |
+| `backend.javaToolOptions` accepts a named allow-list of JVM memory and tuning options only, each with the value form the JVM takes (sizes: a whole number with an optional `k`/`m`/`g`; percentages: a number without a suffix; counts: a whole number) | Move application settings out of JVM options; drop `-XX` options that are not listed in `values.yaml`; write `-XX:MaxRAMPercentage=75`, not `75m` |
+| `identity.keycloak.proxyHeaders` needs `networkPolicy.enabled=true` and `networkPolicy.keycloak.extraFrom` entries that select the proxy; an empty peer, an empty `podSelector` or `namespaceSelector`, a selector made only of `Exists`, `NotIn` or `DoesNotExist` terms, and an `ipBlock` wider than `/8` (IPv4) or `/32` (IPv6) are refused | Name the proxy's pods or namespace with `matchLabels` or an `In` term, or its address range |
 | `backend.probes.readiness.periodSeconds` must be greater than 5 | Raise a smaller period |
+| `backend.extraEnv` refuses every `LD_*` name; `identity.keycloak.bootstrapAdmin.enabled` must be `true` or `false` (also with `--skip-schema-validation`) | Remove loader variables; write the boolean |
 | `commonLabels` are no longer copied into the PostgreSQL pod template | Nothing; select the database pod by the chart's own labels |
 | The backend Deployment uses the `Recreate` strategy (single instance) | Expect the backend to be down for the length of its restart on every rollout |
 | The bundled PostgreSQL pod is recreated once by this upgrade (probe commands, `fsGroupChangePolicy`, script-only checksum) | Plan the database restart; later chart bumps no longer recreate it |
@@ -341,7 +351,11 @@ Keycloak against a disposable PostgreSQL with the seed volume shaped like a kube
 set: the cluster-local Keycloak has no proxy in front of it, and `identity.keycloak.proxyHeaders`
 (`xforwarded`|`forwarded`) is for a trusted proxy that is the only path to it: rendering it requires
 `networkPolicy.enabled=true` and a `networkPolicy.keycloak.extraFrom` entry naming the proxy, because without the
-policy any pod could send forged forwarding headers and without the entry the policy admits no proxy at all. With
+policy any pod could send forged forwarding headers and without the entry the policy admits no proxy at all. An
+entry names the proxy when its selector has a `matchLabels` entry or a `matchExpressions` term with operator `In`
+(`Exists`, `NotIn` and `DoesNotExist` terms alone can match every pod or namespace), or when its `ipBlock` has a
+prefix of at least `/8` for IPv4 or `/32` for IPv6. The chart cannot check that the labels or the range belong
+to the proxy and to nothing else; that stays with the operator. With
 `identity.keycloak.importRealm=false` the issuer realm exists only if an operator creates it, so rendering
 requires the acknowledgement `identity.keycloak.realmManagedByOperator=true`.
 
@@ -450,7 +464,7 @@ scripts/verify-install-package.sh
 
 # backend image from the built jar
 ./gradlew :backend:bootJar && docker build -t owl-mast/backend:0.1.0 -f backend/Dockerfile backend
-scripts/verify-backend-image.sh   # jar name vs version, docker build, UID 10001, qualified JDK, read-only-root start up to the first database connection
+scripts/verify-backend-image.sh   # jar name vs version, docker build, UID 10001, qualified JDK, read-only-root start with the chart's environment up to the first database connection
 
 # install (secrets must exist first; see examples/)
 helm upgrade --install owl-mast deploy/helm/owl-mast -n owl-mast -f deploy/helm/owl-mast/examples/bundled-bundled.yaml --wait

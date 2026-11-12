@@ -3,6 +3,7 @@ package com.aisquad.owlmast.access.adapter.identity;
 import com.aisquad.owlmast.platform.diagnostics.SafeFailure;
 import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import lombok.NonNull;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.health.contributor.Health;
@@ -20,16 +21,22 @@ import reactor.core.publisher.Mono;
  * carry the published value in {@code iss}, so an issuer that differs only by a trailing slash
  * would pass a lenient readiness check and then fail every token validation.
  *
- * <p>The outcome, UP or DOWN, is cached for {@link #CACHE_TTL}: however often the readiness
- * endpoint is evaluated, the identity provider receives at most one discovery request per interval,
- * and concurrent evaluations share one request. An evaluation may therefore observe a result up to
- * {@link #CACHE_TTL} old. The installation chart refuses a readiness probe period that is not
- * greater than this interval, so consecutive kubelet probes never read the same cached result; a
- * chart render test reads the constant from this file.
+ * <p>The outcome, UP or DOWN, is cached for {@link #CACHE_TTL}, counted from the moment its
+ * discovery request was STARTED, not from the moment the answer arrived: however often the
+ * readiness endpoint is evaluated, the identity provider receives at most one discovery request per
+ * interval, and concurrent evaluations share one request. An evaluation therefore observes the
+ * result of a request started at most {@link #CACHE_TTL} earlier, however long the provider took to
+ * answer (up to {@link #TIMEOUT}); an answer that took the whole interval is delivered and not
+ * kept. The installation chart refuses a readiness probe period that is not greater than this
+ * interval, so two consecutive kubelet probes never read the result of the same request; a chart
+ * render test reads the constant from this file.
  *
- * <p>On an issuer mismatch the published value is reported (health detail {@code publishedIssuer}
- * and one warning per evaluation), shortened and reduced to printable characters: it comes from the
- * remote response, and an operator needs it to correct a difference as small as a trailing slash.
+ * <p>On an issuer mismatch the published value is reported, shortened and reduced to printable
+ * characters: it comes from the remote response, and an operator needs it to correct a difference
+ * as small as a trailing slash. Every DOWN result carries it as the health detail {@code
+ * publishedIssuer}. The warning is logged once per distinct published value, not on every cache
+ * refresh: a mismatch can last indefinitely, and the log is where the installation notes send the
+ * operator. It is logged again when the value changes or after the issuer has matched in between.
  */
 @Slf4j
 final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator {
@@ -44,6 +51,10 @@ final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator 
   private final WebClient client;
   private final IdentityProperties properties;
   private final Mono<Health> cached;
+  private final AtomicReference<String> lastWarnedIssuer = new AtomicReference<>();
+
+  /** A result with the instant ({@link System#nanoTime()}) its discovery request was started. */
+  private record Timed(Health health, long startedNanos) {}
 
   IdentityDiscoveryHealthIndicator(WebClient client, IdentityProperties properties) {
     this(client, properties, CACHE_TTL);
@@ -53,7 +64,25 @@ final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator 
       WebClient client, IdentityProperties properties, Duration cacheTtl) {
     this.client = client;
     this.properties = properties;
-    this.cached = Mono.defer(this::discover).cache(cacheTtl);
+    // discover() never errors and is never empty, so only the value's interval matters. What is
+    // left of the interval after the answer arrived is how long the answer is kept: zero or less
+    // means it is delivered to the waiting evaluations and the next one starts a new request.
+    this.cached =
+        Mono.defer(
+                () -> {
+                  long started = System.nanoTime();
+                  return discover().map(health -> new Timed(health, started));
+                })
+            .cache(
+                timed -> remaining(cacheTtl, timed.startedNanos()),
+                failure -> Duration.ZERO,
+                () -> Duration.ZERO)
+            .map(Timed::health);
+  }
+
+  private static Duration remaining(Duration cacheTtl, long startedNanos) {
+    Duration left = cacheTtl.minusNanos(System.nanoTime() - startedNanos);
+    return left.isNegative() ? Duration.ZERO : left;
   }
 
   @Override
@@ -87,16 +116,20 @@ final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator 
     }
     if (!published.equals(properties.issuerUri())) {
       String reported = printable(published);
-      log.warn(
-          "Identity discovery: the published issuer [{}] differs from the configured issuer [{}]",
-          reported,
-          properties.issuerUri());
+      if (!reported.equals(lastWarnedIssuer.getAndSet(reported))) {
+        log.warn(
+            "Identity discovery: the published issuer [{}] differs from the configured issuer [{}]"
+                + " (logged once per published value; the readiness detail keeps reporting it)",
+            reported,
+            properties.issuerUri());
+      }
       return Health.down()
           .withDetail("reason", "published issuer differs from the configured issuer")
           .withDetail("issuer", properties.issuerUri())
           .withDetail("publishedIssuer", reported)
           .build();
     }
+    lastWarnedIssuer.set(null);
     return Health.up().withDetail("issuer", properties.issuerUri()).build();
   }
 

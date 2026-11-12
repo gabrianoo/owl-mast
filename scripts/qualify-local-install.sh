@@ -234,13 +234,20 @@ RELEASE_KINDS_AND_SUFFIXES=( "deployment:-backend" "deployment:-postgresql" "dep
   "configmap:-postgresql-init" "configmap:-keycloak-realm" "configmap:-postgresql-provision-scripts"
   "job:-postgresql-provision-keycloak" "ingress:" "httproute:" "pvc:-postgresql-data"
   "networkpolicy:-postgresql" "networkpolicy:-keycloak" )
+# Components whose pod template carries no commonLabels, so their pods and ReplicaSets have NO run label: the
+# chart keeps commonLabels off the PostgreSQL pod template (a label edit must not recreate the database).
+# Ownership of such a pod is proven through its Deployment alone (see verified_pods).
+CHAIN_UNLABELLED_COMPONENTS="postgresql"
 verified_pods() { # verified_pods <release> <component> <owner>: prints the names of the selected pods whose controller chain is proven
-  # Each selected pod must carry the owner label and exactly one controller reference to a ReplicaSet that
-  # exists, is readable, has that UID, carries the owner label and is itself controlled (one controller
-  # reference, matching UID) by the expected Deployment <release>-<component>, which must exist, be readable
-  # and carry the owner label. Anything else refuses. This proves the chain at the moment of reading; a pod
-  # replaced afterwards is not covered by this proof (no atomic guarantee is claimed).
-  local rel="$1" comp="$2" owner="$3" out rc=0 line name label refs dep_uid dep_label rs_out rs_uid rs_label rs_refs
+  # Each selected pod must have exactly one controller reference to a ReplicaSet that exists, is readable, has
+  # that UID and is itself controlled (one controller reference, matching UID) by the expected Deployment
+  # <release>-<component>, which must exist, be readable and carry the owner label. The pod and the ReplicaSet
+  # must carry the owner label too, except for CHAIN_UNLABELLED_COMPONENTS: there the label is absent by design,
+  # so an ABSENT label is accepted and the UID chain to the owned Deployment is the proof; a label naming anyone
+  # else still refuses. Anything else refuses. This proves the chain at the moment of reading; a pod replaced
+  # afterwards is not covered by this proof (no atomic guarantee is claimed).
+  local rel="$1" comp="$2" owner="$3" out rc=0 line name label refs dep_uid dep_label rs_out rs_uid rs_label rs_refs unlabelled_ok=0
+  case " $CHAIN_UNLABELLED_COMPONENTS " in *" $comp "*) unlabelled_ok=1 ;; esac
   local proven_file="$OUT/preflight/proven-pods-$rel-$comp.txt"; : >"$proven_file"  # the proven names, read by callers
   dep_uid="$(k -n "$NS" get deployment "$rel-$comp" -o jsonpath='{.metadata.uid}|{.metadata.labels.owlmast\.aisquad\.com/run}' 2>&1)" || rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -254,7 +261,7 @@ verified_pods() { # verified_pods <release> <component> <owner>: prints the name
   while IFS='|' read -r name label refs; do
     [ -n "$name" ] || continue
     printf 'pod %s/%s label=%s refs=%s\n' "$NS" "$name" "$label" "$refs" >>"$OUT/preflight/resources.txt"
-    if [ "$label" != "$owner" ]; then log "chain pod $NS/$name: label '$label' is not $owner: refusing"; failed=1; continue; fi
+    if [ "$label" != "$owner" ] && ! { [ "$unlabelled_ok" -eq 1 ] && [ -z "$label" ]; }; then log "chain pod $NS/$name: label '$label' is not $owner: refusing"; failed=1; continue; fi
     local controllers; controllers="$(tr ' ' '\n' <<<"$refs" | grep -E '/true$' || true)"
     if [ "$(grep -c . <<<"$controllers")" -ne 1 ] || [ -z "$controllers" ]; then log "chain pod $NS/$name: expected exactly one controller reference, got '$refs': refusing"; failed=1; continue; fi
     local ckind cname cuid; IFS='/' read -r ckind cname cuid _ <<<"$controllers"
@@ -266,14 +273,18 @@ verified_pods() { # verified_pods <release> <component> <owner>: prints the name
     fi
     IFS='|' read -r rs_uid rs_label rs_refs <<<"$rs_out"
     if [ "$rs_uid" != "$cuid" ]; then log "chain pod $NS/$name: ReplicaSet $cname UID $rs_uid differs from the pod's controller reference $cuid: refusing"; failed=1; continue; fi
-    if [ "$rs_label" != "$owner" ]; then log "chain pod $NS/$name: ReplicaSet $cname label '$rs_label' is not $owner: refusing"; failed=1; continue; fi
+    if [ "$rs_label" != "$owner" ] && ! { [ "$unlabelled_ok" -eq 1 ] && [ -z "$rs_label" ]; }; then log "chain pod $NS/$name: ReplicaSet $cname label '$rs_label' is not $owner: refusing"; failed=1; continue; fi
     local rs_controllers; rs_controllers="$(tr ' ' '\n' <<<"$rs_refs" | grep -E '/true$' || true)"
     if [ "$(grep -c . <<<"$rs_controllers")" -ne 1 ] || [ -z "$rs_controllers" ]; then log "chain pod $NS/$name: ReplicaSet $cname has no single controller: refusing"; failed=1; continue; fi
     local dkind dname duid; IFS='/' read -r dkind dname duid _ <<<"$rs_controllers"
     if [ "$dkind/$dname" != "Deployment/$rel-$comp" ] || [ "$duid" != "$dep_uid" ] || [ "$dep_label" != "$owner" ]; then
       log "chain pod $NS/$name: ReplicaSet $cname is controlled by $dkind/$dname ($duid), expected Deployment/$rel-$comp ($dep_uid) owned by $owner: refusing"; failed=1; continue
     fi
-    log "chain pod $NS/$name: proven ($name -> ReplicaSet/$cname $rs_uid -> Deployment/$rel-$comp $dep_uid, all $owner)"
+    if [ -z "$label" ] || [ -z "$rs_label" ]; then
+      log "chain pod $NS/$name: proven ($name -> ReplicaSet/$cname $rs_uid -> Deployment/$rel-$comp $dep_uid, Deployment owned by $owner; the $comp pod template carries no run label)"
+    else
+      log "chain pod $NS/$name: proven ($name -> ReplicaSet/$cname $rs_uid -> Deployment/$rel-$comp $dep_uid, all $owner)"
+    fi
     printf '%s\n' "$name" >>"$proven_file"
   done <<<"$out"
   [ "$failed" -eq 0 ]
@@ -766,6 +777,9 @@ step_failure_paths() {
 
 step_inventory() {
   record inventory-all k get all,pvc,pv,secrets,configmap,resourcequota -A -l "$RUN_LABEL_KEY" -o custom-columns=KIND:.kind,NS:.metadata.namespace,NAME:.metadata.name,OWNER:.metadata.labels.owlmast\.aisquad\.com/run,CREATED:.metadata.creationTimestamp
+  # The PostgreSQL pods and ReplicaSets carry no run label (CHAIN_UNLABELLED_COMPONENTS), so the label query above
+  # cannot list them: they are listed by component with their controller references, which lead to the labelled Deployment.
+  record inventory-unlabelled-pods k get pods,replicasets -n "$NS" -l app.kubernetes.io/component=postgresql -o custom-columns=KIND:.kind,NS:.metadata.namespace,NAME:.metadata.name,INSTANCE:.metadata.labels.app\.kubernetes\.io/instance,CONTROLLER:.metadata.ownerReferences[0].kind,CONTROLLER-NAME:.metadata.ownerReferences[0].name,CREATED:.metadata.creationTimestamp
   record inventory-pv k get pv -o custom-columns=NAME:.metadata.name,CLAIM:.spec.claimRef.name,NS:.spec.claimRef.namespace,RECLAIM:.spec.persistentVolumeReclaimPolicy,CLASS:.spec.storageClassName,PHASE:.status.phase
   record inventory-helm h list -A
 }

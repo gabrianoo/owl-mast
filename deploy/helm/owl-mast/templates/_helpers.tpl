@@ -127,7 +127,7 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- /* loads a file or opens the attach mechanism would override or bypass the validated configuration */ -}}
 {{- $jvm := $v.backend.javaToolOptions | default "" -}}
 {{- if not (regexMatch (include "owl-mast.javaToolOptionsPattern" .) $jvm) -}}
-{{- fail (printf "backend.javaToolOptions %q is refused: only the listed JVM memory and tuning options are accepted (-Xms/-Xmx/-Xmn/-Xss with a size, and the -XX options named in values.yaml, such as -XX:MaxRAMPercentage=75 or -XX:+UseZGC). System properties (-D), agents (-javaagent, -agentlib, -agentpath), argument files (@file) and every other -XX option (file-loading, hook and attach options included) are refused: they would override the chart-validated issuer and database configuration" $jvm) -}}
+{{- fail (printf "backend.javaToolOptions %q is refused: only the listed JVM memory and tuning options are accepted, each with the value form the JVM takes (-Xms/-Xmx/-Xmn/-Xss and the -XX size options with a whole number and an optional k, m or g; the -XX percentage options with a number and no suffix; the -XX count options with a whole number; the -XX flags named in values.yaml, such as -XX:+UseZGC). System properties (-D), agents (-javaagent, -agentlib, -agentpath), argument files (@file) and every other -XX option (file-loading, hook and attach options included) are refused: they would override the chart-validated issuer and database configuration" $jvm) -}}
 {{- end -}}
 {{- /* the schema's extraEnv rules, repeated here so that --skip-schema-validation does not reopen them: a later */ -}}
 {{- /* duplicate of a variable the chart renders wins in Kubernetes */ -}}
@@ -136,17 +136,18 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $name) -}}
 {{- fail (printf "backend.extraEnv[%d].name %q is not a valid environment variable name" $i $name) -}}
 {{- end -}}
-{{- if or (regexMatch "(?i)^(OWLMAST_|SPRING_|MANAGEMENT_|SERVER_|LOADER_)" $name) (regexMatch "(?i)^(JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS|JAVA_OPTS|JAVA_HOME|PATH|CLASSPATH|LD_PRELOAD|LD_LIBRARY_PATH)$" $name) -}}
-{{- fail (printf "backend.extraEnv[%d].name %q is refused: it would override the chart-validated configuration (OWLMAST_*, SPRING_*, MANAGEMENT_*, SERVER_*, LOADER_*), the JVM options or the dynamic loader" $i $name) -}}
+{{- if or (regexMatch "(?i)^(OWLMAST_|SPRING_|MANAGEMENT_|SERVER_|LOADER_|LD_)" $name) (regexMatch "(?i)^(JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS|JAVA_OPTS|JAVA_HOME|PATH|CLASSPATH)$" $name) -}}
+{{- fail (printf "backend.extraEnv[%d].name %q is refused: it would override the chart-validated configuration (OWLMAST_*, SPRING_*, MANAGEMENT_*, SERVER_*, LOADER_*), the JVM options or the dynamic loader (every LD_* variable: LD_PRELOAD, LD_AUDIT, LD_LIBRARY_PATH and the rest)" $i $name) -}}
 {{- end -}}
 {{- if regexMatch "(?i)(password|secret|token|credential)" $name -}}
 {{- fail (printf "backend.extraEnv[%d].name %q looks like a credential: credentials are existing Secret references, never plain values" $i $name) -}}
 {{- end -}}
 {{- end -}}
-{{- /* the readiness indicator caches its result for 5 s (IdentityDiscoveryHealthIndicator.CACHE_TTL): a shorter or */ -}}
-{{- /* equal period would let consecutive probes read one cached result */ -}}
+{{- /* the readiness indicator keeps a result for 5 s (IdentityDiscoveryHealthIndicator.CACHE_TTL), counted from the */ -}}
+{{- /* START of its discovery request, however long the answer took: with a longer period, two consecutive probes */ -}}
+{{- /* never read the result of the same request. A shorter or equal period would let them */ -}}
 {{- if le (int $v.backend.probes.readiness.periodSeconds) 5 -}}
-{{- fail (printf "backend.probes.readiness.periodSeconds=%v is refused: it must be greater than 5, the interval for which the backend caches its identity readiness result, so every probe observes a current result" $v.backend.probes.readiness.periodSeconds) -}}
+{{- fail (printf "backend.probes.readiness.periodSeconds=%v is refused: it must be greater than 5, the interval (counted from the start of the discovery request) for which the backend keeps its identity readiness result, so two consecutive probes never read the result of the same request" $v.backend.probes.readiness.periodSeconds) -}}
 {{- end -}}
 {{- if not $v.database.existingSecret -}}
 {{- fail "database.existingSecret is required: an existing Secret with keys username and password for the application principal" -}}
@@ -197,7 +198,9 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- if not $peers -}}
 {{- fail (printf "identity.keycloak.proxyHeaders=%s needs networkPolicy.keycloak.extraFrom to name the trusted proxy: with no entry the policy admits only the backend, whose direct requests are not proxied" $v.identity.keycloak.proxyHeaders) -}}
 {{- end -}}
-{{- /* a peer must NAME the proxy: an empty peer or an empty selector admits every pod, a /0 block every address */ -}}
+{{- /* a peer must NAME the proxy: an empty peer or an empty selector admits every pod, and so does a selector made */ -}}
+{{- /* only of Exists, NotIn or DoesNotExist terms (key Exists on a label every namespace carries is {} spelled */ -}}
+{{- /* differently). An ipBlock must be a narrow range: /0 is every address, and two /1 blocks are too. */ -}}
 {{- range $i, $peer := $peers -}}
 {{- if not $peer -}}
 {{- fail (printf "networkPolicy.keycloak.extraFrom[%d] is empty: with identity.keycloak.proxyHeaders=%s every entry must name the trusted proxy (podSelector, namespaceSelector or ipBlock), because an empty peer admits every pod" $i $v.identity.keycloak.proxyHeaders) -}}
@@ -208,12 +211,25 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- if and (not (get $selector "matchLabels")) (not (get $selector "matchExpressions")) -}}
 {{- fail (printf "networkPolicy.keycloak.extraFrom[%d].%s is empty: with identity.keycloak.proxyHeaders=%s it must select the trusted proxy by matchLabels or matchExpressions, because an empty selector admits every %s, each able to send forged X-Forwarded-*/Forwarded headers" $i $key $v.identity.keycloak.proxyHeaders (ternary "pod of the release namespace" "pod of every namespace" (eq $key "podSelector"))) -}}
 {{- end -}}
+{{- $names := not (empty (get $selector "matchLabels")) -}}
+{{- range $expr := (get $selector "matchExpressions" | default list) -}}
+{{- if kindIs "map" $expr -}}
+{{- if and (eq (toString (get $expr "operator")) "In") (get $expr "values") -}}{{- $names = true -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if not $names -}}
+{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].%s names nothing: with identity.keycloak.proxyHeaders=%s it must select the trusted proxy by a matchLabels entry or a matchExpressions term with operator In. Exists, NotIn and DoesNotExist terms alone can match every %s (key Exists on a label all of them carry is an empty selector spelled differently), each able to send forged X-Forwarded-*/Forwarded headers" $i $key $v.identity.keycloak.proxyHeaders (ternary "pod of the release namespace" "namespace" (eq $key "podSelector"))) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- if hasKey $peer "ipBlock" -}}
 {{- $cidr := toString (get (get $peer "ipBlock" | default dict) "cidr") -}}
-{{- if or (not (contains "/" $cidr)) (hasSuffix "/0" $cidr) -}}
-{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].ipBlock.cidr %q is refused: with identity.keycloak.proxyHeaders=%s it must be the proxy's own address range, not every address" $i $cidr $v.identity.keycloak.proxyHeaders) -}}
+{{- $minPrefix := ternary 32 8 (contains ":" $cidr) -}}
+{{- if not (regexMatch "^[0-9A-Fa-f:.]+/[0-9]{1,3}$" $cidr) -}}
+{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].ipBlock.cidr %q is refused: with identity.keycloak.proxyHeaders=%s it must be the proxy's own address range in CIDR form (address/prefix)" $i $cidr $v.identity.keycloak.proxyHeaders) -}}
+{{- end -}}
+{{- if lt (int (regexFind "[0-9]+$" $cidr)) $minPrefix -}}
+{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].ipBlock.cidr %q is refused: with identity.keycloak.proxyHeaders=%s it must be the proxy's own address range, with a prefix of at least /%d (/8 for IPv4, /32 for IPv6). A wider block, alone (/0) or combined with another (0.0.0.0/1 and 128.0.0.0/1), admits every address" $i $cidr $v.identity.keycloak.proxyHeaders $minPrefix) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -323,7 +339,7 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- define "owl-mast.validateIngress" -}}
 {{- $in := .Values.routing.ingress -}}
 {{- $hostPattern := "^(\\*\\.)?[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$" -}}
-{{- $ipPattern := "^[0-9]+(\\.[0-9]+){3}$" -}}
+{{- $ipPattern := include "owl-mast.ipv4Pattern" . -}}
 {{- if not $in.host -}}
 {{- fail "routing.ingress.enabled=true requires routing.ingress.host" -}}
 {{- end -}}
@@ -426,7 +442,7 @@ by the operator's Gateway.
 {{- if or (eq $host "") (gt (len $host) 253) (not (regexMatch "^(\\*\\.)?[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $host)) -}}
 {{- fail (printf "routing.gateway.hostnames[%d] %q is not a valid HTTPRoute hostname: lowercase DNS name, optional leading wildcard label '*.', no scheme, port or path, at most 253 characters" $i $host) -}}
 {{- end -}}
-{{- if regexMatch "^[0-9]+(\\.[0-9]+){3}$" $host -}}
+{{- if regexMatch (include "owl-mast.ipv4Pattern" $) $host -}}
 {{- fail (printf "routing.gateway.hostnames[%d] %q is an IP address: the Gateway API Hostname type forbids IP addresses, and no conformant controller matches one" $i $host) -}}
 {{- end -}}
 {{- end -}}
@@ -450,13 +466,33 @@ by the operator's Gateway.
 
 {{/*
 backend.javaToolOptions: whitespace-separated options, each one of the heap and stack sizes or a NAMED -XX
-option. The same expression is the schema's pattern (deploy/tests pins that they are identical).
+option with the value form the JVM takes: size options a whole number with an optional k/m/g, percentage options
+a number without a suffix, count options a whole number (the JVM exits with "Improperly specified VM option" on
+-XX:MaxRAMPercentage=75m or -XX:ParallelGCThreads=1.5g). The same expression is the schema's pattern
+(deploy/tests pins that they are identical).
 */}}
 {{- define "owl-mast.javaToolOptionsPattern" -}}
-^\s*(-(Xm[sxn][0-9]+[kKmMgG]?|Xss[0-9]+[kKmMgG]?|XX:(MaxRAMPercentage|InitialRAMPercentage|MinRAMPercentage|MaxRAM|MaxMetaspaceSize|MetaspaceSize|MaxDirectMemorySize|ReservedCodeCacheSize|ActiveProcessorCount|MaxHeapFreeRatio|MinHeapFreeRatio|MaxGCPauseMillis|G1HeapRegionSize|ParallelGCThreads|ConcGCThreads|InitiatingHeapOccupancyPercent|SoftMaxHeapSize|MaxNewSize|NewSize|NewRatio|SurvivorRatio|TieredStopAtLevel)=[0-9]+(\.[0-9]+)?[kKmMgG]?|XX:[+-](UseG1GC|UseZGC|UseSerialGC|UseParallelGC|UseShenandoahGC|UseContainerSupport|UseStringDeduplication|AlwaysPreTouch|ExitOnOutOfMemoryError|UseCompressedOops|UseCompressedClassPointers|TieredCompilation|DisableExplicitGC|UseNUMA))(\s+|$))*$
+^\s*(-(Xm[sxn][0-9]+[kKmMgG]?|Xss[0-9]+[kKmMgG]?|XX:(MaxRAM|MaxMetaspaceSize|MetaspaceSize|MaxDirectMemorySize|ReservedCodeCacheSize|G1HeapRegionSize|SoftMaxHeapSize|MaxNewSize|NewSize)=[0-9]+[kKmMgG]?|XX:(MaxRAMPercentage|InitialRAMPercentage|MinRAMPercentage)=[0-9]+(\.[0-9]+)?|XX:(ActiveProcessorCount|MaxHeapFreeRatio|MinHeapFreeRatio|MaxGCPauseMillis|ParallelGCThreads|ConcGCThreads|InitiatingHeapOccupancyPercent|NewRatio|SurvivorRatio|TieredStopAtLevel)=[0-9]+|XX:[+-](UseG1GC|UseZGC|UseSerialGC|UseParallelGC|UseShenandoahGC|UseContainerSupport|UseStringDeduplication|AlwaysPreTouch|ExitOnOutOfMemoryError|UseCompressedOops|UseCompressedClassPointers|TieredCompilation|DisableExplicitGC|UseNUMA))(\s+|$))*$
 {{- end -}}
 
-{{/* 0.2.0 value read with its default, so a release upgraded with --reuse-values (0.1.0 values, no new keys) renders. */}}
+{{/*
+0.2.0 value read with its default, so a release upgraded with --reuse-values (0.1.0 values, no new keys) renders.
+Only true and false are accepted: with --skip-schema-validation a string such as "False" would match neither
+branch of the callers, and Keycloak would start without the bootstrap admin and without any warning.
+*/}}
 {{- define "owl-mast.keycloak.bootstrapAdminEnabled" -}}
-{{- dig "bootstrapAdmin" "enabled" true .Values.identity.keycloak | toString -}}
+{{- $enabled := dig "bootstrapAdmin" "enabled" true .Values.identity.keycloak | toString -}}
+{{- if not (has $enabled (list "true" "false")) -}}
+{{- fail (printf "identity.keycloak.bootstrapAdmin.enabled %q must be a boolean: true or false" $enabled) -}}
+{{- end -}}
+{{- $enabled -}}
+{{- end -}}
+
+{{/*
+A dotted IPv4 address as the Kubernetes API server reads one (octets 0-255, leading zeros allowed): the hosts it
+rejects as "an IP address, not a DNS name". 999.1.1.1 or 256.0.0.1 are DNS names made of numeric labels and are
+not matched. The same expression is the schema's (deploy/tests pins that they are identical).
+*/}}
+{{- define "owl-mast.ipv4Pattern" -}}
+^(0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$
 {{- end -}}

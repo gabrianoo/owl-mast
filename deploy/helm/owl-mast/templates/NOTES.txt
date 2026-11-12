@@ -50,6 +50,11 @@ NOTE: the temporary Keycloak bootstrap admin (Secret {{ .Values.identity.keycloa
 pod. Create a permanent admin, delete the temporary one, then upgrade with
 identity.keycloak.bootstrapAdmin.enabled=false (docs/installation.md).
 {{- end }}
+{{- if .Values.database.bundled }}
+
+Bundled PostgreSQL: Deployment {{ include "owl-mast.postgresql.fullname" . }}, data claim {{ default (include "owl-mast.postgresql.dataClaim" .) .Values.postgresql.persistence.existingClaim }}
+(these are the names for the kubectl commands in docs/installation.md).
+{{- end }}
 {{- if and .Values.database.bundled (not .Values.postgresql.persistence.existingClaim) }}
 
 The PersistentVolumeClaim {{ include "owl-mast.postgresql.dataClaim" . }} is retained when this

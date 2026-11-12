@@ -72,8 +72,8 @@
     "secretName": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"},
     "sslMode": {
       "type": "string",
-      "enum": ["disable", "allow", "prefer", "require"],
-      "description": "verify-ca and verify-full are not accepted until the chart mounts a CA trust (deferred, docs/installation.md): require encrypts the connection but does not authenticate the server."
+      "enum": ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"],
+      "description": "verify-ca and verify-full are listed only so that the templates can refuse them with the reason (a schema refusal prints no explanation): they are not accepted until the chart mounts a CA trust (deferred, docs/installation.md). require encrypts the connection but does not authenticate the server."
     },
     "dnsHost": {
       "type": "string",
@@ -85,8 +85,8 @@
       "type": "string",
       "maxLength": 253,
       "pattern": "^$|^(\\*\\.)?[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$",
-      "not": {"pattern": "^[0-9]+(\\.[0-9]+){3}$"},
-      "description": "Lowercase DNS name, each label at most 63 characters, optional leading wildcard label. Not an IP address: the API server rejects one as an Ingress host."
+      "not": {"pattern": "^(0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$"},
+      "description": "Lowercase DNS name, each label at most 63 characters, optional leading wildcard label. Not an IPv4 address (octets 0-255): the API server rejects one as an Ingress host. Numeric labels that are not an address, such as 999.1.1.1, are DNS names."
     },
     "annotations": {"type": "object", "additionalProperties": {"type": "string"}},
     "labels": {
@@ -132,8 +132,8 @@
         "resources": {"$ref": "#/$defs/resources"},
         "javaToolOptions": {
           "type": "string",
-          "pattern": "^\\s*(-(Xm[sxn][0-9]+[kKmMgG]?|Xss[0-9]+[kKmMgG]?|XX:(MaxRAMPercentage|InitialRAMPercentage|MinRAMPercentage|MaxRAM|MaxMetaspaceSize|MetaspaceSize|MaxDirectMemorySize|ReservedCodeCacheSize|ActiveProcessorCount|MaxHeapFreeRatio|MinHeapFreeRatio|MaxGCPauseMillis|G1HeapRegionSize|ParallelGCThreads|ConcGCThreads|InitiatingHeapOccupancyPercent|SoftMaxHeapSize|MaxNewSize|NewSize|NewRatio|SurvivorRatio|TieredStopAtLevel)=[0-9]+(\\.[0-9]+)?[kKmMgG]?|XX:[+-](UseG1GC|UseZGC|UseSerialGC|UseParallelGC|UseShenandoahGC|UseContainerSupport|UseStringDeduplication|AlwaysPreTouch|ExitOnOutOfMemoryError|UseCompressedOops|UseCompressedClassPointers|TieredCompilation|DisableExplicitGC|UseNUMA))(\\s+|$))*$",
-          "description": "A named allow-list of JVM memory and tuning options (-Xms/-Xmx/-Xmn/-Xss and the -XX options listed in values.yaml). System properties (-D), agents, argument files and every other -XX option (file-loading, hook and attach options) are refused: they would override or bypass the chart-validated configuration."
+          "pattern": "^\\s*(-(Xm[sxn][0-9]+[kKmMgG]?|Xss[0-9]+[kKmMgG]?|XX:(MaxRAM|MaxMetaspaceSize|MetaspaceSize|MaxDirectMemorySize|ReservedCodeCacheSize|G1HeapRegionSize|SoftMaxHeapSize|MaxNewSize|NewSize)=[0-9]+[kKmMgG]?|XX:(MaxRAMPercentage|InitialRAMPercentage|MinRAMPercentage)=[0-9]+(\\.[0-9]+)?|XX:(ActiveProcessorCount|MaxHeapFreeRatio|MinHeapFreeRatio|MaxGCPauseMillis|ParallelGCThreads|ConcGCThreads|InitiatingHeapOccupancyPercent|NewRatio|SurvivorRatio|TieredStopAtLevel)=[0-9]+|XX:[+-](UseG1GC|UseZGC|UseSerialGC|UseParallelGC|UseShenandoahGC|UseContainerSupport|UseStringDeduplication|AlwaysPreTouch|ExitOnOutOfMemoryError|UseCompressedOops|UseCompressedClassPointers|TieredCompilation|DisableExplicitGC|UseNUMA))(\\s+|$))*$",
+          "description": "A named allow-list of JVM memory and tuning options (-Xms/-Xmx/-Xmn/-Xss and the -XX options listed in values.yaml), each with the value form the JVM takes: sizes a whole number with an optional k/m/g, percentages a number without a suffix, counts a whole number. System properties (-D), agents, argument files and every other -XX option (file-loading, hook and attach options) are refused: they would override or bypass the chart-validated configuration."
         },
         "probes": {
           "type": "object",
@@ -147,7 +147,7 @@
                 {"$ref": "#/$defs/httpProbe"},
                 {
                   "properties": {"periodSeconds": {"minimum": 6}},
-                  "description": "Greater than 5 s, the interval for which the backend caches its identity readiness result."
+                  "description": "Greater than 5 s, the interval (counted from the start of the discovery request) for which the backend keeps its identity readiness result."
                 }
               ]
             }
@@ -166,13 +166,13 @@
                 "not": {
                   "anyOf": [
                     {"pattern": "(?i)(password|secret|token|credential)"},
-                    {"pattern": "(?i)^(OWLMAST_|SPRING_|MANAGEMENT_|SERVER_|LOADER_)"},
+                    {"pattern": "(?i)^(OWLMAST_|SPRING_|MANAGEMENT_|SERVER_|LOADER_|LD_)"},
                     {
-                      "pattern": "(?i)^(JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS|JAVA_OPTS|JAVA_HOME|PATH|CLASSPATH|LD_PRELOAD|LD_LIBRARY_PATH)$"
+                      "pattern": "(?i)^(JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS|JAVA_OPTS|JAVA_HOME|PATH|CLASSPATH)$"
                     }
                   ]
                 },
-                "description": "Plain variables only: no credentials, and nothing that overrides the chart-validated OWLMAST_/SPRING_/MANAGEMENT_/SERVER_ configuration, the Spring Boot launcher (LOADER_*), the JVM options or the dynamic loader."
+                "description": "Plain variables only: no credentials, and nothing that overrides the chart-validated OWLMAST_/SPRING_/MANAGEMENT_/SERVER_ configuration, the Spring Boot launcher (LOADER_*), the JVM options or the dynamic loader (every LD_* variable)."
               },
               "value": {"type": "string"}
             }
@@ -265,7 +265,7 @@
                 "minLength": 1,
                 "maxLength": 253,
                 "pattern": "^(\\*\\.)?[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
-                "not": {"pattern": "^[0-9]+(\\.[0-9]+){3}$"}
+                "not": {"pattern": "^(0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}0*(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$"}
               }
             },
             "allowAllListenerHostnames": {"type": "boolean"},

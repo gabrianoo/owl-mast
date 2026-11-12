@@ -1,6 +1,7 @@
 package com.aisquad.owlmast.testing;
 
 import java.net.URI;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.UnaryOperator;
 import reactor.core.publisher.Mono;
@@ -74,7 +75,20 @@ public final class StubIdentityProvider implements AutoCloseable {
     return new StubIdentityProvider(server, realm, UnaryOperator.identity(), requests);
   }
 
+  /**
+   * Starts a happy-path provider that answers every discovery request only after {@code delay}, to
+   * prove how a slow answer is aged by a cache.
+   */
+  public static StubIdentityProvider startSlow(String realm, Duration delay) {
+    return start(realm, UnaryOperator.identity(), delay);
+  }
+
   private static StubIdentityProvider start(String realm, UnaryOperator<String> published) {
+    return start(realm, published, Duration.ZERO);
+  }
+
+  private static StubIdentityProvider start(
+      String realm, UnaryOperator<String> published, Duration delay) {
     AtomicInteger requests = new AtomicInteger();
     String[] own = new String[1];
     DisposableServer server =
@@ -89,11 +103,12 @@ public final class StubIdentityProvider implements AutoCloseable {
                           .header("Content-Type", "application/json")
                           .sendString(
                               Mono.just(
-                                  "{\"issuer\":\""
-                                      + published.apply(own[0])
-                                      + "\",\"authorization_endpoint\":\""
-                                      + own[0]
-                                      + "/protocol/openid-connect/auth\"}"));
+                                      "{\"issuer\":\""
+                                          + published.apply(own[0])
+                                          + "\",\"authorization_endpoint\":\""
+                                          + own[0]
+                                          + "/protocol/openid-connect/auth\"}")
+                                  .delaySubscription(delay));
                     }))
             .bindNow();
     own[0] = "http://localhost:" + server.port() + "/realms/" + realm;

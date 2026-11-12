@@ -21,6 +21,47 @@ REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "qualify-local-install.sh"
 RUN_ID = "om-01-02-local-20261107-01"
 SENTINEL = "SENTINEL-SECRET-VALUE-9f3a7c"
+CHART = REPO / "deploy" / "helm" / "owl-mast"
+HELM = os.environ.get("OWLMAST_HELM") or shutil.which("helm")
+RUN_LABEL_KEY = "owlmast.aisquad.com/run"
+COMPONENTS = ("backend", "postgresql", "keycloak")  # the components whose pods the script proves
+
+
+def rendered_pod_run_labels():
+    """component -> whether the pod template the CHART renders carries the run label, when the label is set the way the
+    qualification script sets it (commonLabels). The real Helm renders it; None when no Helm 4 is available."""
+    if HELM is None:
+        return None
+    import yaml
+    r = subprocess.run([HELM, "template", "owl-mast", str(CHART), "--set", f"commonLabels.{RUN_LABEL_KEY.replace('.', chr(92) + '.')}={RUN_ID}"],
+                       capture_output=True, text=True, check=False)
+    if r.returncode != 0:
+        raise AssertionError(r.stderr)
+    out = {}
+    for doc in yaml.safe_load_all(r.stdout):
+        if doc and doc["kind"] == "Deployment":
+            comp = doc["metadata"]["labels"]["app.kubernetes.io/component"]
+            if doc["metadata"]["labels"].get(RUN_LABEL_KEY) != RUN_ID:
+                raise AssertionError(f"the {comp} Deployment itself must carry the run label: the ownership proof ends there")
+            out[comp] = doc["spec"]["template"]["metadata"]["labels"].get(RUN_LABEL_KEY) == RUN_ID
+    return out
+
+
+def template_pod_run_labels():
+    """The same answer read from the template sources (no Helm): does the pod template include commonLabels?"""
+    out = {}
+    for comp in COMPONENTS:
+        text = (CHART / "templates" / f"{comp}-deployment.yaml").read_text()
+        pod_metadata = text.split("\n  template:\n", 1)[1].split("\n    spec:\n", 1)[0]
+        out[comp] = ".Values.commonLabels" in pod_metadata or 'include "owl-mast.labels"' in pod_metadata
+    return out
+
+
+# The stub world answers the labels of the REAL rendered objects (review 5866834124, comment 4544473145): a stub that
+# labelled every pod hid that the PostgreSQL pods have no run label, which made the script refuse them on a cluster.
+POD_RUN_LABELS = rendered_pod_run_labels() or template_pod_run_labels()
+UNLABELLED_COMPONENTS = sorted(c for c in COMPONENTS if not POD_RUN_LABELS[c])
+
 MUTATING = re.compile(r"(^| )(create|apply|label|annotate|patch|delete|exec|rollout|upgrade|uninstall|install)( |$)")
 
 KUBECTL_STUB = r'''#!/usr/bin/env bash
@@ -97,16 +138,19 @@ fi
 # UIDs: deployment dep-<rel>-<comp>, replicaset rs-<rel>-<comp>. States: owned | foreign:unlabelled | foreign:<label> |
 # foreign:owner (ReplicaSet named for another release) | foreign:rs-foreign | foreign:rs-missing | foreign:rs-unreadable |
 # foreign:uid | foreign:deploy | foreign:ambiguous | foreign:no-controller | error
+# The run label of an `owned` pod and ReplicaSet is what the CHART renders for that component: components named in
+# $STUB_UNLABELLED_COMPONENTS (derived from the rendered chart by the test module) have none, like the real objects.
+lbl_of() { case " ${STUB_UNLABELLED_COMPONENTS:-} " in *" $1 "*) printf '' ;; *) printf '%s' "$STUB_RUN_ID" ;; esac; }
 if [[ "$args" == *" get pods -l "* && "$args" == *"ownerReferences"* ]]; then
   sel="$(sed -E 's/.* -l ([^ ]+).*/\1/' <<<"$args")"; rel="${sel#app.kubernetes.io/instance=}"; rel="${rel%%,*}"; comp="${sel##*component=}"
-  state="$(state_of pods "$ns" "$rel-$comp")"; pod="$rel-$comp-abc12-xyz"; rs="$rel-$comp-abc12"; uid="rs-$rel-$comp"
+  state="$(state_of pods "$ns" "$rel-$comp")"; pod="$rel-$comp-abc12-xyz"; rs="$rel-$comp-abc12"; uid="rs-$rel-$comp"; lbl="$(lbl_of "$comp")"
   case "$state" in
     absent) exit 0 ;;
-    owned|foreign:rs-foreign|foreign:rs-missing|foreign:rs-unreadable|foreign:deploy) printf '%s|%s|ReplicaSet/%s/%s/true \n' "$pod" "$STUB_RUN_ID" "$rs" "$uid"; exit 0 ;;
-    foreign:owner) printf '%s|%s|ReplicaSet/other-%s-abc12/rs-other/true \n' "$pod" "$STUB_RUN_ID" "$comp"; exit 0 ;;
-    foreign:uid) printf '%s|%s|ReplicaSet/%s/stale-uid/true \n' "$pod" "$STUB_RUN_ID" "$rs"; exit 0 ;;
-    foreign:ambiguous) printf '%s|%s|ReplicaSet/%s/%s/true ReplicaSet/%s-old/rs-old/true \n' "$pod" "$STUB_RUN_ID" "$rs" "$uid" "$rs"; exit 0 ;;
-    foreign:no-controller) printf '%s|%s|ReplicaSet/%s/%s/false \n' "$pod" "$STUB_RUN_ID" "$rs" "$uid"; exit 0 ;;
+    owned|foreign:rs-foreign|foreign:rs-missing|foreign:rs-unreadable|foreign:deploy) printf '%s|%s|ReplicaSet/%s/%s/true \n' "$pod" "$lbl" "$rs" "$uid"; exit 0 ;;
+    foreign:owner) printf '%s|%s|ReplicaSet/other-%s-abc12/rs-other/true \n' "$pod" "$lbl" "$comp"; exit 0 ;;
+    foreign:uid) printf '%s|%s|ReplicaSet/%s/stale-uid/true \n' "$pod" "$lbl" "$rs"; exit 0 ;;
+    foreign:ambiguous) printf '%s|%s|ReplicaSet/%s/%s/true ReplicaSet/%s-old/rs-old/true \n' "$pod" "$lbl" "$rs" "$uid" "$rs"; exit 0 ;;
+    foreign:no-controller) printf '%s|%s|ReplicaSet/%s/%s/false \n' "$pod" "$lbl" "$rs" "$uid"; exit 0 ;;
     foreign:unlabelled) printf '%s||ReplicaSet/%s/%s/true \n' "$pod" "$rs" "$uid"; exit 0 ;;
     foreign:*) printf '%s|%s|ReplicaSet/%s/%s/true \n' "$pod" "${state#foreign:}" "$rs" "$uid"; exit 0 ;;
     *) echo "Unable to connect to the server: dial tcp 10.0.0.1:6443: connect: connection refused" >&2; exit 1 ;;
@@ -115,13 +159,13 @@ fi
 if [[ "$args" == *" get replicaset "* ]]; then
   rs="$(sed -E 's/.* get replicaset ([^ ]+).*/\1/' <<<"$args")"; base="${rs%-abc12}"; base="${base%-old}"
   if [[ "$rs" == other-* ]]; then printf 'rs-other|%s|Deployment/other-%s/dep-other/true \n' "$STUB_RUN_ID" "${base#other-}"; exit 0; fi
-  state="$(state_of pods "$ns" "$base")"
+  state="$(state_of pods "$ns" "$base")"; lbl="$(lbl_of "${base##*-}")"
   case "$state" in
     foreign:rs-missing) echo "Error from server (NotFound): replicasets.apps \"$rs\" not found" >&2; exit 1 ;;
     foreign:rs-unreadable) echo "Error from server (Forbidden): replicasets.apps \"$rs\" is forbidden" >&2; exit 1 ;;
     foreign:rs-foreign) printf 'rs-%s|someone-else|Deployment/%s/dep-%s/true \n' "$base" "$base" "$base"; exit 0 ;;
-    foreign:deploy) printf 'rs-%s|%s|Deployment/%s-other/dep-%s-other/true \n' "$base" "$STUB_RUN_ID" "$base" "$base"; exit 0 ;;
-    *) printf 'rs-%s|%s|Deployment/%s/dep-%s/true \n' "$base" "$STUB_RUN_ID" "$base" "$base"; exit 0 ;;
+    foreign:deploy) printf 'rs-%s|%s|Deployment/%s-other/dep-%s-other/true \n' "$base" "$lbl" "$base" "$base"; exit 0 ;;
+    *) printf 'rs-%s|%s|Deployment/%s/dep-%s/true \n' "$base" "$lbl" "$base" "$base"; exit 0 ;;
   esac
 fi
 if [[ "$args" == *" get deployment "* && "$args" == *"{.metadata.uid}|"* ]]; then
@@ -134,6 +178,8 @@ if [[ "$args" == *" get deployment "* && "$args" == *"{.metadata.uid}|"* ]]; the
     *) echo "Unable to connect to the server" >&2; exit 1 ;;
   esac
 fi
+# The retained volume of the persistence step (T3): reclaim policy and class as the qualification's StorageClass gives them.
+if [[ "$args" == *" get pv "* && "$args" == *"persistentVolumeReclaimPolicy"* ]]; then printf 'Retain owl-mast-local-retain'; exit 0; fi
 if [[ "$args" == *" get secret"* ]]; then
   if [[ "$args" == *"-o json"* || "$args" == *"-o yaml"* || ( "$args" == *".data"* && "$args" != *'$k, $v := .data}}{{$k}}'* ) ]]; then
     printf '{"apiVersion":"v1","kind":"Secret","type":"Opaque","metadata":{"name":"x","namespace":"%s"},"data":{"username":"dXNlcg==","password":"%s"}}\n' "$ns" "$STUB_SENTINEL"
@@ -231,7 +277,7 @@ class Harness:
     def env(self, **extra):
         env = {"PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": os.environ.get("HOME", "/"), "KUBECONFIG": str(self.tmp / "kubeconfig"),
                "OWLMAST_HELM": str(self.bin / "helm"), "EVIDENCE_DIR": str(self.evidence), "STUB_WORLD": str(self.world), "STUB_CALLS": str(self.calls), "STUB_RUN_ID": RUN_ID, "STUB_SENTINEL": SENTINEL,
-               "BACKEND_IMAGE_TAG": "stub"}
+               "BACKEND_IMAGE_TAG": "stub", "STUB_UNLABELLED_COMPONENTS": " ".join(UNLABELLED_COMPONENTS)}
         env.update(extra)
         return env
 
@@ -338,7 +384,6 @@ class PreflightTests(unittest.TestCase):
         cases = {
             "foreign:owner": "expected Deployment/owl-mast-postgresql",            # ReplicaSet of another release
             "foreign:another-run": "label 'another-run' is not",                    # pod label foreign
-            "foreign:unlabelled": "label '' is not",                                # pod unlabelled
             "foreign:rs-foreign": "label 'someone-else' is not",                    # ReplicaSet exists but foreign
             "foreign:rs-missing": "controller ReplicaSet owl-mast-postgresql-abc12 is missing",
             "foreign:rs-unreadable": "controller ReplicaSet owl-mast-postgresql-abc12 unreadable",
@@ -351,6 +396,10 @@ class PreflightTests(unittest.TestCase):
         for state, message in cases.items():
             r = self.run_refused(BASE_WORLD + dep + f"pods owl-mast-test owl-mast-postgresql {state}\n", "persistence")
             self.assertIn(message, r.stdout, state)
+        # a component whose pod template DOES carry the run label: an unlabelled pod or ReplicaSet is refused there
+        bdep = dep + "pods owl-mast-test owl-mast-postgresql owned\ndeployment owl-mast-test owl-mast-backend owned\n"
+        r = self.run_refused(BASE_WORLD + bdep + "pods owl-mast-test owl-mast-backend foreign:unlabelled\n", "persistence")
+        self.assertIn("chain pod owl-mast-test/owl-mast-backend-abc12-xyz: label '' is not", r.stdout)
         # a proven pod whose Deployment is absent or foreign is refused too
         self.run_refused(BASE_WORLD + "pods owl-mast-test owl-mast-postgresql owned\n", "persistence")
         self.run_refused(BASE_WORLD + "deployment owl-mast-test owl-mast-postgresql foreign:other\npods owl-mast-test owl-mast-postgresql owned\n", "persistence")
@@ -365,6 +414,74 @@ class PreflightTests(unittest.TestCase):
             self.assertIn("proven (owl-mast-postgresql-abc12-xyz -> ReplicaSet/owl-mast-postgresql-abc12 rs-owl-mast-postgresql -> Deployment/owl-mast-postgresql dep-owl-mast-postgresql", r.stdout)
             calls = h.calls.read_text()
             self.assertIn(" get replicaset owl-mast-postgresql-abc12 ", calls); self.assertIn(" get deployment owl-mast-postgresql ", calls)
+        finally:
+            h.close()
+
+    def test_stub_pod_labels_are_the_labels_the_chart_renders(self):
+        """4544473145: commit 9ca009b took commonLabels (and with them the run label) off the PostgreSQL pod template, and the
+        stub world went on answering a labelled pod. The stub's labels now come from the rendered chart, and the script's
+        list of unlabelled components must be exactly that."""
+        self.assertEqual(set(POD_RUN_LABELS), set(COMPONENTS))
+        self.assertEqual(UNLABELLED_COMPONENTS, ["postgresql"])  # what chart 0.2.0 renders; a change here must be deliberate
+        declared = re.search(r'^CHAIN_UNLABELLED_COMPONENTS="([^"]*)"$', SCRIPT.read_text(), re.M).group(1).split()
+        self.assertEqual(sorted(declared), UNLABELLED_COMPONENTS)
+        self.assertEqual(template_pod_run_labels(), POD_RUN_LABELS)  # the Helm-free fallback agrees with the render
+        if HELM is not None:
+            self.assertEqual(rendered_pod_run_labels(), POD_RUN_LABELS)
+
+    def test_unlabelled_postgresql_pods_are_proven_through_the_owned_deployment(self):
+        """4544473145: the pod and its ReplicaSet have no run label; the UID chain to the owned Deployment proves them. A label
+        naming someone else, or a Deployment that is not owned, still refuses. The same world fails if the script requires the label."""
+        world = BASE_WORLD + "deployment owl-mast-test owl-mast-postgresql owned\npods owl-mast-test owl-mast-postgresql owned\n"
+        h = Harness(world)
+        try:
+            r = h.source("verified_pods owl-mast postgresql " + RUN_ID)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            calls = h.calls.read_text()
+            self.assertIn("Deployment owned by " + RUN_ID + "; the postgresql pod template carries no run label", r.stdout)
+            self.assertNotIn("refusing", r.stdout)
+            # what the stub answered is what the chart renders: no label on the pod or the ReplicaSet
+            resources = (h.evidence / "runtime" / "preflight" / "resources.txt").read_text()
+            self.assertIn("pod owl-mast-test/owl-mast-postgresql-abc12-xyz label= refs=ReplicaSet/owl-mast-postgresql-abc12/", resources)
+            self.assertIn(" get replicaset owl-mast-postgresql-abc12 ", calls)
+            # a script that still required the label (the regression) refuses this very world
+            r = h.source("CHAIN_UNLABELLED_COMPONENTS=''; verified_pods owl-mast postgresql " + RUN_ID)
+            self.assertEqual(r.returncode, 1); self.assertIn("label '' is not", r.stdout)
+        finally:
+            h.close()
+        for bad, message in (("pods owl-mast-test owl-mast-postgresql foreign:another-run\n", "label 'another-run' is not"),
+                             ("pods owl-mast-test owl-mast-postgresql foreign:rs-foreign\n", "label 'someone-else' is not")):
+            r = self.run_refused(BASE_WORLD + "deployment owl-mast-test owl-mast-postgresql owned\n" + bad, "persistence")
+            self.assertIn(message, r.stdout)
+        r = self.run_refused(BASE_WORLD + "deployment owl-mast-test owl-mast-postgresql foreign:unlabelled\npods owl-mast-test owl-mast-postgresql owned\n", "persistence")
+        self.assertIn("exists but owner is 'unlabelled'", r.stdout)
+
+    def test_persistence_step_replaces_the_proven_unlabelled_postgresql_pod(self):
+        """4544473145: T3 stopped at 'pod controller chain not proven; nothing deleted' and the re-entry preflight refused every
+        existing release. With the labels the chart renders, the step passes preflight, proves the chain and deletes by name."""
+        world = BASE_WORLD + "release - owl-mast owned\npvc owl-mast-test owl-mast-postgresql-data owned\n"
+        for comp in COMPONENTS:
+            world += f"deployment owl-mast-test owl-mast-{comp} owned\npods owl-mast-test owl-mast-{comp} owned\n"
+        h = Harness(world)
+        try:
+            r = h.run("persistence")
+            self.assertNotIn("REFUSED", r.stdout, r.stdout)
+            self.assertIn("preflight passed", r.stdout)
+            self.assertNotIn("pod controller chain not proven", r.stdout)
+            deletes = [c for c in h.calls.read_text().splitlines() if " delete pod " in c]
+            self.assertEqual(len(deletes), 1, r.stdout)
+            self.assertIn(" delete pod -n owl-mast-test owl-mast-postgresql-abc12-xyz --wait=true", deletes[0])
+            self.assertEqual((h.evidence / "runtime" / "t3-delete-pod-proven.txt").read_text().split(), ["owl-mast-postgresql-abc12-xyz"])
+        finally:
+            h.close()
+
+    def test_inventory_lists_the_unlabelled_postgresql_pods(self):
+        """4544473145: the label-selected inventory cannot list objects that carry no run label."""
+        h = Harness(BASE_WORLD)
+        try:
+            h.source("step_inventory")
+            calls = h.calls.read_text()
+            self.assertIn("get pods,replicasets -n owl-mast-test -l app.kubernetes.io/component=postgresql", calls)
         finally:
             h.close()
 
