@@ -325,6 +325,27 @@ class R2dbcWorkRepository implements WorkRepository {
         .then();
   }
 
+  /**
+   * PostgreSQL arms {@code transaction_timeout} when it is set inside a transaction, unless a timer
+   * is already running, and then terminates the session at that moment, also in the middle of a
+   * statement or while idle. A default of the role, database or server is armed when the
+   * transaction begins, so the setting is cleared first: the timer that counts is always this one.
+   */
+  @Override
+  public Mono<Void> limitTransactionTime(Duration remaining) {
+    return transactionTimeout("0")
+        .then(transactionTimeout(Long.toString(Math.max(1, remaining.toMillis()))));
+  }
+
+  private Mono<Void> transactionTimeout(String millis) {
+    return databaseClient
+        .sql("select set_config('transaction_timeout', :millis, true)")
+        .bind("millis", millis)
+        .fetch()
+        .rowsUpdated()
+        .then();
+  }
+
   @Override
   public Flux<TenantId> tenantsWithDueWork(
       int limit, Set<WorkType> types, Duration statementLimit) {

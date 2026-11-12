@@ -49,10 +49,11 @@ import reactor.core.publisher.Mono;
  *       stale lease rolls back the handler's database effects and the write changes nothing (AC2).
  *   <li>{@link RetryPolicy#handlerDeadline()} is measured from the start of the claim step, which
  *       is never later than the start of the lease in the database. A handler still running at the
- *       deadline is cancelled and the attempt fails with {@value #REASON_DEADLINE_EXCEEDED}; its
- *       statements are bounded on the server by {@link RetryPolicy#statementTimeout()}, so one hung
- *       handler, including one blocked inside the database, cannot stall the dispatch of every
- *       other item and tenant.
+ *       deadline is cancelled and the attempt fails with {@value #REASON_DEADLINE_EXCEEDED}; the
+ *       server ends its transaction at {@link RetryPolicy#handlerCutoff()}, counted from the same
+ *       moment and whenever the statement it is running started, so one hung handler, including one
+ *       blocked inside the database, cannot stall the dispatch of every other item and tenant and
+ *       its failure is still written under the lease.
  *   <li>Failed attempts persist the attempt count, a capped backoff and the exception class chain
  *       only; the last permitted attempt, or a {@link NonRetryableWorkException}, makes the item
  *       terminal (AC5).
@@ -237,7 +238,9 @@ public final class WorkProcessor {
     return transactions
         .inTransaction(current ->
             repository
-                .limitStatementTime(policy.statementTimeout())
+                // Counted from the claim, not per statement: a statement the handler starts just
+                // before its deadline is ended with the transaction, well inside the lease.
+                .limitTransactionTime(dispatch.remaining(policy.handlerCutoff()))
                 .then(Mono.defer(() -> handler.handle(item)))
                 .timeout(
                     dispatch.remaining(policy.handlerDeadline()),
@@ -269,7 +272,20 @@ public final class WorkProcessor {
             })
         // One resume for every other failure: the reason is derived first, so a failure of the
         // failure write itself propagates instead of replacing a typed reason with its own class.
-        .onErrorResume(error -> failure(dispatch, error));
+        // An outcome decided inside the transaction stands: the rollback of a transaction the
+        // server has already ended fails with an error of its own, which is not the reason.
+        .onErrorResume(error ->
+            dispatch
+                .decided()
+                .map(write -> {
+                  log.info(
+                      "Work item {} ({}) had already failed when its transaction ended with: {}",
+                      item.id(),
+                      item.type().value(),
+                      SafeFailure.describe(error));
+                  return write;
+                })
+                .orElseGet(() -> failure(dispatch, error)));
   }
 
   private Mono<Void> failure(Dispatch dispatch, Throwable error) {

@@ -18,13 +18,15 @@ import reactor.core.publisher.Mono;
  * unchanged; an unsuccessful row written while the commit's outcome was unknown is corrected to the
  * intent (see {@link AuditStore#publish}). A publish item that cannot name an intent (no or
  * malformed event id, no intent for the bound tenant) fails as {@link NonRetryableWorkException}:
- * there is nothing a retry could publish. Registered as tenant-internal system work: it only moves
- * the tenant's own audit rows under the service identity.
+ * there is nothing a retry could publish. Registered as tenant-internal system work (it only moves
+ * the tenant's own audit rows under the service identity) without an attempt limit: a committed
+ * mutation's intent is retried, at most every {@code owlmast.jobs.backoff-cap}, until it reaches
+ * the history instead of being abandoned after {@code owlmast.jobs.max-attempts} (AC4).
  */
 public final class AuditPublishHandler implements WorkHandler {
 
   private static final WorkRegistration REGISTRATION =
-      WorkRegistration.tenantInternal(AuditEnvelopeContract.PUBLISH_WORK_TYPE);
+      WorkRegistration.tenantInternalRetriedWithoutLimit(AuditEnvelopeContract.PUBLISH_WORK_TYPE);
 
   private final AuditStore store;
 

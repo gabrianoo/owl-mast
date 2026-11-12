@@ -89,8 +89,8 @@ class RetryPolicyTest {
                 Duration.ofSeconds(30)))
         .as("the deadline must leave the failure write inside the lease")
         .isInstanceOf(IllegalArgumentException.class);
-    assertThat(policy.statementTimeout())
-        .as("server-side bound halfway between the deadline and the lease expiry")
+    assertThat(policy.handlerCutoff())
+        .as("server-side end of the handler's transaction, halfway between deadline and lease")
         .isEqualTo(Duration.ofMillis(28_500));
   }
 

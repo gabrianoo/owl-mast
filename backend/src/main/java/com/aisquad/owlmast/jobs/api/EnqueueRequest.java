@@ -10,7 +10,10 @@ import java.util.OptionalInt;
  * never from the request. The payload holds identifiers only (bounded by {@link WorkItemContract});
  * the correlation id ties the item to the request or audit event that caused it. An absent {@code
  * maxAttempts} means the configured {@code owlmast.jobs.max-attempts}; a present one overrides it
- * for this item only (added in contract v1 with that absence-preserving meaning).
+ * for this item only (added in contract v1 with that absence-preserving meaning) and lies between 1
+ * and {@link WorkItemContract#MAX_ATTEMPTS_PER_ITEM}, so no producer can enqueue work that never
+ * runs out of attempts. A request that sets it for a work type whose handler registered without an
+ * attempt limit ({@link WorkRegistration#unlimitedAttempts()}) is rejected at enqueue.
  */
 public record EnqueueRequest(
     WorkType type,
@@ -32,8 +35,9 @@ public record EnqueueRequest(
     });
     Objects.requireNonNull(maxAttempts, "maxAttempts");
     maxAttempts.ifPresent(attempts -> {
-      if (attempts < 1) {
-        throw new IllegalArgumentException("max attempts must be at least 1");
+      if (attempts < 1 || attempts > WorkItemContract.MAX_ATTEMPTS_PER_ITEM) {
+        throw new IllegalArgumentException(
+            "max attempts must be between 1 and " + WorkItemContract.MAX_ATTEMPTS_PER_ITEM);
       }
     });
   }
@@ -52,7 +56,10 @@ public record EnqueueRequest(
     return new EnqueueRequest(type, payload, Optional.of(correlationId));
   }
 
-  /** The same request with a per-item attempt limit instead of the configured default. */
+  /**
+   * The same request with a per-item attempt limit (1 to {@link
+   * WorkItemContract#MAX_ATTEMPTS_PER_ITEM}) instead of the configured default.
+   */
   public EnqueueRequest withMaxAttempts(int attempts) {
     return new EnqueueRequest(type, payload, correlationId, OptionalInt.of(attempts));
   }

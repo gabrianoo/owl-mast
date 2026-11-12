@@ -768,7 +768,7 @@ class AuditedMutationIT {
       CapturedOutput output) {
     UUID eventId = auditedCreate(TENANT_A, "persistent", "corr-p", AuditedMode.SUCCEED).eventId();
     WorkRow item = db.workItems().get(0);
-    assertThat(item.maxAttempts()).isEqualTo(AuditEnvelopeContract.PUBLISH_MAX_ATTEMPTS);
+    assertThat(item.maxAttempts()).isEqualTo(WorkItemContract.UNLIMITED_ATTEMPTS);
     db.installAuditEventFault();
 
     WorkProcessor single = singleItemProcessor();
@@ -799,6 +799,28 @@ class AuditedMutationIT {
   }
 
   @Test
+  void aRequestCannotSetAnAttemptLimitOnAPublishItem() {
+    EnqueueRequest limited =
+        EnqueueRequest.of(
+                AuditEnvelopeContract.PUBLISH_WORK_TYPE,
+                Map.of(AuditEnvelopeContract.PAYLOAD_EVENT_ID, UUID.randomUUID().toString()))
+            .withMaxAttempts(1);
+
+    StepVerifier.create(
+            transactions
+                .inTransaction(scope -> enqueue.enqueue(limited))
+                .contextWrite(Scopes.bind(TENANT_A)))
+        .expectErrorSatisfies(error ->
+            assertThat(error)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("retried without an attempt limit"))
+        .verify();
+    assertThat(db.workItems())
+        .as("the attempt limit of a publish item comes from its handler, never from a request")
+        .isEmpty();
+  }
+
+  @Test
   void recoveryAfterAFaultBeforePublicationYieldsExactlyOneHistoryRecord() {
     UUID eventId = auditedCreate(TENANT_A, "faulted", "corr-8", AuditedMode.SUCCEED).eventId();
     db.installAuditEventFault();
@@ -825,6 +847,28 @@ class AuditedMutationIT {
     assertThat(unpublished(TENANT_A)).isZero();
     assertThat(db.workItems().get(0).status()).isEqualTo("SUCCEEDED");
     assertThat(find(TENANT_A, eventId).block().outcome()).isEqualTo(AuditOutcome.SUCCEEDED);
+  }
+
+  @Test
+  void aRepeatPublicationLeavesTheSucceededHistoryRowUntouched() {
+    UUID eventId = auditedCreate(TENANT_A, "repeat", "corr-r", AuditedMode.SUCCEED).eventId();
+    processor.runOnce().block();
+    assertThat(find(TENANT_A, eventId).block().outcome()).isEqualTo(AuditOutcome.SUCCEEDED);
+    List<String> published = db.rowsAsText("audit.event");
+    List<String> intent = db.rowsAsText("audit.publication_intent");
+
+    Long written =
+        transactions
+            .inTransaction(scope -> auditStore.publish(eventId))
+            .contextWrite(Scopes.bind(TENANT_A))
+            .block();
+
+    assertThat(written).as("a repeat inserts and upgrades nothing").isZero();
+    assertThat(db.rowsAsText("audit.event"))
+        .as("every column of the SUCCEEDED row, published_at included, is as first published")
+        .containsExactlyInAnyOrderElementsOf(published);
+    assertThat(db.rowsAsText("audit.publication_intent"))
+        .containsExactlyInAnyOrderElementsOf(intent);
   }
 
   @Test

@@ -83,6 +83,13 @@ public interface WorkRepository {
   Mono<Void> limitStatementTime(Duration timeout);
 
   /**
+   * Ends the current transaction on the server once {@code remaining} has passed from now, whatever
+   * it is doing then and whenever its current statement started: the server closes the session, so
+   * nothing of the transaction can commit afterwards.
+   */
+  Mono<Void> limitTransactionTime(Duration remaining);
+
+  /**
    * Identifier-only discovery across tenants, outside any scope; drives per-tenant processing. Only
    * work this instance can claim counts (the given types, a supported contract version). Tenants
    * are ordered by their longest-waiting due item, so a bounded wake-up never starves the tenants

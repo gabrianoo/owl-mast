@@ -7,6 +7,7 @@ import com.aisquad.owlmast.platform.scope.TenantId;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -121,12 +122,42 @@ class WorkContractTypesTest {
   }
 
   @Test
-  void aPerItemAttemptLimitIsOptionalAndAtLeastOne() {
+  void aPerItemAttemptLimitIsOptionalAndBetweenOneAndThePublishedMaximum() {
     EnqueueRequest plain = EnqueueRequest.of(WorkType.of("fixture.limit"), Map.of());
+    int maximum = WorkItemContract.MAX_ATTEMPTS_PER_ITEM;
 
     assertThat(plain.maxAttempts()).isEmpty();
     assertThat(plain.withMaxAttempts(7).maxAttempts()).hasValue(7);
     assertThat(plain.withMaxAttempts(7).type()).isEqualTo(plain.type());
+    assertThat(plain.withMaxAttempts(1).maxAttempts()).hasValue(1);
+    assertThat(plain.withMaxAttempts(maximum).maxAttempts()).hasValue(maximum);
     assertThatThrownBy(() -> plain.withMaxAttempts(0)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> plain.withMaxAttempts(maximum + 1))
+        .as("a producer cannot enqueue work that never becomes terminal")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("between 1 and " + maximum);
+    assertThatThrownBy(() -> plain.withMaxAttempts(WorkItemContract.UNLIMITED_ATTEMPTS))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() ->
+            new EnqueueRequest(
+                plain.type(), Map.of(), Optional.empty(), OptionalInt.of(maximum + 1)))
+        .as("the canonical constructor enforces the same bound")
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void onlyTenantInternalSystemWorkMayRegisterWithoutAnAttemptLimit() {
+    assertThat(WorkRegistration.tenantInternal(TYPE).unlimitedAttempts()).isFalse();
+    assertThat(WorkRegistration.requiresAuthorization(TYPE).unlimitedAttempts()).isFalse();
+    assertThat(new WorkRegistration(TYPE, true).unlimitedAttempts())
+        .as("registrations written before the component was added keep the bounded limit")
+        .isFalse();
+
+    WorkRegistration unlimited = WorkRegistration.tenantInternalRetriedWithoutLimit(TYPE);
+    assertThat(unlimited.unlimitedAttempts()).isTrue();
+    assertThat(unlimited.tenantInternalSystemWork()).isTrue();
+    assertThatThrownBy(() -> new WorkRegistration(TYPE, false, true))
+        .as("work that needs authorization or has external effects always becomes terminal")
+        .isInstanceOf(IllegalArgumentException.class);
   }
 }

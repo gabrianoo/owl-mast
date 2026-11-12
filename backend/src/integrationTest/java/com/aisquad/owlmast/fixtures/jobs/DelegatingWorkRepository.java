@@ -33,6 +33,11 @@ public abstract class DelegatingWorkRepository implements WorkRepository {
   }
 
   @Override
+  public Mono<Void> limitTransactionTime(Duration remaining) {
+    return delegate.limitTransactionTime(remaining);
+  }
+
+  @Override
   public Mono<UUID> insert(
       UUID id,
       EnqueueRequest request,

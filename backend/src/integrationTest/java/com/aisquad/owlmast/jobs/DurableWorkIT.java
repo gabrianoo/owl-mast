@@ -15,6 +15,7 @@ import com.aisquad.owlmast.fixtures.notes.FollowUpHandler;
 import com.aisquad.owlmast.fixtures.notes.NotesFixture;
 import com.aisquad.owlmast.fixtures.notes.NotesFixture.Failure;
 import com.aisquad.owlmast.fixtures.notes.NotesFixtureConfiguration;
+import com.aisquad.owlmast.jobs.api.DispatchAuthorization;
 import com.aisquad.owlmast.jobs.api.DispatchDecision;
 import com.aisquad.owlmast.jobs.api.EffectOutcome;
 import com.aisquad.owlmast.jobs.api.EnqueueRequest;
@@ -530,6 +531,88 @@ class DurableWorkIT {
     assertThat(row.status()).isEqualTo("PENDING");
     assertThat(row.attempts()).isEqualTo(1);
     assertThat(row.reason()).isEqualTo("handler-deadline-exceeded");
+  }
+
+  @Test
+  void aStatementStartedLateInTheHandlersBudgetIsEndedByTheServerInsideTheLease() {
+    createNote(TENANT_A, Failure.NONE);
+    UUID itemId = db.workItems().get(0).id();
+    CompletableFuture<Void> statementStarted = new CompletableFuture<>();
+    // Lease 8 s, deadline 4 s, server-side end of the transaction 6 s, all counted from the claim.
+    // The statement starts at 3 s: a limit counted from the statement's own start (6 s more) would
+    // keep it running until 9 s, past the lease, and the failure write would be fenced out.
+    followUp.behaveOnce(item ->
+        Mono.delay(Duration.ofSeconds(3))
+            .then(
+                databaseClient
+                    .sql("select pg_sleep(61)")
+                    .fetch()
+                    .rowsUpdated()
+                    .doOnSubscribe(sent -> statementStarted.complete(null)))
+            .then(Mono.<EffectOutcome>never()));
+    WorkProcessor lateStatement =
+        blockedHandlerProcessor(
+            new TenantInternalOnlyDispatchAuthorization(),
+            Duration.ofSeconds(8),
+            Duration.ofSeconds(4));
+
+    assertThat(lateStatement.processTenant(TENANT_A.tenant()).block(Duration.ofSeconds(20)))
+        .isEqualTo(1L);
+
+    assertThat(statementStarted)
+        .as("the handler reached its statement before the deadline")
+        .isDone();
+    assertFailedUnderItsLeaseAndStoppedOnTheServer(itemId);
+  }
+
+  @Test
+  void theServerSideEndOfAHandlersTransactionCountsFromTheClaimNotFromItsOwnStart() {
+    createNote(TENANT_A, Failure.NONE);
+    UUID itemId = db.workItems().get(0).id();
+    followUp.behaveOnce(item ->
+        databaseClient
+            .sql("select pg_sleep(61)")
+            .fetch()
+            .rowsUpdated()
+            .then(Mono.<EffectOutcome>never()));
+    // Lease 10 s, deadline 7 s, server-side end 8.5 s. The recheck uses 3 s of the budget before
+    // the transaction begins: a limit counted from the transaction's start would end it at 11.5 s.
+    WorkProcessor slowRecheck =
+        blockedHandlerProcessor(
+            (item, registration) ->
+                Mono.delay(Duration.ofSeconds(3)).thenReturn(DispatchDecision.ALLOW),
+            Duration.ofSeconds(10),
+            Duration.ofSeconds(7));
+
+    assertThat(slowRecheck.processTenant(TENANT_A.tenant()).block(Duration.ofSeconds(20)))
+        .isEqualTo(1L);
+
+    assertFailedUnderItsLeaseAndStoppedOnTheServer(itemId);
+  }
+
+  @Test
+  void aDefaultTransactionTimeoutOfTheRoleDoesNotReplaceTheHandlersOwn() {
+    createNote(TENANT_A, Failure.NONE);
+    UUID itemId = db.workItems().get(0).id();
+    followUp.behaveOnce(item ->
+        databaseClient
+            .sql("select pg_sleep(61)")
+            .fetch()
+            .rowsUpdated()
+            .then(Mono.<EffectOutcome>never()));
+    // Connections are not pooled, so the next transaction starts with this default already armed.
+    db.runSql("alter role current_user set transaction_timeout = '60s'");
+    try {
+      assertThat(
+              shortDeadlineProcessor()
+                  .processTenant(TENANT_A.tenant())
+                  .block(Duration.ofSeconds(10)))
+          .isEqualTo(1L);
+    } finally {
+      db.runSql("alter role current_user reset transaction_timeout");
+    }
+
+    assertFailedUnderItsLeaseAndStoppedOnTheServer(itemId);
   }
 
   @Test
@@ -1054,7 +1137,7 @@ class DurableWorkIT {
             .block();
     CompletableFuture<Void> deadlineFired = new CompletableFuture<>();
     // The statement outlives the handler deadline, so the rollback queues behind it on the same
-    // connection until the server ends it (statement_timeout, 2.75 s into this 5 s lease).
+    // connection until the server ends the transaction (2.75 s into this 5 s lease).
     followUp.behaveOnce(item ->
         databaseClient
             .sql("select pg_sleep(60)")
@@ -1733,6 +1816,35 @@ class DurableWorkIT {
             10,
             Duration.ofMillis(500)),
         "short-deadline-processor");
+  }
+
+  private WorkProcessor blockedHandlerProcessor(
+      DispatchAuthorization authorization, Duration lease, Duration deadline) {
+    return new WorkProcessor(
+        transactions,
+        repository,
+        registry,
+        authorization,
+        new RetryPolicy(
+            policy.maxAttempts(), policy.backoffBase(), policy.backoffCap(), lease, 1, deadline),
+        "blocked-handler-processor");
+  }
+
+  /** The deadline overrun was recorded under the claiming lease and nothing still runs for it. */
+  private void assertFailedUnderItsLeaseAndStoppedOnTheServer(UUID itemId) {
+    WorkRow row = db.work(itemId);
+    assertThat(row.status())
+        .as("the failure was written under the lease that claimed the item")
+        .isEqualTo("PENDING");
+    assertThat(row.attempts()).isEqualTo(1);
+    assertThat(row.reason()).isEqualTo("handler-deadline-exceeded");
+    assertThat(row.leaseToken()).isNull();
+    assertThat(
+            db.count(
+                "select count(*) from pg_stat_activity where pid <> pg_backend_pid()"
+                    + " and state = 'active' and query like '%pg_sleep(61)%'"))
+        .as("the server stopped working for the handler")
+        .isZero();
   }
 
   private WorkProcessor lateClaimProcessor(Duration answerDelay, RetryPolicy retryPolicy) {

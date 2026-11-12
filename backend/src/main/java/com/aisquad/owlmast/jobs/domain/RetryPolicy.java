@@ -61,13 +61,16 @@ public record RetryPolicy(
   }
 
   /**
-   * Server-side bound for every statement in a handler's transaction: halfway between the handler
-   * deadline and the lease expiry. A handler blocked inside the database (a lock wait, a slow
-   * query) is cancelled by PostgreSQL in time for the rollback and the failure write to finish
-   * under the lease; cancelling the reactive subscription alone would leave the rollback queued
-   * behind it.
+   * Server-side end of a handler's transaction, counted from the claim like the handler deadline:
+   * halfway between the handler deadline and the lease expiry. PostgreSQL ends the transaction (and
+   * its session) at that moment whatever it is doing and whenever its current statement started, so
+   * a handler blocked inside the database (a lock wait, a slow query) is stopped in time for the
+   * failure write to finish under the lease; cancelling the reactive subscription alone would leave
+   * the rollback queued behind the statement. What is guaranteed is the moment the server stops
+   * working for the handler; the failure write still needs the database to answer within the other
+   * half of the margin.
    */
-  public Duration statementTimeout() {
+  public Duration handlerCutoff() {
     return handlerDeadline.plus(leaseDuration.minus(handlerDeadline).dividedBy(2));
   }
 

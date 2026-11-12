@@ -23,6 +23,21 @@ public final class WorkItemContract {
    */
   public static final int DEFAULT_MAX_ATTEMPTS = 5;
 
+  /**
+   * Largest attempt limit a producer may ask for on one item ({@link
+   * EnqueueRequest#withMaxAttempts(int)}), so no request can make an item retry without end. The
+   * configured default ({@code owlmast.jobs.max-attempts}) is the operator's and is not capped by
+   * it.
+   */
+  public static final int MAX_ATTEMPTS_PER_ITEM = 100;
+
+  /**
+   * Attempt limit of an item whose handler registered with {@link
+   * WorkRegistration#tenantInternalRetriedWithoutLimit(WorkType)}: effectively none. Only a handler
+   * can ask for it, for its own work type; no enqueue request can.
+   */
+  public static final int UNLIMITED_ATTEMPTS = Integer.MAX_VALUE;
+
   /** Default lease a claim holds before another processor may reclaim the item. */
   public static final Duration DEFAULT_LEASE_DURATION = Duration.ofSeconds(30);
 

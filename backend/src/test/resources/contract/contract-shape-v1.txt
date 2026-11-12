@@ -4,13 +4,17 @@
 # new file. Additions within v1 (absence-preserving meaning, see docs/durable-work-and-audit-contract.md)
 # are appended as new lines in the same change.
 # Added within v1 by OM-01.03 R4: EnqueueRequest component 3 maxAttempts, its 3-argument compatibility
-# constructor, EnqueueRequest.withMaxAttempts and AuditEnvelopeContract.PUBLISH_MAX_ATTEMPTS.
+# constructor and EnqueueRequest.withMaxAttempts.
 # Added within v1 by OM-01.03 R5: NonRetryableWorkException (a handler's terminal-failure signal),
 # WorkItemContract.DEFAULT_INITIAL_DELAY and AuditEnvelopeContract.MAX_FIELD_LENGTH.
+# Changed before v1 was first released (OM-01.03 R9, owner decision 2026-11-12; nothing outside the story
+# had read it): AuditEnvelopeContract.PUBLISH_MAX_ATTEMPTS removed. The unlimited attempt limit is now a
+# handler's registration (WorkRegistration component 2 unlimitedAttempts, its 2-argument compatibility
+# constructor stays, WorkRegistration.tenantInternalRetriedWithoutLimit, WorkItemContract.UNLIMITED_ATTEMPTS)
+# and a request's own limit is capped (WorkItemContract.MAX_ATTEMPTS_PER_ITEM).
 class com.aisquad.owlmast.audit.api.AuditEnvelopeContract
 class com.aisquad.owlmast.jobs.api.WorkItemContract
 constant com.aisquad.owlmast.audit.api.AuditEnvelopeContract.PAYLOAD_EVENT_ID = eventId
-constant com.aisquad.owlmast.audit.api.AuditEnvelopeContract.PUBLISH_MAX_ATTEMPTS = 2147483647
 constant com.aisquad.owlmast.audit.api.AuditEnvelopeContract.PUBLISH_WORK_TYPE = WorkType[value=audit.publish]
 constant com.aisquad.owlmast.audit.api.AuditEnvelopeContract.VERSION = 1
 constant com.aisquad.owlmast.jobs.api.WorkItemContract.DEFAULT_BACKOFF_BASE = PT1S
@@ -153,3 +157,8 @@ constructor com.aisquad.owlmast.jobs.api.NonRetryableWorkException(java.lang.Str
 constructor com.aisquad.owlmast.jobs.api.NonRetryableWorkException(java.lang.String, java.lang.Throwable)
 constant com.aisquad.owlmast.jobs.api.WorkItemContract.DEFAULT_INITIAL_DELAY = PT0S
 constant com.aisquad.owlmast.audit.api.AuditEnvelopeContract.MAX_FIELD_LENGTH = 256
+constant com.aisquad.owlmast.jobs.api.WorkItemContract.MAX_ATTEMPTS_PER_ITEM = 100
+constant com.aisquad.owlmast.jobs.api.WorkItemContract.UNLIMITED_ATTEMPTS = 2147483647
+constructor com.aisquad.owlmast.jobs.api.WorkRegistration(com.aisquad.owlmast.jobs.api.WorkType, boolean, boolean)
+method com.aisquad.owlmast.jobs.api.WorkRegistration static tenantInternalRetriedWithoutLimit(com.aisquad.owlmast.jobs.api.WorkType): com.aisquad.owlmast.jobs.api.WorkRegistration
+record com.aisquad.owlmast.jobs.api.WorkRegistration component 2 unlimitedAttempts: boolean
