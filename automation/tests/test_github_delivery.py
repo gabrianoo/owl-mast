@@ -1191,6 +1191,7 @@ class CustomizationTests(unittest.TestCase):
         self.assertEqual(rows["fix"], "`claude-fable-5-2`, effort `medium`")
         self.assertIn("inherit", rows["walkthrough"])
         self.assertIn("never fall back to another model", doc)
+        self.assertIn('`{"instanceId": "claudeAgent", "model": ', doc)  # the launch refuses a selection without it
         for skill in ("bmad-build", "bmad-review", "bmad-walkthrough"):
             with self.subTest(skill=skill), (REPO_ROOT / "_bmad" / "custom" / f"{skill}.toml").open("rb") as handle:
                 self.assertIn("model from the Loop table of `docs/github-delivery-workflow.md` as `modelSelection`",
