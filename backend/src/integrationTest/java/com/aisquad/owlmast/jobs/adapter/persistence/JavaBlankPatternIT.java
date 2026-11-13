@@ -71,6 +71,11 @@ class JavaBlankPatternIT {
                   "the operator query of the contract, standard_conforming_strings = %s",
                   conforming)
               .isEqualTo(javaBlank);
+          // Review cycle 4: the code points are checked one character at a time, so a class
+          // ending in `]+$` would pass them all and still miss the empty id.
+          assertThat(documentedQueryMatchesTheEmptyString(connection, documentedClass))
+              .as("the operator query matches '', standard_conforming_strings = %s", conforming)
+              .isTrue();
         }
       }
     }
@@ -113,6 +118,15 @@ class JavaBlankPatternIT {
         rows.next();
         return rows.getBoolean(1);
       }
+    }
+  }
+
+  private static boolean documentedQueryMatchesTheEmptyString(
+      Connection connection, String documentedClass) throws SQLException {
+    try (Statement statement = connection.createStatement();
+        ResultSet rows = statement.executeQuery("select '' ~ " + documentedClass)) {
+      rows.next();
+      return rows.getBoolean(1);
     }
   }
 }

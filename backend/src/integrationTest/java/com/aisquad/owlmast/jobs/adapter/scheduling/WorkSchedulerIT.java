@@ -218,16 +218,41 @@ class WorkSchedulerIT {
     // refusal was already logged, so that branch was never reached; start from a confirmed state.
     answer.set(Mono.just(true));
     scheduler.wake().block(Duration.ofSeconds(10));
+    assertThat(db.work(second).status()).isEqualTo("SUCCEEDED");
+    // Review cycle 4: an item is pending while the read fails, so a claim despite the error shows.
+    notes
+        .createWithFollowUp("third note", Failure.NONE)
+        .contextWrite(Scopes.bind(TENANT_A))
+        .block();
+    UUID third =
+        db.workItems().stream()
+            .filter(row -> !row.id().equals(itemId) && !row.id().equals(second))
+            .findFirst()
+            .orElseThrow()
+            .id();
     answer.set(Mono.error(new IllegalStateException("s3cr3t outage detail")));
     scheduler.wake().block(Duration.ofSeconds(10));
+    assertThat(db.work(third).status())
+        .as("a failed read on a running instance claims nothing")
+        .isEqualTo("PENDING");
+    assertThat(db.work(third).attempts()).isZero();
     assertThat(output.getAll())
         .contains(
             "Durable work is paused: the database precondition could not be read: "
                 + IllegalStateException.class.getSimpleName())
         .doesNotContain("s3cr3t");
+    assertThat(output.getAll().split("Durable work is paused", -1))
+        .as("the read failure is a new pause")
+        .hasSize(4);
+
+    // The read-failure pause ends like the others: the next confirmed answer resumes and claims.
+    answer.set(Mono.just(true));
+    scheduler.wake().block(Duration.ofSeconds(10));
+    assertThat(db.work(third).status()).isEqualTo("SUCCEEDED");
+    assertThat(asked).hasValue(9);
     assertThat(output.getAll().split("Durable work resumes", -1))
-        .as("one resume after each pause")
-        .hasSize(3);
+        .as("three pauses ended, three resumes")
+        .hasSize(4);
     scheduler.stop();
   }
 
