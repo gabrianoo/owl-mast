@@ -7,6 +7,7 @@ and no test writes to the real use ledger under the home directory."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -79,6 +80,25 @@ def stat_refusing(under: Path, error: OSError):
         return original(path, *args, **kwargs)
 
     return mock.patch.object(activation_module.os, "stat", stat)
+
+
+@contextlib.contextmanager
+def stat_raising(errors: dict):
+    """`os.stat` that raises ``errors[path]`` for exactly the paths it names and nothing under them;
+    yields the list of the paths it raised for, in order."""
+    original = os.stat
+    by_path = {os.fspath(path): error for path, error in errors.items()}
+    raised = []
+
+    def stat(path, *args, **kwargs):
+        text = os.fspath(path) if isinstance(path, (str, os.PathLike)) else None
+        if text in by_path:
+            raised.append(text)
+            raise by_path[text]
+        return original(path, *args, **kwargs)
+
+    with mock.patch.object(activation_module.os, "stat", stat):
+        yield raised
 
 
 # -- F1 ---------------------------------------------------------------------------------------------------------------------
@@ -519,6 +539,63 @@ class MovedDirectoryFourAdvicesTests(LiveCase):
         self.assertEqual((found, problem.errno), ("unknown", 5))
         self.assertEqual(probe("bad\0path", "run-live")[0], "unknown")
         self.assertEqual(probe(7, "run-live")[0], "unknown")
+
+    def test_a_run_directory_that_cannot_be_searched_is_unknown_though_the_recorded_directory_answers(self):
+        """PR #176 R5-1, the first stat (`<recorded>/<run_id>/run.json`). The mutation it pins: its
+        `except (OSError, ValueError)` handler turned into `pass`, so the error falls through to the
+        stat of the recorded directory, which answers, and the line reads "exists without the run"."""
+        self.recorded.mkdir()
+        error = PermissionError(13, "Permission denied")
+        with stat_refusing(self.recorded / "run-live", error):
+            os.stat(self.recorded)  # the recorded directory itself answers: only the first stat is refused
+            with self.assertRaises(PermissionError):
+                os.stat(self.recorded / "run-live" / "run.json")
+            found, problem = activation_module._recorded_run(str(self.recorded), "run-live")
+            line = self.line()
+        self.assertEqual(found, "unknown")
+        self.assertIs(problem, error)
+        self.assert_cannot_be_examined(line, 13, "Permission denied")
+
+    def assert_cannot_be_examined(self, line: dict, errno: int, strerror: str) -> None:
+        self.assertEqual((line["field"], line["errno"], line["strerror"]), ("recorded directory cannot be examined", errno, strerror))
+        self.assertIn("cannot be examined", line["error"])
+        for other in ("is spent", "holds no run", "no longer exists"):
+            self.assertNotIn(other, line["error"])
+        self.assertIn("cannot be settled from here", line["consequence"])
+        self.assertNotIn("every later open retries", line["consequence"])
+
+    def test_a_recorded_directory_that_cannot_be_examined_is_unknown_though_the_run_is_absent(self):
+        """PR #176 R5-1, the second stat (`<recorded>`). The mutation it pins: its handlers folded
+        into `except (OSError, ValueError): return "gone", None`, so an error that is not absence
+        reads as "gone" once the first stat has answered that `run.json` is absent."""
+        error = OSError(5, "Input/output error")
+        with stat_raising({self.recorded: error}) as raised:  # run.json is absent on the file system itself: the first stat answers ENOENT
+            found, problem = activation_module._recorded_run(str(self.recorded), "run-live")
+            self.assertEqual(raised, [str(self.recorded)])  # the second stat, and only it, was refused
+            line = self.line()
+        self.assertEqual(found, "unknown")
+        self.assertIs(problem, error)
+        self.assert_cannot_be_examined(line, 5, "Input/output error")
+
+    def test_a_value_the_file_system_cannot_take_is_unknown_at_either_stat(self):
+        """PR #176 R5-1 review. The mutation it pins: `except (OSError, ValueError)` narrowed to
+        `except OSError` at the first stat, or at the second (the `ValueError` then escapes)."""
+        found, problem = activation_module._recorded_run(str(self.recorded) + "\0x", "run-live")  # absolute, so the first stat is reached
+        self.assertEqual((found, type(problem)), ("unknown", ValueError))
+        error = ValueError("embedded null byte")
+        with stat_raising({self.recorded: error}) as raised:
+            found, problem = activation_module._recorded_run(str(self.recorded), "run-live")
+        self.assertEqual((found, raised), ("unknown", [str(self.recorded)]))
+        self.assertIs(problem, error)
+
+    def test_a_recorded_path_under_a_file_is_gone(self):
+        """PR #176 R5-1 review. The mutation it pins: `NotADirectoryError` dropped from the second
+        stat's absence handler, so a recorded path whose parent is a file reads as `unknown`."""
+        parent = Path(self.h.h.tmpdir.name) / "a-file"
+        parent.write_text("a file", encoding="utf-8")
+        with self.assertRaises(NotADirectoryError):
+            os.stat(parent / "created-under")
+        self.assertEqual(activation_module._recorded_run(str(parent / "created-under"), "run-live"), ("gone", None))
 
     def test_each_variant_is_its_own_line(self):
         fields = [self.line()["field"]]  # gone
