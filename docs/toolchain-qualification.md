@@ -100,7 +100,7 @@ BUILD SUCCESSFUL in 2m 46s
 20 actionable tasks: 20 executed
 ```
 
-`--warning-mode all` printed no Gradle deprecation; the only warnings are Lombok's `sun.misc.Unsafe` notice below. `scripts/verify-quality-gates.sh` passed on the same wrapper (16 backend and frontend checks, each failing on its injected violation), `GradleWrapperDocumentTest` passed against the moved wrapper, and CI validates the wrapper jar on every run.
+`--warning-mode all` printed no Gradle deprecation; the only warnings are Lombok's `sun.misc.Unsafe` notice below. `scripts/verify-quality-gates.sh` passed on the same wrapper (16 checks: 11 backend, 3 frontend, the API compatibility pair and the script lint, each failing on its injected violation), `GradleWrapperDocumentTest` passed against the moved wrapper, and CI validates the wrapper jar on every run.
 
 Observations (2026-11-06, unchanged): Error Prone reported a real defect during development (`[FormatString] extra format arguments` on a mis-parenthesised `String.formatted` call), confirming it runs inside javac 27. Lombok prints a JDK 27 deprecation notice at compile time (`sun.misc.Unsafe::objectFieldOffset has been called by lombok.permit.Permit`); it is a warning from Lombok's own internals, not from project code, and does not affect `-Werror`. Gradle reports no deprecated build-script features (`--warning-mode all`).
 
