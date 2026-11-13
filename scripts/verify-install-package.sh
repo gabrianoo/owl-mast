@@ -64,9 +64,10 @@ fi
 # against the pinned upstream schema offline). The whole set, with its transitive dependencies, is pinned
 # with hashes in deploy/tests/requirements.txt (generated from requirements.in) and installed with
 # --require-hashes into a virtual environment of its own, so the suite never runs against whatever the
-# interpreter happens to have and nothing is installed into it (E01-R-11). The environment is kept in
-# OWLMAST_TOOLS_DIR when that is set and reused while the requirements file and the interpreter are unchanged
-# (both are stamped into the environment); otherwise it is created in a scratch directory for this run.
+# interpreter happens to have and nothing is installed into it (E01-R-11). The environment is created afresh on
+# every run, in OWLMAST_TOOLS_DIR when that is set and otherwise in a scratch directory for this run: a reused one
+# could hold a .pth file, sitecustomize or a changed pip that no distribution owns and no reinstall removes
+# (review cycle 3). Only pip's download cache is reused, and --require-hashes checks every file taken from it.
 REQUIREMENTS="$ROOT/deploy/tests/requirements.txt"
 VENV_HOME="${OWLMAST_TOOLS_DIR:-}"
 if [ -z "$VENV_HOME" ]; then
@@ -74,20 +75,10 @@ if [ -z "$VENV_HOME" ]; then
   trap 'rm -rf "$VENV_HOME"' EXIT
 fi
 VENV="$VENV_HOME/deploy-tests-venv"
-# The stamp also names the interpreter the environment was built from, so a changed python3 rebuilds it, and so
-# does any installed distribution outside the pinned set. Every pinned package is then reinstalled from the hashed
-# requirements on every run (--force-reinstall: pip skips an installed version without re-hashing its files, so a
-# plain install would trust whatever the cached environment holds at that version).
-venv_stamp="$(sha256sum "$REQUIREMENTS" | cut -d' ' -f1) $(command -v python3) $(python3 -c 'import sys; print(sys.version.split()[0])')"
-dist_names() { sed -nE 's/^([A-Za-z0-9_.-]+)==.*/\1/p' | tr 'A-Z_.' 'a-z--' | sort -u; }
-unpinned_in_venv() { comm -23 <("$VENV/bin/python" -m pip list --format=freeze --disable-pip-version-check --exclude pip 2>/dev/null | dist_names) <(dist_names <"$REQUIREMENTS"); }
-if [ ! -x "$VENV/bin/python" ] || [ "$(cat "$VENV/.owlmast-stamp" 2>/dev/null)" != "$venv_stamp" ] || [ -n "$(unpinned_in_venv)" ]; then
-  rm -rf "$VENV"
-  python3 -m venv "$VENV"
-fi
-"$VENV/bin/python" -m pip install --quiet --disable-pip-version-check --require-hashes --force-reinstall --no-deps -r "$REQUIREMENTS"
+rm -rf "$VENV"
+python3 -m venv "$VENV"
+"$VENV/bin/python" -m pip install --quiet --disable-pip-version-check --require-hashes --no-deps -r "$REQUIREMENTS"
 "$VENV/bin/python" -m pip check --disable-pip-version-check
-printf '%s\n' "$venv_stamp" >"$VENV/.owlmast-stamp"
 "$VENV/bin/python" -m pip list --format=freeze --disable-pip-version-check 2>/dev/null | grep -iE '^(pyyaml|jsonschema)=='
 cd "$ROOT"
 # The suite runs the scripts under test (qualify-local-install.sh parses manifests with `python3` and PyYAML), so
