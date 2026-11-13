@@ -750,10 +750,10 @@ class GitHub:
                 "thread_id": thread["id"], "finding_id": marker.group(1) if marker else None,
                 "resolved": thread["isResolved"], "outdated": thread["isOutdated"],
                 "path": thread["path"], "line": thread["line"], "url": comments[0]["url"] if comments else None,
-                "comments": [{"author": author, "body": c["body"]} for author, c in zip(authors, comments)],
+                "comments": [{"author": author, "body": c["body"]} for author, c in zip(authors, comments, strict=True)],
             }
             if marker:  # replies are part of the fix round's input: say which ones a trusted author wrote
-                for author, comment in zip(authors, entry["comments"]):
+                for author, comment in zip(authors, entry["comments"], strict=True):
                     comment["trusted"] = self.trusted(author)
             (bmad if marker else other).append(entry)
         open_bmad = [t for t in bmad if not t["resolved"]]

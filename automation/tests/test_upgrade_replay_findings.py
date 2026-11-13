@@ -16,7 +16,6 @@ Part 3 checks the positive controls and that cleanup stays possible."""
 import json
 import os
 from datetime import datetime, timedelta
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,7 +24,7 @@ from automation.tests import legacy_baseline as lb
 from automation.tests.fake_transport import small_backlog
 from automation.tests.support import Harness, evidence, ok_worktree, passing_runner, write_policy
 from automation.unattended.coordinator import Coordinator
-from automation.unattended.errors import Refused, UnattendedError
+from automation.unattended.errors import Refused
 from automation.unattended.github import PullRequestRecord
 from automation.unattended.policy import load_policy
 from automation.unattended.state import Store

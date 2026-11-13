@@ -18,13 +18,15 @@ class R2dbcSchemaBaselineRepository implements SchemaBaselineRepository {
   public Mono<SchemaBaseline> findBaseline() {
     return databaseClient
         .sql(
-            "select vchord_version, vector_version, applied_at"
+            "select vchord_version, vector_version, applied_at,"
+                + " cast(current_setting('server_version_num') as integer) as server_version_num"
                 + " from bootstrap.schema_baseline where id = 1")
         .map(row ->
             new SchemaBaseline(
                 row.get("vchord_version", String.class),
                 row.get("vector_version", String.class),
-                row.get("applied_at", OffsetDateTime.class).toInstant()))
+                row.get("applied_at", OffsetDateTime.class).toInstant(),
+                row.get("server_version_num", Integer.class)))
         .one();
   }
 }

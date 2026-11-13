@@ -11,16 +11,26 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import reactor.test.StepVerifier;
 
-/** AC7: the default recheck allows tenant-internal system work only and denies everything else. */
+/**
+ * AC7: the default recheck allows only tenant-internal system work whose type the jobs owner
+ * granted, and denies everything else.
+ */
 class TenantInternalOnlyDispatchAuthorizationTest {
 
+  private static final WorkType PUBLISH = WorkType.of("audit.publish");
+
   private final TenantInternalOnlyDispatchAuthorization authorization =
-      new TenantInternalOnlyDispatchAuthorization();
+      new TenantInternalOnlyDispatchAuthorization(TenantInternalGrants.platformDefault());
 
   @Test
-  void allowsTenantInternalSystemWork() {
-    WorkType type = WorkType.of("audit.publish");
-    StepVerifier.create(authorization.recheck(item(type), WorkRegistration.tenantInternal(type)))
+  void allowsGrantedTenantInternalSystemWork() {
+    StepVerifier.create(
+            authorization.recheck(item(PUBLISH), WorkRegistration.tenantInternal(PUBLISH)))
+        .expectNext(DispatchDecision.ALLOW)
+        .verifyComplete();
+    StepVerifier.create(
+            authorization.recheck(
+                item(PUBLISH), WorkRegistration.tenantInternalRetriedWithoutLimit(PUBLISH)))
         .expectNext(DispatchDecision.ALLOW)
         .verifyComplete();
   }
@@ -30,6 +40,35 @@ class TenantInternalOnlyDispatchAuthorizationTest {
     WorkType type = WorkType.of("fixture.external");
     StepVerifier.create(
             authorization.recheck(item(type), WorkRegistration.requiresAuthorization(type)))
+        .expectNext(DispatchDecision.DENY)
+        .verifyComplete();
+    // A granted type whose handler did not ask for the privilege is not given it.
+    StepVerifier.create(
+            authorization.recheck(item(PUBLISH), WorkRegistration.requiresAuthorization(PUBLISH)))
+        .expectNext(DispatchDecision.DENY)
+        .verifyComplete();
+  }
+
+  /** E01-R-03: saying tenant-internal is a request; without the grant the recheck denies. */
+  @Test
+  void deniesASelfDeclaredTenantInternalRegistrationOfAnUngrantedType() {
+    WorkType selfGranted = WorkType.of("feature.self-granted");
+    StepVerifier.create(
+            authorization.recheck(item(selfGranted), WorkRegistration.tenantInternal(selfGranted)))
+        .expectNext(DispatchDecision.DENY)
+        .verifyComplete();
+    StepVerifier.create(
+            authorization.recheck(item(selfGranted), new WorkRegistration(selfGranted, true, true)))
+        .expectNext(DispatchDecision.DENY)
+        .verifyComplete();
+  }
+
+  /** A granted registration does not cover an item of another type. */
+  @Test
+  void deniesAnItemWhoseTypeIsNotTheRegistrationsType() {
+    StepVerifier.create(
+            authorization.recheck(
+                item(WorkType.of("feature.other")), WorkRegistration.tenantInternal(PUBLISH)))
         .expectNext(DispatchDecision.DENY)
         .verifyComplete();
   }

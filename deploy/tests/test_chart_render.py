@@ -947,10 +947,15 @@ class ReviewCycle1Test(unittest.TestCase):
         """109/4543776435, 4543776449, 4543776321, 116/4543777495: documented limits, kept in step with the chart."""
         doc = " ".join((REPO / "docs" / "installation.md").read_text().split())
         for phrase in ("fixed at first initialisation", "`ALTER ROLE", "are immutable on the existing claim", "has no TLS",
-                       "qualification of chart 0.2.0 is pending", "`routing.exposeActuator`", "`routing.gateway.allowAllListenerHostnames`",
+                       "`routing.exposeActuator`", "`routing.gateway.allowAllListenerHostnames`",
                        "`identity.keycloak.bootstrapAdmin.enabled=false`"):
             self.assertIn(phrase, doc, phrase)
         self.assertNotIn("Qualified on 2026-11-07 for GitHub issue #21 on a disposable local Kind target;", doc)  # that was chart 0.1.0
+        # E01-R-01: the qualification status is stated as it is, per revision, including what failed and what was not run.
+        self.assertNotIn("qualification of chart 0.2.0 is pending", doc)
+        for phrase in ("**The 2026-11-12 and 2026-11-13 runs, exactly.**", "What this does not amount to:", "**not run** on a cluster (render support only)",
+                       "**not run** by the script (`frontend.enabled=false`)"):
+            self.assertIn(phrase, doc, phrase)
 
 
 ISSUER_REASONS = ("host", "port", "userinfo", "query")  # the refusal reasons a sample line may name (IdentityPropertiesTest.REASONS)
@@ -1820,6 +1825,41 @@ class ReviewCycle6Test(unittest.TestCase):
         for text in (deployment, (CHART / "templates" / "NOTES.txt").read_text()):
             self.assertNotIn("keycloak.service.port", text)
         self.assertEqual(helpers.count("keycloak.service.port"), 1)
+
+    def test_keycloak_is_replaced_not_rolled(self):
+        """Kind qualification 2026-11-12 (E01-R-01): retiring the bootstrap admin changed the Keycloak pod for the first time. Under the
+        default rolling update the new pod waited for a cluster with the old one that the NetworkPolicy does not allow, never became
+        ready, and `helm upgrade --wait` timed out. The strategy stays RollingUpdate without surge: the same run showed that an
+        existing release cannot be upgraded to `type: Recreate` (the server refuses it next to the defaulted rollingUpdate block).
+        Review 5883535263: no surge does not stop the two pods overlapping, so Keycloak runs with a local cache and never waits for a cluster."""
+        keycloak = deployments_of(render())["t-owl-mast-keycloak"]
+        self.assertEqual(keycloak["spec"]["strategy"], {"type": "RollingUpdate", "rollingUpdate": {"maxSurge": 0, "maxUnavailable": 1}})
+        self.assertEqual(keycloak["spec"]["replicas"], 1)
+        policy = next(p for p in by_kind(render(), "NetworkPolicy") if p["metadata"]["name"] == "t-owl-mast-keycloak")
+        ports = [p["port"] for rule in policy["spec"]["ingress"] for p in rule["ports"]]
+        self.assertNotIn(7800, ports, "no cluster port is admitted, so two Keycloak pods must never try to form a cluster")
+        # RollingUpdate without surge still lets the new pod start while the old one terminates (the controller does not
+        # count a terminating pod), so the overlap is made harmless instead: a local cache never looks for a cluster.
+        env = {e["name"]: e.get("value") for e in keycloak["spec"]["template"]["spec"]["containers"][0]["env"]}
+        self.assertEqual(env.get("KC_CACHE"), "local")
+
+    def test_the_frontend_container_port_is_fixed_at_the_port_the_image_listens_on(self):
+        """E01-R-06 (retro B6): any port was accepted, but the image's nginx listens on 8080 only, so the probes failed."""
+        listen = (REPO / "frontend" / "nginx" / "default.conf.template").read_text()
+        self.assertRegex(listen, r"(?m)^\s*listen\s+8080;")
+        frontend = ("frontend.enabled=true", "frontend.image.tag=0.0.1-shell")
+        for value in ("8081", "80", "8443"):
+            self.assertIn("schema", refused(*sets(*frontend, f"frontend.containerPort={value}")).lower(), value)
+            err = refused("--skip-schema-validation", *sets(*frontend, f"frontend.containerPort={value}"))
+            self.assertIn(f"frontend.containerPort {value} is refused", err, value)
+            self.assertIn("listens on 8080 only", err, value)
+        # Refused with the frontend disabled too: the value is wrong whenever it is enabled later.
+        self.assertIn("schema", refused(*sets("frontend.containerPort=8081")).lower())
+        docs = render(*sets(*frontend, "frontend.containerPort=8080", "frontend.service.port=8088"))
+        container = deployments_of(docs)["t-owl-mast-frontend"]["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual(container["ports"], [{"name": "http", "containerPort": 8080}])
+        service = next(d for d in by_kind(docs, "Service") if d["metadata"]["name"] == "t-owl-mast-frontend")
+        self.assertEqual(service["spec"]["ports"][0]["port"], 8088)
 
     def test_the_keycloak_network_policy_admits_the_container_port_whatever_the_service_port(self):
         """4545058435: a NetworkPolicy port is the pod's port; the Service port must not leak into it."""

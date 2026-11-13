@@ -161,6 +161,10 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- if not (regexMatch (include "owl-mast.javaToolOptionsPattern" .) $jvm) -}}
 {{- fail (printf "backend.javaToolOptions %q is refused: only the listed JVM memory and tuning options are accepted, each with the value form the JVM takes (-Xms/-Xmx/-Xmn/-Xss and the -XX size options with a whole number and an optional k, m or g; the -XX percentage options with a number and no suffix; the -XX count options with a whole number; the -XX flags named in values.yaml, such as -XX:+UseZGC). System properties (-D), agents (-javaagent, -agentlib, -agentpath), argument files (@file) and every other -XX option (file-loading, hook and attach options included) are refused: they would override the chart-validated issuer and database configuration" $jvm) -}}
 {{- end -}}
+{{- /* the frontend image listens on 8080 only; repeated from the schema so --skip-schema-validation does not reopen it */ -}}
+{{- if ne (toString $v.frontend.containerPort) "8080" -}}
+{{- fail (printf "frontend.containerPort %v is refused: the frontend image listens on 8080 only, so the probes and the Service would point at a port nothing listens on; set frontend.service.port to change the Service port" $v.frontend.containerPort) -}}
+{{- end -}}
 {{- /* the schema's extraEnv rules, repeated here so that --skip-schema-validation does not reopen them: a later */ -}}
 {{- /* duplicate of a variable the chart renders wins in Kubernetes */ -}}
 {{- range $i, $e := $v.backend.extraEnv -}}

@@ -332,7 +332,6 @@ class ExpiryAndCleanupTests(unittest.TestCase):
         self.assertIsInstance(report, dict)
 
     def test_restart_after_expiry_replays_cleanup_but_not_advancing_intents(self):
-        c = self.c
         state = self.store.load_story(S)
         state.intents[0].status = "pending"  # the claim comment landed; its completion did not persist
         self.store.save_story(state)

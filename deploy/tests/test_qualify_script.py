@@ -8,6 +8,7 @@ success, failure or interruption, and that the isolation and readiness evaluator
 intended PostgreSQL denial / backend 503 and reject transport, authentication and generic failures.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -62,6 +63,9 @@ def template_pod_run_labels():
 # labelled every pod hid that the PostgreSQL pods have no run label, which made the script refuse them on a cluster.
 POD_RUN_LABELS = rendered_pod_run_labels() or template_pod_run_labels()
 UNLABELLED_COMPONENTS = sorted(c for c in COMPONENTS if not POD_RUN_LABELS[c])
+
+# The migrations of this checkout (V001__..., V002__...): what the backend built from it applies and what the script requires.
+MIGRATIONS = sorted(p.name[1:].split("__", 1)[0] for p in (REPO / "backend" / "src" / "main" / "resources" / "db" / "migration").glob("V*__*.sql"))
 
 MUTATING = re.compile(r"(^| )(create|apply|label|annotate|patch|delete|exec|rollout|upgrade|uninstall|install)( |$)")
 
@@ -206,11 +210,43 @@ if [[ "$args" == *" logs job/"* ]]; then
   if [ "$(state_of job "$ns" "$job")" = absent ]; then echo "error: error from server (NotFound): jobs.batch \"$job\" not found" >&2; exit 1; fi
   printf 'GRANT\n'; exit 0
 fi
+# Pods of the release that are being deleted (wait_no_terminating_pods): STUB_TERMINATING=<n> reports one for the first n reads.
+if [[ "$args" == *" get pods "* && "$args" == *"?(@.metadata.deletionTimestamp)"* ]]; then
+  [ "${STUB_TERMINATING_READ:-}" = fail ] && { echo "error: the server is currently unable to handle the request" >&2; exit 1; }
+  n=0; [ -e "$STUB_WORLD.terminating" ] && n="$(grep -c . "$STUB_WORLD.terminating")"
+  if [ "$n" -lt "${STUB_TERMINATING:-0}" ]; then echo read >> "$STUB_WORLD.terminating"; printf 'owl-mast-fe-keycloak-old-abc12\n'; fi
+  exit 0
+fi
 # Runtime answers for whole-step runs (STUB_RUNTIME=1): what a healthy install returns to the script's observations.
 if [ "${STUB_RUNTIME:-}" = 1 ]; then
   if [[ "$args" == *" get --raw /api/v1/namespaces/"* ]]; then
     svc="$(sed -E 's/.*\/services\/([^:\/]+).*/\1/' <<<"$args")"
     if [[ "$args" == *"openid-configuration"* ]]; then printf '{"issuer":"http://%s:8080/realms/owl-mast"}\n' "$svc"; else printf '{"status":"UP"}\n'; fi
+    exit 0
+  fi
+  # The release's Keycloak pods that are not being deleted, as `name deletionTimestamp` lines (keycloak_pod_names): a retired
+  # release runs a new pod, unless STUB_RETIRE=same-pod keeps the old one.
+  if [[ "$args" == *" get pods "* && "$args" == *"app.kubernetes.io/component=keycloak"* && "$args" == *'{.metadata.name}{" "}{.metadata.deletionTimestamp}'* ]]; then
+    rel="$(sed -E 's/.*app\.kubernetes\.io\/instance=([^ ,]+).*/\1/' <<<"$args")"
+    if [ -e "$STUB_WORLD.retired" ] && [ "${STUB_RETIRE:-}" != same-pod ]; then printf '%s-keycloak-new-def34 \n' "$rel"; else printf '%s-keycloak-old-abc12 \n' "$rel"; fi
+    # STUB_RETIRE=deleting-listed: a pod that is being deleted is also listed, with its deletionTimestamp, before and after.
+    if [ "${STUB_RETIRE:-}" = deleting-listed ]; then printf '%s-keycloak-gone-xyz98 2026-11-13T00:29:00Z\n' "$rel"; fi
+    exit 0
+  fi
+  # The Keycloak container environment as `NAME=<secret or empty>` lines (retire_bootstrap_admin). The helm stub marks the
+  # release retired when an upgrade sets bootstrapAdmin.enabled=false; STUB_RETIRE=kept leaves the variables in place.
+  if [[ "$args" == *" get deploy "*"-keycloak "* && "$args" == *"{.name}={.valueFrom.secretKeyRef.name}"* ]]; then
+    rel="$(sed -E 's/.* get deploy ([^ ]+)-keycloak .*/\1/' <<<"$args")"
+    printf 'KC_DB=\nKC_DB_USERNAME=%s-keycloak-db\nKC_DB_PASSWORD=%s-keycloak-db\n' "$rel" "$rel"
+    if [ ! -e "$STUB_WORLD.retired" ]; then printf 'KC_BOOTSTRAP_ADMIN_USERNAME=%s-keycloak-bootstrap\nKC_BOOTSTRAP_ADMIN_PASSWORD=%s-keycloak-bootstrap\n' "$rel" "$rel"; fi
+    exit 0
+  fi
+  # The release's Deployments and running pods as JSON (retire_bootstrap_admin looks for the bootstrap Secret's name in every
+  # field that can carry one). STUB_RETIRE=volume: the environment is clean but a pod still mounts the Secret as a volume.
+  if [[ "$args" == *" get deploy,pods "* && "$args" == *"-o json"* ]]; then
+    rel="$(sed -E 's/.*app\.kubernetes\.io\/instance=([^ ,]+).*/\1/' <<<"$args")"
+    volume=""; [ "${STUB_RETIRE:-}" = volume ] && volume="{\"name\": \"bootstrap\", \"secret\": {\"secretName\": \"$rel-keycloak-bootstrap\"}}"
+    printf '{"apiVersion": "v1", "kind": "List", "items": [{"kind": "Deployment", "metadata": {"name": "%s-keycloak"}, "spec": {"template": {"spec": {"containers": [{"name": "keycloak", "env": [{"name": "KC_DB_PASSWORD", "valueFrom": {"secretKeyRef": {"name": "%s-keycloak-db", "key": "password"}}}]}], "volumes": [%s]}}}}]}\n' "$rel" "$rel" "$volume"
     exit 0
   fi
   if [[ "$args" == *" get pods "* && "$args" == *"READY:.status.containerStatuses[0].ready"* ]]; then printf 'NAME READY RESTARTS\npostgresql-abc12-xyz   true   0\n'; exit 0; fi
@@ -245,7 +281,15 @@ if [[ "$args" == *" exec "* ]]; then
       fi
       printf '%s\n' "$db"; exit 0
     fi
-    printf 'owlmast_app|f|f|f\nkeycloak_app|f|f|f\nvchord=1.1.1\nvector=0.8.2\nt\n001|true\nIndex Scan using vectors_vchordrq on vectors\nCREATE INDEX vectors_vchordrq ON qualification.vectors USING vchordrq (embedding vector_l2_ops)\n'; exit 0
+    # STUB_FLYWAY_HISTORY: the flyway_schema_history rows (default: every migration of this checkout, applied);
+    # STUB_MIGRATED_BY: who applied them; STUB_TABLE_OWNER: owner of the jobs and audit tables;
+    # STUB_DURABLE_WORK: the state of the synthetic audit.publish item as check_durable_work reads it.
+    printf 'owlmast_app|f|f|f\nkeycloak_app|f|f|f\nvchord=1.1.1\nvector=0.8.2\nt\n%b' "$STUB_FLYWAY_HISTORY"
+    printf 'migrated-by|%s\n' "${STUB_MIGRATED_BY:-owlmast_app}"
+    for table in audit.event audit.publication_intent jobs.work_item; do printf 'table-owner|%s|%s\n' "$table" "${STUB_TABLE_OWNER:-owlmast_app}"; done
+    [ -n "${STUB_EXTRA_TABLE:-}" ] && printf '%s\n' "$STUB_EXTRA_TABLE"
+    printf '%s\n' "${STUB_DURABLE_WORK:-durable-work|SUCCEEDED|1|true|owl-mast-backend/owl-mast-backend-abc12-xyz/8d6c1f0e|-}"
+    printf 'Index Scan using vectors_vchordrq on vectors\nCREATE INDEX vectors_vchordrq ON qualification.vectors USING vchordrq (embedding vector_l2_ops)\n'; exit 0
   fi
   case "${STUB_EXEC_MODE:-denied}" in
     denied) if [ "$db" = "${STUB_DENIED_DB:-keycloak}" ]; then printf 'psql: error: connection to server at "127.0.0.1", port 5432 failed: FATAL:  permission denied for database "%s"\nDETAIL:  User does not have CONNECT privilege.\ncommand terminated with exit code 2\n' "$db"; exit 2; fi; printf '%s\n' "$db"; exit 0 ;;
@@ -355,6 +399,7 @@ if [[ "$args" == *" upgrade "* ]]; then
   else
     : > "$(hooks_file "$rel")"   # a revision whose render has no provisioning hook records none
   fi
+  if [[ "$args" == *"bootstrapAdmin.enabled=false"* ]] && [ "${STUB_RETIRE:-retired}" != kept ]; then : > "$STUB_WORLD.retired"; fi
   if grep -q "^release - $rel " "$STUB_WORLD"; then [ -e "$(rev_file "$rel")" ] || echo "$rel" >> "$(rev_file "$rel")"   # a release the world started with is at revision 1
   else printf 'release - %s owned\n' "$rel" >> "$STUB_WORLD"; fi
   echo "$rel" >> "$(rev_file "$rel")"
@@ -362,6 +407,14 @@ if [[ "$args" == *" upgrade "* ]]; then
 fi
 echo "stub helm ok"
 '''
+
+
+def chart_digest(chart: Path) -> str:
+    """The digest record_source writes, computed without the script: sha256sum's `<hex>  ./<path>` line for every
+    file in byte order of the path, hashed together."""
+    files = sorted((p for p in chart.rglob("*") if p.is_file()), key=lambda p: ("./" + p.relative_to(chart).as_posix()).encode())
+    lines = "".join(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  ./{p.relative_to(chart).as_posix()}\n" for p in files)
+    return hashlib.sha256(lines.encode()).hexdigest()
 
 
 class Harness:
@@ -378,7 +431,8 @@ class Harness:
     def env(self, **extra):
         env = {"PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": os.environ.get("HOME", "/"), "KUBECONFIG": str(self.tmp / "kubeconfig"),
                "OWLMAST_HELM": str(self.bin / "helm"), "EVIDENCE_DIR": str(self.evidence), "STUB_WORLD": str(self.world), "STUB_CALLS": str(self.calls), "STUB_RUN_ID": RUN_ID, "STUB_SENTINEL": SENTINEL,
-               "BACKEND_IMAGE_TAG": "stub", "STUB_UNLABELLED_COMPONENTS": " ".join(UNLABELLED_COMPONENTS)}
+               "BACKEND_IMAGE_TAG": "stub", "STUB_UNLABELLED_COMPONENTS": " ".join(UNLABELLED_COMPONENTS),
+               "STUB_FLYWAY_HISTORY": "".join(f"{version}|true\\n" for version in MIGRATIONS), "DURABLE_WORK_TIMEOUT": "0"}
         env.update(extra)
         return env
 
@@ -398,7 +452,7 @@ class Harness:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
 
-BASE_WORLD = f"namespace - owl-mast-test owned\nnamespace - owl-mast-test-external owned\n"
+BASE_WORLD = "namespace - owl-mast-test owned\nnamespace - owl-mast-test-external owned\n"
 
 
 class PreflightTests(unittest.TestCase):
@@ -415,7 +469,7 @@ class PreflightTests(unittest.TestCase):
             h.close()
 
     def test_prepare_proceeds_only_with_owned_or_absent_resources_and_labels_only_new_objects(self):
-        h = Harness(BASE_WORLD + f"secret owl-mast-test owl-mast-db owned\nsecret owl-mast-test-external owl-mast-db owned\n")
+        h = Harness(BASE_WORLD + "secret owl-mast-test owl-mast-db owned\nsecret owl-mast-test-external owl-mast-db owned\n")
         try:
             r = h.run("prepare")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -1024,7 +1078,8 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
         # the identifiers are read before the upgrade and again after it
         calls = r.calls.splitlines()
         upgrade = next(i for i, c in enumerate(calls) if "provisionKeycloakDatabase=true" in c)
-        reads = [i for i, c in enumerate(calls) if "'role='||r.oid" in c]
+        retire = next(i for i, c in enumerate(calls) if "bootstrapAdmin.enabled=false" in c)
+        reads = [i for i, c in enumerate(calls) if "'role='||r.oid" in c and i < retire]  # the retirement reads them once more
         self.assertEqual(len(reads), 2, reads); self.assertLess(reads[0], upgrade); self.assertGreater(reads[1], upgrade)
 
     def test_a_direct_read_of_the_succeeded_hook_job_is_not_found_in_the_stub_world(self):
@@ -1092,10 +1147,333 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
                      "ok   fe3-hook-run (hook Job/owl-mast-fe-postgresql-provision-keycloak events=pre-upgrade phase=Succeeded started_at=",
                      "ok   fe2-first-enable-provisioned (role and database absent before, present after the pre-upgrade hook: role=16385 database=16386 owner=16385)",
                      "ok   fe3-revision (revision 2 -> 3, deployed)", "ok   fe3-identity-unchanged", "ok   fe3-hook-removed", "ok   fe3-retry-no-op", "ok   fe3-keycloak-schema-intact",
+                     "ok   fe2-durable-work (the installed backend claimed the synthetic audit.publish item as the restricted principal",
+                     "ok   fe5-revision (revision 3 -> 4, deployed)",
+                     "ok   fe5-bootstrap-admin-retired (injected before; after bootstrapAdmin.enabled=false no bootstrap variable and no reference to the bootstrap Secret",
                      "qualification steps complete: first-enable"):
             self.assertIn(line, r.stdout)
         self.assertNotIn("FAIL", r.stdout)
         self.assertEqual(self.direct_hook_reads(r.calls), [])
+
+    def test_every_all_run_retires_the_bootstrap_admin_and_replaces_the_keycloak_pod(self):
+        """Review 5884091345: the re-provisioning upgrade leaves the Keycloak pod template unchanged, so `all` never replaced the
+        Keycloak pod. Bundled-bundled now ends with the retirement, which must replace it. This checks the step only: that the
+        retirement runs after the re-provisioning, replaces the pod and records what the terminating-pod wait saw."""
+        r = self.step("bundled-bundled")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok   bb-retire-bootstrap-admin-retired", r.stdout)
+        self.assertEqual(r.evidence["bb-retire-keycloak-pod-replaced"].splitlines(),
+                         ["before: owl-mast-keycloak-old-abc12", "after: owl-mast-keycloak-new-def34"])
+        wait = r.evidence["bb-retire-terminating-wait"].splitlines()
+        self.assertEqual(len(wait), 2, wait)  # review 5884955290 R4-4: when helm returned, then the wait's one read
+        self.assertRegex(wait[0], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ helm upgrade returned$")
+        self.assertRegex(wait[1], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ terminating: none$")
+        calls = r.calls.splitlines()
+        retire = [c for c in calls if c.startswith("helm ") and "bootstrapAdmin.enabled=false" in c]
+        self.assertEqual(len(retire), 1, retire)
+        self.assertIn(" --reuse-values", retire[0])
+        provision = [i for i, c in enumerate(calls) if c.startswith("helm ") and "provisionKeycloakDatabase=true" in c]
+        self.assertLess(provision[-1], calls.index(retire[0]))
+
+    def test_a_keycloak_pod_being_deleted_counts_neither_before_nor_after_the_retirement(self):
+        """Review cycle 3: keycloak_pod_names drops listed pods that carry a deletionTimestamp."""
+        r = self.step("bundled-bundled", STUB_RETIRE="deleting-listed")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.evidence["bb-retire-keycloak-pod-replaced"].splitlines(),
+                         ["before: owl-mast-keycloak-old-abc12", "after: owl-mast-keycloak-new-def34"])
+
+    def test_the_retirement_fails_when_the_keycloak_pod_was_not_replaced(self):
+        r = self.step("bundled-bundled", STUB_RETIRE="same-pod")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL bb-retire: the Keycloak pod was not replaced by the retirement (before: owl-mast-keycloak-old-abc12; after: owl-mast-keycloak-old-abc12)", r.stdout)
+        self.assertNotIn("ok   bb-retire-bootstrap-admin-retired", r.stdout)
+
+    def test_first_enable_retires_the_bootstrap_admin_and_proves_it_from_the_pod(self):
+        """E01-R-01: the switch-off of the Keycloak bootstrap admin was documented as part of the Kind qualification but no step ran it."""
+        r = self.first_enable()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = r.calls.splitlines()
+        retire = [c for c in calls if c.startswith("helm ") and "bootstrapAdmin.enabled=false" in c]
+        self.assertEqual(len(retire), 1, retire)
+        # the Secret value is pointed at a name that does not exist: a remaining reference would fail `helm upgrade --wait`
+        self.assertIn("identity.keycloak.bootstrapExistingSecret=absent-keycloak-bootstrap-secret", retire[0])
+        self.assertIn(" --wait ", retire[0])
+        self.assertIn("identity.bundled=true", retire[0])
+        self.assertNotIn("provisionKeycloakDatabase=true", retire[0])
+        # the retirement runs after the retry and before the fixture is uninstalled
+        order = [i for i, c in enumerate(calls) if c.startswith("helm ") and (" upgrade " in c or " uninstall " in c)]
+        self.assertEqual([("uninstall" if " uninstall " in calls[i] else "retire" if "bootstrapAdmin.enabled=false" in calls[i] else "upgrade") for i in order][-2:], ["retire", "uninstall"])
+        self.assertIn("KC_BOOTSTRAP_ADMIN_PASSWORD=owl-mast-fe-keycloak-bootstrap", r.evidence["fe5-keycloak-env-before"])
+        self.assertNotIn("KC_BOOTSTRAP_ADMIN", r.evidence["fe5-keycloak-env-after"])
+        self.assertIn("KC_DB_PASSWORD=owl-mast-fe-keycloak-db", r.evidence["fe5-keycloak-env-after"])
+
+    def test_the_retirement_reads_the_secret_references_only_once_the_replaced_pod_is_gone(self):
+        """Review 5883535263: `helm upgrade --wait` can return while the replaced Keycloak pod still terminates, and that pod still
+        names the bootstrap Secret; reading the references then would report a retirement that worked as failed."""
+        r = self.first_enable(STUB_TERMINATING="1", TERMINATING_POD_TIMEOUT="30")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok   fe5-bootstrap-admin-retired", r.stdout)
+        calls = r.calls.splitlines()
+        waits = [i for i, c in enumerate(calls) if "?(@.metadata.deletionTimestamp)" in c]
+        reads = [i for i, c in enumerate(calls) if " get deploy,pods " in c and "-o json" in c]
+        self.assertEqual(len(waits), 2, waits)  # one read still saw the terminating pod, the next one none
+        self.assertEqual([line.split(" ", 1)[1] for line in r.evidence["fe5-terminating-wait"].splitlines()],
+                         ["helm upgrade returned", "terminating: owl-mast-fe-keycloak-old-abc12", "terminating: none"])
+        for i in waits:  # review 5884091345: the exact namespace and selector of the release's Keycloak pods
+            self.assertIn(" -n owl-mast-test ", calls[i])
+            self.assertIn(" -l app.kubernetes.io/instance=owl-mast-fe,app.kubernetes.io/component=keycloak ", calls[i])
+        self.assertEqual(len(reads), 1, reads)
+        self.assertLess(waits[-1], reads[0])
+        r = self.first_enable(STUB_TERMINATING="1000", TERMINATING_POD_TIMEOUT="0")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL fe5: pod(s) still terminating after 0s: owl-mast-fe-keycloak-old-abc12", r.stdout)
+        self.assertNotIn("ok   fe5-bootstrap-admin-retired", r.stdout)
+        self.assertNotIn(" get deploy,pods ", r.calls)
+
+    def test_a_failed_read_of_the_terminating_pods_is_recorded_and_fails_the_retirement(self):
+        """Review 5884955290 R4-10: the wait's evidence names a read that failed, instead of ending without a line."""
+        r = self.first_enable(STUB_TERMINATING_READ="fail")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL fe5: the release's Keycloak pods could not be listed", r.stdout)
+        self.assertEqual([line.split(" ", 1)[1] for line in r.evidence["fe5-terminating-wait"].splitlines()],
+                         ["helm upgrade returned", "read failed"])
+        self.assertNotIn(" get deploy,pods ", r.calls)
+
+    def test_a_rerun_with_the_same_prefix_keeps_the_earlier_reads(self):
+        """Review 5884955290 R4-12: the wait appends, so a second retirement in the same evidence directory keeps the first one's reads."""
+        h = Harness(BASE_WORLD)
+        try:
+            out = h.evidence / "runtime"; out.mkdir(parents=True, exist_ok=True)
+            (out / "rr-terminating-wait.txt").write_text("2026-11-13T00:00:00Z terminating: none\n")
+            r = h.source("OUT='%s'; NS=owl-mast-test; wait_no_terminating_pods rr owl-mast-fe" % out, STUB_TERMINATING="0")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            lines = (out / "rr-terminating-wait.txt").read_text().splitlines()
+            self.assertEqual(lines[0], "2026-11-13T00:00:00Z terminating: none")
+            self.assertEqual([line.split(" ", 1)[1] for line in lines[1:]], ["terminating: none"])
+        finally:
+            h.close()
+
+    def test_every_run_records_its_own_source(self):
+        """Review 5884955290 R4-3 and cycle 5: the script appends a record at the start, before the retirement upgrade
+        and at the end: the commit, whether the whole tree differs from it, and digests of the chart and of itself,
+        computed here independently of the script."""
+        r = self.step("bundled-bundled")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        blocks = [b.splitlines() for b in re.split(r"(?m)^(?=== )", r.evidence["source"]) if b]
+        self.assertEqual([re.sub(r"^== \S+ ", "", b[0]) for b in blocks],
+                         ["start: bundled-bundled", "before bb-retire-retire-upgrade", "end: bundled-bundled"])
+        head = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        porcelain = subprocess.run(["git", "-C", str(REPO), "status", "--porcelain"], capture_output=True, text=True, check=True).stdout
+        for block in blocks:
+            self.assertRegex(block[0], r"^== \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ ")
+            self.assertEqual(block[1], f"head {head}")
+            self.assertEqual(block[2], f"chart {CHART} sha256 {chart_digest(CHART)}")
+            self.assertEqual(block[3], f"script sha256 {hashlib.sha256(SCRIPT.read_bytes()).hexdigest()}")
+            self.assertEqual(block[4], "tree clean" if not porcelain else "tree dirty:")
+        self.assertEqual(len(re.findall(r"source \((start|before|end)[^)]*\): head [0-9a-f]{40}, tree (clean|DIRTY \(see source.txt\)), "
+                                        rf"chart sha256 {chart_digest(CHART)}", r.stdout)), 3)
+
+    @staticmethod
+    def throwaway_checkout(h, local_kind=False):
+        """A git repository holding a copy of the script and a one-file chart, so a test can change the chart and the
+        tree without touching the real checkout. With local_kind, also the static manifests `main` checks its targets
+        against."""
+        repo = h.tmp / "repo"
+        (repo / "scripts").mkdir(parents=True)
+        shutil.copy(SCRIPT, repo / "scripts" / SCRIPT.name)
+        if local_kind:
+            shutil.copytree(REPO / "deploy" / "local-kind", repo / "deploy" / "local-kind")
+        chart = repo / "deploy" / "helm" / "owl-mast"; chart.mkdir(parents=True)
+        (chart / "Chart.yaml").write_text("name: owl-mast\n")
+        (repo / "settings.gradle.kts").write_text("// root build input\n")
+        git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        subprocess.run([*git, "init", "-q"], check=True)
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "commit", "-q", "-m", "fixture"], check=True)
+        return repo, chart
+
+    def test_the_retirement_stops_before_its_upgrade_when_the_chart_changed_after_the_first_record(self):
+        """Review cycle 6 (R6-2): the record before the retirement upgrade is what keeps a chart edited mid-run (the
+        22:39Z case) from being installed, so a changed chart must stop the retirement before `helm upgrade`."""
+        def retire(change_chart):
+            h = Harness(BASE_WORLD + "release owl-mast-test owl-mast-fe owned\n")
+            try:
+                repo, chart = self.throwaway_checkout(h)
+                change = f"echo 'version: 2' >> '{chart / 'Chart.yaml'}'; " if change_chart else ""
+                body = (f"source '{repo / 'scripts' / SCRIPT.name}'; record_source first || exit 10; {change}"
+                        "retire_bootstrap_admin fe5 owl-mast-fe fe3-identity-after --timeout 10m && echo PASSED || echo CAUGHT")
+                r = subprocess.run(["bash", "-c", body], env=h.env(**self.RUNTIME), stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False, timeout=60)
+                return r, h.calls.read_text()
+            finally:
+                h.close()
+        # Control: on an unchanged chart the retirement gets as far as its upgrade.
+        r, calls = retire(False)
+        self.assertIn(" upgrade owl-mast-fe ", calls, r.stdout + r.stderr)
+        self.assertIn("ok   fe5-retire-upgrade", r.stdout)
+        self.assertNotIn("the chart changed", r.stdout)
+        r, calls = retire(True)
+        self.assertEqual(r.stdout.strip().splitlines()[-1], "CAUGHT", r.stdout + r.stderr)
+        self.assertIn("FAIL source (before fe5-retire-upgrade): the chart changed during the run", r.stdout)
+        self.assertNotIn(" upgrade ", calls)
+        self.assertNotIn("ok   fe5-retire-upgrade", r.stdout)
+
+    def test_a_run_whose_chart_changes_after_its_last_retirement_fails_at_the_end_record(self):
+        """Review cycle 7 (R7-3): steps after the retirement (persistence, the external combinations, failure-paths)
+        install the chart with no record right before them, so the end record is what fails a run whose chart was
+        edited during those steps: `main` must exit non-zero and never report the steps complete."""
+        def run(change_chart):
+            h = Harness(BASE_WORLD)
+            try:
+                repo, chart = self.throwaway_checkout(h, local_kind=True)
+                change = f"echo 'version: 2' >> '{chart / 'Chart.yaml'}'; " if change_chart else ""
+                body = (f"source '{repo / 'scripts' / SCRIPT.name}'; step_inventory() {{ {change}log 'ok   inventory-stub'; }}; "
+                        "main inventory; echo \"main returned $?\"")
+                return subprocess.run(["bash", "-c", body], env=h.env(**self.RUNTIME), stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False, timeout=60)
+            finally:
+                h.close()
+        # Control: an unchanged chart completes.
+        r = run(False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok   inventory-stub", r.stdout)
+        self.assertIn("qualification steps complete: inventory", r.stdout)
+        r = run(True)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("ok   inventory-stub", r.stdout)
+        self.assertIn("FAIL source (end: inventory): the chart changed during the run", r.stdout)
+        self.assertNotIn("qualification steps complete", r.stdout)
+        self.assertNotIn("main returned", r.stdout)
+
+    def test_the_source_record_names_dirty_paths_keeps_earlier_records_and_fails_on_a_changed_chart(self):
+        """Review cycle 5: dirty detection covers the whole tree (a root Gradle file builds the image too), each call
+        appends, and a chart that changes after the first record fails the run."""
+        h = Harness(BASE_WORLD)
+        try:
+            repo, chart = self.throwaway_checkout(h)
+            clean_digest = chart_digest(chart)
+            body = (f"source '{repo / 'scripts' / SCRIPT.name}'; record_source first || exit 10; "
+                    f"echo changed >> '{repo / 'settings.gradle.kts'}'; record_source second || exit 11; "
+                    f"echo 'version: 2' >> '{chart / 'Chart.yaml'}'; record_source third || exit 12")
+            r = subprocess.run(["bash", "-c", body], env=h.env(), stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False, timeout=60)
+            self.assertEqual(r.returncode, 12, r.stdout + r.stderr)
+            text = (h.evidence / "runtime" / "source.txt").read_text()
+            blocks = [b.splitlines() for b in re.split(r"(?m)^(?=== )", text) if b]
+            self.assertEqual([b[0].split(" ", 2)[2] for b in blocks], ["first", "second", "third"])
+            self.assertEqual(blocks[0][2], f"chart {chart} sha256 {clean_digest}")
+            self.assertEqual(blocks[0][4:], ["tree clean"])
+            self.assertEqual(blocks[1][2], f"chart {chart} sha256 {clean_digest}")
+            self.assertEqual(blocks[1][4:], ["tree dirty:", " M settings.gradle.kts"])
+            self.assertNotEqual(chart_digest(chart), clean_digest)
+            self.assertEqual(blocks[2][2], f"chart {chart} sha256 {chart_digest(chart)}")
+            self.assertEqual(blocks[2][4:], ["tree dirty:", " M deploy/helm/owl-mast/Chart.yaml", " M settings.gradle.kts"])
+            self.assertIn("source (second): head", r.stdout)
+            self.assertIn("tree DIRTY (see source.txt)", r.stdout)
+            self.assertIn(f"FAIL source (third): the chart changed during the run (sha256 {clean_digest}, now {chart_digest(chart)})", r.stdout)
+        finally:
+            h.close()
+
+    def test_first_enable_fails_when_the_bootstrap_admin_is_still_injected_after_the_retirement(self):
+        r = self.first_enable(STUB_RETIRE="kept")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL fe5: the Keycloak pod still takes a bootstrap admin variable or references the bootstrap Secret", r.stdout)
+        self.assertNotIn("ok   fe5-bootstrap-admin-retired", r.stdout)
+        self.assertNotIn("qualification steps complete", r.stdout)
+        self.assertNotIn("helm uninstall", r.calls)  # the failed fixture is left for diagnosis
+
+    def test_first_enable_fails_when_a_pod_still_mounts_the_bootstrap_secret(self):
+        """The environment alone is not the whole pod: a Secret volume (or envFrom, or an init container) would keep the reference."""
+        r = self.first_enable(STUB_RETIRE="volume")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL fe5: a Deployment or a running pod of the release still references the bootstrap Secret", r.stdout)
+        self.assertNotIn("ok   fe5-bootstrap-admin-retired", r.stdout)
+        self.assertIn('"secretName": "owl-mast-fe-keycloak-bootstrap"', r.evidence["fe5-secret-references"])
+        self.assertNotIn("KC_DB_PASSWORD", r.evidence["fe5-secret-references"])  # only the matching name fields are kept
+        r = self.first_enable()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("no reference", r.evidence["fe5-secret-references"])
+
+    def test_the_retirement_needs_the_admin_to_be_injected_before_it(self):
+        """A release that never injected the admin proves nothing about switching it off."""
+        h = Harness(BASE_WORLD)
+        try:
+            (h.tmp / "world.txt.retired").write_text("")
+            r = h.source("retire_bootstrap_admin fe5 owl-mast-fe fe3-identity-after --timeout 10m && echo PASSED || echo CAUGHT", **self.RUNTIME)
+            self.assertEqual(r.stdout.strip().splitlines()[-1], "CAUGHT", r.stdout + r.stderr)
+            self.assertIn("FAIL fe5: the bootstrap admin was not injected before the retirement", r.stdout)
+            self.assertNotIn("helm upgrade", h.calls.read_text())
+        finally:
+            h.close()
+
+    def test_every_migration_of_the_checkout_must_be_applied_by_the_application_principal(self):
+        """Retro R12: the script only looked for V001, so a database that never ran the jobs and audit migrations passed."""
+        self.assertGreaterEqual(len(MIGRATIONS), 5, MIGRATIONS)
+        r = self.step("bundled-bundled", STUB_FLYWAY_HISTORY="001|true\\n")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL flyway history: migration 002 is not applied", r.stdout)
+        r = self.step("bundled-bundled", STUB_FLYWAY_HISTORY="".join(f"{v}|true\\n" for v in MIGRATIONS[:-1]) + f"{MIGRATIONS[-1]}|false\\n")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn(f"FAIL flyway history: migration {MIGRATIONS[-1]} is not applied", r.stdout)
+        r = self.step("bundled-bundled", STUB_MIGRATED_BY="owlmast_admin")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL migrations were not all applied by the application principal owlmast_app", r.stdout)
+        r = self.step("bundled-bundled", STUB_TABLE_OWNER="owlmast_admin")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL jobs.work_item is not owned by owlmast_app", r.stdout)
+        # a table added to either schema later is covered without naming it in the script
+        r = self.step("bundled-bundled", STUB_EXTRA_TABLE="table-owner|jobs.future_table|owlmast_admin")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL a jobs or audit table is not owned by owlmast_app: table-owner|jobs.future_table|owlmast_admin", r.stdout)
+        r = self.step("bundled-bundled")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"ok   ac3-owl-mast-test-flyway-history (applied: {' '.join(MIGRATIONS)} )", r.stdout)
+        self.assertIn("ok   ac3-owl-mast-test-migrated-by", r.stdout)
+
+    def test_a_checkout_without_migrations_cannot_pass_the_migration_check(self):
+        """An empty expectation (moved directory, wrong root) must not read as 'everything applied'."""
+        h = Harness(BASE_WORLD)
+        try:
+            r = h.source("expected_migrations() { :; }; check_shared_postgres owl-mast-test owl-mast-postgresql && echo PASSED || echo CAUGHT", STUB_EXEC_MODE="ac3")
+            self.assertEqual(r.stdout.strip().splitlines()[-1], "CAUGHT", r.stdout + r.stderr)
+            self.assertIn("FAIL flyway history: no migration found in this checkout", r.stdout)
+        finally:
+            h.close()
+
+    def test_every_combination_with_a_database_proves_durable_work_on_the_database_its_backend_uses(self):
+        """E01-R-01: the proof runs wherever a backend is installed, against the bundled or the external PostgreSQL it connects to."""
+        for step, namespace, deployment in (("bundled-bundled", "owl-mast-test", "owl-mast-postgresql"), ("bundled-external", "owl-mast-test", "owl-mast-postgresql"),
+                                            ("external-bundled", "owl-mast-test-external", "external-postgresql"), ("external-external", "owl-mast-test-external", "external-postgresql")):
+            with self.subTest(step):
+                r = self.step(step)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn(f"ok   {step}-durable-work (", r.stdout)
+                enqueue = [c for c in r.calls.splitlines() if "insert into audit.publication_intent" in c]
+                self.assertEqual(len(enqueue), 1, enqueue)
+                self.assertIn(f"-n {namespace} exec deploy/{deployment} ", enqueue[0])
+                r = self.step(step, STUB_DURABLE_WORK="durable-work|FAILED|0|false|owl-mast-backend/pod/1|x")
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn(f"FAIL {step}-durable-work", r.stdout)
+
+    def test_the_installed_backend_must_finish_real_durable_work(self):
+        """Retro R12: the scheduler had never been shown to run under the chart's restricted principal."""
+        r = self.step("bundled-bundled")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok   bundled-bundled-durable-work (", r.stdout)
+        enqueue = [c for c in r.calls.splitlines() if "insert into audit.publication_intent" in c]
+        self.assertEqual(len(enqueue), 1, enqueue)
+        # written as the application principal, for the synthetic tenant, as the publisher's own work type
+        self.assertIn("OWLMAST_APP_PASSWORD", enqueue[0])
+        self.assertIn("'qualification'", enqueue[0])
+        self.assertIn("'audit.publish'", enqueue[0])
+        for state, reason in (("durable-work|PENDING|0|false|-|-", "still pending at the deadline"),
+                              ("durable-work|FAILED|0|false|owl-mast-backend/pod/1|io.r2dbc.postgresql.ExceptionFactory$PostgresqlBadGrammarException", "terminal failure"),
+                              ("durable-work|SUCCEEDED|0|true|owl-mast-backend/pod/1|-", "succeeded without a history row"),
+                              ("durable-work|SUCCEEDED|1|true|-|-", "no lease owner: not claimed by the backend"),
+                              ("stub ok", "unreadable")):
+            with self.subTest(reason):
+                r = self.step("bundled-bundled", STUB_DURABLE_WORK=state)
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn("FAIL bundled-bundled-durable-work: the synthetic audit.publish item was not published within 0s", r.stdout)
+                self.assertNotIn("ok   bundled-bundled-durable-work (", r.stdout)
+                self.assertNotIn("provision-keycloak-upgrade", r.stdout)  # the step stopped there
 
     def test_first_enable_fails_when_the_role_is_missing_after_the_hook_or_recreated_by_the_retry(self):
         r = self.first_enable(STUB_KC_IDENTITY_1="")  # the Keycloak principal cannot log in after the first enable
@@ -1228,6 +1606,16 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
                 self.assertIn(f"REFUSED: HOOK_GONE_TIMEOUT must be a whole number of seconds (digits only, no leading zero), got '{value}'", r.stderr)
                 self.assertEqual(r.calls, "")
+
+    def test_the_step_timeouts_must_be_whole_numbers_without_a_leading_zero(self):
+        """Review 5883535263: `08` passed `^[0-9]+$` and then aborted the step in bash's octal arithmetic."""
+        for name in ("DURABLE_WORK_TIMEOUT", "TERMINATING_POD_TIMEOUT"):
+            for value in ("08", "030", "-1", "1.5", " ", "2m", "1234567890", "99999999999999999999"):
+                with self.subTest(name=name, value=value):
+                    r = self.step("bundled-bundled", **{name: value})
+                    self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                    self.assertIn(f"REFUSED: {name} must be a whole number of seconds (digits only, no leading zero, at most 9 digits), got '{value}'", r.stderr)
+                    self.assertEqual(r.calls, "")
 
     def test_the_script_reads_no_hook_object_the_chart_deletes_on_success(self):
         """The delete policy the script depends on is the chart's, and no step reads the hook Job, its log or its ConfigMap directly."""

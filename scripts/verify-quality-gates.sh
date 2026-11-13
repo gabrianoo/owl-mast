@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Negative diagnostics for OM-01.01 AC2 (backend) and OM-01.04 T4 (frontend): inject one violation
-# per gate into a scratch copy and assert the gate fails with a message naming the offending file or
-# rule. The frontend gates need `frontend/node_modules` (run `npm ci` in frontend first).
+# Negative diagnostics for OM-01.01 AC2 (backend), the OM-01.03 contract rules and OM-01.04 T4
+# (frontend): inject one violation per gate into a scratch copy and assert the gate fails with a
+# message naming the offending file or rule. The frontend gates need `frontend/node_modules` (run
+# `npm ci` in frontend first); the script-lint gate needs python3 with venv and, unless OWLMAST_TOOLS_DIR
+# already holds them, network access for the pinned shellcheck and ruff.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -17,6 +19,13 @@ fresh_copy() {
       --exclude='./.agents' --exclude='./.claude' --exclude='./.codex' --exclude='./docs' \
       --exclude='./scripts' --exclude='./.github' --exclude='**/build' --exclude='./.gradle' \
       --exclude='./.kotlin' --exclude='./frontend' -cf - .) | tar -xf - -C "$SCRATCH/repo"
+}
+
+# DurableWorkContractTest compares the published types with the contract document, which the scratch
+# copy leaves out with the rest of docs/.
+with_contract_document() {
+  mkdir -p "$SCRATCH/repo/docs"
+  cp "$ROOT/docs/durable-work-and-audit-contract.md" "$SCRATCH/repo/docs/"
 }
 
 # expect_gate_failure <name> <pattern> <gradle task and arguments...>
@@ -95,6 +104,115 @@ public final class PlatformLeak {
 JAVA
 expect_gate_failure module-rules 'platform must not depend on feature packages|PlatformLeak' \
   :backend:test --tests com.aisquad.owlmast.architecture.FeatureModuleRulesTest
+
+echo "== layering gate (ArchUnit: api is the lowest layer of a feature, E01-R-10)"
+fresh_copy
+cat >"$SCRATCH/repo/$MAIN/bootstrap/api/LayerLeak.java" <<'JAVA'
+package com.aisquad.owlmast.bootstrap.api;
+
+import com.aisquad.owlmast.bootstrap.port.SchemaBaselineRepository;
+
+/** Deliberate violation: a published api type that exposes the feature's own port. */
+public record LayerLeak(SchemaBaselineRepository repository) {}
+JAVA
+expect_gate_failure layering 'api must not depend on application, domain or port' \
+  :backend:test --tests com.aisquad.owlmast.architecture.FeatureModuleRulesTest
+
+echo "== tenant-internal grant gate (OM-01.03 AC7, E01-R-03: only the jobs owner grants the privilege)"
+fresh_copy
+with_contract_document
+cat >"$SCRATCH/repo/$MAIN/audit/adapter/config/SelfGrantedWork.java" <<'JAVA'
+package com.aisquad.owlmast.audit.adapter.config;
+
+import com.aisquad.owlmast.jobs.api.WorkType;
+import com.aisquad.owlmast.jobs.application.TenantInternalGrants;
+import java.util.Set;
+
+/** Deliberate violation: a feature module granting itself tenant-internal system work. */
+public final class SelfGrantedWork {
+  private SelfGrantedWork() {}
+
+  public static TenantInternalGrants grants() {
+    return new TenantInternalGrants(Set.of(WorkType.of("audit.self-granted")));
+  }
+}
+JAVA
+expect_gate_failure tenant-internal-grant 'tenant-internal system work is granted only by the jobs owner' \
+  :backend:test --tests com.aisquad.owlmast.architecture.DurableWorkContractTest
+
+# The recheck port is the other way to change the dispatch decision: JobsConfiguration takes any
+# DispatchAuthorization bean in place of the fail-closed default. Both halves of that rule must fire, each in
+# its own copy (the test stops at its first failing rule).
+fresh_copy
+with_contract_document
+cat >"$SCRATCH/repo/$MAIN/audit/adapter/config/AllowAllRecheck.java" <<'JAVA'
+package com.aisquad.owlmast.audit.adapter.config;
+
+import com.aisquad.owlmast.jobs.api.DispatchAuthorization;
+import com.aisquad.owlmast.jobs.api.DispatchDecision;
+import com.aisquad.owlmast.jobs.api.WorkItem;
+import com.aisquad.owlmast.jobs.api.WorkRegistration;
+import reactor.core.publisher.Mono;
+
+/** Deliberate violation: a feature module implementing the dispatch recheck itself. */
+public final class AllowAllRecheck implements DispatchAuthorization {
+  @Override
+  public Mono<DispatchDecision> recheck(WorkItem item, WorkRegistration registration) {
+    return Mono.just(DispatchDecision.ALLOW);
+  }
+}
+JAVA
+expect_gate_failure dispatch-recheck-implementation 'the dispatch authorization recheck is implemented only by jobs and access' \
+  :backend:test --tests com.aisquad.owlmast.architecture.DurableWorkContractTest
+
+fresh_copy
+with_contract_document
+cat >"$SCRATCH/repo/$MAIN/audit/adapter/config/AllowAllRecheckSupplier.java" <<'JAVA'
+package com.aisquad.owlmast.audit.adapter.config;
+
+import com.aisquad.owlmast.jobs.api.DispatchAuthorization;
+import com.aisquad.owlmast.jobs.api.DispatchDecision;
+import reactor.core.publisher.Mono;
+
+/** Deliberate violation: a feature module handing out an allow-all recheck (as a @Bean method would). */
+public final class AllowAllRecheckSupplier {
+  private AllowAllRecheckSupplier() {}
+
+  public static DispatchAuthorization allowAll() {
+    return (item, registration) -> Mono.just(DispatchDecision.ALLOW);
+  }
+}
+JAVA
+expect_gate_failure dispatch-recheck-supplier 'only jobs and access hand out a dispatch authorization recheck' \
+  :backend:test --tests com.aisquad.owlmast.architecture.DurableWorkContractTest
+
+echo "== wake-up source gate (OM-01.03 AC9: scheduling only in jobs.adapter.scheduling)"
+fresh_copy
+with_contract_document
+cat >"$SCRATCH/repo/$MAIN/audit/application/RogueScheduler.java" <<'JAVA'
+package com.aisquad.owlmast.audit.application;
+
+import org.springframework.scheduling.annotation.Scheduled;
+
+/** Deliberate violation: a second wake-up source outside the jobs scheduling adapter. */
+public class RogueScheduler {
+
+  @Scheduled(fixedDelay = 1000)
+  public void wake() {}
+}
+JAVA
+expect_gate_failure wake-up-source 'scheduling annotations live only in jobs.adapter.scheduling' \
+  :backend:test --tests com.aisquad.owlmast.architecture.DurableWorkContractTest
+
+echo "== published contract gate (OM-01.03 AC9: the frozen v1 shape of jobs.api and audit.api)"
+fresh_copy
+with_contract_document
+# A published bound changes its value: the frozen line `constant ...MAX_PAYLOAD_ENTRIES = 32` no longer holds.
+sed -i 's/int MAX_PAYLOAD_ENTRIES = 32;/int MAX_PAYLOAD_ENTRIES = 33;/' "$SCRATCH/repo/$MAIN/jobs/api/WorkItemContract.java"
+grep -q 'int MAX_PAYLOAD_ENTRIES = 33;' "$SCRATCH/repo/$MAIN/jobs/api/WorkItemContract.java" \
+  || { echo "FAIL [contract-shape]: the violation could not be injected (WorkItemContract.MAX_PAYLOAD_ENTRIES moved)"; failures=$((failures + 1)); }
+expect_gate_failure contract-shape 'every frozen v1 line must still hold' \
+  :backend:test --tests com.aisquad.owlmast.architecture.DurableWorkContractTest
 
 echo "== qualified JDK gate (exact runtime version enforced on the daemon JVM)"
 fresh_copy
@@ -175,6 +293,34 @@ elif grep -qE 'INCOMPATIBLE.*1\.x.*2\.0' "$SCRATCH/compat.log"; then
   echo "ok   [api-compatibility]: incompatible pair detected naming both contracts"
 else
   echo "FAIL [api-compatibility]: unexpected diagnostic"; cat "$SCRATCH/compat.log"; failures=$((failures + 1))
+fi
+
+echo "== script lint gate (scripts/verify-script-lint.sh: shellcheck and ruff)"
+# A copy of what the lint reads, with one shell warning and one Python defect injected. The gate must fail and
+# name both; a rule set or a file selection that stopped finding anything would pass here otherwise.
+LINT="$SCRATCH/lint"
+rm -rf "$LINT"; mkdir -p "$LINT"
+(cd "$ROOT" && tar --exclude='**/node_modules' --exclude='**/build' -cf - scripts deploy automation ruff.toml frontend/docker-entrypoint.d) | tar -xf - -C "$LINT"
+cat >"$LINT/deploy/lint-violation.sh" <<'SH'
+#!/usr/bin/env bash
+unused_value=1
+cd /nonexistent
+SH
+cat >"$LINT/scripts/lint_violation.py" <<'PY'
+def answer():
+    return undefined_name
+PY
+if (cd "$LINT" && OWLMAST_TOOLS_DIR="${OWLMAST_TOOLS_DIR:-$SCRATCH/lint-tools}" scripts/verify-script-lint.sh >"$SCRATCH/lint.log" 2>&1); then
+  echo "FAIL [script-lint]: the lint gate passed although a shell and a Python defect were injected"
+  failures=$((failures + 1))
+elif grep -q 'deploy/lint-violation\.sh' "$SCRATCH/lint.log" && grep -qE 'SC2034.*unused_value' "$SCRATCH/lint.log" && grep -q 'SC2164' "$SCRATCH/lint.log" \
+    && grep -q 'scripts/lint_violation\.py' "$SCRATCH/lint.log" && grep -qE 'F821.*undefined_name' "$SCRATCH/lint.log" \
+    && grep -q 'FAIL \[shellcheck\]' "$SCRATCH/lint.log" && grep -q 'FAIL \[ruff\]' "$SCRATCH/lint.log"; then
+  echo "ok   [script-lint]: shellcheck named deploy/lint-violation.sh (SC2034, SC2164) and ruff named scripts/lint_violation.py (F821)"
+else
+  echo "FAIL [script-lint]: the lint gate failed but did not name the injected defects"
+  sed 's/^/      /' "$SCRATCH/lint.log" | tail -40
+  failures=$((failures + 1))
 fi
 
 if [ "$failures" -ne 0 ]; then

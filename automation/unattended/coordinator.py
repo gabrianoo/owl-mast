@@ -75,7 +75,6 @@ import subprocess
 from collections.abc import Callable
 from contextlib import contextmanager
 import json
-import os
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -89,7 +88,7 @@ from .github import PullRequestRecord, Transport, render_marker
 from .policy import Policy, Target
 from .probes import run_commands
 from .receipts import execution_run_id, validate_receipt
-from .state import ACTIVE_PHASES, RUN_ID_RE, TERMINAL_PHASES, UNRESOLVED_AUTHORIZATION_STATUSES, Intent, Store, StoryState, utcnow, story_ownership
+from .state import ACTIVE_PHASES, RUN_ID_RE, UNRESOLVED_AUTHORIZATION_STATUSES, Intent, Store, StoryState, utcnow, story_ownership
 
 WorktreeCheck = Callable[[str, str], tuple[bool, str]]
 

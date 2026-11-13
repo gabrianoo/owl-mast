@@ -6,6 +6,8 @@ import com.aisquad.owlmast.jobs.api.EffectOutcome;
 import com.aisquad.owlmast.jobs.api.NonRetryableWorkException;
 import com.aisquad.owlmast.jobs.api.WorkHandler;
 import com.aisquad.owlmast.jobs.api.WorkItem;
+import com.aisquad.owlmast.jobs.api.WorkRegistration;
+import com.aisquad.owlmast.jobs.api.WorkType;
 import com.aisquad.owlmast.jobs.domain.RetryPolicy;
 import com.aisquad.owlmast.jobs.port.Claim;
 import com.aisquad.owlmast.jobs.port.ClaimedWork;
@@ -201,16 +203,22 @@ public final class WorkProcessor {
   }
 
   private Mono<Void> dispatch(Dispatch dispatch) {
+    WorkType type = dispatch.item().type();
     return registry
-        .find(dispatch.item().type())
-        .map(handler -> authorizeAndRun(dispatch, handler))
+        .find(type)
+        .flatMap(handler ->
+            registry
+                .registration(type)
+                .map(registration -> authorizeAndRun(dispatch, handler, registration)))
         // Unreachable while claims are limited to registered types; kept as the fail-safe answer.
         .orElseGet(() -> recordFailure(dispatch, REASON_UNREGISTERED, false));
   }
 
-  private Mono<Void> authorizeAndRun(Dispatch dispatch, WorkHandler handler) {
+  /** The registration is the one read at startup, not what the handler answers now. */
+  private Mono<Void> authorizeAndRun(
+      Dispatch dispatch, WorkHandler handler, WorkRegistration registration) {
     WorkItem item = dispatch.item();
-    return Mono.defer(() -> authorization.recheck(item, handler.registration()))
+    return Mono.defer(() -> authorization.recheck(item, registration))
         .timeout(dispatch.remaining(policy.recheckDeadline()))
         .onErrorResume(error -> {
           log.warn(

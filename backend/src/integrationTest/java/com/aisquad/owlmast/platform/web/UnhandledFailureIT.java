@@ -2,9 +2,16 @@ package com.aisquad.owlmast.platform.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.aisquad.owlmast.platform.authorization.OperationDeniedException;
+import com.aisquad.owlmast.platform.blocking.BoundedBlocking;
+import com.aisquad.owlmast.platform.blocking.BoundedBlockingProperties;
+import com.aisquad.owlmast.platform.scope.Scopes;
 import com.aisquad.owlmast.testing.ContainersConfiguration;
 import com.aisquad.owlmast.testing.StubIdentityConfiguration;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -30,7 +37,9 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
+import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * OM-01.04 common error envelope: a failure nobody handled answers as an RFC 9457 problem detail
@@ -170,7 +179,9 @@ class UnhandledFailureIT {
     "/api/test-only/failure/access-denied, 403, Forbidden",
     "/api/test-only/failure/access-denied-subclass, 403, Forbidden",
     "/api/test-only/failure/unauthenticated, 401, Unauthorized",
-    "/api/test-only/failure/unauthenticated-signalled, 401, Unauthorized"
+    "/api/test-only/failure/unauthenticated-signalled, 401, Unauthorized",
+    // E01-R-05: the platform's own denial carries no web type and used to answer 500.
+    "/api/test-only/failure/operation-denied, 403, Forbidden"
   })
   void aFailureThatCarriesItsOwnStatusKeepsIt(
       String path, int status, String title, CapturedOutput output) {
@@ -246,7 +257,13 @@ class UnhandledFailureIT {
   @CsvSource({
     "/api/test-only/failure/error-response-unavailable, 503, Service Unavailable, OwnStatus",
     "/api/test-only/failure/identity-provider-down, 500, Internal Server Error,"
-        + " IdentityProviderDown"
+        + " IdentityProviderDown",
+    // E01-R-05: the shared kernel's scope and bounded-blocking failures, raised by the real code.
+    "/api/test-only/failure/missing-scope, 500, Internal Server Error, MissingScopeException",
+    "/api/test-only/failure/blocking-capacity, 503, Service Unavailable,"
+        + " BlockingCapacityExceededException",
+    "/api/test-only/failure/blocking-deadline, 504, Gateway Timeout,"
+        + " BlockingDeadlineExceededException"
   })
   void aCarriedServerErrorKeepsItsStatusAndIsLoggedAsAFailure(
       String path, int status, String title, String logged, CapturedOutput output) {
@@ -390,6 +407,82 @@ class UnhandledFailureIT {
     @GetMapping("/api/test-only/failure/response-status-inherited")
     Mono<String> responseStatusInherited() {
       return Mono.error(new GoneForGoodChild(SECRET));
+    }
+
+    @GetMapping("/api/test-only/failure/operation-denied")
+    Mono<String> operationDenied() {
+      return Mono.error(new OperationDeniedException("not-permitted"));
+    }
+
+    @GetMapping("/api/test-only/failure/missing-scope")
+    Mono<String> missingScope() {
+      return Scopes.current().map(scope -> scope.tenant().value());
+    }
+
+    /** One thread and one queued call are taken, so the third call is refused. */
+    @GetMapping("/api/test-only/failure/blocking-capacity")
+    Mono<String> blockingCapacity() {
+      BoundedBlocking blocking =
+          BoundedBlocking.create(new BoundedBlockingProperties(1, 1, Duration.ofSeconds(5)));
+      CountDownLatch occupied = new CountDownLatch(1);
+      CountDownLatch release = new CountDownLatch(1);
+      Disposable first =
+          blocking
+              .call(
+                  "occupying",
+                  () -> {
+                    occupied.countDown();
+                    // The clean-up below disposes this call, which interrupts the thread, and may
+                    // do so before the latch is seen. Returning normally keeps a late exception
+                    // out of Reactor's onErrorDropped log (with its stack trace), which made this
+                    // case fail now and then.
+                    try {
+                      return release.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException cancelled) {
+                      Thread.currentThread().interrupt();
+                      return false;
+                    }
+                  })
+              .subscribe();
+      return Mono.fromCallable(() -> occupied.await(5, TimeUnit.SECONDS))
+          .subscribeOn(Schedulers.boundedElastic())
+          .flatMap(taken -> {
+            if (!taken) {
+              return Mono.error(
+                  new AssertionError("the occupying call never started; nothing is proven"));
+            }
+            Disposable queued = blocking.call("queued", () -> SECRET).subscribe();
+            return blocking
+                .call(SECRET, () -> "never")
+                .doFinally(ended -> {
+                  release.countDown();
+                  queued.dispose();
+                  first.dispose();
+                  blocking.close();
+                });
+          });
+    }
+
+    @GetMapping("/api/test-only/failure/blocking-deadline")
+    Mono<String> blockingDeadline() {
+      BoundedBlocking blocking =
+          BoundedBlocking.create(new BoundedBlockingProperties(1, 1, Duration.ofSeconds(5)));
+      return blocking
+          .call(
+              SECRET,
+              Duration.ofMillis(50),
+              () -> {
+                // The deadline cancels the call and interrupts this thread. Returning normally
+                // keeps the test about the answer: an exception thrown after the cancellation has
+                // no subscriber left and Reactor logs it with its stack trace (onErrorDropped).
+                try {
+                  Thread.sleep(2_000);
+                } catch (InterruptedException cancelled) {
+                  Thread.currentThread().interrupt();
+                }
+                return "late";
+              })
+          .doFinally(ended -> blocking.close());
     }
 
     @GetMapping("/api/test-only/failure/access-denied")

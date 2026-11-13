@@ -20,7 +20,7 @@ from automation.tests.test_enabling_repair_1 import claimed, refuses
 from automation.tests.test_pr108_review_findings import cli_args, no_gh_calls, review_authorized, run_cli
 from automation.tests.test_pr114_review_findings import LiveCase, clearance, regress
 from automation.tests.test_pr114_round3_findings import ClearableClockStopTests, record, write_clearance
-from automation.tests.test_pr114_round4_findings import ClearanceLocationCase, git, stop_of
+from automation.tests.test_pr114_round4_findings import ClearanceLocationCase, stop_of
 from automation.unattended import activation as activation_module
 from automation.unattended import cli as cli_module
 from automation.unattended import state as state_module

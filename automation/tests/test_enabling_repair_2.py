@@ -21,12 +21,11 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from automation.tests.support import IMPLEMENTER, REVIEWER, REVIEW_BRANCH, REVIEW_WORKTREE, controlled_cli_clock, ok_worktree, passing_runner
+from automation.tests.support import REVIEWER, REVIEW_BRANCH, REVIEW_WORKTREE, controlled_cli_clock, ok_worktree
 from automation.tests.test_activation import S, T0, LiveHarness, activation_text
 from automation.tests.test_enabling_repair_1 import claimed, refuses
 from automation.unattended import cli
 from automation.unattended.activation import load_activation
-from automation.unattended.errors import Refused
 from automation.unattended.state import Store
 
 NO_CALLS: list = []

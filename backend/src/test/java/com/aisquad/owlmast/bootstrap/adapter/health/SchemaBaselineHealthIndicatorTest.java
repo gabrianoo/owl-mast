@@ -18,7 +18,7 @@ import reactor.test.StepVerifier;
 class SchemaBaselineHealthIndicatorTest {
 
   private static final SchemaBaseline BASELINE =
-      new SchemaBaseline("1.1.1", "0.8.2", Instant.parse("2026-11-06T10:00:00Z"));
+      new SchemaBaseline("1.1.1", "0.8.2", Instant.parse("2026-11-06T10:00:00Z"), 180_003);
 
   @Test
   void reportsUpWithExtensionVersionsWhenBaselineExists() {
@@ -28,8 +28,45 @@ class SchemaBaselineHealthIndicatorTest {
           assertThat(health.getDetails())
               .containsEntry("vchord", "1.1.1")
               .containsEntry("vector", "0.8.2")
+              .containsEntry("postgresqlMajor", 18)
               .containsEntry("appliedAt", "2026-11-06T10:00:00Z");
         })
+        .verifyComplete();
+  }
+
+  /** E01-R-06 (B5): {@code transaction_timeout} needs PostgreSQL 17; 16 must not become ready. */
+  @Test
+  void reportsDownOnAPostgresqlServerOlderThanTheMinimum(CapturedOutput output) {
+    SchemaBaseline onSixteen =
+        new SchemaBaseline("1.1.1", "0.8.2", Instant.parse("2026-11-06T10:00:00Z"), 160_011);
+
+    SchemaBaselineHealthIndicator indicator =
+        new SchemaBaselineHealthIndicator(() -> Mono.just(onSixteen));
+    for (int probe = 0; probe < 3; probe++) {
+      StepVerifier.create(indicator.health())
+          .assertNext(health -> {
+            assertDown(health, "PostgreSQL 17 or newer is required");
+            assertThat(health.getDetails()).containsEntry("postgresqlMajor", 16);
+          })
+          .verifyComplete();
+    }
+    assertThat(
+            output
+                .getAll()
+                .split("PostgreSQL 16 answered; Owl Mast requires PostgreSQL 17 or newer", -1))
+        .as("every probe answers DOWN, the reason is logged once")
+        .hasSize(2);
+  }
+
+  @Test
+  void theOldestSupportedServerIsAccepted() {
+    SchemaBaseline onSeventeen = new SchemaBaseline("1.1.1", "0.8.2", Instant.EPOCH, 170_000);
+
+    assertThat(onSeventeen.serverIsSupported()).isTrue();
+    assertThat(new SchemaBaseline("1.1.1", "0.8.2", Instant.EPOCH, 169_999).serverIsSupported())
+        .isFalse();
+    StepVerifier.create(new SchemaBaselineHealthIndicator(() -> Mono.just(onSeventeen)).health())
+        .assertNext(health -> assertThat(health.getStatus()).isEqualTo(Status.UP))
         .verifyComplete();
   }
 

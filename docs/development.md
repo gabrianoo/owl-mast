@@ -21,9 +21,13 @@ No other tool is installed globally. Pins and the evidence behind them are in [t
 | `./gradlew :backend:spotlessApply` | Reformat sources. |
 | `./gradlew :backend:bootTestRun --args='--server.port=8080'` | Run the application locally against a disposable VectorChord container; `GET http://localhost:8080/actuator/health` answers `{"status":"UP"}`. Stop with Ctrl-C; the container is removed. |
 | `./gradlew :backend:bootRun` | Run against an existing database; see below. |
-| `scripts/verify-quality-gates.sh` | Prove that formatting, Error Prone, Lombok, module-rule and qualified-JDK gates each fail with a useful diagnostic on an injected violation. |
+| `scripts/verify-quality-gates.sh` | Prove that the formatting, Error Prone, Lombok, module-rule, layering, tenant-internal-grant, wake-up-source, frozen-contract and qualified-JDK gates, and the frontend accessibility-lint, type, design-token and API-pair gates, each fail with a useful diagnostic on an injected violation. Needs `frontend/node_modules` (`npm ci`). |
+| `scripts/verify-backend-image.sh` | Build the backend image from the `bootJar` and prove its contract with the chart: jar name, UID/GID 10001, qualified JDK, entrypoint with `--enable-native-access=ALL-UNNAMED`, start on a read-only root with the chart's environment up to the first database connection. |
+| `scripts/verify-script-lint.sh` | shellcheck over the repository's shell scripts and ruff over its Python (`scripts/`, `deploy/`, `automation/`), both pinned. |
+| `scripts/verify-install-package.sh` | Chart lint, renders and the deploy test suite with the qualified Helm and kubectl ([installation.md](installation.md)). |
 | `./gradlew :backend:dependencies --write-locks` | Refresh `backend/gradle.lockfile` after changing pins. |
 | `cd frontend && npm ci && npm run lint && npm run typecheck && npm test && npm run build` | Frontend gates and unit/component suite ([frontend.md](frontend.md)). |
+| `cd frontend && npx playwright install chromium` | Once per machine and after a Playwright bump: the browser the two suites below drive. `npm ci` does not download it. |
 | `cd frontend && npm run test:e2e` / `npm run test:e2e:smoke` | Browser accessibility/state suite with a mocked API; browser → real backend smoke (starts `bootTestRun`, needs Docker). |
 | `scripts/verify-frontend-artifact.sh` | Build the frontend image and prove its runtime contract (non-root 8080, SPA fallback, config endpoint, published API contract, 404 below the API prefix, prefix guard, no JDK); `OWLMAST_IMAGE_BROWSER_SMOKE=1` adds Chromium against the container. |
 | `scripts/check-api-compatibility.py [--frontend-url URL] [--backend-url URL]` | Frontend/backend API contract check ([api-compatibility.md](api-compatibility.md)). |
@@ -54,7 +58,7 @@ Integration tests use Testcontainers. When no Docker-compatible runtime is reach
 
 > Owl Mast integration tests require a reachable Docker-compatible container runtime … Tests fail rather than skip.
 
-They are never skipped, so a green `build` always includes the real-database evidence. Testcontainers honours `DOCKER_HOST` and `~/.testcontainers.properties` for remote or rootless engines. CI uses the Docker engine preinstalled on GitHub's `ubuntu-latest` runners.
+They are never skipped, so a green `build` always includes the real-database evidence. Testcontainers honours `DOCKER_HOST` and `~/.testcontainers.properties` for remote or rootless engines. CI uses the Docker engine preinstalled on GitHub's pinned `ubuntu-26.04` runner.
 
 The VectorChord image's default command preloads the extension; the fixture (`OwlMastPostgres`) restates `shared_preload_libraries=vchord,vector` because Testcontainers replaces the image command.
 
@@ -62,12 +66,15 @@ The VectorChord image's default command preloads the extension; the fixture (`Ow
 
 `.github/workflows/ci.yml` runs these jobs on every push to `main` and every pull request, on the pinned `ubuntu-26.04` runner, with actions pinned by commit SHA and the Gradle wrapper validated:
 
-1. `build`: `./gradlew build` on Temurin 27 (all gates and both test suites), uploading test reports.
-2. `gate-negative-checks`: `scripts/verify-quality-gates.sh` (backend gates plus the frontend jsx-a11y, type, token and API-pair gates).
-3. `package-checks`: `scripts/verify-install-package.sh` (chart render tests, including the API compatibility check's own tests).
-4. `automation-tests`: the unattended-execution qualification suite.
-5. `frontend`: lint, typecheck, unit/component tests, build, Playwright accessibility/state suite and the static API pair check.
-6. `frontend-backend-smoke`: the frontend image contract and the browser → real backend smoke.
+1. `build`: `./gradlew build` on Temurin 27 (all gates and both test suites), then `scripts/verify-backend-image.sh` (the backend runtime image and its contract with the chart), uploading test reports.
+2. `gate-negative-checks`: `scripts/verify-quality-gates.sh` (backend gates, the OM-01.03 contract rules, and the frontend jsx-a11y, type, token and API-pair gates).
+3. `package-checks`: `scripts/verify-install-package.sh` (chart render tests, including the API compatibility check's own tests), with hash-pinned Python dependencies.
+4. `script-lint`: `scripts/verify-script-lint.sh` (shellcheck and ruff).
+5. `automation-tests`: the unattended-execution qualification suite.
+6. `frontend`: lint, typecheck, unit/component tests, build, Playwright accessibility/state suite and the static API pair check.
+7. `frontend-backend-smoke`: the frontend image contract and the browser → real backend smoke.
+
+`DevelopmentDocumentTest` in the deploy suite fails when a job of the workflow is missing from this list or the list names a job the workflow does not have.
 
 ## Layout
 
@@ -88,13 +95,19 @@ backend/
     db/migration/V001__…sql   bootstrap-owned schema only
     db/migration/V002__…sql   jobs-owned work table
     db/migration/V003__…sql   audit-owned intent and history tables
+    db/migration/V004__…sql   jobs: tenant_id must not be blank
+    db/migration/V005__…sql   audit: tenant_id must not be blank
   src/test                    unit, ArchUnit and contract-compatibility tests, negative fixtures
   src/testFixtures            Testcontainers fixtures for every feature
   src/integrationTest         real-database suite, including the test-owned fixture module
                               (fixtures/notes) that exercises the jobs and audit owner APIs
 frontend/                     independent web shell (OM-01.04): src/, e2e/, Dockerfile, nginx/, api-compatibility.json
 docs/                         conventions, toolchain evidence, frontend and API compatibility, tracking contract
-scripts/verify-quality-gates.sh
-scripts/verify-frontend-artifact.sh
+scripts/verify-quality-gates.sh     gates fail on injected violations
+scripts/verify-backend-image.sh     backend image contract
+scripts/verify-frontend-artifact.sh frontend image contract
+scripts/verify-install-package.sh   chart lint, renders, deploy tests
+scripts/verify-script-lint.sh       shellcheck and ruff
+scripts/qualify-local-install.sh    runtime qualification on the local Kind target
 scripts/check-api-compatibility.py
 ```

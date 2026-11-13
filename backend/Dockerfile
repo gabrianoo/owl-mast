@@ -22,4 +22,8 @@ COPY ${JAR_FILE} /app/owl-mast.jar
 USER 10001:10001
 WORKDIR /app
 EXPOSE 8080
-ENTRYPOINT ["java", "-jar", "/app/owl-mast.jar"]
+# Netty loads native libraries; JDK 24+ prints a native-access warning for every such load and a later JDK
+# will refuse it (docs/toolchain-qualification.md). The option is part of the image's own command line, not
+# of JAVA_TOOL_OPTIONS: the chart refuses every option outside its memory and tuning allow-list
+# (backend.javaToolOptions), so an operator can neither be asked to pass it nor remove it.
+ENTRYPOINT ["java", "--enable-native-access=ALL-UNNAMED", "-jar", "/app/owl-mast.jar"]

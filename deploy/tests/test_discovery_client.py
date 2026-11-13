@@ -20,7 +20,6 @@ import subprocess
 import tempfile
 import threading
 import unittest
-from pathlib import Path
 
 from deploy.tests.test_qualify_script import BASE_WORLD, Harness
 

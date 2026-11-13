@@ -18,14 +18,16 @@ The web client is a separate artifact in `frontend/` (Node 24.21.0, React + Type
 
 ```sh
 cd frontend && npm ci && npm run dev          # shell on http://localhost:5173, proxying /api to the backend above
-npm run lint && npm run typecheck && npm test && npm run build && npm run test:e2e
+npm run lint && npm run typecheck && npm test && npm run build
+npx playwright install chromium               # once per machine and per Playwright bump; npm ci does not fetch the browser
+npm run test:e2e
 ```
 
 Pins, commands, accessibility evidence and deferrals: [docs/frontend.md](docs/frontend.md). The frontend/backend version policy and its pre-rollout check: [docs/api-compatibility.md](docs/api-compatibility.md).
 
 ## Stack
 
-Java 27 application code, Spring Boot 4.1.2 (WebFlux, R2DBC, Flyway, Actuator), Gradle 9.8.2 with Kotlin DSL, PostgreSQL 18 with VectorChord (pgvector only as its required dependency), Testcontainers. One modular reactive backend plus an independently built and packaged React/TypeScript/Vite web shell (OM-01.04; never bundled into the backend image) and Kubernetes packaging (OM-01.02).
+Java 27 application code, Spring Boot 4.1.2 (WebFlux, R2DBC, Flyway, Actuator), Gradle 9.9.0 with Kotlin DSL, PostgreSQL 18 with VectorChord (pgvector only as its required dependency), Testcontainers. One modular reactive backend plus an independently built and packaged React/TypeScript/Vite web shell (OM-01.04; never bundled into the backend image) and Kubernetes packaging (OM-01.02).
 
 ## Installation
 

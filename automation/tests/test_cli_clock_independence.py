@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import io
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime
 from unittest import mock
 
 from automation.tests import test_enabling_repair_1, test_enabling_repair_2, test_enabling_repair_3, test_upgrade_replay_findings

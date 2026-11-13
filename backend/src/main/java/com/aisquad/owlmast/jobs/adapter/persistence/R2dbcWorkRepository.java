@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.r2dbc.core.DatabaseClient;
@@ -46,6 +47,11 @@ class R2dbcWorkRepository implements WorkRepository {
 
   /** Reason persisted for a claimed row that cannot be decoded into a {@link WorkItem}. */
   static final String REASON_UNDECODABLE = "undecodable-work-item";
+
+  /** How many distinct undecodable tenant ids are reported before the warning goes quiet. */
+  private static final int MAX_REPORTED_UNDECODABLE_TENANTS = 16;
+
+  private final Set<String> reportedUndecodableTenants = ConcurrentHashMap.newKeySet();
 
   private static final String BOUND_TENANT =
       "current_setting('" + ScopedTransactions.TENANT_SETTING + "', true)";
@@ -353,19 +359,64 @@ class R2dbcWorkRepository implements WorkRepository {
         transaction -> limitStatementTime(statementLimit).thenMany(dueTenants(limit, types)));
   }
 
+  /**
+   * A PostgreSQL regular expression for what {@link TenantId} refuses as blank: empty, or only
+   * characters {@link Character#isWhitespace(int)} accepts ({@code String.isBlank}). Written out
+   * because PostgreSQL's {@code [[:space:]]}, which V004 uses, follows the database's character
+   * classification: it leaves out U+001C to U+001F and, under some collations, the Unicode
+   * separators, so such ids would sort among the real tenants, take slots of the limit and then be
+   * skipped. It is bound as a parameter, never pasted into the SQL: in a string literal its
+   * backslashes would depend on {@code standard_conforming_strings}.
+   */
+  static final String JAVA_BLANK =
+      "^[\\t\\n\\u000b\\f\\r\\u001c-\\u001f \\u1680\\u2000-\\u2006\\u2008-\\u200a"
+          + "\\u2028\\u2029\\u205f\\u3000]*$";
+
   private Flux<TenantId> dueTenants(int limit, Set<WorkType> types) {
     return databaseClient
         .sql(
             "select tenant_id from jobs.work_item where "
                 + DUE
                 + CLAIMABLE
-                + " group by tenant_id order by min(case when status = 'PENDING' then"
-                + " next_attempt_at else lease_expires_at end), tenant_id limit :limit")
+                // A tenant id no scope can be bound to sorts last, so such rows take a slot of
+                // the limit only when fewer real tenants are due and never starve one.
+                + " group by tenant_id order by (tenant_id ~ :blank),"
+                + " min(case when status = 'PENDING' then next_attempt_at else lease_expires_at"
+                + " end), tenant_id limit :limit")
         .bind("limit", (long) limit)
+        .bind("blank", JAVA_BLANK)
         .bind("types", typeValues(types))
         .bind("version", WorkItemContract.VERSION)
-        .map(row -> new TenantId(row.get("tenant_id", String.class)))
-        .all();
+        .map(row -> Optional.ofNullable(row.get("tenant_id", String.class)))
+        .all()
+        .flatMap(this::decodeTenant);
+  }
+
+  /**
+   * A stored tenant that cannot become a {@link TenantId} is skipped, so one such row does not end
+   * the wake-up for every other tenant. V004 rejects an empty or white-space tenant id; what can
+   * still arrive here is a row from before it, a hand-edited one, or a value the database check
+   * lets through and {@code TenantId} refuses (a few control characters count as blank in Java).
+   * Its work stays where it is: no tenant scope can be bound for it, so nothing can claim it, and
+   * an operator has to correct or remove the row (the contract document gives the query). The row
+   * is found again at every wake-up, so the warning is written once per distinct value and process,
+   * for a bounded number of values.
+   */
+  private Flux<TenantId> decodeTenant(Optional<String> stored) {
+    try {
+      return Flux.just(new TenantId(stored.orElse(null)));
+    } catch (IllegalArgumentException undecodable) {
+      String description =
+          stored.map(value -> "blank, " + value.length() + " characters").orElse("null");
+      if (reportedUndecodableTenants.size() < MAX_REPORTED_UNDECODABLE_TENANTS
+          && reportedUndecodableTenants.add(stored.orElse(""))) {
+        log.warn(
+            "Due work is stored under a tenant id that is not a valid tenant ({}); it is skipped"
+                + " and stays unclaimed until the row is corrected",
+            description);
+      }
+      return Flux.empty();
+    }
   }
 
   @Override

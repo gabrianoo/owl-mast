@@ -14,7 +14,7 @@ from automation.tests.support import IMPLEMENTER, REVIEWER, REVIEW_BRANCH, REVIE
 from automation.tests.test_activation import S, T0, LiveHarness, activation_text
 from automation.unattended import cli
 from automation.unattended.activation import Activation, load_activation
-from automation.unattended.errors import Refused, UnattendedError
+from automation.unattended.errors import UnattendedError
 from automation.unattended.state import Store
 
 NO_CALLS: list = []

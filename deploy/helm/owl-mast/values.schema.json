@@ -189,7 +189,7 @@
         "enabled": {"type": "boolean"},
         "image": {"$ref": "#/$defs/image"},
         "replicas": {"type": "integer", "minimum": 0},
-        "containerPort": {"$ref": "#/$defs/servicePort"},
+        "containerPort": {"type": "integer", "const": 8080, "description": "Fixed: the frontend image's nginx listens on 8080 (frontend/nginx/default.conf.template) and nothing in the image reads another port, so any other value leaves the probes and the Service without a listener. Change the Service port with frontend.service.port."},
         "service": {"$ref": "#/$defs/service"},
         "resources": {"$ref": "#/$defs/resources"},
         "probes": {

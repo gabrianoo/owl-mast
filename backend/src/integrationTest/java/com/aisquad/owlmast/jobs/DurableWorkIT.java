@@ -23,11 +23,16 @@ import com.aisquad.owlmast.jobs.api.FailedWorkItem;
 import com.aisquad.owlmast.jobs.api.FailedWorkQuery;
 import com.aisquad.owlmast.jobs.api.NonRetryableWorkException;
 import com.aisquad.owlmast.jobs.api.WorkEnqueue;
+import com.aisquad.owlmast.jobs.api.WorkHandler;
+import com.aisquad.owlmast.jobs.api.WorkItem;
 import com.aisquad.owlmast.jobs.api.WorkItemContract;
+import com.aisquad.owlmast.jobs.api.WorkRegistration;
 import com.aisquad.owlmast.jobs.api.WorkStatus;
 import com.aisquad.owlmast.jobs.api.WorkType;
 import com.aisquad.owlmast.jobs.application.HandlerRegistry;
+import com.aisquad.owlmast.jobs.application.TenantInternalGrants;
 import com.aisquad.owlmast.jobs.application.TenantInternalOnlyDispatchAuthorization;
+import com.aisquad.owlmast.jobs.application.WorkEnqueueService;
 import com.aisquad.owlmast.jobs.application.WorkProcessor;
 import com.aisquad.owlmast.jobs.domain.RetryPolicy;
 import com.aisquad.owlmast.jobs.port.Claim;
@@ -58,9 +63,13 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
@@ -104,6 +113,7 @@ class DurableWorkIT {
   private static final String SECRET = "s3cr3t-PLANTED-9f8e2c";
 
   @Autowired private NotesFixture notes;
+  @Autowired private TenantInternalGrants grants;
   @Autowired private FollowUpHandler followUp;
   @Autowired private ExternalHandler external;
   @Autowired private EffectStore effects;
@@ -328,7 +338,7 @@ class DurableWorkIT {
             transactions,
             new CompletionHeldUntil(repository, release),
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             new RetryPolicy(
                 3, Duration.ofMillis(100), Duration.ofMillis(400), Duration.ofSeconds(1), 1),
             "short-lease-processor");
@@ -552,7 +562,7 @@ class DurableWorkIT {
             .then(Mono.<EffectOutcome>never()));
     WorkProcessor lateStatement =
         blockedHandlerProcessor(
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             Duration.ofSeconds(8),
             Duration.ofSeconds(4));
 
@@ -667,6 +677,61 @@ class DurableWorkIT {
   }
 
   // --- AC7 ---------------------------------------------------------------------------------
+
+  /**
+   * E01-R-03: the registration read at startup decides, at enqueue and at dispatch, whatever the
+   * handler answers later. The type holds the grant here, so only the registration differs: a
+   * processor or enqueue that asked the handler again would run the item, and store it without an
+   * attempt limit.
+   */
+  @Test
+  void dispatchAndEnqueueUseTheRegistrationReadAtStartup() {
+    WorkType type = WorkType.of("fixture.shifting");
+    AtomicReference<WorkRegistration> answer =
+        new AtomicReference<>(WorkRegistration.requiresAuthorization(type));
+    AtomicInteger invocations = new AtomicInteger();
+    WorkHandler shifting =
+        new WorkHandler() {
+          @Override
+          public WorkRegistration registration() {
+            return answer.get();
+          }
+
+          @Override
+          public Mono<EffectOutcome> handle(WorkItem item) {
+            invocations.incrementAndGet();
+            return Mono.just(EffectOutcome.applied(item.idempotencyKey()));
+          }
+        };
+    TenantInternalGrants granted = new TenantInternalGrants(Set.of(type));
+    HandlerRegistry atStartup = new HandlerRegistry(List.of(shifting), granted);
+
+    answer.set(WorkRegistration.tenantInternalRetriedWithoutLimit(type));
+
+    UUID itemId =
+        new WorkEnqueueService(transactions, repository, policy, () -> atStartup)
+            .enqueue(EnqueueRequest.of(type, Map.of("subject", "note-1")))
+            .contextWrite(Scopes.bind(TENANT_A))
+            .block();
+    assertThat(db.work(itemId).maxAttempts())
+        .as("the attempt limit of the startup registration, not unlimited")
+        .isEqualTo(policy.maxAttempts());
+
+    new WorkProcessor(
+            transactions,
+            repository,
+            atStartup,
+            new TenantInternalOnlyDispatchAuthorization(granted),
+            policy,
+            "startup-registration-processor")
+        .runOnce()
+        .block();
+
+    WorkRow row = db.work(itemId);
+    assertThat(row.status()).isEqualTo("DENIED");
+    assertThat(row.reason()).isEqualTo("authorization-denied");
+    assertThat(invocations).as("the handler was not invoked").hasValue(0);
+  }
 
   @Test
   void theDefaultRecheckDeniesHandlersThatAreNotTenantInternalWithoutInvokingThem() {
@@ -923,7 +988,7 @@ class DurableWorkIT {
             transactions,
             new HeldWorkRepository(repository, Call.DISCOVERY),
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             oneSecondSteps,
             "stalled-discovery-processor");
     StepVerifier.create(overStalledDiscovery.runOnce())
@@ -940,7 +1005,7 @@ class DurableWorkIT {
             transactions,
             repository,
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             new RetryPolicy(
                 policy.maxAttempts(),
                 policy.backoffBase(),
@@ -1004,7 +1069,7 @@ class DurableWorkIT {
             transactions,
             heldFailure,
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             singleItemPolicy(),
             "held-failure-processor");
 
@@ -1036,7 +1101,7 @@ class DurableWorkIT {
             transactions,
             heldDenial,
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             singleItemPolicy(),
             "held-denial-processor");
 
@@ -1062,7 +1127,7 @@ class DurableWorkIT {
             transactions,
             lostAnswer,
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             singleItemPolicy(),
             "lost-answer-processor");
 
@@ -1151,7 +1216,7 @@ class DurableWorkIT {
             transactions,
             watched,
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             new RetryPolicy(
                 policy.maxAttempts(),
                 policy.backoffBase(),
@@ -1196,7 +1261,7 @@ class DurableWorkIT {
             transactions,
             heldFailure,
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             singleItemPolicy(),
             "failed-completion-processor");
 
@@ -1224,7 +1289,7 @@ class DurableWorkIT {
             transactions,
             watched,
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             policy,
             "watched-processor");
 
@@ -1391,7 +1456,7 @@ class DurableWorkIT {
             transactions,
             new CompletionHeldUntil(repository, new CompletableFuture<>()),
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             new RetryPolicy(
                 3, Duration.ofMillis(100), Duration.ofMillis(400), Duration.ofSeconds(1), 1),
             "silent-completion-processor");
@@ -1524,7 +1589,7 @@ class DurableWorkIT {
             transactions,
             new FailingForTenant(repository, TENANT_A.tenant()),
             registry,
-            new TenantInternalOnlyDispatchAuthorization(),
+            new TenantInternalOnlyDispatchAuthorization(grants),
             policy,
             "isolating-processor");
 
@@ -1541,6 +1606,120 @@ class DurableWorkIT {
     assertThat(output.getAll())
         .contains("Processing work for tenant tenant-a failed: IllegalStateException")
         .doesNotContain("fixture: tenant-level fault");
+  }
+
+  /**
+   * E01-R-04 (retro B1): a row stored under a blank tenant id used to fail tenant discovery, so no
+   * tenant was processed on any wake-up. V004 rejects such rows; one from before it (or written
+   * while the constraint is absent, as here) is skipped with a log line and the others proceed.
+   */
+  @Test
+  void aBlankTenantRowIsSkippedAndTheOtherTenantsAreStillProcessed(CapturedOutput output) {
+    createNote(TENANT_A, Failure.NONE);
+    createNote(TENANT_B, Failure.NONE);
+    String migrated = dropTenantCheck();
+    try {
+      // The oldest due item, so discovery reaches it first.
+      db.runSql(
+          "update jobs.work_item set tenant_id = '   ',"
+              + " next_attempt_at = next_attempt_at - interval '1 hour'"
+              + " where tenant_id = 'tenant-a'");
+
+      assertThat(processor.runOnce().block()).isEqualTo(1L);
+
+      assertThat(db.workItems())
+          .filteredOn(row -> row.tenant().equals("tenant-b"))
+          .singleElement()
+          .satisfies(row -> assertThat(row.status()).isEqualTo("SUCCEEDED"));
+      assertThat(db.workItems())
+          .filteredOn(row -> row.tenant().isBlank())
+          .singleElement()
+          .satisfies(row -> {
+            assertThat(row.status()).isEqualTo("PENDING");
+            assertThat(row.attempts()).isZero();
+          });
+      assertThat(output.getAll())
+          .contains("Due work is stored under a tenant id that is not a valid tenant (blank, 3")
+          .contains("it is skipped and stays unclaimed until the row is corrected");
+    } finally {
+      db.runSql("delete from jobs.work_item where tenant_id ~ '^[[:space:]]*$'");
+      restoreTenantCheck(migrated);
+    }
+  }
+
+  /**
+   * Review 5883535263: the skip alone does not keep blank rows from starving real tenants, because
+   * the limit is applied before it. Discovery sorts every id {@code TenantId} refuses after the
+   * real tenants, including the ones PostgreSQL's {@code [[:space:]]} (and so V004) lets through:
+   * U+001F and the Unicode separators.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = {"repeat(' ', 3)", "chr(9)", "chr(31)", "chr(8232)", "chr(12288)"})
+  void aBlankTenantNeverTakesTheLastSlotOfABoundedDiscovery(String blankTenant) {
+    createNote(TENANT_A, Failure.NONE);
+    createNote(TENANT_B, Failure.NONE);
+    String migrated = dropTenantCheck();
+    try {
+      db.runSql(
+          "update jobs.work_item set tenant_id = "
+              + blankTenant
+              + ", next_attempt_at = next_attempt_at - interval '1 hour'"
+              + " where tenant_id = 'tenant-a'");
+      assertThat(db.count("select count(*) from jobs.work_item where tenant_id = " + blankTenant))
+          .isEqualTo(1L);
+
+      assertThat(
+              repository
+                  .tenantsWithDueWork(1, registry.types(), policy.stepTimeout())
+                  .collectList()
+                  .block())
+          .as("the blank row waited longest, yet the only slot goes to the real tenant")
+          .containsExactly(TENANT_B.tenant());
+    } finally {
+      db.runSql("delete from jobs.work_item where tenant_id not in ('tenant-a', 'tenant-b')");
+      restoreTenantCheck(migrated);
+    }
+  }
+
+  /** Drops V004's check for a test and returns the definition the migrations gave it. */
+  private String dropTenantCheck() {
+    String migrated = db.constraintDefinition("jobs.work_item", "work_item_tenant_id_not_blank");
+    db.runSql("alter table jobs.work_item drop constraint work_item_tenant_id_not_blank");
+    return migrated;
+  }
+
+  /** Puts back exactly the migrated check, so later tests run against the migrated schema. */
+  private void restoreTenantCheck(String migrated) {
+    db.runSql(
+        "alter table jobs.work_item add constraint work_item_tenant_id_not_blank " + migrated);
+    assertThat(db.constraintDefinition("jobs.work_item", "work_item_tenant_id_not_blank"))
+        .isEqualTo(migrated);
+  }
+
+  /** E01-R-04: V004 and V005 reject a blank tenant id on the jobs and audit tables. */
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "insert into jobs.work_item (id, tenant_id, work_type, contract_version, status,"
+            + " max_attempts, next_attempt_at, enqueued_by) values (gen_random_uuid(), ' ',"
+            + " 'fixture.follow-up', 1, 'PENDING', 3, now(), 'person-a')",
+        "insert into audit.publication_intent (event_id, envelope_version, tenant_id, actor_kind,"
+            + " object_type, action, outcome, occurred_at, correlation_id) values"
+            + " (gen_random_uuid(), 1, '', 'SERVICE', 'note', 'create', 'SUCCEEDED', now(), 'c-1')",
+        "insert into audit.event (event_id, envelope_version, tenant_id, actor_kind, object_type,"
+            + " action, outcome, occurred_at, recorded_at, correlation_id) values"
+            + " (gen_random_uuid(), 1, E'\\t', 'SERVICE', 'note', 'create', 'FAILED', now(), now(),"
+            + " 'c-1')"
+      })
+  void aBlankTenantIdIsRejectedByTheDatabase(String insert) {
+    assertThatThrownBy(() -> db.runSql(insert)).hasStackTraceContaining("tenant_id_not_blank");
+    assertThat(
+            db.count(
+                "select (select count(*) from pg_constraint where conname in"
+                    + " ('work_item_tenant_id_not_blank', 'publication_intent_tenant_id_not_blank',"
+                    + " 'event_tenant_id_not_blank') and convalidated)"))
+        .as("all three checks are validated on a database without blank rows")
+        .isEqualTo(3L);
   }
 
   @Test
@@ -1807,7 +1986,7 @@ class DurableWorkIT {
         transactions,
         repository,
         registry,
-        new TenantInternalOnlyDispatchAuthorization(),
+        new TenantInternalOnlyDispatchAuthorization(grants),
         new RetryPolicy(
             policy.maxAttempts(),
             policy.backoffBase(),
@@ -1852,7 +2031,7 @@ class DurableWorkIT {
         transactions,
         new LateClaimAnswer(repository, answerDelay),
         registry,
-        new TenantInternalOnlyDispatchAuthorization(),
+        new TenantInternalOnlyDispatchAuthorization(grants),
         retryPolicy,
         "late-claim-processor");
   }
@@ -2008,7 +2187,7 @@ class DurableWorkIT {
         transactions,
         repository,
         registry,
-        new TenantInternalOnlyDispatchAuthorization(),
+        new TenantInternalOnlyDispatchAuthorization(grants),
         policy,
         owner);
   }
@@ -2019,7 +2198,7 @@ class DurableWorkIT {
         transactions,
         repository,
         registry,
-        new TenantInternalOnlyDispatchAuthorization(),
+        new TenantInternalOnlyDispatchAuthorization(grants),
         singleItemPolicy(),
         "single-item-processor");
   }

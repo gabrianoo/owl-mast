@@ -6,7 +6,7 @@ import unittest
 from dataclasses import replace
 
 from automation.tests.fake_transport import CrashAfterEffect, FakeTransport, small_backlog
-from automation.tests.support import IMPLEMENTER, Harness, ok_worktree, receipt
+from automation.tests.support import IMPLEMENTER, Harness, ok_worktree
 from automation.unattended.backlog import take_snapshot
 from automation.unattended.coordinator import Coordinator
 from automation.unattended.errors import Conflict, Outage, PermissionDenied, Refused, StaleRevision

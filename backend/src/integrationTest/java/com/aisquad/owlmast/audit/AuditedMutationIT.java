@@ -26,6 +26,7 @@ import com.aisquad.owlmast.jobs.api.EnqueueRequest;
 import com.aisquad.owlmast.jobs.api.WorkEnqueue;
 import com.aisquad.owlmast.jobs.api.WorkItemContract;
 import com.aisquad.owlmast.jobs.application.HandlerRegistry;
+import com.aisquad.owlmast.jobs.application.TenantInternalGrants;
 import com.aisquad.owlmast.jobs.application.TenantInternalOnlyDispatchAuthorization;
 import com.aisquad.owlmast.jobs.application.WorkProcessor;
 import com.aisquad.owlmast.jobs.domain.RetryPolicy;
@@ -104,6 +105,7 @@ class AuditedMutationIT {
   private static final String SECRET = "s3cr3t-PLANTED-7b1d4e";
 
   @Autowired private NotesFixture notes;
+  @Autowired private TenantInternalGrants grants;
   @Autowired private AuditHistoryQuery history;
   @Autowired private WorkProcessor processor;
   @Autowired private DbProbe db;
@@ -1147,7 +1149,7 @@ class AuditedMutationIT {
         transactions,
         workRepository,
         registry,
-        new TenantInternalOnlyDispatchAuthorization(),
+        new TenantInternalOnlyDispatchAuthorization(grants),
         new RetryPolicy(
             policy.maxAttempts(),
             policy.backoffBase(),

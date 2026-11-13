@@ -2,8 +2,8 @@ package com.aisquad.owlmast.jobs.application;
 
 import com.aisquad.owlmast.jobs.api.EnqueueRequest;
 import com.aisquad.owlmast.jobs.api.WorkEnqueue;
-import com.aisquad.owlmast.jobs.api.WorkHandler;
 import com.aisquad.owlmast.jobs.api.WorkItemContract;
+import com.aisquad.owlmast.jobs.api.WorkRegistration;
 import com.aisquad.owlmast.jobs.domain.RetryPolicy;
 import com.aisquad.owlmast.jobs.port.WorkRepository;
 import com.aisquad.owlmast.platform.persistence.ScopedTransactions;
@@ -46,13 +46,13 @@ public final class WorkEnqueueService implements WorkEnqueue {
   @Override
   public Mono<UUID> enqueue(EnqueueRequest request) {
     Objects.requireNonNull(request, "request");
-    Optional<WorkHandler> handler = registry.get().find(request.type());
-    if (handler.isEmpty()) {
+    Optional<WorkRegistration> registration = registry.get().registration(request.type());
+    if (registration.isEmpty()) {
       return Mono.error(
           new IllegalArgumentException(
               "no handler is registered for work type '" + request.type().value() + "'"));
     }
-    boolean unlimited = handler.get().registration().unlimitedAttempts();
+    boolean unlimited = registration.get().unlimitedAttempts();
     if (unlimited && request.maxAttempts().isPresent()) {
       return Mono.error(
           new IllegalArgumentException(

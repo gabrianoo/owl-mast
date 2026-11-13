@@ -1,6 +1,12 @@
 package com.aisquad.owlmast.platform.web;
 
+import com.aisquad.owlmast.platform.authorization.OperationDeniedException;
+import com.aisquad.owlmast.platform.blocking.BlockingCapacityExceededException;
+import com.aisquad.owlmast.platform.blocking.BlockingDeadlineExceededException;
 import com.aisquad.owlmast.platform.diagnostics.SafeFailure;
+import com.aisquad.owlmast.platform.persistence.IncompatibleScopeException;
+import com.aisquad.owlmast.platform.persistence.ScopeBindingUnavailableException;
+import com.aisquad.owlmast.platform.scope.MissingScopeException;
 import java.util.Map;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.Ordered;
@@ -52,7 +58,13 @@ import org.springframework.web.server.ServerWebExchange;
  *       (401), or a subclass, recognised by class name ({@link #STATUS_BY_CLASS_NAME}) because
  *       Spring Security is not a dependency yet. The nearest listed class wins, so {@code
  *       AuthenticationServiceException} and its subclasses stay 500: the identity provider or user
- *       store failed, which is an outage and not a credential problem.
+ *       store failed, which is an outage and not a credential problem;
+ *   <li>the shared kernel's own failures ({@link #STATUS_BY_PLATFORM_FAILURE}), which carry no web
+ *       type because {@code platform} code below the web layer raises them: an {@link
+ *       OperationDeniedException} is a denial (403); a missing, incompatible or unbindable scope is
+ *       a defect of the calling code and stays 500, stated here so that it is a decision and not a
+ *       default; a refused or late bounded blocking call is load or a slow dependency, not a defect
+ *       (503 when capacity is exhausted, 504 when the deadline passed).
  * </ol>
  *
  * <p>A status outside 4xx/5xx is not an error answer and becomes 500, without the headers that came
@@ -81,6 +93,25 @@ class UnhandledFailureAdvice {
           HttpStatus.UNAUTHORIZED,
           "org.springframework.security.authentication.AuthenticationServiceException",
           HttpStatus.INTERNAL_SERVER_ERROR);
+
+  /**
+   * Failures raised by the shared kernel ({@code platform}), by exact class: every one is final.
+   * The denial reason code and the operation name stay out of the response like everything else.
+   */
+  static final Map<Class<? extends Throwable>, HttpStatus> STATUS_BY_PLATFORM_FAILURE =
+      Map.of(
+          OperationDeniedException.class,
+          HttpStatus.FORBIDDEN,
+          MissingScopeException.class,
+          HttpStatus.INTERNAL_SERVER_ERROR,
+          IncompatibleScopeException.class,
+          HttpStatus.INTERNAL_SERVER_ERROR,
+          ScopeBindingUnavailableException.class,
+          HttpStatus.INTERNAL_SERVER_ERROR,
+          BlockingCapacityExceededException.class,
+          HttpStatus.SERVICE_UNAVAILABLE,
+          BlockingDeadlineExceededException.class,
+          HttpStatus.GATEWAY_TIMEOUT);
 
   @ExceptionHandler(Throwable.class)
   ResponseEntity<ProblemDetail> unhandled(Throwable failure, ServerWebExchange exchange) {
@@ -127,6 +158,6 @@ class UnhandledFailureAdvice {
         return byName;
       }
     }
-    return null;
+    return STATUS_BY_PLATFORM_FAILURE.get(failure.getClass());
   }
 }

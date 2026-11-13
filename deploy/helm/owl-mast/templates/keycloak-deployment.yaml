@@ -8,6 +8,21 @@ metadata:
     app.kubernetes.io/component: keycloak
 spec:
   replicas: 1
+  # Single instance. With the default (ispn) cache two Keycloak pods that run together try to form a cluster
+  # (JGroups, discovered through the shared database); the NetworkPolicy admits only the backend on :8080, so
+  # they cannot, the new pod's cluster health check stays DOWN, it never becomes ready and the rollout hangs
+  # until `helm upgrade --wait` times out. Found by the bootstrap-admin retirement on the Kind target
+  # (2026-11-12), the first upgrade that changed this pod. The cure is KC_CACHE=local below: a pod never
+  # looks for a cluster, so an overlap is harmless. Rolling without surge only shortens the overlap: under
+  # RollingUpdate the controller does not count a terminating pod, so the new pod can start while the old one
+  # is still shutting down. Deliberately not `type: Recreate`: a release installed while this Deployment
+  # still rolled carries the API server's default rollingUpdate block, and a server-side apply that only
+  # changes the type is refused ("rollingUpdate may not be specified when strategy type is Recreate").
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       {{- include "owl-mast.selectorLabels" . | nindent 6 }}
@@ -111,6 +126,10 @@ spec:
               value: {{ include "owl-mast.keycloak.baseUrl" . | quote }}
             - name: KC_HTTP_ENABLED
               value: "true"
+            # One instance, no cluster (see the strategy above). A build option: `start` re-augments for it, like
+            # for KC_DB.
+            - name: KC_CACHE
+              value: local
             - name: KC_HEALTH_ENABLED
               value: "true"
             - name: KC_HTTP_MANAGEMENT_PORT

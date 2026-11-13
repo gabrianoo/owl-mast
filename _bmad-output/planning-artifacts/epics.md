@@ -184,7 +184,7 @@ All nineteen epics are planned now. E01–E18 cover the full V1 plan; E17 is an 
 |---|---|
 | FR-1 | E02, E09, E18 |
 | FR-2 | E05, E07, E08, E18 |
-| FR-3 | E01, E05, E06, E09, E16, E17 |
+| FR-3 | E01, E03, E05, E06, E07, E08, E09, E13, E15, E16, E17, E18, E19 |
 | FR-4 | E05, E06, E07, E08, E10, E17 |
 | FR-5 | E09, E10, E17, E18 |
 | FR-6 | E09, E10, E13 |

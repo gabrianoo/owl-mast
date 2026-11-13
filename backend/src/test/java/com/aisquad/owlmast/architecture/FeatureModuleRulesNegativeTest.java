@@ -47,8 +47,45 @@ class FeatureModuleRulesNegativeTest {
             lines -> assertThat(lines).anyMatch(l -> l.contains("ThreadLocalAuthorization")))
         .hasEntrySatisfying(
             "application/port must not depend on adapters",
-            lines -> assertThat(lines).anyMatch(l -> l.contains("BetaService")));
+            lines -> assertThat(lines).anyMatch(l -> l.contains("BetaService")))
+        // E01-R-10: the two rules that had no negative fixture, and the layering rows.
+        .hasEntrySatisfying(
+            "feature packages must be free of dependency cycles",
+            lines ->
+                assertThat(lines)
+                    .anyMatch(l -> l.contains("AlphaLoop") && l.contains("BetaView"))
+                    .anyMatch(l -> l.contains("BetaService") && l.contains("AlphaRepository")))
+        .hasEntrySatisfying(
+            "api/domain stay free of Spring and adapters",
+            lines ->
+                assertThat(lines)
+                    .anyMatch(l -> l.contains("SpringLeakingContract") && l.contains("HttpStatus")))
+        .hasEntrySatisfying(
+            "api must not depend on application, domain or port",
+            lines ->
+                assertThat(lines)
+                    .anyMatch(
+                        l -> l.contains("InternalLeakingContract") && l.contains("EpsilonRule"))
+                    .noneMatch(l -> l.contains("SpringLeakingContract")))
+        .hasEntrySatisfying(
+            "domain must not depend on application or port",
+            lines ->
+                assertThat(lines)
+                    .anyMatch(l -> l.contains("EpsilonRule") && l.contains("EpsilonPort")))
+        .hasEntrySatisfying(
+            "port must not depend on application",
+            lines ->
+                assertThat(lines)
+                    .anyMatch(l -> l.contains("EpsilonPort") && l.contains("EpsilonService")))
+        .hasEntrySatisfying(
+            "domain of 'epsilon' must not depend on another feature",
+            lines ->
+                assertThat(lines)
+                    .anyMatch(l -> l.contains("ForeignRule") && l.contains("AlphaView"))
+                    .noneMatch(l -> l.contains("EpsilonRule")));
     assertThat(violationsByRule)
-        .doesNotContainKey("only 'beta.api' may be used outside feature 'beta'");
+        .doesNotContainKey("only 'beta.api' may be used outside feature 'beta'")
+        .doesNotContainKey("only 'epsilon.api' may be used outside feature 'epsilon'")
+        .doesNotContainKey("domain of 'alpha' must not depend on another feature");
   }
 }
