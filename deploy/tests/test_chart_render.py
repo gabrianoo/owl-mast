@@ -953,7 +953,7 @@ class ReviewCycle1Test(unittest.TestCase):
         self.assertNotIn("Qualified on 2026-11-07 for GitHub issue #21 on a disposable local Kind target;", doc)  # that was chart 0.1.0
         # E01-R-01: the qualification status is stated as it is, per revision, including what failed and what was not run.
         self.assertNotIn("qualification of chart 0.2.0 is pending", doc)
-        for phrase in ("**The 2026-11-12 runs, exactly.**", "What this does not amount to:", "**not run** on a cluster (render support only)",
+        for phrase in ("**The 2026-11-12 and 2026-11-13 runs, exactly.**", "What this does not amount to:", "**not run** on a cluster (render support only)",
                        "**not run** by the script (`frontend.enabled=false`)"):
             self.assertIn(phrase, doc, phrase)
 
