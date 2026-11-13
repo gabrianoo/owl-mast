@@ -214,8 +214,8 @@ class WorkSchedulerIT {
         .as("the new refusal is logged again")
         .hasSize(3);
 
-    // Review cycle 3: a read failure on a running instance takes its own branch. Earlier the refusal was already
-    // logged, so that branch was never reached; start it from a confirmed state.
+    // Review cycle 3: a read failure on a running instance takes its own branch. Earlier the
+    // refusal was already logged, so that branch was never reached; start from a confirmed state.
     answer.set(Mono.just(true));
     scheduler.wake().block(Duration.ofSeconds(10));
     answer.set(Mono.error(new IllegalStateException("s3cr3t outage detail")));
