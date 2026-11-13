@@ -466,8 +466,8 @@ class MovedDirectoryFourAdvicesTests(LiveCase):
         self.h.coordinator()
         self.recorded = Path(self.h.h.tmpdir.name) / "created-under"
 
-    def line(self) -> dict:
-        set_ledger(self.h, state="pending", state_dir=str(self.recorded))
+    def line(self, state_dir: str | None = None) -> dict:
+        set_ledger(self.h, state="pending", state_dir=str(self.recorded) if state_dir is None else state_dir)
         self.h.coordinator(activation=None)
         lines = [d for d in unconfirmed(self.store) if d["type"] == "state-dir-mismatch"]
         return lines[-1]
@@ -507,12 +507,7 @@ class MovedDirectoryFourAdvicesTests(LiveCase):
     def test_a_recorded_directory_that_cannot_be_examined_is_not_gone(self):
         with stat_refusing(self.recorded, PermissionError(13, "Permission denied")):
             line = self.line()
-        self.assertEqual((line["field"], line["errno"], line["strerror"]), ("recorded directory cannot be examined", 13, "Permission denied"))
-        self.assertIn("cannot be examined", line["error"])
-        self.assertNotIn("no longer exists", line["error"])
-        self.assertNotIn("is spent", line["error"])
-        self.assertIn("cannot be settled from here", line["consequence"])
-        self.assertNotIn("every later open retries", line["consequence"])
+        self.assert_cannot_be_examined(line, 13, "Permission denied", "PermissionError: Permission denied")
 
     def test_a_recorded_path_that_is_not_absolute_is_never_resolved_against_the_current_directory(self):
         here = Path(self.h.h.tmpdir.name) / "cwd"
@@ -554,11 +549,18 @@ class MovedDirectoryFourAdvicesTests(LiveCase):
             line = self.line()
         self.assertEqual(found, "unknown")
         self.assertIs(problem, error)
-        self.assert_cannot_be_examined(line, 13, "Permission denied")
+        self.assert_cannot_be_examined(line, 13, "Permission denied", "PermissionError: Permission denied")
 
-    def assert_cannot_be_examined(self, line: dict, errno: int, strerror: str) -> None:
+    def assert_cannot_be_examined(self, line: dict, errno: int, strerror: str, reason: str) -> None:
+        """PR #176 R6-2. The advice names both paths the probe stats, the recorded directory and the
+        run directory under it (either may be the one refused, or a directory above them: what the
+        operator needs is search permission along the path, not read permission), and carries the
+        reason of the error: `<type>: <text>`. The mutations it pins: the run directory dropped
+        from the advice, and the reason cut down to the type alone."""
         self.assertEqual((line["field"], line["errno"], line["strerror"]), ("recorded directory cannot be examined", errno, strerror))
         self.assertIn("cannot be examined", line["error"])
+        self.assertIn(f"make {str(self.recorded)!r} and the run directory 'run-live' under it reachable (every directory on the path searchable)", line["error"])
+        self.assertIn(f"cannot be examined ({reason}), so whether the run is still there is not known", line["error"])
         for other in ("is spent", "holds no run", "no longer exists"):
             self.assertNotIn(other, line["error"])
         self.assertIn("cannot be settled from here", line["consequence"])
@@ -575,7 +577,7 @@ class MovedDirectoryFourAdvicesTests(LiveCase):
             line = self.line()
         self.assertEqual(found, "unknown")
         self.assertIs(problem, error)
-        self.assert_cannot_be_examined(line, 5, "Input/output error")
+        self.assert_cannot_be_examined(line, 5, "Input/output error", "OSError: Input/output error")
 
     def test_a_value_the_file_system_cannot_take_is_unknown_at_either_stat(self):
         """PR #176 R5-1 review. The mutation it pins: `except (OSError, ValueError)` narrowed to
@@ -596,6 +598,30 @@ class MovedDirectoryFourAdvicesTests(LiveCase):
         with self.assertRaises(NotADirectoryError):
             os.stat(parent / "created-under")
         self.assertEqual(activation_module._recorded_run(str(parent / "created-under"), "run-live"), ("gone", None))
+
+    def test_a_run_directory_without_run_json_holds_no_run(self):
+        """PR #176 R6-1, the `run` / `no-run` boundary. The mutation it pins: the first stat probing
+        the run directory, `<recorded>/<run_id>`, instead of `<recorded>/<run_id>/run.json`, so an
+        empty or partial run directory (the run was moved out of it) gets the advice to open the
+        run through a directory that does not hold it."""
+        (self.recorded / "run-live").mkdir(parents=True)
+        self.assertEqual(activation_module._recorded_run(str(self.recorded), "run-live"), ("no-run", None))  # empty
+        (self.recorded / "run-live" / "journal.jsonl").write_text("", encoding="utf-8")
+        self.assertEqual(activation_module._recorded_run(str(self.recorded), "run-live"), ("no-run", None))  # partial
+        line = self.line()
+        self.assertEqual(line["field"], "recorded path exists without the run")
+        self.assertIn("holds no run 'run-live'", line["error"])
+        self.assertIn("is spent", line["error"])
+        self.assertNotIn("open the run through the directory it was created under", line["error"])
+        self.assertNotIn("an open of the run through the recorded directory confirms it", line["consequence"])
+
+    def test_a_recorded_path_that_is_not_absolute_says_so_in_the_journaled_line(self):
+        """PR #176 R6-2, the reason of an error that has neither errno nor strerror. The mutation it
+        pins: `({type(problem).__name__}: {strerror or problem})` cut down to the type, which
+        leaves `(ValueError)` and drops what is wrong with the recorded path."""
+        line = self.line(state_dir="rel")
+        self.assertEqual((line["field"], line["errno"], line["strerror"]), ("recorded directory cannot be examined", None, None))
+        self.assertIn("cannot be examined (ValueError: the recorded state directory 'rel' is not an absolute path), so whether", line["error"])
 
     def test_each_variant_is_its_own_line(self):
         fields = [self.line()["field"]]  # gone

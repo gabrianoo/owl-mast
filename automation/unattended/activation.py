@@ -655,7 +655,7 @@ def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, r
                 consequence = "the use ledger record cannot be settled from here: the recorded directory is gone; the document is spent, and no open through this state directory confirms the record"
             else:
                 advice = (f"the recorded directory cannot be examined ({type(problem).__name__}: {strerror or problem}), so whether the run is still there is not known: "
-                          f"make {recorded!r} readable and open the run again; if the run is there, opening it through that directory confirms the record")
+                          f"make {recorded!r} and the run directory {run_id!r} under it reachable (every directory on the path searchable) and open the run again; if the run is there, opening it through that directory confirms the record")
                 consequence = "the use ledger record cannot be settled from here, and whether it can be settled at all is not known while the recorded directory cannot be examined; no open through this state directory confirms the record"
             return ("error", {"type": "state-dir-mismatch", "errno": errno, "strerror": strerror, "field": RECORDED_RUN_VARIANTS[found],
                               "message": f"the use ledger record of run {run_id} names the state directory {recorded!r}, not {os.path.realpath(state_dir)!r}; it stays {used.get('state')} ({advice})", "consequence": consequence})
