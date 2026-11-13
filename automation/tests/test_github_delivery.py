@@ -1098,7 +1098,9 @@ class DeferTests(unittest.TestCase):
                 code = main(["defer", "--title", self.TITLE, "--body-file", str(body), "--source", "21"], client=gh)
             self.assertEqual(code, 0)
             self.assertEqual(json.loads(out.getvalue())["issue"], 150)
-            self.assertIn("- Issue #21", json.loads(next(stdin for call, stdin in fake.calls if self.CREATE in call))["body"])
+            sent = json.loads(next(stdin for call, stdin in fake.calls if self.CREATE in call))
+            self.assertTrue(sent["body"].startswith("What is deferred and why.\n"), sent["body"])
+            self.assertIn("- Issue #21", sent["body"])
             gh, fake = self.client()
             err = io.StringIO()
             with redirect_stderr(err), redirect_stdout(io.StringIO()):
@@ -1275,6 +1277,21 @@ class CliTests(unittest.TestCase):
         self.assertEqual((code, json.loads(out.getvalue())["commit"]), (0, SHA))
         sent = json.loads(next(stdin for call, stdin in fake.calls if "pulls/12/reviews" in call))
         self.assertEqual((sent["commit_id"], sent["comments"][0]["line"]), (SHA, 12))
+        self.assertIn("One problem.", sent["body"])
+
+    def test_reply_cli_posts_the_text_of_the_body_file_on_the_thread(self):
+        url = "https://github.com/gabrianoo/owl-mast/pull/12#discussion_r1"
+        fake = FakeGh([("addPullRequestReviewThreadReply",
+                        {"data": {"addPullRequestReviewThreadReply": {"comment": {"url": url}}}})])
+        with tempfile.TemporaryDirectory() as tmp:
+            body = Path(tmp) / "reply.md"
+            body.write_text("Fixed in abc: one line.\n", encoding="utf-8")
+            with redirect_stdout(io.StringIO()) as out:
+                code = main(["reply", "PRRT_1", "--body-file", str(body)], client=GitHub(run=fake))
+        self.assertEqual((code, json.loads(out.getvalue())), (0, {"url": url}))
+        (call, stdin), = fake.calls
+        self.assertTrue(call.endswith(" -f t=PRRT_1 -f b=Fixed in abc: one line.\n"), call)
+        self.assertIsNone(stdin)
 
     def bad_input_files(self, folder):
         """One path per way an input file cannot be read, with the reason the refusal must give."""
@@ -1358,6 +1375,18 @@ class CliTests(unittest.TestCase):
                  ("finding is not an object", "[1]", bad_finding),
                  ("line is not an integer", finding.format(rest=', "line": "twelve"'), bad_finding),
                  ("line overflows", finding.format(rest=', "line": 1e999'), bad_finding)]
+        # A value nested deeper than str() can print. Where the parser itself gives up at that depth (it does
+        # before Python 3.14), the file is refused as not valid JSON instead; both name the file and exit 2.
+        deep = "[" * 50_000 + "]" * 50_000
+        for key in ("id", "path", "body"):
+            fields = {"id": '"R1-1"', "path": '"app.py"', "body": '"b"', key: deep}
+            text = "[{" + ", ".join(f'"{k}": {v}' for k, v in fields.items()) + "}]"
+            try:
+                json.loads(text)
+            except RecursionError:
+                cases.append((f"{key} nested too deep for the parser", text, not_json))
+            else:
+                cases.append((f"{key} nested too deep to print", text, bad_finding))
         digit_limit = getattr(sys, "get_int_max_str_digits", lambda: 0)()  # 0: no limit, or a Python without one
         if digit_limit:  # valid JSON, but past the integer digit limit of the parser
             cases.append(("integer over the digit limit", finding.format(rest=', "line": ' + "1" * (digit_limit + 1)),
@@ -1376,6 +1405,35 @@ class CliTests(unittest.TestCase):
                                     client=GitHub(run=fake))
                     self.assertEqual(code, 2)
                     self.assertTrue(err.getvalue().startswith("error: " + message.format(path=findings)), err.getvalue())
+                    self.assertNotIn("Traceback", err.getvalue())
+                    self.assertEqual((out.getvalue(), fake.calls, fake.lookups), ("", [], []))
+
+    def test_post_review_refuses_a_finding_value_too_deep_to_print(self):
+        # The parser is stubbed, so the str() of the value is what fails on every Python version; whether a file
+        # can get a value this deep past the real parser depends on the version (see the parse test above).
+        deep = []
+        for _ in range(100_000):
+            deep = [deep]
+        with self.assertRaises(RecursionError):
+            str(deep)
+        with tempfile.TemporaryDirectory() as tmp:
+            summary, findings = Path(tmp) / "s.md", Path(tmp) / "f.json"
+            summary.write_text("One problem.", encoding="utf-8")
+            findings.write_text("[]", encoding="utf-8")
+            for key in ("id", "path", "body"):
+                with self.subTest(key=key):
+                    parsed = [{"id": "R1-1", "path": "app.py", "body": "b", key: deep}]
+                    fake = FakeGh([])
+                    err = io.StringIO()
+                    with mock.patch("automation.github_delivery.json.loads", return_value=parsed), \
+                            redirect_stderr(err), redirect_stdout(io.StringIO()) as out:
+                        code = main(["post-review", "12", "--round", "1", "--commit", SHA, "--verdict", "changes",
+                                     "--summary-file", str(summary), "--findings-file", str(findings)],
+                                    client=GitHub(run=fake))
+                    self.assertEqual(code, 2)
+                    self.assertTrue(err.getvalue().startswith(
+                        f"error: findings file {findings}: each finding needs id, path, body and an optional "
+                        "integer line: "), err.getvalue()[:300])
                     self.assertNotIn("Traceback", err.getvalue())
                     self.assertEqual((out.getvalue(), fake.calls, fake.lookups), ("", [], []))
 

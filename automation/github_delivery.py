@@ -880,7 +880,8 @@ def _findings(path: Path) -> List[Finding]:
     try:
         return [Finding(id=str(f["id"]), path=str(f["path"]), body=str(f["body"]),
                         line=int(f["line"]) if f.get("line") else None) for f in data]
-    except (KeyError, TypeError, ValueError, OverflowError) as error:  # OverflowError: a line of 1e999
+    # OverflowError: a line of 1e999. RecursionError: an id, path or body nested deeper than str() can print.
+    except (KeyError, TypeError, ValueError, OverflowError, RecursionError) as error:
         raise DeliveryError(f"findings file {path}: each finding needs id, path, body and an optional integer "
                             f"line: {error}") from error
 

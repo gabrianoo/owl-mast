@@ -63,7 +63,7 @@ An input file (`--file`, `--body-file`, `--summary-file`, `--findings-file`) tha
 - it is not valid JSON, or is nested deeper than the parser goes;
 - it is valid JSON that the parser cannot load (an integer longer than Python's digit limit, 4,300 by default);
 - it is not a JSON array;
-- a finding has no `id`, `path` or `body`, or its `line` cannot be read as an integer (`"twelve"`, or a number too large to be one, such as `1e999`).
+- a finding has no `id`, `path` or `body`, one of the three is nested deeper than the helper can print, or its `line` cannot be read as an integer (`"twelve"`, or a number too large to be one, such as `1e999`).
 
 Each of these is refused before any GitHub call, so nothing was written: correct the path or the file and run the same command again.
 
