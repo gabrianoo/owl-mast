@@ -3,6 +3,9 @@ package com.aisquad.owlmast.jobs.adapter.persistence;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.aisquad.owlmast.testing.OwlMastPostgres;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -10,6 +13,8 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
@@ -25,13 +30,22 @@ class JavaBlankPatternIT {
       "select cp from generate_series(1, 1114111) cp"
           + " where (cp < 55296 or cp > 57343) and chr(cp) ~ ? order by cp";
 
-  /** The class as docs/durable-work-and-audit-contract.md gives it in the operator query. */
-  private static final String DOCUMENTED_OPERATOR_CLASS =
-      "E'^[\\\\t\\\\n\\\\u000b\\\\f\\\\r\\\\u001c-\\\\u001f \\\\u1680"
-          + "\\\\u2000-\\\\u2006\\\\u2008-\\\\u200a\\\\u2028\\\\u2029\\\\u205f\\\\u3000]*$'";
+  private static final Path CONTRACT = Path.of("..", "docs", "durable-work-and-audit-contract.md");
+
+  /**
+   * The operator query's pattern as docs/durable-work-and-audit-contract.md gives it, read from the
+   * document (review cycle 3: a copy typed into the test would pass whatever the document says).
+   */
+  private static final Pattern OPERATOR_QUERY =
+      Pattern.compile("FROM jobs\\.work_item WHERE tenant_id ~ (E'[^']*');`");
 
   @Test
-  void postgresqlMatchesExactlyWhatStringIsBlankRefuses() throws SQLException {
+  void postgresqlMatchesExactlyWhatStringIsBlankRefuses() throws SQLException, IOException {
+    Matcher documented = OPERATOR_QUERY.matcher(Files.readString(CONTRACT));
+    assertThat(documented.find()).as("the contract's operator query for blank tenant ids").isTrue();
+    String documentedClass = documented.group(1);
+    assertThat(documented.find()).as("exactly one operator query in the contract").isFalse();
+
     List<Integer> javaBlank = new ArrayList<>();
     for (int codePoint = 1; codePoint <= Character.MAX_CODE_POINT; codePoint++) {
       boolean surrogate =
@@ -52,7 +66,7 @@ class JavaBlankPatternIT {
               .as("standard_conforming_strings = %s", conforming)
               .isEqualTo(javaBlank);
           assertThat(emptyStringMatches(connection)).isTrue();
-          assertThat(documentedQueryMatches(connection))
+          assertThat(documentedQueryMatches(connection, documentedClass))
               .as(
                   "the operator query of the contract, standard_conforming_strings = %s",
                   conforming)
@@ -75,14 +89,15 @@ class JavaBlankPatternIT {
     return matching;
   }
 
-  private static List<Integer> documentedQueryMatches(Connection connection) throws SQLException {
+  private static List<Integer> documentedQueryMatches(Connection connection, String documentedClass)
+      throws SQLException {
     List<Integer> matching = new ArrayList<>();
     try (Statement statement = connection.createStatement();
         ResultSet rows =
             statement.executeQuery(
                 "select cp from generate_series(1, 1114111) cp where (cp < 55296 or cp > 57343)"
                     + " and chr(cp) ~ "
-                    + DOCUMENTED_OPERATOR_CLASS
+                    + documentedClass
                     + " order by cp")) {
       while (rows.next()) {
         matching.add(rows.getInt(1));

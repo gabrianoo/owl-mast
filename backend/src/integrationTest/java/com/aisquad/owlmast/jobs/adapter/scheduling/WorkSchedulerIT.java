@@ -213,6 +213,21 @@ class WorkSchedulerIT {
     assertThat(output.getAll().split("Durable work is paused", -1))
         .as("the new refusal is logged again")
         .hasSize(3);
+
+    // Review cycle 3: a read failure on a running instance takes its own branch. Earlier the refusal was already
+    // logged, so that branch was never reached; start it from a confirmed state.
+    answer.set(Mono.just(true));
+    scheduler.wake().block(Duration.ofSeconds(10));
+    answer.set(Mono.error(new IllegalStateException("s3cr3t outage detail")));
+    scheduler.wake().block(Duration.ofSeconds(10));
+    assertThat(output.getAll())
+        .contains(
+            "Durable work is paused: the database precondition could not be read: "
+                + IllegalStateException.class.getSimpleName())
+        .doesNotContain("s3cr3t");
+    assertThat(output.getAll().split("Durable work resumes", -1))
+        .as("one resume after each pause")
+        .hasSize(3);
     scheduler.stop();
   }
 
