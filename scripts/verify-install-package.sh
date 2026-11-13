@@ -19,18 +19,28 @@ KUBECTL_VERSION=v1.36.1
 KUBECTL_SHA256=629d3f410e09bf49b64ae7079f7f0bda1191efed311f7d37fdbab0ad5b0ec2b7
 
 sha256_ok() { echo "$2  $1" | sha256sum -c --status - 2>/dev/null; }
+# physical_dir <dir>: the absolute, symlink-free path of an existing directory. The `cd` is physical (-P), so it
+# names the directory that `mkdir`, `[ -d ]` and `mktemp` reach: a logical `cd` would drop `link/..` from
+# `link/../dir` textually and land somewhere else when `link` is a symlink (review cycle 11, R11-1). A relative
+# path gets `./` in front, so one that starts with `-` (`-` alone means OLDPWD to `cd`) is taken as a name.
+physical_dir() {
+  case "$1" in
+    /*) (CDPATH='' cd -P -- "$1" && pwd -P) ;;
+    *) (CDPATH='' cd -P -- "./$1" && pwd -P) ;;
+  esac
+}
 # A relative OWLMAST_TOOLS_DIR is resolved once, against the caller's directory, before anything is created in it:
 # the suite runs after `cd "$ROOT"`, where a relative path would name another directory, and the EXIT trap would
 # then miss the Helm directory and the environment this run made there (review cycle 9, R9-2).
 if [ -n "${OWLMAST_TOOLS_DIR:-}" ]; then
   mkdir -p "$OWLMAST_TOOLS_DIR"
-  OWLMAST_TOOLS_DIR="$(CDPATH='' cd -- "$OWLMAST_TOOLS_DIR" && pwd)"
+  OWLMAST_TOOLS_DIR="$(physical_dir "$OWLMAST_TOOLS_DIR")"
 fi
 # A relative TMPDIR is resolved the same way, since the scratch directories are made in it before `cd "$ROOT"`
 # (review cycle 10, R10-2). One that does not exist is left as given; mktemp then fails if a scratch directory is needed.
 case "${TMPDIR:-}" in
   '' | /*) ;;
-  *) if [ -d "$TMPDIR" ]; then TMPDIR="$(CDPATH='' cd -- "$TMPDIR" && pwd)"; export TMPDIR; fi ;;
+  *) if [ -d "$TMPDIR" ]; then TMPDIR="$(physical_dir "$TMPDIR")"; export TMPDIR; fi ;;
 esac
 # What this run creates is removed on exit, also when the run fails: the directory it extracts Helm into, the scratch
 # directory for the Helm and kubectl downloads (when OWLMAST_TOOLS_DIR is unset), the hashed environment and the

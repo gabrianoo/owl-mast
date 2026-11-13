@@ -113,8 +113,12 @@ if [ "$3" = install ]; then
 fi
 # STUB_REACH_SUITE=1: `pip check` and `pip list` pass, so the deploy-test gate gets past `cd "$ROOT"` and fails in
 # its suite instead.
+# STUB_PIP_CHECK_FAILS=1 then fails `pip check` alone, and STUB_PIP_LIST_UNPINNED=1 lists no PyYAML/jsonschema.
 if [ "${STUB_REACH_SUITE:-}" = 1 ]; then
-  case "$3" in check) exit 0 ;; list) echo "PyYAML==6.0.3"; exit 0 ;; esac
+  case "$3" in
+    check) [ "${STUB_PIP_CHECK_FAILS:-}" = 1 ] && exit 1; exit 0 ;;
+    list) if [ "${STUB_PIP_LIST_UNPINNED:-}" = 1 ]; then echo "pip==25.3"; else echo "PyYAML==6.0.3"; fi; exit 0 ;;
+  esac
 fi
 exit 1
 PY
@@ -149,7 +153,8 @@ class GateCleanupTests(unittest.TestCase):
     against a concurrent one."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="owlmast-gate-cleanup."))
+        # Resolved: the gates resolve relative directories physically (R11-1), so every expected path is symlink-free.
+        self.tmp = Path(tempfile.mkdtemp(prefix="owlmast-gate-cleanup.")).resolve()
         self.tools = self.tmp / "tools"; self.tools.mkdir()
         self.kept = ["deploy-tests-venv.other1", "helm", "helm.other1", "ruff-venv.other1", "shellcheck.other1"]  # another run's entries
         for name in self.kept:
@@ -191,13 +196,22 @@ class GateCleanupTests(unittest.TestCase):
         env.update(extra)
         return subprocess.run(["bash", str(REPO / "scripts" / name)], env=env, capture_output=True, text=True, timeout=60, cwd=cwd)
 
+    # The scratch directory each gate makes in TMPDIR for its environment when OWLMAST_TOOLS_DIR is unset.
+    SCRATCH_PREFIX = {"deploy-tests-venv": "owlmast-deploy-tests.", "ruff-venv": "owlmast-lint."}
+
     def assert_cleaned(self, r, prefix, home=None):
+        """The run failed, built exactly one environment, in `home` when given and otherwise in a scratch directory of
+        its own directly under TMPDIR (R11-2, R11-3: an absolute path, never /tmp or a relative one), and removed it."""
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         created = [line.split()[-1] for line in self.log.read_text().splitlines() if line.startswith("python3 -m venv ")]
         self.assertEqual(len(created), 1, created)
         venv = Path(created[0])
+        self.assertTrue(venv.is_absolute(), venv)
         if home is not None:
             self.assertEqual(venv.parent, home)
+        else:
+            self.assertEqual(venv.parent.parent, self.scratch, "the environment's scratch directory is not in TMPDIR")
+            self.assertTrue(venv.parent.name.startswith(self.SCRATCH_PREFIX[prefix]), venv)
         self.assertTrue(venv.name.startswith(prefix + "."), venv)
         self.assertFalse(venv.exists(), "the run's environment was left behind")
         self.assert_tools_kept()
@@ -359,9 +373,66 @@ class GateCleanupTests(unittest.TestCase):
                     self.assertTrue((victim / "keep").exists(), f"the lint gate removed the caller's {name}")
 
     def test_without_a_tools_directory_the_lint_gate_leaves_nothing_in_tmpdir(self):
+        """Review cycle 11 (R11-3): the shellcheck download and the ruff environment go to one scratch directory of the
+        run directly under TMPDIR, which the gate removes on exit."""
         r = self.run_gate("verify-script-lint.sh", tools_dir=False, own_shellcheck=True)
         self.assertIn("is ruff 0.0.0-stub, not ruff", r.stderr)
+        extracted = self.extracted()
+        self.assertEqual(len(extracted), 1, extracted)
+        self.assertEqual(extracted[0].parent.parent, self.scratch, extracted)
+        self.assertTrue(extracted[0].parent.name.startswith("owlmast-lint."), extracted)
         self.assert_cleaned(r, "ruff-venv")
+        venv = Path(next(line.split()[-1] for line in self.log.read_text().splitlines() if line.startswith("python3 -m venv ")))
+        self.assertEqual(venv.parent, extracted[0].parent, "the environment and the download use different scratch directories")
+
+    def test_a_path_through_a_symlink_and_dot_dot_is_resolved_to_the_directory_the_kernel_reaches(self):
+        """Review cycle 11 (R11-1): `link/../dir`, with `link` a symlink, names the sibling of the link's target, as for
+        mkdir, [ -d ] and mktemp; a logical `cd` would name `dir` next to the link instead. Both relative variables are
+        resolved physically, and the decoy next to the link is never used."""
+        caller = self.tmp / "caller"; caller.mkdir()
+        (caller / "link").symlink_to(self.bin)  # link/.. is self.tmp
+        for decoy in ("tools", "tmpdir"):
+            (caller / decoy).mkdir()
+        r = self.run_gate("verify-install-package.sh", own_helm=True, cwd=caller, OWLMAST_TOOLS_DIR="link/../tools")
+        extracted = self.extracted()
+        self.assertEqual(len(extracted), 1, extracted)
+        self.assertEqual(extracted[0].parent, self.tools)
+        self.assert_cleaned(r, "deploy-tests-venv", self.tools)
+        self.log.unlink()
+        r = self.run_gate("verify-install-package.sh", tools_dir=False, own_helm=True, cwd=caller, TMPDIR="link/../tmpdir")
+        extracted = self.extracted()
+        self.assertEqual(len(extracted), 1, extracted)
+        self.assertEqual(extracted[0].parent.parent, self.scratch)
+        self.assert_cleaned(r, "deploy-tests-venv")
+        self.assertEqual(sorted(p.name for p in caller.iterdir()), ["link", "tmpdir", "tools"])
+        for decoy in ("tools", "tmpdir"):
+            self.assertEqual(list((caller / decoy).iterdir()), [], f"the gate used the decoy {decoy} next to the link")
+
+    def test_a_relative_tmpdir_that_does_not_exist_is_left_as_given_when_no_scratch_directory_is_needed(self):
+        """Review cycle 11 (R11-4): with OWLMAST_TOOLS_DIR set the gate makes nothing in TMPDIR, so a relative TMPDIR
+        that does not exist must not stop it: it builds its environment in the tools directory as usual."""
+        r = self.run_gate("verify-install-package.sh", cwd=self.tmp, TMPDIR="does-not-exist")
+        self.assertNotIn("does-not-exist", r.stderr)
+        self.assert_cleaned(r, "deploy-tests-venv", self.tools)
+        self.assertFalse((self.tmp / "does-not-exist").exists())
+
+    def test_the_deploy_test_gate_checks_its_environment_before_the_suite(self):
+        """Review cycle 11 (R11-5): the environment is installed with --no-deps, so `pip check` is what proves the
+        hashed set complete and consistent, and `pip list` that PyYAML and jsonschema are in it. Each runs before the
+        suite, and each failing alone stops the gate before the suite runs, with its environment removed."""
+        r = self.run_gate("verify-install-package.sh", STUB_REACH_SUITE="1")
+        calls = [line.split(" ", 1)[1] for line in self.log.read_text().splitlines() if line.startswith("venv-python ")]
+        steps = [c for c in calls if c.startswith(("-m pip check", "-m pip list", "-m unittest"))]
+        self.assertEqual([" ".join(c.split()[:3]) for c in steps], ["-m pip check", "-m pip list", "-m unittest discover"], calls)
+        self.assert_cleaned(r, "deploy-tests-venv", self.tools)
+        for stub, step in (("STUB_PIP_CHECK_FAILS", "-m pip check"), ("STUB_PIP_LIST_UNPINNED", "-m pip list")):
+            with self.subTest(stub=stub):
+                self.log.unlink()
+                r = self.run_gate("verify-install-package.sh", STUB_REACH_SUITE="1", **{stub: "1"})
+                log = self.log.read_text()
+                self.assertIn(f"venv-python {step}", log)
+                self.assertNotIn("venv-python -m unittest", log, f"the suite ran although {step} failed")
+                self.assert_cleaned(r, "deploy-tests-venv", self.tools)
 
 
 if __name__ == "__main__":
