@@ -95,5 +95,78 @@ class HashedVenvTests(unittest.TestCase):
             self.assertNotIn("pip install", text, name)
 
 
+# A python3 stub for the gates themselves: the environment's interpreter accepts the install (and, for the lint
+# gate, puts a ruff there that reports the wrong version) and fails `pip check`, so each gate stops right after
+# its environment was built. The EXIT trap must still remove that environment.
+GATE_PYTHON3_STUB = r"""#!/usr/bin/env bash
+echo "python3 $*" >> "$STUB_LOG"
+if [ "$1 $2" = "-m venv" ]; then
+  mkdir -p "$3/bin"
+  cat > "$3/bin/python" <<'PY'
+#!/usr/bin/env bash
+echo "venv-python $*" >> "$STUB_LOG"
+if [ "$3" = install ]; then
+  bindir="$(dirname "$0")"
+  printf '#!/usr/bin/env bash\necho "ruff 0.0.0-stub"\n' > "$bindir/ruff"; chmod +x "$bindir/ruff"
+  exit 0
+fi
+exit 1
+PY
+  chmod +x "$3/bin/python"
+  exit 0
+fi
+exit 1
+"""
+
+
+class GateCleanupTests(unittest.TestCase):
+    """Review cycle 5: both gates remove the environment of their run on exit, also when they fail, and leave what
+    another run keeps in a shared OWLMAST_TOOLS_DIR alone."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="owlmast-gate-cleanup."))
+        self.tools = self.tmp / "tools"; self.tools.mkdir()
+        self.other = self.tools / "deploy-tests-venv.other1"; self.other.mkdir()  # another run's environment
+        (self.tools / "ruff-venv.other1").mkdir()
+        self.bin = self.tmp / "bin"; self.bin.mkdir()
+        self.log = self.tmp / "calls"
+        stubs = {
+            "python3": GATE_PYTHON3_STUB,
+            "helm": '#!/usr/bin/env bash\necho "v4.3.1"\n',
+            "kubectl": '#!/usr/bin/env bash\necho "Client Version: v1.36.1"\n',
+            "shellcheck": '#!/usr/bin/env bash\necho "version: 0.11.0"\n',
+        }
+        for name, text in stubs.items():
+            stub = self.bin / name
+            stub.write_text(text); stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_gate(self, name):
+        env = {"PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": str(self.tmp), "STUB_LOG": str(self.log),
+               "OWLMAST_TOOLS_DIR": str(self.tools), "OWLMAST_HELM": str(self.bin / "helm"),
+               "OWLMAST_KUBECTL": str(self.bin / "kubectl"), "OWLMAST_SHELLCHECK": str(self.bin / "shellcheck")}
+        return subprocess.run(["bash", str(REPO / "scripts" / name)], env=env, capture_output=True, text=True, timeout=60)
+
+    def assert_cleaned(self, r, prefix):
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        created = [line.split()[-1] for line in self.log.read_text().splitlines() if line.startswith("python3 -m venv ")]
+        self.assertEqual(len(created), 1, created)
+        venv = Path(created[0])
+        self.assertEqual(venv.parent, self.tools)
+        self.assertTrue(venv.name.startswith(prefix + "."), venv)
+        self.assertFalse(venv.exists(), "the run's environment was left behind")
+        self.assertEqual(sorted(p.name for p in self.tools.iterdir()), ["deploy-tests-venv.other1", "ruff-venv.other1"])
+
+    def test_the_deploy_test_gate_removes_its_environment_when_it_fails(self):
+        self.assert_cleaned(self.run_gate("verify-install-package.sh"), "deploy-tests-venv")
+
+    def test_the_lint_gate_removes_its_environment_when_it_fails(self):
+        r = self.run_gate("verify-script-lint.sh")
+        self.assertIn("is ruff 0.0.0-stub, not ruff", r.stderr)
+        self.assert_cleaned(r, "ruff-venv")
+
+
 if __name__ == "__main__":
     unittest.main()
