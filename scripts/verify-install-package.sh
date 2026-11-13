@@ -26,6 +26,12 @@ if [ -n "${OWLMAST_TOOLS_DIR:-}" ]; then
   mkdir -p "$OWLMAST_TOOLS_DIR"
   OWLMAST_TOOLS_DIR="$(CDPATH='' cd -- "$OWLMAST_TOOLS_DIR" && pwd)"
 fi
+# A relative TMPDIR is resolved the same way, since the scratch directories are made in it before `cd "$ROOT"`
+# (review cycle 10, R10-2). One that does not exist is left as given; mktemp then fails if a scratch directory is needed.
+case "${TMPDIR:-}" in
+  '' | /*) ;;
+  *) if [ -d "$TMPDIR" ]; then TMPDIR="$(CDPATH='' cd -- "$TMPDIR" && pwd)"; export TMPDIR; fi ;;
+esac
 # What this run creates is removed on exit, also when the run fails: the directory it extracts Helm into, the scratch
 # directory for the Helm and kubectl downloads (when OWLMAST_TOOLS_DIR is unset), the hashed environment and the
 # scratch directory that holds it. Each name is cleared here first, so a value inherited from the caller's

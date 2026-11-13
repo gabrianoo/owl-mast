@@ -139,7 +139,7 @@ DOWNLOAD_STUBS = {
 
 
 class GateCleanupTests(unittest.TestCase):
-    """Review cycles 5 to 9: both gates remove what they create for their run on exit, also when they fail (the
+    """Review cycles 5 to 10: both gates remove what they create for their run on exit, also when they fail (the
     hashed environment, the directories the lint gate extracts shellcheck and the deploy-test gate extracts Helm
     into, and, when OWLMAST_TOOLS_DIR is unset, the scratch directories for the environment and for the Helm, kubectl
     and shellcheck downloads), remove nothing they did not create (a HASHED_VENV inherited from the caller), and
@@ -318,6 +318,45 @@ class GateCleanupTests(unittest.TestCase):
         self.assertEqual(len(extracted), 1, extracted)
         self.assertEqual(extracted[0].parent, self.tools)  # absolute: resolved against the caller's directory
         self.assert_cleaned(r, "deploy-tests-venv", self.tools)
+
+    def test_a_relative_tmpdir_is_cleaned_up_after_the_gate_changes_into_the_repository(self):
+        """Review cycle 10 (R10-2): without OWLMAST_TOOLS_DIR, run from another directory with a relative TMPDIR, the
+        gate makes its Helm download and environment scratch directories under the absolute TMPDIR, and its trap
+        still removes both after the suite (a stub that fails) ran from $ROOT."""
+        r = self.run_gate("verify-install-package.sh", tools_dir=False, own_helm=True, cwd=self.tmp,
+                          TMPDIR=self.scratch.name, STUB_REACH_SUITE="1")
+        self.assertIn("venv-python -m unittest", self.log.read_text(), "the stub suite was not reached")
+        extracted = self.extracted()
+        self.assertEqual(len(extracted), 1, extracted)
+        self.assertEqual(extracted[0].parent.parent, self.scratch)  # absolute: resolved against the caller's directory
+        self.assert_cleaned(r, "deploy-tests-venv")
+
+    def test_the_lint_gate_never_removes_any_name_of_its_trap_that_it_inherited(self):
+        """Review cycle 10 (R10-1): the lint gate clears RUN_TOOLS and SCRATCH_TOOLS before its EXIT trap, and
+        scripts/hashed-venv.sh clears HASHED_VENV when sourced. With OWLMAST_SHELLCHECK supplied and OWLMAST_TOOLS_DIR
+        set, the gate assigns neither RUN_TOOLS nor SCRATCH_TOOLS, and with OWLMAST_RUFF supplied it never calls
+        hashed_venv, so a value inherited from the caller would reach `rm -rf`."""
+        trap = re.search(r"^trap '(.*)' EXIT$", (REPO / "scripts" / "verify-script-lint.sh").read_text(), re.M).group(1)
+        names = sorted(set(re.findall(r"\$\{(\w+):\+", trap)))
+        self.assertEqual(names, ["HASHED_VENV", "RUN_TOOLS", "SCRATCH_TOOLS"])
+        for name in names:
+            for own_ruff in (False, True):
+                with self.subTest(name=name, own_ruff=own_ruff):
+                    victim = self.tmp / f"callers-{name}"; victim.mkdir(exist_ok=True); (victim / "keep").write_text("x")
+                    self.log.unlink(missing_ok=True)
+                    extra = {name: str(victim)}
+                    if own_ruff:
+                        extra["OWLMAST_RUFF"] = str(self.tmp / "no-ruff")
+                    r = self.run_gate("verify-script-lint.sh", **extra)
+                    self.assertRegex(r.stderr, r", not ruff ", r.stdout + r.stderr)
+                    if own_ruff:
+                        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+                        self.assertNotIn("-m venv", self.log.read_text() if self.log.exists() else "")
+                        self.assert_tools_kept()
+                        self.assertEqual(list(self.scratch.iterdir()), [])
+                    else:
+                        self.assert_cleaned(r, "ruff-venv", self.tools)
+                    self.assertTrue((victim / "keep").exists(), f"the lint gate removed the caller's {name}")
 
     def test_without_a_tools_directory_the_lint_gate_leaves_nothing_in_tmpdir(self):
         r = self.run_gate("verify-script-lint.sh", tools_dir=False, own_shellcheck=True)
