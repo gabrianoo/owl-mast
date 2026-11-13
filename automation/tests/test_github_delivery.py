@@ -1,3 +1,4 @@
+import errno
 import io
 import json
 import os
@@ -1279,6 +1280,87 @@ class CliTests(unittest.TestCase):
         self.assertEqual((code, json.loads(out.getvalue())["commit"]), (0, SHA))
         sent = json.loads(next(stdin for call, stdin in fake.calls if "pulls/12/reviews" in call))
         self.assertEqual((sent["commit_id"], sent["comments"][0]["line"]), (SHA, 12))
+
+    def bad_input_files(self, folder):
+        """One path per way an input file cannot be read, with the reason the refusal must give."""
+        folder = Path(folder)
+        binary = folder / "latin1.md"
+        binary.write_bytes(b"caf\xe9\n")
+        cases = [("missing", folder / "absent.md", os.strerror(errno.ENOENT)),
+                 ("directory", folder, os.strerror(errno.EISDIR)),
+                 ("not UTF-8", binary, "it is not valid UTF-8 (invalid continuation byte at byte 3)")]
+        locked = folder / "locked.md"
+        locked.write_text("secret", encoding="utf-8")
+        locked.chmod(0)
+        if not os.access(locked, os.R_OK):  # root, and some file systems, read it anyway
+            cases.append(("unreadable", locked, os.strerror(errno.EACCES)))
+        return cases
+
+    def assert_refuses_unreadable_input(self, argv_for):
+        """``argv_for(path, folder)`` is the command line that reads ``path``; no GitHub call may be made."""
+        with tempfile.TemporaryDirectory() as folder:
+            for name, path, reason in self.bad_input_files(folder):
+                with self.subTest(case=name):
+                    fake = FakeGh([])  # any gh call fails the test
+                    err = io.StringIO()
+                    with redirect_stderr(err), redirect_stdout(io.StringIO()) as out:
+                        code = main(argv_for(path, Path(folder)), client=GitHub(run=fake))
+                    self.assertEqual(code, 2)
+                    self.assertTrue(err.getvalue().startswith(f"error: cannot read {path}: "), err.getvalue())
+                    self.assertIn(reason, err.getvalue())
+                    self.assertEqual(err.getvalue().count("\n"), 1)
+                    self.assertNotIn("Traceback", err.getvalue())
+                    self.assertEqual((out.getvalue(), fake.calls, fake.lookups), ("", [], []))
+
+    def test_defer_refuses_a_body_file_it_cannot_read(self):
+        self.assert_refuses_unreadable_input(
+            lambda path, _: ["defer", "--title", "PR #120: t", "--body-file", str(path), "--source", "21"])
+
+    def test_reply_refuses_a_body_file_it_cannot_read(self):
+        self.assert_refuses_unreadable_input(lambda path, _: ["reply", "T1", "--body-file", str(path)])
+
+    def test_spec_push_refuses_a_file_it_cannot_read(self):
+        self.assert_refuses_unreadable_input(lambda path, _: ["spec-push", "21", "--file", str(path), "--key", "spec-x"])
+
+    def test_doc_push_refuses_a_file_it_cannot_read(self):
+        self.assert_refuses_unreadable_input(lambda path, _: ["doc-push", "1", "--file", str(path), "--key", "notes"])
+
+    def test_post_review_refuses_a_summary_or_findings_file_it_cannot_read(self):
+        base = ["post-review", "12", "--round", "1", "--commit", SHA, "--verdict", "changes"]
+
+        def with_good(flag, text):
+            def argv(path, folder):
+                good = folder / f"good{flag}.txt"
+                good.write_text(text, encoding="utf-8")
+                other = "--findings-file" if flag == "--summary-file" else "--summary-file"
+                return base + [flag, str(good), other, str(path)]
+            return argv
+        self.assert_refuses_unreadable_input(with_good("--findings-file", "[]"))  # the summary cannot be read
+        self.assert_refuses_unreadable_input(with_good("--summary-file", "One problem."))  # the findings cannot
+
+    def test_post_review_refuses_a_findings_file_it_cannot_parse(self):
+        not_json = "findings file {path} is not valid JSON: "
+        bad_finding = "each finding needs id, path, body and an optional integer line: "
+        cases = [("not JSON", "[{'id': 'R1-1'}]", not_json),
+                 ("nested too deep", "[" * 100_000, not_json),
+                 ("not an array", "{}", "findings file must hold a JSON array"),
+                 ("line overflows", '[{"id": "R1-1", "path": "app.py", "body": "b", "line": 1e999}]', bad_finding)]
+        with tempfile.TemporaryDirectory() as tmp:
+            summary, findings = Path(tmp) / "s.md", Path(tmp) / "f.json"
+            summary.write_text("One problem.", encoding="utf-8")
+            for name, text, message in cases:
+                with self.subTest(case=name):
+                    findings.write_text(text, encoding="utf-8")
+                    fake = FakeGh([])
+                    err = io.StringIO()
+                    with redirect_stderr(err), redirect_stdout(io.StringIO()) as out:
+                        code = main(["post-review", "12", "--round", "1", "--commit", SHA, "--verdict", "changes",
+                                     "--summary-file", str(summary), "--findings-file", str(findings)],
+                                    client=GitHub(run=fake))
+                    self.assertEqual(code, 2)
+                    self.assertTrue(err.getvalue().startswith("error: " + message.format(path=findings)), err.getvalue())
+                    self.assertNotIn("Traceback", err.getvalue())
+                    self.assertEqual((out.getvalue(), fake.calls, fake.lookups), ("", [], []))
 
     def test_post_review_requires_the_reviewed_commit(self):
         with redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):

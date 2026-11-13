@@ -58,6 +58,8 @@ A `gh` call that takes longer than 120 seconds is a refusal like any other (exit
 - `status`: read the Status first. If it already shows the target, the write went through; a rerun with the old `--expect` would be refused. With `--claim`, the run's marker comment may be left on the issue (a rerun is then refused as "being claimed by another run" and names it): delete that comment by hand.
 - `reply`: look at the thread first; a rerun after a reply that went through posts it twice.
 
+An input file (`--file`, `--body-file`, `--summary-file`, `--findings-file`) that is missing, is a directory, cannot be read or is not valid UTF-8 is a refusal that names the path, and so is a findings file that is not valid JSON. It is refused before any GitHub call, so nothing was written: correct the path or the file and run the same command again.
+
 If the helper exits 2, report its message and stop; never work around a refusal with raw `gh` writes.
 
 ### Trusted authors
