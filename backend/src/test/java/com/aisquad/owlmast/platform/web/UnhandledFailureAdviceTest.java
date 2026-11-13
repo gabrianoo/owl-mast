@@ -15,6 +15,7 @@ import java.lang.reflect.Modifier;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.annotation.ResponseStatus;
@@ -58,7 +59,9 @@ class UnhandledFailureAdviceTest {
                 .filter(
                     type -> !UnhandledFailureAdvice.STATUS_BY_PLATFORM_FAILURE.containsKey(type))
                 .filter(type -> !ErrorResponse.class.isAssignableFrom(type))
-                .filter(type -> !type.isAnnotationPresent(ResponseStatus.class))
+                // As the advice reads it: composed and inherited annotations count.
+                .filter(type ->
+                    AnnotatedElementUtils.findMergedAnnotation(type, ResponseStatus.class) == null)
                 .map(Class::getName)
                 .toList();
     assertThat(undecided)
