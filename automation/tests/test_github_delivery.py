@@ -1,3 +1,4 @@
+import errno
 import io
 import json
 import os
@@ -5,12 +6,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
 from automation.github_delivery import (
     MAX_REVIEW_ROUNDS,
+    PATH_ERRNOS,
     DeliveryError,
     Finding,
     GitHub,
@@ -508,12 +510,9 @@ class SpecSyncTests(unittest.TestCase):
 
         fake = FakeGh([("--paginate", comments), ("-X POST", create), ("-X PATCH", edit)])
         gh = GitHub(run=fake)
-        spec = self.dir / "spec-om-01-05-x.md"
-        spec.write_text(SPEC, encoding="utf-8")
-        self.assertTrue(gh.spec_push(42, "spec-om-01-05-x", spec)["changed"])
-        self.assertFalse(gh.spec_push(42, "spec-om-01-05-x", spec)["changed"])
-        spec.write_text(SPEC.replace("in-progress", "done"), encoding="utf-8")
-        self.assertTrue(gh.spec_push(42, "spec-om-01-05-x", spec)["changed"])
+        self.assertTrue(gh.spec_push(42, "spec-om-01-05-x", SPEC)["changed"])
+        self.assertFalse(gh.spec_push(42, "spec-om-01-05-x", SPEC)["changed"])
+        self.assertTrue(gh.spec_push(42, "spec-om-01-05-x", SPEC.replace("in-progress", "done"))["changed"])
         self.assertEqual(len(store), 1)
         self.assertEqual(sum("-X PATCH" in c for c, _ in fake.calls), 1)
         out = self.dir / "hydrated" / "spec.md"
@@ -546,13 +545,10 @@ class SpecSyncTests(unittest.TestCase):
             render_spec_comment("epic-1-context", text)
         fake, store = self.comment_store()
         gh = GitHub(run=fake)
-        doc = self.dir / "epic-1-context.md"
-        doc.write_text(text, encoding="utf-8")
-        self.assertTrue(gh.doc_push(1, "epic-1-context", doc)["changed"])
-        self.assertFalse(gh.doc_push(1, "epic-1-context", doc)["changed"])
-        doc.write_text(text + "more\n", encoding="utf-8")
-        self.assertEqual(gh.doc_push(1, "epic-1-context", doc), {"number": 1, "key": "epic-1-context", "comment": "c1",
-                                                                 "changed": True})
+        self.assertTrue(gh.doc_push(1, "epic-1-context", text)["changed"])
+        self.assertFalse(gh.doc_push(1, "epic-1-context", text)["changed"])
+        self.assertEqual(gh.doc_push(1, "epic-1-context", text + "more\n"),
+                         {"number": 1, "key": "epic-1-context", "comment": "c1", "changed": True})
         self.assertEqual(len(store), 1)
         out = self.dir / "work" / "epic-1-context.md"
         self.assertEqual(gh.doc_pull(1, None, out)["key"], "epic-1-context")
@@ -561,11 +557,8 @@ class SpecSyncTests(unittest.TestCase):
     def test_documents_and_specs_with_the_same_key_do_not_see_each_other(self):
         fake, store = self.comment_store()
         gh = GitHub(run=fake)
-        spec, doc = self.dir / "k.md", self.dir / "k.txt"
-        spec.write_text(SPEC, encoding="utf-8")
-        doc.write_text("plain\n", encoding="utf-8")
-        gh.spec_push(7, "k", spec)
-        gh.doc_push(7, "k", doc)
+        gh.spec_push(7, "k", SPEC)
+        gh.doc_push(7, "k", "plain\n")
         self.assertEqual([c["body"].split("\n")[0] for c in store],
                          ["<!-- bmad:spec key=k -->", "<!-- bmad:doc key=k -->"])
         self.assertEqual([s["key"] for s in gh.spec_list(7)], ["k"])
@@ -598,7 +591,16 @@ class SpecSyncTests(unittest.TestCase):
             twice.doc_pull(1, "k", out)
         outsider = GitHub(run=FakeGh([]), trusted_authors=WRITER)
         with self.assertRaisesRegex(DeliveryError, "not a trusted author.*refusing to write"):
-            outsider.doc_push(1, "k", out)
+            outsider.doc_push(1, "k", "plain\n")
+
+    def test_spec_cli_publishes_the_text_of_the_file_under_its_stem(self):
+        fake, store = self.comment_store()
+        spec = self.dir / "spec-om-01-05-x.md"
+        spec.write_text(SPEC, encoding="utf-8")
+        with redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(main(["spec-push", "42", "--file", str(spec)], client=GitHub(run=fake)), 0)
+        self.assertEqual(json.loads(out.getvalue())["key"], "spec-om-01-05-x")
+        self.assertEqual(parse_spec_comment(store[0]["body"]), ("spec-om-01-05-x", SPEC))
 
     def test_doc_cli_defaults_the_key_to_the_file_stem(self):
         fake, store = self.comment_store()
@@ -644,9 +646,7 @@ class SpecSyncTests(unittest.TestCase):
     def test_push_next_to_a_forged_spec_comment_creates_the_real_one(self):
         forged = {"id": 2, "body": render_spec_comment("k", SPEC), "html_url": "theirs", "user": {"login": OUTSIDER}}
         fake = FakeGh([("--paginate", [[forged]]), ("-X POST", {"html_url": "new"})])
-        spec = self.dir / "k.md"
-        spec.write_text(SPEC, encoding="utf-8")
-        self.assertEqual(GitHub(run=fake).spec_push(1, "k", spec), {"number": 1, "key": "k", "comment": "new", "changed": True})
+        self.assertEqual(GitHub(run=fake).spec_push(1, "k", SPEC), {"number": 1, "key": "k", "comment": "new", "changed": True})
         self.assertFalse([c for c, _ in fake.calls if "-X PATCH" in c])
 
 
@@ -760,13 +760,10 @@ class ReviewStateTests(unittest.TestCase):
         fake = FakeGh([("projectV2(number:$number){ id", {"data": PROJECT}),
                        ("issueOrPullRequest", {"data": item("Ready")["data"]})])
         gh = GitHub(run=fake, trusted_authors=WRITER)
-        with tempfile.TemporaryDirectory() as tmp:
-            spec = Path(tmp) / "k.md"
-            spec.write_text(SPEC, encoding="utf-8")
-            for write in (lambda: gh.spec_push(1, "k", spec), lambda: gh.post_review(12, 1, "clean", "ok", [], HEAD),
-                          lambda: gh.set_status(5, "In progress", ["Ready"], claim=True)):
-                with self.assertRaisesRegex(DeliveryError, "gh user delivery-bot is not a trusted author.*refusing to write"):
-                    write()
+        for write in (lambda: gh.spec_push(1, "k", SPEC), lambda: gh.post_review(12, 1, "clean", "ok", [], HEAD),
+                      lambda: gh.set_status(5, "In progress", ["Ready"], claim=True)):
+            with self.assertRaisesRegex(DeliveryError, "gh user delivery-bot is not a trusted author.*refusing to write"):
+                write()
         self.assertFalse([c for c, _ in fake.calls if "-X POST" in c or "--paginate" in c])
 
     def test_forged_clean_last_round_cannot_end_the_loop_or_be_posted_over(self):
@@ -1102,7 +1099,9 @@ class DeferTests(unittest.TestCase):
                 code = main(["defer", "--title", self.TITLE, "--body-file", str(body), "--source", "21"], client=gh)
             self.assertEqual(code, 0)
             self.assertEqual(json.loads(out.getvalue())["issue"], 150)
-            self.assertIn("- Issue #21", json.loads(next(stdin for call, stdin in fake.calls if self.CREATE in call))["body"])
+            sent = json.loads(next(stdin for call, stdin in fake.calls if self.CREATE in call))
+            self.assertTrue(sent["body"].startswith("What is deferred and why.\n"), sent["body"])
+            self.assertIn("- Issue #21", sent["body"])
             gh, fake = self.client()
             err = io.StringIO()
             with redirect_stderr(err), redirect_stdout(io.StringIO()):
@@ -1280,6 +1279,253 @@ class CliTests(unittest.TestCase):
         self.assertEqual((code, json.loads(out.getvalue())["commit"]), (0, SHA))
         sent = json.loads(next(stdin for call, stdin in fake.calls if "pulls/12/reviews" in call))
         self.assertEqual((sent["commit_id"], sent["comments"][0]["line"]), (SHA, 12))
+        self.assertIn("One problem.", sent["body"])
+
+    def test_reply_cli_posts_the_text_of_the_body_file_on_the_thread(self):
+        url = "https://github.com/gabrianoo/owl-mast/pull/12#discussion_r1"
+        fake = FakeGh([("addPullRequestReviewThreadReply",
+                        {"data": {"addPullRequestReviewThreadReply": {"comment": {"url": url}}}})])
+        with tempfile.TemporaryDirectory() as tmp:
+            body = Path(tmp) / "reply.md"
+            body.write_text("Fixed in abc: one line.\n", encoding="utf-8")
+            with redirect_stdout(io.StringIO()) as out:
+                code = main(["reply", "PRRT_1", "--body-file", str(body)], client=GitHub(run=fake))
+        self.assertEqual((code, json.loads(out.getvalue())), (0, {"url": url}))
+        (call, stdin), = fake.calls
+        self.assertTrue(call.endswith(" -f t=PRRT_1 -f b=Fixed in abc: one line.\n"), call)
+        self.assertIsNone(stdin)
+
+    def bad_input_files(self, folder):
+        """One path per way an input file cannot be read, with the reason the refusal must give."""
+        folder = Path(folder)
+        binary = folder / "latin1.md"
+        binary.write_bytes(b"caf\xe9\n")
+        denied = folder / "denied.md"  # the read is mocked to fail, so the case runs for every user and file system
+        denied.write_text("secret", encoding="utf-8")
+        locked = folder / "locked.md"  # really unreadable, where the system honours the mode
+        locked.write_text("secret", encoding="utf-8")
+        locked.chmod(0)
+        return [("missing", folder / "absent.md", os.strerror(errno.ENOENT)),
+                ("directory", folder, os.strerror(errno.EISDIR)),
+                ("not UTF-8", binary, "it is not valid UTF-8 (invalid continuation byte at byte 3)"),
+                ("permission denied (mocked)", denied, os.strerror(errno.EACCES)),
+                ("permission denied (chmod 0)", locked, os.strerror(errno.EACCES))]
+
+    def assert_refuses_unreadable_input(self, argv_for):
+        """``argv_for(path, folder)`` is the command line that reads ``path``; no GitHub call may be made."""
+        real_read = Path.read_text
+
+        def read(path, *args, **kwargs):
+            if path.name == "denied.md":
+                raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(path))
+            return real_read(path, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as folder:
+            for name, path, reason in self.bad_input_files(folder):
+                with self.subTest(case=name):
+                    if path.name == "locked.md" and os.access(path, os.R_OK):
+                        self.skipTest("chmod(0) leaves the file readable here (root, or a file system that ignores "
+                                      "the mode); the mocked case covers EACCES")
+                    fake = FakeGh([])  # any gh call fails the test
+                    err = io.StringIO()
+                    patched = mock.patch.object(Path, "read_text", read) if path.name == "denied.md" else nullcontext()
+                    with patched, redirect_stderr(err), redirect_stdout(io.StringIO()) as out:
+                        code = main(argv_for(path, Path(folder)), client=GitHub(run=fake))
+                    self.assertEqual(code, 2)
+                    self.assertTrue(err.getvalue().startswith(f"error: cannot read {path}: "), err.getvalue())
+                    self.assertIn(reason, err.getvalue())
+                    self.assertEqual(err.getvalue().count("\n"), 1)
+                    self.assertNotIn("Traceback", err.getvalue())
+                    self.assertEqual((out.getvalue(), fake.calls, fake.lookups), ("", [], []))
+
+    def read_failing_on_flaky(self, make_error):
+        """``Path.read_text`` that raises a fresh ``make_error()`` for ``flaky.md`` and reads any other file."""
+        real_read = Path.read_text
+
+        def read(path, *args, **kwargs):
+            if path.name == "flaky.md":
+                raise make_error()
+            return real_read(path, *args, **kwargs)
+        return mock.patch.object(Path, "read_text", read)
+
+    def input_file_commands(self, good):
+        """One command line per input file the helper reads; ``good`` is a readable file for the other flag."""
+        review = ["post-review", "12", "--round", "1", "--commit", SHA, "--verdict", "changes"]
+        return {
+            "defer": lambda path: ["defer", "--title", "PR #120: t", "--body-file", path, "--source", "21"],
+            "reply": lambda path: ["reply", "T1", "--body-file", path],
+            "spec-push": lambda path: ["spec-push", "21", "--file", path, "--key", "spec-x"],
+            "doc-push": lambda path: ["doc-push", "1", "--file", path, "--key", "notes"],
+            "post-review summary": lambda path: review + ["--findings-file", str(good), "--summary-file", path],
+            "post-review findings": lambda path: review + ["--summary-file", str(good), "--findings-file", path],
+        }
+
+    def test_a_read_failure_that_is_not_about_the_path_says_a_rerun_is_safe(self):
+        """EIO, EMFILE and the like leave nothing to correct in the file: the refusal must not say "cannot read"."""
+        failures = {
+            "EIO": lambda: OSError(errno.EIO, os.strerror(errno.EIO)),
+            "EMFILE": lambda: OSError(errno.EMFILE, os.strerror(errno.EMFILE)),
+            "EINTR": lambda: InterruptedError(errno.EINTR, os.strerror(errno.EINTR)),
+            "ESTALE": lambda: OSError(errno.ESTALE, os.strerror(errno.ESTALE)),
+            "no errno": lambda: OSError("mount went away"),
+            "no errno, no text": OSError,
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "flaky.md"
+            path.write_text("A file with nothing wrong.\n", encoding="utf-8")
+            good = Path(folder) / "good.json"  # valid as a findings file and as a summary
+            good.write_text("[]", encoding="utf-8")
+            for name, argv_for in self.input_file_commands(good).items():
+                for label, make_error in failures.items():
+                    with self.subTest(command=name, failure=label):
+                        fake = FakeGh([])  # any gh call fails the test
+                        err = io.StringIO()
+                        with self.read_failing_on_flaky(make_error), \
+                                redirect_stderr(err), redirect_stdout(io.StringIO()) as out:
+                            code = main(argv_for(str(path)), client=GitHub(run=fake))
+                        self.assertEqual(code, 2)
+                        sample = make_error()
+                        reason = sample.strerror or str(sample) or "OSError"
+                        self.assertTrue(err.getvalue().startswith(f"error: reading {path} failed: {reason}; "),
+                                        err.getvalue())
+                        self.assertIn("nothing was sent to GitHub", err.getvalue())
+                        self.assertIn("run the same command again as it is", err.getvalue())
+                        self.assertNotIn("cannot read", err.getvalue())
+                        self.assertEqual(err.getvalue().count("\n"), 1)
+                        self.assertNotIn("Traceback", err.getvalue())
+                        self.assertEqual((out.getvalue(), fake.calls, fake.lookups), ("", [], []))
+
+    def test_every_read_error_about_the_path_keeps_the_cannot_read_refusal(self):
+        """Pins PATH_ERRNOS to a list written out here, so a code dropped from or added to the set fails."""
+        # A second, hand-written copy of the set, not read from it. It, PATH_ERRNOS and the "cannot read"
+        # causes in docs/github-delivery-workflow.md change together.
+        documented = (errno.ENOENT, errno.EISDIR, errno.ENOTDIR, errno.EACCES, errno.EPERM,
+                      errno.ENAMETOOLONG, errno.ELOOP)
+        self.assertEqual(sorted(errno.errorcode[code] for code in PATH_ERRNOS),
+                         sorted(errno.errorcode[code] for code in documented))
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "flaky.md"
+            good = Path(folder) / "good.json"
+            good.write_text("[]", encoding="utf-8")
+            for name, argv_for in self.input_file_commands(good).items():
+                for code in documented:
+                    with self.subTest(command=name, errno=errno.errorcode[code]):
+                        fake = FakeGh([])
+                        err = io.StringIO()
+                        with self.read_failing_on_flaky(lambda: OSError(code, os.strerror(code))), \
+                                redirect_stderr(err), redirect_stdout(io.StringIO()) as out:
+                            self.assertEqual(main(argv_for(str(path)), client=GitHub(run=fake)), 2)
+                        self.assertEqual(err.getvalue(), f"error: cannot read {path}: {os.strerror(code)}\n")
+                        self.assertEqual((out.getvalue(), fake.calls, fake.lookups), ("", [], []))
+
+    def test_a_path_with_a_null_byte_is_refused_not_a_traceback(self):
+        fake = FakeGh([])
+        err = io.StringIO()
+        with redirect_stderr(err), redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(main(["reply", "T1", "--body-file", "a\0b.md"], client=GitHub(run=fake)), 2)
+        self.assertEqual(err.getvalue(), "error: cannot read a\\0b.md: embedded null byte\n")
+        self.assertEqual((out.getvalue(), fake.calls, fake.lookups), ("", [], []))
+
+    def test_defer_refuses_a_body_file_it_cannot_read(self):
+        self.assert_refuses_unreadable_input(
+            lambda path, _: ["defer", "--title", "PR #120: t", "--body-file", str(path), "--source", "21"])
+
+    def test_reply_refuses_a_body_file_it_cannot_read(self):
+        self.assert_refuses_unreadable_input(lambda path, _: ["reply", "T1", "--body-file", str(path)])
+
+    def test_spec_push_refuses_a_file_it_cannot_read(self):
+        self.assert_refuses_unreadable_input(lambda path, _: ["spec-push", "21", "--file", str(path), "--key", "spec-x"])
+
+    def test_doc_push_refuses_a_file_it_cannot_read(self):
+        self.assert_refuses_unreadable_input(lambda path, _: ["doc-push", "1", "--file", str(path), "--key", "notes"])
+
+    def test_post_review_refuses_a_summary_or_findings_file_it_cannot_read(self):
+        base = ["post-review", "12", "--round", "1", "--commit", SHA, "--verdict", "changes"]
+
+        def with_good(flag, text):
+            def argv(path, folder):
+                good = folder / f"good{flag}.txt"
+                good.write_text(text, encoding="utf-8")
+                other = "--findings-file" if flag == "--summary-file" else "--summary-file"
+                return base + [flag, str(good), other, str(path)]
+            return argv
+        self.assert_refuses_unreadable_input(with_good("--findings-file", "[]"))  # the summary cannot be read
+        self.assert_refuses_unreadable_input(with_good("--summary-file", "One problem."))  # the findings cannot
+
+    def test_post_review_refuses_a_findings_file_it_cannot_parse(self):
+        not_json = "findings file {path} is not valid JSON: "
+        bad_finding = "findings file {path}: each finding needs id, path, body and an optional integer line: "
+        finding = '[{{"id": "R1-1", "path": "app.py", "body": "b"{rest}}}]'
+        cases = [("not JSON", "[{'id': 'R1-1'}]", not_json),
+                 ("nested too deep", "[" * 100_000, not_json),
+                 ("not an array", "{}", "findings file {path} must hold a JSON array"),
+                 ("no id", '[{"path": "app.py", "body": "b"}]', bad_finding + "'id'"),
+                 ("no path", '[{"id": "R1-1", "body": "b"}]', bad_finding + "'path'"),
+                 ("no body", '[{"id": "R1-1", "path": "app.py"}]', bad_finding + "'body'"),
+                 ("finding is not an object", "[1]", bad_finding),
+                 ("line is not an integer", finding.format(rest=', "line": "twelve"'), bad_finding),
+                 ("line overflows", finding.format(rest=', "line": 1e999'), bad_finding)]
+        # A value nested deeper than str() can print. Where the parser itself gives up at that depth (it does
+        # before Python 3.14), the file is refused as not valid JSON instead; both name the file and exit 2.
+        deep = "[" * 50_000 + "]" * 50_000
+        for key in ("id", "path", "body"):
+            fields = {"id": '"R1-1"', "path": '"app.py"', "body": '"b"', key: deep}
+            text = "[{" + ", ".join(f'"{k}": {v}' for k, v in fields.items()) + "}]"
+            try:
+                json.loads(text)
+            except RecursionError:
+                cases.append((f"{key} nested too deep for the parser", text, not_json))
+            else:
+                cases.append((f"{key} nested too deep to print", text, bad_finding))
+        digit_limit = getattr(sys, "get_int_max_str_digits", lambda: 0)()  # 0: no limit, or a Python without one
+        if digit_limit:  # valid JSON, but past the integer digit limit of the parser
+            cases.append(("integer over the digit limit", finding.format(rest=', "line": ' + "1" * (digit_limit + 1)),
+                          "findings file {path} cannot be parsed: "))
+        with tempfile.TemporaryDirectory() as tmp:
+            summary, findings = Path(tmp) / "s.md", Path(tmp) / "f.json"
+            summary.write_text("One problem.", encoding="utf-8")
+            for name, text, message in cases:
+                with self.subTest(case=name):
+                    findings.write_text(text, encoding="utf-8")
+                    fake = FakeGh([])
+                    err = io.StringIO()
+                    with redirect_stderr(err), redirect_stdout(io.StringIO()) as out:
+                        code = main(["post-review", "12", "--round", "1", "--commit", SHA, "--verdict", "changes",
+                                     "--summary-file", str(summary), "--findings-file", str(findings)],
+                                    client=GitHub(run=fake))
+                    self.assertEqual(code, 2)
+                    self.assertTrue(err.getvalue().startswith("error: " + message.format(path=findings)), err.getvalue())
+                    self.assertNotIn("Traceback", err.getvalue())
+                    self.assertEqual((out.getvalue(), fake.calls, fake.lookups), ("", [], []))
+
+    def test_post_review_refuses_a_finding_value_too_deep_to_print(self):
+        # The parser is stubbed, so the str() of the value is what fails on every Python version; whether a file
+        # can get a value this deep past the real parser depends on the version (see the parse test above).
+        deep = []
+        for _ in range(100_000):
+            deep = [deep]
+        with self.assertRaises(RecursionError):
+            str(deep)
+        with tempfile.TemporaryDirectory() as tmp:
+            summary, findings = Path(tmp) / "s.md", Path(tmp) / "f.json"
+            summary.write_text("One problem.", encoding="utf-8")
+            findings.write_text("[]", encoding="utf-8")
+            for key in ("id", "path", "body"):
+                with self.subTest(key=key):
+                    parsed = [{"id": "R1-1", "path": "app.py", "body": "b", key: deep}]
+                    fake = FakeGh([])
+                    err = io.StringIO()
+                    with mock.patch("automation.github_delivery.json.loads", return_value=parsed), \
+                            redirect_stderr(err), redirect_stdout(io.StringIO()) as out:
+                        code = main(["post-review", "12", "--round", "1", "--commit", SHA, "--verdict", "changes",
+                                     "--summary-file", str(summary), "--findings-file", str(findings)],
+                                    client=GitHub(run=fake))
+                    self.assertEqual(code, 2)
+                    self.assertTrue(err.getvalue().startswith(
+                        f"error: findings file {findings}: each finding needs id, path, body and an optional "
+                        "integer line: "), err.getvalue()[:300])
+                    self.assertNotIn("Traceback", err.getvalue())
+                    self.assertEqual((out.getvalue(), fake.calls, fake.lookups), ("", [], []))
 
     def test_post_review_requires_the_reviewed_commit(self):
         with redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):

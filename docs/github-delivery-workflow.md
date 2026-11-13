@@ -58,7 +58,23 @@ A `gh` call that takes longer than 120 seconds is a refusal like any other (exit
 - `status`: read the Status first. If it already shows the target, the write went through; a rerun with the old `--expect` would be refused. With `--claim`, the run's marker comment may be left on the issue (a rerun is then refused as "being claimed by another run" and names it): delete that comment by hand.
 - `reply`: look at the thread first; a rerun after a reply that went through posts it twice.
 
-If the helper exits 2, report its message and stop; never work around a refusal with raw `gh` writes.
+An input file (`--file`, `--body-file`, `--summary-file`, `--findings-file`) that the helper cannot read is a refusal that names the path, in one of two forms:
+
+- `cannot read <path>: <reason>`: the problem is the path or the file. It is missing, is a directory, has a component that is not a directory, may not be read (permission denied), has a name that is too long, a symbolic-link loop or a null byte, or is not valid UTF-8. Correct the path or the file and run the same command again.
+- `reading <path> failed: <reason>`: any other read error (an I/O error, too many open files, an interrupted read, a stale network mount). The failure may not be about the file, so there is nothing to correct first: run the same command again as it is, once. If it fails again, look at the file, report the message and stop.
+
+A findings file is also refused, with a message that names the file, when:
+
+- it is not valid JSON, or is nested deeper than the parser goes;
+- it is valid JSON that the parser cannot load (an integer longer than Python's digit limit, 4,300 by default);
+- it is not a JSON array;
+- a finding has no `id`, `path` or `body`, one of the three is nested deeper than the helper can print, or its `line` cannot be read as an integer (`"twelve"`, or a number too large to be one, such as `1e999`).
+
+Correct the findings file and run the same command again.
+
+Every input-file refusal above happens before any GitHub call, so nothing was written and a rerun cannot post anything twice.
+
+If the helper exits 2, report its message and stop; never work around a refusal with raw `gh` writes. The one exception is `reading <path> failed`, which is run again once first, as described above.
 
 ### Trusted authors
 

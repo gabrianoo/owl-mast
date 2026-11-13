@@ -27,6 +27,7 @@ Requires an authenticated ``gh`` CLI. Python 3.9+ standard library only.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import re
@@ -66,12 +67,33 @@ HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 DELETED_FILE = re.compile(r"^diff --git a/(.+) b/\1$")
 BINARY_FILE = re.compile(r"^Binary files .+ and (?:b/(.+)|/dev/null) differ$")
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
+# The read errors that are about the input path itself, so the remedy is to correct the path or the
+# file. Any other OSError (EIO, EMFILE, EINTR, ENOMEM, a stale mount) may pass on a rerun.
+PATH_ERRNOS = frozenset({errno.ENOENT, errno.EISDIR, errno.ENOTDIR, errno.EACCES, errno.EPERM,
+                         errno.ENAMETOOLONG, errno.ELOOP})
 
 Runner = Callable[[Sequence[str], Optional[str]], str]
 
 
 class DeliveryError(RuntimeError):
     """A refusal or failed GitHub operation. Exit code 2, message on stderr."""
+
+
+def read_input(path: Path) -> str:
+    """The text of an input file; a file that cannot be read is a refusal, not a traceback."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        raise DeliveryError(f"cannot read {path}: it is not valid UTF-8 ({error.reason} at byte {error.start})") from error
+    except ValueError as error:  # a path the system cannot take, such as one with an embedded null byte
+        raise DeliveryError(f"cannot read {path}: {error}".replace("\0", "\\0")) from error
+    except OSError as error:
+        reason = error.strerror or str(error) or type(error).__name__
+        if error.errno in PATH_ERRNOS:
+            raise DeliveryError(f"cannot read {path}: {reason}") from error
+        raise DeliveryError(f"reading {path} failed: {reason}; nothing was sent to GitHub and the failure may not "
+                            "be about the file, so run the same command again as it is, once, and check the file "
+                            "if it fails again") from error
 
 
 def gh_runner(args: Sequence[str], stdin: Optional[str] = None) -> str:
@@ -667,16 +689,17 @@ class GitHub:
     def spec_pull(self, number: int, key: Optional[str], out: Path) -> dict:
         return self._pull(number, key, out, SPEC_MARKER, "spec", parse_spec_comment)
 
-    def spec_push(self, number: int, key: str, spec_file: Path) -> dict:
-        return self._push(number, key, render_spec_comment(key, spec_file.read_text(encoding="utf-8")), SPEC_MARKER, "spec")
+    def spec_push(self, number: int, key: str, text: str) -> dict:
+        """Publish a spec's text. It takes the text, not a path: ``main`` reads every input file before the first call."""
+        return self._push(number, key, render_spec_comment(key, text), SPEC_MARKER, "spec")
 
     def doc_pull(self, number: int, key: Optional[str], out: Path) -> dict:
         """Hydrate a document (epic context, retrospective, design note) from its marked comment."""
         return self._pull(number, key, out, DOC_MARKER, "document", parse_doc_comment)
 
-    def doc_push(self, number: int, key: str, doc_file: Path) -> dict:
-        """Publish any text file as one marked comment, created or edited in place like a spec."""
-        return self._push(number, key, render_doc_comment(key, doc_file.read_text(encoding="utf-8")), DOC_MARKER, "document")
+    def doc_push(self, number: int, key: str, text: str) -> dict:
+        """Publish any text as one marked comment, created or edited in place like a spec. Text, not a path, as above."""
+        return self._push(number, key, render_doc_comment(key, text), DOC_MARKER, "document")
 
     def _pull(self, number: int, key: Optional[str], out: Path, pattern: "re.Pattern[str]", kind: str,
               parse: Callable[[str], Tuple[str, str]]) -> dict:
@@ -857,14 +880,22 @@ class GitHub:
 
 
 def _findings(path: Path) -> List[Finding]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    text = read_input(path)
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, RecursionError) as error:  # RecursionError: nested deeper than the parser goes
+        raise DeliveryError(f"findings file {path} is not valid JSON: {error}") from error
+    except ValueError as error:  # valid JSON the parser refuses: an integer over Python's digit limit
+        raise DeliveryError(f"findings file {path} cannot be parsed: {error}") from error
     if not isinstance(data, list):
-        raise DeliveryError("findings file must hold a JSON array")
+        raise DeliveryError(f"findings file {path} must hold a JSON array")
     try:
         return [Finding(id=str(f["id"]), path=str(f["path"]), body=str(f["body"]),
                         line=int(f["line"]) if f.get("line") else None) for f in data]
-    except (KeyError, TypeError, ValueError) as error:
-        raise DeliveryError(f"each finding needs id, path, body and an optional integer line: {error}") from error
+    # OverflowError: a line of 1e999. RecursionError: an id, path or body nested deeper than str() can print.
+    except (KeyError, TypeError, ValueError, OverflowError, RecursionError) as error:
+        raise DeliveryError(f"findings file {path}: each finding needs id, path, body and an optional integer "
+                            f"line: {error}") from error
 
 
 def main(argv: Optional[Sequence[str]] = None, client: Optional[GitHub] = None) -> int:
@@ -927,17 +958,17 @@ def main(argv: Optional[Sequence[str]] = None, client: Optional[GitHub] = None) 
         elif args.command == "status":
             result = gh.set_status(args.issue, args.to, args.expect, args.claim)
         elif args.command == "defer":
-            result = gh.defer(args.title, args.body_file.read_text(encoding="utf-8"), args.source)
+            result = gh.defer(args.title, read_input(args.body_file), args.source)
         elif args.command == "spec-pull":
             result = gh.spec_pull(args.number, args.key, args.out)
         elif args.command == "spec-push":
-            result = gh.spec_push(args.number, args.key or args.file.stem, args.file)
+            result = gh.spec_push(args.number, args.key or args.file.stem, read_input(args.file))
         elif args.command == "doc-list":
             result = gh.doc_list(args.number)
         elif args.command == "doc-pull":
             result = gh.doc_pull(args.number, args.key, args.out)
         elif args.command == "doc-push":
-            result = gh.doc_push(args.number, args.key or args.file.stem, args.file)
+            result = gh.doc_push(args.number, args.key or args.file.stem, read_input(args.file))
         elif args.command == "spec-list":
             result = gh.spec_list(args.number)
         elif args.command == "review-state":
@@ -945,9 +976,9 @@ def main(argv: Optional[Sequence[str]] = None, client: Optional[GitHub] = None) 
         elif args.command == "post-review":
             findings = _findings(args.findings_file) if args.findings_file else []
             result = gh.post_review(args.pr, args.round, args.verdict,
-                                    args.summary_file.read_text(encoding="utf-8"), findings, args.commit)
+                                    read_input(args.summary_file), findings, args.commit)
         elif args.command == "reply":
-            result = {"url": gh.reply(args.thread_id, args.body_file.read_text(encoding="utf-8"))}
+            result = {"url": gh.reply(args.thread_id, read_input(args.body_file))}
         else:
             result = {"resolved": gh.resolve(args.thread_ids)}
     except DeliveryError as error:
