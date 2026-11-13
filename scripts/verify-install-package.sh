@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # OM-01.02 packaging checks: lint and render the owl-mast chart for every bundled/external
 # combination and assert fail-closed validation. Uses OWLMAST_HELM when set; otherwise fetches the
-# qualified Helm 4.3.1 (checksum verified) into a scratch directory. Installed Helm 3.x is not used.
+# qualified Helm 4.3.1 (checksum verified) into OWLMAST_TOOLS_DIR or, when that is unset, a scratch directory that is
+# removed on exit. Installed Helm 3.x is not used.
 # A cached tool in OWLMAST_TOOLS_DIR (created if missing) is never trusted as is: the Helm binary is
 # re-extracted on every run from an archive whose sha256 is verified and must report version v4.3.1; the
 # kubectl binary's own sha256 is re-verified and its client gitVersion must be v1.36.1. Binaries supplied
@@ -17,6 +18,14 @@ KUBECTL_VERSION=v1.36.1
 KUBECTL_SHA256=629d3f410e09bf49b64ae7079f7f0bda1191efed311f7d37fdbab0ad5b0ec2b7
 
 sha256_ok() { echo "$2  $1" | sha256sum -c --status - 2>/dev/null; }
+# What this run creates outside a shared OWLMAST_TOOLS_DIR is removed on exit, also when the run fails: the scratch
+# directory for the Helm and kubectl downloads, the hashed environment and the scratch directory that holds it.
+SCRATCH_TOOLS=""
+SCRATCH_HOME=""
+trap 'rm -rf ${HASHED_VENV:+"$HASHED_VENV"} ${SCRATCH_HOME:+"$SCRATCH_HOME"} ${SCRATCH_TOOLS:+"$SCRATCH_TOOLS"}' EXIT
+scratch_tools() {
+  [ -n "$SCRATCH_TOOLS" ] || SCRATCH_TOOLS="$(mktemp -d "${TMPDIR:-/tmp}/owlmast-tools.XXXXXX")"
+}
 require_pinned_platform() {
   local platform; platform="$(uname -s)-$(uname -m)"
   if [ "$platform" != "Linux-x86_64" ]; then
@@ -28,7 +37,8 @@ require_pinned_platform() {
 
 if [ -z "${OWLMAST_HELM:-}" ]; then
   require_pinned_platform
-  TOOLS="${OWLMAST_TOOLS_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/owlmast-helm.XXXXXX")}"
+  [ -n "${OWLMAST_TOOLS_DIR:-}" ] || scratch_tools
+  TOOLS="${OWLMAST_TOOLS_DIR:-$SCRATCH_TOOLS}"
   mkdir -p "$TOOLS"
   if ! sha256_ok "$TOOLS/helm.tar.gz" "$HELM_SHA256"; then
     curl -fsSL -o "$TOOLS/helm.tar.gz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
@@ -45,7 +55,8 @@ fi
 # kubectl v1.36.1 release binary (checksum verified) unless OWLMAST_KUBECTL names one.
 if [ -z "${OWLMAST_KUBECTL:-}" ]; then
   require_pinned_platform
-  TOOLS="${OWLMAST_TOOLS_DIR:-${TOOLS:-$(mktemp -d "${TMPDIR:-/tmp}/owlmast-kubectl.XXXXXX")}}"
+  [ -n "${OWLMAST_TOOLS_DIR:-}" ] || scratch_tools
+  TOOLS="${OWLMAST_TOOLS_DIR:-$SCRATCH_TOOLS}"
   mkdir -p "$TOOLS"
   if ! sha256_ok "$TOOLS/kubectl" "$KUBECTL_SHA256"; then
     rm -f "$TOOLS/kubectl"
@@ -71,9 +82,7 @@ REQUIREMENTS="$ROOT/deploy/tests/requirements.txt"
 # shellcheck source=scripts/hashed-venv.sh
 . "$ROOT/scripts/hashed-venv.sh"
 VENV_HOME="${OWLMAST_TOOLS_DIR:-}"
-SCRATCH_HOME=""
 [ -n "$VENV_HOME" ] || { SCRATCH_HOME="$(mktemp -d "${TMPDIR:-/tmp}/owlmast-deploy-tests.XXXXXX")"; VENV_HOME="$SCRATCH_HOME"; }
-trap 'rm -rf "${HASHED_VENV:-}" ${SCRATCH_HOME:+"$SCRATCH_HOME"}' EXIT
 hashed_venv "$VENV_HOME" deploy-tests-venv "$REQUIREMENTS"
 VENV="$HASHED_VENV"
 "$VENV/bin/python" -m pip check --disable-pip-version-check

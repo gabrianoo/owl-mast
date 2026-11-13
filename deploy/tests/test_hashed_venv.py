@@ -119,21 +119,24 @@ exit 1
 """
 
 
-# For the lint gate's own shellcheck download (no OWLMAST_SHELLCHECK): a linux-x86_64 host, an archive that passes
-# the checksum, and a tar that extracts a shellcheck reporting the pinned version into the directory given by -C.
+# For the gates' own downloads (no OWLMAST_SHELLCHECK, OWLMAST_HELM or OWLMAST_KUBECTL): a linux-x86_64 host, files
+# that pass the checksum, and a tar that extracts the archive's last named member (shellcheck or helm, reporting the
+# pinned version) into the directory given by -C. No kubectl is ever written, so a kubectl download stops the gate.
 DOWNLOAD_STUBS = {
     "uname": '#!/usr/bin/env bash\ncase "$1" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo Linux ;; esac\n',
     "sha256sum": '#!/usr/bin/env bash\ncat >/dev/null; exit 0\n',
-    "tar": '#!/usr/bin/env bash\necho "tar $*" >> "$STUB_LOG"\nwhile [ $# -gt 0 ]; do [ "$1" = -C ] && dir="$2"; shift; done\n'
-           'printf \'#!/usr/bin/env bash\\necho "version: 0.11.0"\\n\' > "$dir/shellcheck"; chmod +x "$dir/shellcheck"\n',
+    "tar": '#!/usr/bin/env bash\necho "tar $*" >> "$STUB_LOG"\nwhile [ $# -gt 0 ]; do [ "$1" = -C ] && dir="$2"; member="$1"; shift; done\n'
+           'name="$(basename "$member")"; case "$name" in helm) out=v4.3.1 ;; *) out="version: 0.11.0" ;; esac\n'
+           'printf \'#!/usr/bin/env bash\\necho "%s"\\n\' "$out" > "$dir/$name"; chmod +x "$dir/$name"\n',
     "curl": '#!/usr/bin/env bash\necho "curl must not be called" >&2; exit 1\n',
 }
 
 
 class GateCleanupTests(unittest.TestCase):
-    """Review cycles 5 and 6: both gates remove what they create for their run on exit, also when they fail (the
-    hashed environment, the lint gate's extracted shellcheck directory, and the scratch directory used when
-    OWLMAST_TOOLS_DIR is unset), and leave what another run keeps in a shared OWLMAST_TOOLS_DIR alone."""
+    """Review cycles 5 to 7: both gates remove what they create for their run on exit, also when they fail (the
+    hashed environment, the lint gate's extracted shellcheck directory, and, when OWLMAST_TOOLS_DIR is unset, the
+    scratch directories for the environment and for the Helm, kubectl and shellcheck downloads), and leave what
+    another run keeps in a shared OWLMAST_TOOLS_DIR alone."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="owlmast-gate-cleanup."))
@@ -159,14 +162,19 @@ class GateCleanupTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def run_gate(self, name, tools_dir=True, own_shellcheck=False):
+    def run_gate(self, name, tools_dir=True, own_shellcheck=False, own_helm=False, own_kubectl=False):
         path = f"{self.bin}:{os.environ['PATH']}"
-        env = {"PATH": f"{self.download_bin}:{path}" if own_shellcheck else path, "HOME": str(self.tmp), "STUB_LOG": str(self.log),
-               "TMPDIR": str(self.scratch), "OWLMAST_HELM": str(self.bin / "helm"), "OWLMAST_KUBECTL": str(self.bin / "kubectl")}
+        downloads = own_shellcheck or own_helm or own_kubectl
+        env = {"PATH": f"{self.download_bin}:{path}" if downloads else path, "HOME": str(self.tmp), "STUB_LOG": str(self.log),
+               "TMPDIR": str(self.scratch)}
         if tools_dir:
             env["OWLMAST_TOOLS_DIR"] = str(self.tools)
         if not own_shellcheck:
             env["OWLMAST_SHELLCHECK"] = str(self.bin / "shellcheck")
+        if not own_helm:
+            env["OWLMAST_HELM"] = str(self.bin / "helm")
+        if not own_kubectl:
+            env["OWLMAST_KUBECTL"] = str(self.bin / "kubectl")
         return subprocess.run(["bash", str(REPO / "scripts" / name)], env=env, capture_output=True, text=True, timeout=60)
 
     def assert_cleaned(self, r, prefix, home=None):
@@ -200,6 +208,23 @@ class GateCleanupTests(unittest.TestCase):
 
     def test_without_a_tools_directory_the_deploy_test_gate_leaves_nothing_in_tmpdir(self):
         self.assert_cleaned(self.run_gate("verify-install-package.sh", tools_dir=False), "deploy-tests-venv")
+
+    def test_without_a_tools_directory_the_deploy_test_gate_removes_its_helm_download(self):
+        """Review cycle 7 (R7-1): without OWLMAST_TOOLS_DIR and OWLMAST_HELM the Helm archive and binary go to a
+        scratch directory in TMPDIR, which the gate removes on exit like its environment."""
+        r = self.run_gate("verify-install-package.sh", tools_dir=False, own_helm=True)
+        extracted = [line.split()[line.split().index("-C") + 1] for line in self.log.read_text().splitlines() if line.startswith("tar ")]
+        self.assertEqual(len(extracted), 1, extracted)
+        self.assertEqual(Path(extracted[0]).parent, self.scratch)
+        self.assert_cleaned(r, "deploy-tests-venv")
+
+    def test_without_a_tools_directory_the_deploy_test_gate_removes_its_kubectl_download_when_it_fails(self):
+        """Review cycle 7 (R7-1): the kubectl download uses the same scratch directory, and a failure there (the stub
+        writes no kubectl) still leaves nothing in TMPDIR."""
+        r = self.run_gate("verify-install-package.sh", tools_dir=False, own_helm=True, own_kubectl=True)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("python3 -m venv", self.log.read_text())
+        self.assertEqual(list(self.scratch.iterdir()), [], "the run left its download directory in TMPDIR")
 
     def test_without_a_tools_directory_the_lint_gate_leaves_nothing_in_tmpdir(self):
         r = self.run_gate("verify-script-lint.sh", tools_dir=False, own_shellcheck=True)
