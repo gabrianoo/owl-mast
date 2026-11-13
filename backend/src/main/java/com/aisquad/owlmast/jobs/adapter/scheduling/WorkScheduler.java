@@ -34,8 +34,9 @@ import reactor.core.publisher.Sinks;
  * the same reason does not stop a scheduled task, so the wake-up checks for itself, every time: the
  * server behind the same address can change while the process runs (a failover, a repoint), so a
  * yes is not kept. While the precondition answers no, cannot be read or takes longer than {@link
- * #PRECONDITION_TIMEOUT}, nothing is claimed; the refusal is logged when it starts, not at every
- * wake-up. A stop also ends a precondition read in flight.
+ * #PRECONDITION_TIMEOUT}, nothing is claimed; the pause is logged when it starts and its end when
+ * the next answer is yes, not at every wake-up. A transient read failure therefore pauses claiming
+ * for one wake-up and logs both lines. A stop also ends a precondition read in flight.
  */
 @Slf4j
 public final class WorkScheduler implements SmartLifecycle {
@@ -97,7 +98,7 @@ public final class WorkScheduler implements SmartLifecycle {
             }
           } else if (refusing.compareAndSet(false, true)) {
             log.warn(
-                "Durable work is not started: the database server is not a supported PostgreSQL"
+                "Durable work is paused: the database server is not a supported PostgreSQL"
                     + " version, or its schema baseline cannot be read. No work is claimed until"
                     + " it is");
           }
@@ -105,7 +106,7 @@ public final class WorkScheduler implements SmartLifecycle {
         .onErrorResume(error -> {
           if (refusing.compareAndSet(false, true)) {
             log.warn(
-                "Durable work is not started: the database precondition could not be read: {}",
+                "Durable work is paused: the database precondition could not be read: {}",
                 SafeFailure.describe(error));
           }
           return Mono.just(false);

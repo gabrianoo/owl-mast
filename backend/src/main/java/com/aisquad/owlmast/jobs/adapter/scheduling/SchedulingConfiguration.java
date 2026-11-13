@@ -21,8 +21,9 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 class SchedulingConfiguration {
 
   /**
-   * The wake-up starts only on a database server the bootstrap feature reports as supported
-   * (PostgreSQL 17 or newer); a missing baseline counts as not supported.
+   * Every wake-up asks the schema baseline again and claims work only while it reports a supported
+   * server (PostgreSQL 17 or newer); a missing, unreadable or unanswered (longer than {@link
+   * WorkScheduler#PRECONDITION_TIMEOUT}) baseline counts as not supported for that wake-up.
    */
   @Bean
   WorkScheduler workScheduler(WorkProcessor processor, SchemaBaselineQuery schemaBaseline) {

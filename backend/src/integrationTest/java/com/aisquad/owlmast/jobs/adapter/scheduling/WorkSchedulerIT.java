@@ -184,7 +184,7 @@ class WorkSchedulerIT {
         .isEqualTo("PENDING");
     assertThat(db.work(itemId).attempts()).isZero();
     assertThat(asked).hasValue(4);
-    assertThat(output.getAll().split("Durable work is not started", -1))
+    assertThat(output.getAll().split("Durable work is paused", -1))
         .as("the refusal is logged once, not at every wake-up")
         .hasSize(2);
     assertThat(output.getAll()).doesNotContain("s3cr3t");
@@ -210,7 +210,7 @@ class WorkSchedulerIT {
     assertThat(db.work(second).status())
         .as("after the server stops answering as supported, nothing more is claimed")
         .isEqualTo("PENDING");
-    assertThat(output.getAll().split("Durable work is not started", -1))
+    assertThat(output.getAll().split("Durable work is paused", -1))
         .as("the new refusal is logged again")
         .hasSize(3);
     scheduler.stop();
