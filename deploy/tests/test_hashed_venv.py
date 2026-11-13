@@ -7,6 +7,7 @@ stub on PATH that creates the environment's `bin/python` and records every call;
 """
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -133,17 +134,24 @@ DOWNLOAD_STUBS = {
 
 
 class GateCleanupTests(unittest.TestCase):
-    """Review cycles 5 to 7: both gates remove what they create for their run on exit, also when they fail (the
-    hashed environment, the lint gate's extracted shellcheck directory, and, when OWLMAST_TOOLS_DIR is unset, the
-    scratch directories for the environment and for the Helm, kubectl and shellcheck downloads), and leave what
-    another run keeps in a shared OWLMAST_TOOLS_DIR alone."""
+    """Review cycles 5 to 8: both gates remove what they create for their run on exit, also when they fail (the
+    hashed environment, the directories the lint gate extracts shellcheck and the deploy-test gate extracts Helm
+    into, and, when OWLMAST_TOOLS_DIR is unset, the scratch directories for the environment and for the Helm, kubectl
+    and shellcheck downloads), remove nothing they did not create (a HASHED_VENV inherited from the caller), and
+    leave what another run keeps in a shared OWLMAST_TOOLS_DIR alone (its environments, its extracted shellcheck and
+    Helm directories, and a Helm binary an older version of the gate extracted there). A cached kubectl there is
+    rewritten only when its checksum fails, and a first download into an empty shared directory is not guarded
+    against a concurrent one."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="owlmast-gate-cleanup."))
         self.tools = self.tmp / "tools"; self.tools.mkdir()
-        self.kept = ["deploy-tests-venv.other1", "ruff-venv.other1", "shellcheck.other1"]  # another run's entries
+        self.kept = ["deploy-tests-venv.other1", "helm", "helm.other1", "ruff-venv.other1", "shellcheck.other1"]  # another run's entries
         for name in self.kept:
-            (self.tools / name).mkdir()
+            if name == "helm":
+                (self.tools / name).write_text("another run's helm\n")
+            else:
+                (self.tools / name).mkdir()
         self.scratch = self.tmp / "tmpdir"; self.scratch.mkdir()  # TMPDIR of the gate
         self.bin = self.tmp / "bin"; self.bin.mkdir()
         self.download_bin = self.tmp / "download-bin"; self.download_bin.mkdir()
@@ -162,7 +170,7 @@ class GateCleanupTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def run_gate(self, name, tools_dir=True, own_shellcheck=False, own_helm=False, own_kubectl=False):
+    def run_gate(self, name, tools_dir=True, own_shellcheck=False, own_helm=False, own_kubectl=False, **extra):
         path = f"{self.bin}:{os.environ['PATH']}"
         downloads = own_shellcheck or own_helm or own_kubectl
         env = {"PATH": f"{self.download_bin}:{path}" if downloads else path, "HOME": str(self.tmp), "STUB_LOG": str(self.log),
@@ -175,6 +183,7 @@ class GateCleanupTests(unittest.TestCase):
             env["OWLMAST_HELM"] = str(self.bin / "helm")
         if not own_kubectl:
             env["OWLMAST_KUBECTL"] = str(self.bin / "kubectl")
+        env.update(extra)
         return subprocess.run(["bash", str(REPO / "scripts" / name)], env=env, capture_output=True, text=True, timeout=60)
 
     def assert_cleaned(self, r, prefix, home=None):
@@ -186,8 +195,23 @@ class GateCleanupTests(unittest.TestCase):
             self.assertEqual(venv.parent, home)
         self.assertTrue(venv.name.startswith(prefix + "."), venv)
         self.assertFalse(venv.exists(), "the run's environment was left behind")
-        self.assertEqual(sorted(p.name for p in self.tools.iterdir()), self.kept)
+        self.assert_tools_kept()
         self.assertEqual(list(self.scratch.iterdir()), [], "the run left a scratch directory in TMPDIR")
+
+    def assert_tools_kept(self):
+        self.assertEqual(sorted(p.name for p in self.tools.iterdir()), self.kept)
+        self.assertEqual((self.tools / "helm").read_text(), "another run's helm\n")
+
+    def extracted(self):
+        return [Path(line.split()[line.split().index("-C") + 1]) for line in self.log.read_text().splitlines() if line.startswith("tar ")]
+
+    def assert_failed_at_kubectl_in_scratch(self, r):
+        """The stubbed download writes no kubectl, so the gate stops at its chmod; the path shows which directory the
+        kubectl branch used."""
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertRegex(r.stderr, rf"chmod: .*{re.escape(str(self.scratch))}/owlmast-tools\.[^/]+/kubectl")
+        self.assertNotIn("python3 -m venv", self.log.read_text() if self.log.exists() else "")
+        self.assertEqual(list(self.scratch.iterdir()), [], "the run left its download directory in TMPDIR")
 
     def test_the_deploy_test_gate_removes_its_environment_when_it_fails(self):
         self.assert_cleaned(self.run_gate("verify-install-package.sh"), "deploy-tests-venv", self.tools)
@@ -213,18 +237,48 @@ class GateCleanupTests(unittest.TestCase):
         """Review cycle 7 (R7-1): without OWLMAST_TOOLS_DIR and OWLMAST_HELM the Helm archive and binary go to a
         scratch directory in TMPDIR, which the gate removes on exit like its environment."""
         r = self.run_gate("verify-install-package.sh", tools_dir=False, own_helm=True)
-        extracted = [line.split()[line.split().index("-C") + 1] for line in self.log.read_text().splitlines() if line.startswith("tar ")]
+        extracted = self.extracted()
         self.assertEqual(len(extracted), 1, extracted)
-        self.assertEqual(Path(extracted[0]).parent, self.scratch)
+        self.assertEqual(extracted[0].parent.parent, self.scratch)
+        self.assertTrue(extracted[0].parent.name.startswith("owlmast-tools."), extracted)
+        self.assertTrue(extracted[0].name.startswith("helm."), extracted)
         self.assert_cleaned(r, "deploy-tests-venv")
 
     def test_without_a_tools_directory_the_deploy_test_gate_removes_its_kubectl_download_when_it_fails(self):
         """Review cycle 7 (R7-1): the kubectl download uses the same scratch directory, and a failure there (the stub
         writes no kubectl) still leaves nothing in TMPDIR."""
         r = self.run_gate("verify-install-package.sh", tools_dir=False, own_helm=True, own_kubectl=True)
-        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertNotIn("python3 -m venv", self.log.read_text())
-        self.assertEqual(list(self.scratch.iterdir()), [], "the run left its download directory in TMPDIR")
+        self.assertEqual(self.extracted()[0].parent / "kubectl",
+                         Path(re.search(r"chmod: .*'([^']+)'", r.stderr).group(1)), r.stderr)  # the Helm download's directory
+        self.assert_failed_at_kubectl_in_scratch(r)
+
+    def test_without_a_tools_directory_the_deploy_test_gate_removes_a_kubectl_only_download(self):
+        """Review cycle 8 (R8-2): with OWLMAST_HELM supplied, the kubectl branch creates the scratch directory itself,
+        and the gate still removes it."""
+        self.assert_failed_at_kubectl_in_scratch(self.run_gate("verify-install-package.sh", tools_dir=False, own_kubectl=True))
+
+    def test_the_deploy_test_gate_extracts_helm_for_its_run_and_leaves_another_runs_helm_alone(self):
+        """Review cycle 8 (R8-3): in a shared OWLMAST_TOOLS_DIR, Helm is extracted into a directory of this run, which
+        is removed on exit; another run's binary and directory there are not touched."""
+        r = self.run_gate("verify-install-package.sh", own_helm=True)
+        extracted = self.extracted()
+        self.assertEqual(len(extracted), 1, extracted)
+        self.assertEqual(extracted[0].parent, self.tools)
+        self.assertTrue(extracted[0].name.startswith("helm."), extracted)
+        self.assertNotEqual(extracted[0].name, "helm.other1")
+        self.assert_cleaned(r, "deploy-tests-venv", self.tools)
+
+    def test_the_deploy_test_gate_never_removes_a_hashed_venv_it_inherited(self):
+        """Review cycle 8 (R8-1): the EXIT trap is set before the helper is sourced, so a HASHED_VENV exported by the
+        caller must not be removed, neither on the tools-only exit nor on a run that fails after building its own."""
+        victim = self.tmp / "callers-venv"; victim.mkdir(); (victim / "keep").write_text("x")
+        r = self.run_gate("verify-install-package.sh", HASHED_VENV=str(victim), OWLMAST_VERIFY_TOOLS_ONLY="1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue((victim / "keep").exists(), "the tools-only exit removed the caller's HASHED_VENV")
+        self.assert_tools_kept()
+        r = self.run_gate("verify-install-package.sh", HASHED_VENV=str(victim))
+        self.assert_cleaned(r, "deploy-tests-venv", self.tools)
+        self.assertTrue((victim / "keep").exists(), "the failing run removed the caller's HASHED_VENV")
 
     def test_without_a_tools_directory_the_lint_gate_leaves_nothing_in_tmpdir(self):
         r = self.run_gate("verify-script-lint.sh", tools_dir=False, own_shellcheck=True)

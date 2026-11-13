@@ -4,8 +4,9 @@
 # qualified Helm 4.3.1 (checksum verified) into OWLMAST_TOOLS_DIR or, when that is unset, a scratch directory that is
 # removed on exit. Installed Helm 3.x is not used.
 # A cached tool in OWLMAST_TOOLS_DIR (created if missing) is never trusted as is: the Helm binary is
-# re-extracted on every run from an archive whose sha256 is verified and must report version v4.3.1; the
-# kubectl binary's own sha256 is re-verified and its client gitVersion must be v1.36.1. Binaries supplied
+# extracted on every run, into a directory of that run (removed on exit), from an archive whose sha256 is verified
+# and must report version v4.3.1, so a run sharing OWLMAST_TOOLS_DIR never replaces the binary another one is using;
+# the kubectl binary's own sha256 is re-verified and its client gitVersion must be v1.36.1. Binaries supplied
 # through OWLMAST_HELM / OWLMAST_KUBECTL are used as given (not checksummed here; the chart tests still
 # require Helm 4). The pinned downloads exist for linux-amd64 only; other platforms must supply both.
 # OWLMAST_VERIFY_TOOLS_ONLY=1 stops after the tools are verified (used by the deploy tests).
@@ -18,11 +19,15 @@ KUBECTL_VERSION=v1.36.1
 KUBECTL_SHA256=629d3f410e09bf49b64ae7079f7f0bda1191efed311f7d37fdbab0ad5b0ec2b7
 
 sha256_ok() { echo "$2  $1" | sha256sum -c --status - 2>/dev/null; }
-# What this run creates outside a shared OWLMAST_TOOLS_DIR is removed on exit, also when the run fails: the scratch
-# directory for the Helm and kubectl downloads, the hashed environment and the scratch directory that holds it.
+# What this run creates is removed on exit, also when the run fails: the directory it extracts Helm into, the scratch
+# directory for the Helm and kubectl downloads (when OWLMAST_TOOLS_DIR is unset), the hashed environment and the
+# scratch directory that holds it. Each name is cleared here first, so a value inherited from the caller's
+# environment is never removed (review cycle 8, R8-1: the trap is set before scripts/hashed-venv.sh is sourced).
+HASHED_VENV=""
+RUN_HELM=""
 SCRATCH_TOOLS=""
 SCRATCH_HOME=""
-trap 'rm -rf ${HASHED_VENV:+"$HASHED_VENV"} ${SCRATCH_HOME:+"$SCRATCH_HOME"} ${SCRATCH_TOOLS:+"$SCRATCH_TOOLS"}' EXIT
+trap 'rm -rf ${RUN_HELM:+"$RUN_HELM"} ${HASHED_VENV:+"$HASHED_VENV"} ${SCRATCH_HOME:+"$SCRATCH_HOME"} ${SCRATCH_TOOLS:+"$SCRATCH_TOOLS"}' EXIT
 scratch_tools() {
   [ -n "$SCRATCH_TOOLS" ] || SCRATCH_TOOLS="$(mktemp -d "${TMPDIR:-/tmp}/owlmast-tools.XXXXXX")"
 }
@@ -44,10 +49,11 @@ if [ -z "${OWLMAST_HELM:-}" ]; then
     curl -fsSL -o "$TOOLS/helm.tar.gz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
   fi
   echo "$HELM_SHA256  $TOOLS/helm.tar.gz" | sha256sum -c -
-  # Always (re-)extract from the verified archive, so a cached binary never stands in for it.
-  rm -f "$TOOLS/helm"
-  tar -xzf "$TOOLS/helm.tar.gz" -C "$TOOLS" --strip-components=1 linux-amd64/helm
-  export OWLMAST_HELM="$TOOLS/helm"
+  # Always extract from the verified archive, so a cached binary never stands in for it, and into a directory of
+  # this run, so a run sharing OWLMAST_TOOLS_DIR never deletes or rewrites the binary another one is using (R8-3).
+  RUN_HELM="$(mktemp -d "$TOOLS/helm.XXXXXX")"
+  tar -xzf "$TOOLS/helm.tar.gz" -C "$RUN_HELM" --strip-components=1 linux-amd64/helm
+  export OWLMAST_HELM="$RUN_HELM/helm"
   [ "$("$OWLMAST_HELM" version --template '{{.Version}}')" = "$HELM_VERSION" ] || { echo "verify-install-package: $OWLMAST_HELM is not Helm $HELM_VERSION" >&2; exit 1; }
 fi
 

@@ -23,10 +23,13 @@ KUBECTL = os.environ.get("OWLMAST_KUBECTL")
 def helm_archive():
     if not HELM:
         return None
-    for name in ("helm.tar.gz", "helm-v4.3.1-linux-amd64.tar.gz"):
-        candidate = Path(HELM).parent / name
-        if candidate.exists():
-            return candidate
+    # The gate extracts Helm into a directory of its run inside the tools directory (review cycle 8, R8-3), so the
+    # verified archive sits next to that directory; a Helm supplied by hand may have it right beside the binary.
+    for directory in (Path(HELM).parent, Path(HELM).parent.parent):
+        for name in ("helm.tar.gz", "helm-v4.3.1-linux-amd64.tar.gz"):
+            candidate = directory / name
+            if candidate.exists():
+                return candidate
     return None
 
 
