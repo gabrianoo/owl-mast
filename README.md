@@ -27,7 +27,7 @@ Pins, commands, accessibility evidence and deferrals: [docs/frontend.md](docs/fr
 
 ## Stack
 
-Java 27 application code, Spring Boot 4.1.2 (WebFlux, R2DBC, Flyway, Actuator), Gradle 9.9.0 with Kotlin DSL, PostgreSQL 18 with VectorChord (pgvector only as its required dependency), Testcontainers. One modular reactive backend plus an independently built and packaged React/TypeScript/Vite web shell (OM-01.04; never bundled into the backend image) and Kubernetes packaging (OM-01.02).
+Java 27 application code, Spring Boot 4.1.2 (WebFlux, R2DBC, Flyway, Actuator), Gradle 9.9.1 with Kotlin DSL, PostgreSQL 18 with VectorChord (pgvector only as its required dependency), Testcontainers. One modular reactive backend plus an independently built and packaged React/TypeScript/Vite web shell (OM-01.04; never bundled into the backend image) and Kubernetes packaging (OM-01.02).
 
 ## Installation
 
