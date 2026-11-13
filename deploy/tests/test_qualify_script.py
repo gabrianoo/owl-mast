@@ -1273,21 +1273,53 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
         self.assertEqual(len(re.findall(r"source \((start|before|end)[^)]*\): head [0-9a-f]{40}, tree (clean|DIRTY \(see source.txt\)), "
                                         rf"chart sha256 {chart_digest(CHART)}", r.stdout)), 3)
 
+    @staticmethod
+    def throwaway_checkout(h):
+        """A git repository holding a copy of the script and a one-file chart, so a test can change the chart and the
+        tree without touching the real checkout."""
+        repo = h.tmp / "repo"
+        (repo / "scripts").mkdir(parents=True)
+        shutil.copy(SCRIPT, repo / "scripts" / SCRIPT.name)
+        chart = repo / "deploy" / "helm" / "owl-mast"; chart.mkdir(parents=True)
+        (chart / "Chart.yaml").write_text("name: owl-mast\n")
+        (repo / "settings.gradle.kts").write_text("// root build input\n")
+        git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        subprocess.run([*git, "init", "-q"], check=True)
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "commit", "-q", "-m", "fixture"], check=True)
+        return repo, chart
+
+    def test_the_retirement_stops_before_its_upgrade_when_the_chart_changed_after_the_first_record(self):
+        """Review cycle 6 (R6-2): the record before the retirement upgrade is what keeps a chart edited mid-run (the
+        22:39Z case) from being installed, so a changed chart must stop the retirement before `helm upgrade`."""
+        def retire(change_chart):
+            h = Harness(BASE_WORLD + "release owl-mast-test owl-mast-fe owned\n")
+            try:
+                repo, chart = self.throwaway_checkout(h)
+                change = f"echo 'version: 2' >> '{chart / 'Chart.yaml'}'; " if change_chart else ""
+                body = (f"source '{repo / 'scripts' / SCRIPT.name}'; record_source first || exit 10; {change}"
+                        "retire_bootstrap_admin fe5 owl-mast-fe fe3-identity-after --timeout 10m && echo PASSED || echo CAUGHT")
+                r = subprocess.run(["bash", "-c", body], env=h.env(**self.RUNTIME), stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False, timeout=60)
+                return r, h.calls.read_text()
+            finally:
+                h.close()
+        # Control: on an unchanged chart the retirement gets as far as its upgrade.
+        r, calls = retire(False)
+        self.assertIn(" upgrade owl-mast-fe ", calls, r.stdout + r.stderr)
+        self.assertIn("ok   fe5-retire-upgrade", r.stdout)
+        self.assertNotIn("the chart changed", r.stdout)
+        r, calls = retire(True)
+        self.assertEqual(r.stdout.strip().splitlines()[-1], "CAUGHT", r.stdout + r.stderr)
+        self.assertIn("FAIL source (before fe5-retire-upgrade): the chart changed during the run", r.stdout)
+        self.assertNotIn(" upgrade ", calls)
+        self.assertNotIn("ok   fe5-retire-upgrade", r.stdout)
+
     def test_the_source_record_names_dirty_paths_keeps_earlier_records_and_fails_on_a_changed_chart(self):
         """Review cycle 5: dirty detection covers the whole tree (a root Gradle file builds the image too), each call
         appends, and a chart that changes after the first record fails the run."""
         h = Harness(BASE_WORLD)
         try:
-            repo = h.tmp / "repo"
-            (repo / "scripts").mkdir(parents=True)
-            shutil.copy(SCRIPT, repo / "scripts" / SCRIPT.name)
-            chart = repo / "deploy" / "helm" / "owl-mast"; chart.mkdir(parents=True)
-            (chart / "Chart.yaml").write_text("name: owl-mast\n")
-            (repo / "settings.gradle.kts").write_text("// root build input\n")
-            git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
-            subprocess.run([*git, "init", "-q"], check=True)
-            subprocess.run([*git, "add", "-A"], check=True)
-            subprocess.run([*git, "commit", "-q", "-m", "fixture"], check=True)
+            repo, chart = self.throwaway_checkout(h)
             clean_digest = chart_digest(chart)
             body = (f"source '{repo / 'scripts' / SCRIPT.name}'; record_source first || exit 10; "
                     f"echo changed >> '{repo / 'settings.gradle.kts'}'; record_source second || exit 11; "
