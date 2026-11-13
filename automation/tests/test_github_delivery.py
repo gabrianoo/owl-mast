@@ -12,6 +12,7 @@ from unittest import mock
 
 from automation.github_delivery import (
     MAX_REVIEW_ROUNDS,
+    PATH_ERRNOS,
     DeliveryError,
     Finding,
     GitHub,
@@ -1335,6 +1336,88 @@ class CliTests(unittest.TestCase):
                     self.assertEqual(err.getvalue().count("\n"), 1)
                     self.assertNotIn("Traceback", err.getvalue())
                     self.assertEqual((out.getvalue(), fake.calls, fake.lookups), ("", [], []))
+
+    def read_failing_on_flaky(self, make_error):
+        """``Path.read_text`` that raises a fresh ``make_error()`` for ``flaky.md`` and reads any other file."""
+        real_read = Path.read_text
+
+        def read(path, *args, **kwargs):
+            if path.name == "flaky.md":
+                raise make_error()
+            return real_read(path, *args, **kwargs)
+        return mock.patch.object(Path, "read_text", read)
+
+    def input_file_commands(self, good):
+        """One command line per input file the helper reads; ``good`` is a readable file for the other flag."""
+        review = ["post-review", "12", "--round", "1", "--commit", SHA, "--verdict", "changes"]
+        return {
+            "defer": lambda path: ["defer", "--title", "PR #120: t", "--body-file", path, "--source", "21"],
+            "reply": lambda path: ["reply", "T1", "--body-file", path],
+            "spec-push": lambda path: ["spec-push", "21", "--file", path, "--key", "spec-x"],
+            "doc-push": lambda path: ["doc-push", "1", "--file", path, "--key", "notes"],
+            "post-review summary": lambda path: review + ["--findings-file", str(good), "--summary-file", path],
+            "post-review findings": lambda path: review + ["--summary-file", str(good), "--findings-file", path],
+        }
+
+    def test_a_read_failure_that_is_not_about_the_path_says_a_rerun_is_safe(self):
+        """EIO, EMFILE and the like leave nothing to correct in the file: the refusal must not say "cannot read"."""
+        failures = {
+            "EIO": lambda: OSError(errno.EIO, os.strerror(errno.EIO)),
+            "EMFILE": lambda: OSError(errno.EMFILE, os.strerror(errno.EMFILE)),
+            "EINTR": lambda: InterruptedError(errno.EINTR, os.strerror(errno.EINTR)),
+            "ESTALE": lambda: OSError(errno.ESTALE, os.strerror(errno.ESTALE)),
+            "no errno": lambda: OSError("mount went away"),
+            "no errno, no text": OSError,
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "flaky.md"
+            path.write_text("A file with nothing wrong.\n", encoding="utf-8")
+            good = Path(folder) / "good.json"  # valid as a findings file and as a summary
+            good.write_text("[]", encoding="utf-8")
+            for name, argv_for in self.input_file_commands(good).items():
+                for label, make_error in failures.items():
+                    with self.subTest(command=name, failure=label):
+                        fake = FakeGh([])  # any gh call fails the test
+                        err = io.StringIO()
+                        with self.read_failing_on_flaky(make_error), \
+                                redirect_stderr(err), redirect_stdout(io.StringIO()) as out:
+                            code = main(argv_for(str(path)), client=GitHub(run=fake))
+                        self.assertEqual(code, 2)
+                        sample = make_error()
+                        reason = sample.strerror or str(sample) or "OSError"
+                        self.assertTrue(err.getvalue().startswith(f"error: reading {path} failed: {reason}; "),
+                                        err.getvalue())
+                        self.assertIn("nothing was sent to GitHub", err.getvalue())
+                        self.assertIn("run the same command again as it is", err.getvalue())
+                        self.assertNotIn("cannot read", err.getvalue())
+                        self.assertEqual(err.getvalue().count("\n"), 1)
+                        self.assertNotIn("Traceback", err.getvalue())
+                        self.assertEqual((out.getvalue(), fake.calls, fake.lookups), ("", [], []))
+
+    def test_every_read_error_about_the_path_keeps_the_cannot_read_refusal(self):
+        self.assertIn(errno.ENOENT, PATH_ERRNOS)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "flaky.md"
+            good = Path(folder) / "good.json"
+            good.write_text("[]", encoding="utf-8")
+            for name, argv_for in self.input_file_commands(good).items():
+                for code in sorted(PATH_ERRNOS):
+                    with self.subTest(command=name, errno=errno.errorcode[code]):
+                        fake = FakeGh([])
+                        err = io.StringIO()
+                        with self.read_failing_on_flaky(lambda: OSError(code, os.strerror(code))), \
+                                redirect_stderr(err), redirect_stdout(io.StringIO()) as out:
+                            self.assertEqual(main(argv_for(str(path)), client=GitHub(run=fake)), 2)
+                        self.assertEqual(err.getvalue(), f"error: cannot read {path}: {os.strerror(code)}\n")
+                        self.assertEqual((out.getvalue(), fake.calls, fake.lookups), ("", [], []))
+
+    def test_a_path_with_a_null_byte_is_refused_not_a_traceback(self):
+        fake = FakeGh([])
+        err = io.StringIO()
+        with redirect_stderr(err), redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(main(["reply", "T1", "--body-file", "a\0b.md"], client=GitHub(run=fake)), 2)
+        self.assertEqual(err.getvalue(), "error: cannot read a\\0b.md: embedded null byte\n")
+        self.assertEqual((out.getvalue(), fake.calls, fake.lookups), ("", [], []))
 
     def test_defer_refuses_a_body_file_it_cannot_read(self):
         self.assert_refuses_unreadable_input(

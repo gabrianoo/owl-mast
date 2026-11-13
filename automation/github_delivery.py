@@ -27,6 +27,7 @@ Requires an authenticated ``gh`` CLI. Python 3.9+ standard library only.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import re
@@ -66,6 +67,10 @@ HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 DELETED_FILE = re.compile(r"^diff --git a/(.+) b/\1$")
 BINARY_FILE = re.compile(r"^Binary files .+ and (?:b/(.+)|/dev/null) differ$")
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
+# The read errors that are about the input path itself, so the remedy is to correct the path or the
+# file. Any other OSError (EIO, EMFILE, EINTR, ENOMEM, a stale mount) may pass on a rerun.
+PATH_ERRNOS = frozenset({errno.ENOENT, errno.EISDIR, errno.ENOTDIR, errno.EACCES, errno.EPERM,
+                         errno.ENAMETOOLONG, errno.ELOOP})
 
 Runner = Callable[[Sequence[str], Optional[str]], str]
 
@@ -80,8 +85,15 @@ def read_input(path: Path) -> str:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError as error:
         raise DeliveryError(f"cannot read {path}: it is not valid UTF-8 ({error.reason} at byte {error.start})") from error
+    except ValueError as error:  # a path the system cannot take, such as one with an embedded null byte
+        raise DeliveryError(f"cannot read {path}: {error}".replace("\0", "\\0")) from error
     except OSError as error:
-        raise DeliveryError(f"cannot read {path}: {error.strerror or error}") from error
+        reason = error.strerror or str(error) or type(error).__name__
+        if error.errno in PATH_ERRNOS:
+            raise DeliveryError(f"cannot read {path}: {reason}") from error
+        raise DeliveryError(f"reading {path} failed: {reason}; nothing was sent to GitHub and the failure may not "
+                            "be about the file, so run the same command again as it is, once, and check the file "
+                            "if it fails again") from error
 
 
 def gh_runner(args: Sequence[str], stdin: Optional[str] = None) -> str:
