@@ -856,6 +856,7 @@ retire_bootstrap_admin() {
   record_release_revision "$prefix-revision-before" "$rel" || return 1
   local pods_before pods_after
   pods_before="$(keycloak_pod_names "$rel")" && [ -n "$pods_before" ] || { log "FAIL $prefix: the Keycloak pod could not be read before the retirement"; return 1; }
+  record_source "before $prefix-retire-upgrade" || return 1
   record "$prefix-retire-upgrade" h upgrade "$rel" "$CHART" -n "$NS" --wait "$@" \
     --set identity.keycloak.bootstrapAdmin.enabled=false --set identity.keycloak.bootstrapExistingSecret=absent-keycloak-bootstrap-secret || return 1
   printf '%s helm upgrade returned\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$OUT/$prefix-terminating-wait.txt"
@@ -1115,24 +1116,35 @@ step_inventory() {
   record inventory-helm h list -A
 }
 
-# record_source: what this run installs and runs, written by the script itself into $OUT/source.txt (review
-# 5884955290 R4-3: a hand-written head line once named a commit whose chart was not the one installed). The
-# commit, the paths of the chart, scripts and backend that differ from it (or "clean"), and a digest of the
-# chart directory and of this script as they are on disk. A dirty tree is logged; the run goes on, and the
-# evidence says which files differed.
+# record_source <label>: what this run installs and runs, written by the script itself into $OUT/source.txt (review
+# 5884955290 R4-3: a hand-written head line once named a commit whose chart was not the one installed). Each call
+# appends one block, headed by the time and <label>, so a later run or a manual rerun in the same evidence directory
+# keeps the earlier records (review cycle 5): the commit, every path of the checkout that differs from it (or
+# "tree clean"; the backend image is built from the checkout, and its build inputs include the root Gradle files,
+# so the whole tree is checked), and sha256 digests of the chart directory and of this script as they are on disk.
+# A dirty tree is logged; the run goes on, and the evidence says which files differed. The first call of a run
+# keeps the chart digest; a later call that finds another one fails, so a chart edited while the run was going
+# never passes as the one recorded. main records at the start and at the end, and the bootstrap-admin retirement
+# records right before its upgrade, also when it is called directly from a sourced shell.
+SOURCE_CHART_DIGEST=""
 record_source() {
-  local head dirty chart_digest
+  local label="$1" head dirty chart_digest
   head="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo "not a git checkout")"
-  dirty="$(git -C "$ROOT" status --porcelain -- deploy scripts backend 2>/dev/null || echo "unknown")"
+  dirty="$(git -C "$ROOT" status --porcelain 2>/dev/null || echo "unknown")"
   chart_digest="$(cd "$CHART" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
   {
+    printf '== %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$label"
     printf 'head %s\n' "$head"
     printf 'chart %s sha256 %s\n' "$CHART" "$chart_digest"
     printf 'script sha256 %s\n' "$(sha256sum "${BASH_SOURCE[0]}" | cut -d' ' -f1)"
     if [ -z "$dirty" ]; then printf 'tree clean\n'; else printf 'tree dirty:\n%s\n' "$dirty"; fi
-  } >"$OUT/source.txt"
-  if [ -n "$dirty" ]; then log "source: head $head, tree DIRTY (see source.txt), chart sha256 $chart_digest"
-  else log "source: head $head, tree clean, chart sha256 $chart_digest"; fi
+  } >>"$OUT/source.txt"
+  if [ -n "$dirty" ]; then log "source ($label): head $head, tree DIRTY (see source.txt), chart sha256 $chart_digest"
+  else log "source ($label): head $head, tree clean, chart sha256 $chart_digest"; fi
+  if [ -z "$SOURCE_CHART_DIGEST" ]; then SOURCE_CHART_DIGEST="$chart_digest"
+  elif [ "$chart_digest" != "$SOURCE_CHART_DIGEST" ]; then
+    log "FAIL source ($label): the chart changed during the run (sha256 $SOURCE_CHART_DIGEST, now $chart_digest)"; return 1
+  fi
 }
 
 ALL_STEPS=(prepare fixtures bundled-bundled persistence bundled-external external-bundled external-external failure-paths inventory)
@@ -1150,9 +1162,10 @@ main() {
     esac
   done
   assert_supported_targets
-  record_source
+  record_source "start: ${expanded[*]}"
   preflight "${expanded[@]}"
   for step in "${expanded[@]}"; do "step_${step//-/_}"; done
+  record_source "end: ${expanded[*]}" || exit 1
   log "qualification steps complete: ${expanded[*]}"
 }
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then main "$@"; fi

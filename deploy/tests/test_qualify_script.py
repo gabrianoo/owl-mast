@@ -8,6 +8,7 @@ success, failure or interruption, and that the isolation and readiness evaluator
 intended PostgreSQL denial / backend 503 and reject transport, authentication and generic failures.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -406,6 +407,14 @@ if [[ "$args" == *" upgrade "* ]]; then
 fi
 echo "stub helm ok"
 '''
+
+
+def chart_digest(chart: Path) -> str:
+    """The digest record_source writes, computed without the script: sha256sum's `<hex>  ./<path>` line for every
+    file in byte order of the path, hashed together."""
+    files = sorted((p for p in chart.rglob("*") if p.is_file()), key=lambda p: ("./" + p.relative_to(chart).as_posix()).encode())
+    lines = "".join(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  ./{p.relative_to(chart).as_posix()}\n" for p in files)
+    return hashlib.sha256(lines.encode()).hexdigest()
 
 
 class Harness:
@@ -1245,16 +1254,61 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
             h.close()
 
     def test_every_run_records_its_own_source(self):
-        """Review 5884955290 R4-3: the script writes the commit, whether the tree differs from it and digests of the chart and itself."""
+        """Review 5884955290 R4-3 and cycle 5: the script appends a record at the start, before the retirement upgrade
+        and at the end: the commit, whether the whole tree differs from it, and digests of the chart and of itself,
+        computed here independently of the script."""
         r = self.step("bundled-bundled")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        source = r.evidence["source"].splitlines()
+        blocks = [b.splitlines() for b in re.split(r"(?m)^(?=== )", r.evidence["source"]) if b]
+        self.assertEqual([re.sub(r"^== \S+ ", "", b[0]) for b in blocks],
+                         ["start: bundled-bundled", "before bb-retire-retire-upgrade", "end: bundled-bundled"])
         head = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-        self.assertEqual(source[0], f"head {head}")
-        self.assertRegex(source[1], r"^chart .*/deploy/helm/owl-mast sha256 [0-9a-f]{64}$")
-        self.assertRegex(source[2], r"^script sha256 [0-9a-f]{64}$")
-        self.assertIn(source[3], ("tree clean", "tree dirty:"))
-        self.assertRegex(r.stdout, r"source: head [0-9a-f]{40}, tree (clean|DIRTY \(see source.txt\)), chart sha256 [0-9a-f]{64}")
+        porcelain = subprocess.run(["git", "-C", str(REPO), "status", "--porcelain"], capture_output=True, text=True, check=True).stdout
+        for block in blocks:
+            self.assertRegex(block[0], r"^== \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ ")
+            self.assertEqual(block[1], f"head {head}")
+            self.assertEqual(block[2], f"chart {CHART} sha256 {chart_digest(CHART)}")
+            self.assertEqual(block[3], f"script sha256 {hashlib.sha256(SCRIPT.read_bytes()).hexdigest()}")
+            self.assertEqual(block[4], "tree clean" if not porcelain else "tree dirty:")
+        self.assertEqual(len(re.findall(r"source \((start|before|end)[^)]*\): head [0-9a-f]{40}, tree (clean|DIRTY \(see source.txt\)), "
+                                        rf"chart sha256 {chart_digest(CHART)}", r.stdout)), 3)
+
+    def test_the_source_record_names_dirty_paths_keeps_earlier_records_and_fails_on_a_changed_chart(self):
+        """Review cycle 5: dirty detection covers the whole tree (a root Gradle file builds the image too), each call
+        appends, and a chart that changes after the first record fails the run."""
+        h = Harness(BASE_WORLD)
+        try:
+            repo = h.tmp / "repo"
+            (repo / "scripts").mkdir(parents=True)
+            shutil.copy(SCRIPT, repo / "scripts" / SCRIPT.name)
+            chart = repo / "deploy" / "helm" / "owl-mast"; chart.mkdir(parents=True)
+            (chart / "Chart.yaml").write_text("name: owl-mast\n")
+            (repo / "settings.gradle.kts").write_text("// root build input\n")
+            git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+            subprocess.run([*git, "init", "-q"], check=True)
+            subprocess.run([*git, "add", "-A"], check=True)
+            subprocess.run([*git, "commit", "-q", "-m", "fixture"], check=True)
+            clean_digest = chart_digest(chart)
+            body = (f"source '{repo / 'scripts' / SCRIPT.name}'; record_source first || exit 10; "
+                    f"echo changed >> '{repo / 'settings.gradle.kts'}'; record_source second || exit 11; "
+                    f"echo 'version: 2' >> '{chart / 'Chart.yaml'}'; record_source third || exit 12")
+            r = subprocess.run(["bash", "-c", body], env=h.env(), stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False, timeout=60)
+            self.assertEqual(r.returncode, 12, r.stdout + r.stderr)
+            text = (h.evidence / "runtime" / "source.txt").read_text()
+            blocks = [b.splitlines() for b in re.split(r"(?m)^(?=== )", text) if b]
+            self.assertEqual([b[0].split(" ", 2)[2] for b in blocks], ["first", "second", "third"])
+            self.assertEqual(blocks[0][2], f"chart {chart} sha256 {clean_digest}")
+            self.assertEqual(blocks[0][4:], ["tree clean"])
+            self.assertEqual(blocks[1][2], f"chart {chart} sha256 {clean_digest}")
+            self.assertEqual(blocks[1][4:], ["tree dirty:", " M settings.gradle.kts"])
+            self.assertNotEqual(chart_digest(chart), clean_digest)
+            self.assertEqual(blocks[2][2], f"chart {chart} sha256 {chart_digest(chart)}")
+            self.assertEqual(blocks[2][4:], ["tree dirty:", " M deploy/helm/owl-mast/Chart.yaml", " M settings.gradle.kts"])
+            self.assertIn("source (second): head", r.stdout)
+            self.assertIn("tree DIRTY (see source.txt)", r.stdout)
+            self.assertIn(f"FAIL source (third): the chart changed during the run (sha256 {clean_digest}, now {chart_digest(chart)})", r.stdout)
+        finally:
+            h.close()
 
     def test_first_enable_fails_when_the_bootstrap_admin_is_still_injected_after_the_retirement(self):
         r = self.first_enable(STUB_RETIRE="kept")
