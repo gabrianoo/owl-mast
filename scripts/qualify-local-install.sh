@@ -810,16 +810,17 @@ check_durable_work() {
 # wait_no_terminating_pods <prefix> <release>: waits up to TERMINATING_POD_TIMEOUT seconds until no Keycloak pod of
 # the release is being deleted. Only Keycloak takes the bootstrap Secret, and only its pod is replaced by the
 # retirement, so an unrelated pod stuck in Terminating does not decide the retirement.
-# Every read is written to $OUT/<prefix>-terminating-wait.txt (time and the pods still terminating, or "none"), so the
-# evidence shows whether the replaced pod was still terminating when `helm upgrade --wait` returned. A first read of
-# "none" does not show that the two pods never overlapped, only that the old one was gone by then.
+# Every read is appended to $OUT/<prefix>-terminating-wait.txt (time and the pods still terminating, or "none";
+# "read failed" when the pods could not be listed), after the line retire_bootstrap_admin writes when
+# `helm upgrade --wait` returned. The reads come a few seconds after that line, so a first read of "none" shows
+# only that the old pod was gone by the time of that read, not that the two pods never overlapped. The file is
+# appended to, so a rerun with the same prefix keeps the earlier reads.
 wait_no_terminating_pods() {
   local prefix="$1" rel="$2" deadline terminating evidence="$OUT/$1-terminating-wait.txt"
   deadline=$(( $(date -u +%s) + TERMINATING_POD_TIMEOUT ))
-  : >"$evidence"
   while :; do
     terminating="$(k get pods -n "$NS" -l "app.kubernetes.io/instance=$rel,app.kubernetes.io/component=keycloak" -o jsonpath='{range .items[?(@.metadata.deletionTimestamp)]}{.metadata.name}{"\n"}{end}')" \
-      || { log "FAIL $prefix: the release's Keycloak pods could not be listed"; return 1; }
+      || { printf '%s read failed\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$evidence"; log "FAIL $prefix: the release's Keycloak pods could not be listed"; return 1; }
     printf '%s terminating: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(tr '\n' ' ' <<<"${terminating:-none}" | sed 's/ $//')" >>"$evidence"
     [ -z "$terminating" ] && return 0
     if [ "$(date -u +%s)" -ge "$deadline" ]; then
@@ -857,6 +858,7 @@ retire_bootstrap_admin() {
   pods_before="$(keycloak_pod_names "$rel")" && [ -n "$pods_before" ] || { log "FAIL $prefix: the Keycloak pod could not be read before the retirement"; return 1; }
   record "$prefix-retire-upgrade" h upgrade "$rel" "$CHART" -n "$NS" --wait "$@" \
     --set identity.keycloak.bootstrapAdmin.enabled=false --set identity.keycloak.bootstrapExistingSecret=absent-keycloak-bootstrap-secret || return 1
+  printf '%s helm upgrade returned\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$OUT/$prefix-terminating-wait.txt"
   record_release_revision "$prefix-revision-after" "$rel" || return 1
   assert_revision_advanced "$prefix-revision" "$prefix-revision-before" "$prefix-revision-after" || return 1
   record "$prefix-keycloak-env-after" k get deploy "$rel-keycloak" -n "$NS" -o jsonpath="$env_query" || return 1
@@ -868,7 +870,7 @@ retire_bootstrap_admin() {
   # names the bootstrap Secret, so the references are read once the release has no terminating pod left.
   wait_no_terminating_pods "$prefix" "$rel" || return 1
   # The retirement changes the pod template, so the Keycloak pod must have been replaced and the upgrade must not
-  # have hung. Whether the old pod was still terminating beside the new one is in <prefix>-terminating-wait.txt.
+  # have hung. <prefix>-terminating-wait.txt records when the upgrade returned and what each later read saw.
   pods_after="$(keycloak_pod_names "$rel")" && [ -n "$pods_after" ] || { log "FAIL $prefix: the Keycloak pod could not be read after the retirement"; return 1; }
   printf 'before: %s\nafter: %s\n' "$pods_before" "$pods_after" >"$OUT/$prefix-keycloak-pod-replaced.txt"
   [ -z "$(comm -12 <(tr ' ' '\n' <<<"$pods_before" | sort) <(tr ' ' '\n' <<<"$pods_after" | sort))" ] \
@@ -1113,6 +1115,26 @@ step_inventory() {
   record inventory-helm h list -A
 }
 
+# record_source: what this run installs and runs, written by the script itself into $OUT/source.txt (review
+# 5884955290 R4-3: a hand-written head line once named a commit whose chart was not the one installed). The
+# commit, the paths of the chart, scripts and backend that differ from it (or "clean"), and a digest of the
+# chart directory and of this script as they are on disk. A dirty tree is logged; the run goes on, and the
+# evidence says which files differed.
+record_source() {
+  local head dirty chart_digest
+  head="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo "not a git checkout")"
+  dirty="$(git -C "$ROOT" status --porcelain -- deploy scripts backend 2>/dev/null || echo "unknown")"
+  chart_digest="$(cd "$CHART" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+  {
+    printf 'head %s\n' "$head"
+    printf 'chart %s sha256 %s\n' "$CHART" "$chart_digest"
+    printf 'script sha256 %s\n' "$(sha256sum "${BASH_SOURCE[0]}" | cut -d' ' -f1)"
+    if [ -z "$dirty" ]; then printf 'tree clean\n'; else printf 'tree dirty:\n%s\n' "$dirty"; fi
+  } >"$OUT/source.txt"
+  if [ -n "$dirty" ]; then log "source: head $head, tree DIRTY (see source.txt), chart sha256 $chart_digest"
+  else log "source: head $head, tree clean, chart sha256 $chart_digest"; fi
+}
+
 ALL_STEPS=(prepare fixtures bundled-bundled persistence bundled-external external-bundled external-external failure-paths inventory)
 # first-enable is run explicitly (it needs OWLMAST_FOLLOWUP_RUN_ID) and is not part of `all`. It ends with the
 # retirement of the Keycloak bootstrap admin.
@@ -1128,6 +1150,7 @@ main() {
     esac
   done
   assert_supported_targets
+  record_source
   preflight "${expanded[@]}"
   for step in "${expanded[@]}"; do "step_${step//-/_}"; done
   log "qualification steps complete: ${expanded[*]}"

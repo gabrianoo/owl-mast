@@ -211,6 +211,7 @@ if [[ "$args" == *" logs job/"* ]]; then
 fi
 # Pods of the release that are being deleted (wait_no_terminating_pods): STUB_TERMINATING=<n> reports one for the first n reads.
 if [[ "$args" == *" get pods "* && "$args" == *"?(@.metadata.deletionTimestamp)"* ]]; then
+  [ "${STUB_TERMINATING_READ:-}" = fail ] && { echo "error: the server is currently unable to handle the request" >&2; exit 1; }
   n=0; [ -e "$STUB_WORLD.terminating" ] && n="$(grep -c . "$STUB_WORLD.terminating")"
   if [ "$n" -lt "${STUB_TERMINATING:-0}" ]; then echo read >> "$STUB_WORLD.terminating"; printf 'owl-mast-fe-keycloak-old-abc12\n'; fi
   exit 0
@@ -1155,8 +1156,9 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
         self.assertEqual(r.evidence["bb-retire-keycloak-pod-replaced"].splitlines(),
                          ["before: owl-mast-keycloak-old-abc12", "after: owl-mast-keycloak-new-def34"])
         wait = r.evidence["bb-retire-terminating-wait"].splitlines()
-        self.assertEqual(len(wait), 1, wait)
-        self.assertRegex(wait[0], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ terminating: none$")
+        self.assertEqual(len(wait), 2, wait)  # review 5884955290 R4-4: when helm returned, then the wait's one read
+        self.assertRegex(wait[0], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ helm upgrade returned$")
+        self.assertRegex(wait[1], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ terminating: none$")
         calls = r.calls.splitlines()
         retire = [c for c in calls if c.startswith("helm ") and "bootstrapAdmin.enabled=false" in c]
         self.assertEqual(len(retire), 1, retire)
@@ -1207,7 +1209,7 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
         reads = [i for i, c in enumerate(calls) if " get deploy,pods " in c and "-o json" in c]
         self.assertEqual(len(waits), 2, waits)  # one read still saw the terminating pod, the next one none
         self.assertEqual([line.split(" ", 1)[1] for line in r.evidence["fe5-terminating-wait"].splitlines()],
-                         ["terminating: owl-mast-fe-keycloak-old-abc12", "terminating: none"])
+                         ["helm upgrade returned", "terminating: owl-mast-fe-keycloak-old-abc12", "terminating: none"])
         for i in waits:  # review 5884091345: the exact namespace and selector of the release's Keycloak pods
             self.assertIn(" -n owl-mast-test ", calls[i])
             self.assertIn(" -l app.kubernetes.io/instance=owl-mast-fe,app.kubernetes.io/component=keycloak ", calls[i])
@@ -1218,6 +1220,41 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
         self.assertIn("FAIL fe5: pod(s) still terminating after 0s: owl-mast-fe-keycloak-old-abc12", r.stdout)
         self.assertNotIn("ok   fe5-bootstrap-admin-retired", r.stdout)
         self.assertNotIn(" get deploy,pods ", r.calls)
+
+    def test_a_failed_read_of_the_terminating_pods_is_recorded_and_fails_the_retirement(self):
+        """Review 5884955290 R4-10: the wait's evidence names a read that failed, instead of ending without a line."""
+        r = self.first_enable(STUB_TERMINATING_READ="fail")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL fe5: the release's Keycloak pods could not be listed", r.stdout)
+        self.assertEqual([line.split(" ", 1)[1] for line in r.evidence["fe5-terminating-wait"].splitlines()],
+                         ["helm upgrade returned", "read failed"])
+        self.assertNotIn(" get deploy,pods ", r.calls)
+
+    def test_a_rerun_with_the_same_prefix_keeps_the_earlier_reads(self):
+        """Review 5884955290 R4-12: the wait appends, so a second retirement in the same evidence directory keeps the first one's reads."""
+        h = Harness(BASE_WORLD)
+        try:
+            out = h.evidence / "runtime"; out.mkdir(parents=True, exist_ok=True)
+            (out / "rr-terminating-wait.txt").write_text("2026-11-13T00:00:00Z terminating: none\n")
+            r = h.source("OUT='%s'; NS=owl-mast-test; wait_no_terminating_pods rr owl-mast-fe" % out, STUB_TERMINATING="0")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            lines = (out / "rr-terminating-wait.txt").read_text().splitlines()
+            self.assertEqual(lines[0], "2026-11-13T00:00:00Z terminating: none")
+            self.assertEqual([line.split(" ", 1)[1] for line in lines[1:]], ["terminating: none"])
+        finally:
+            h.close()
+
+    def test_every_run_records_its_own_source(self):
+        """Review 5884955290 R4-3: the script writes the commit, whether the tree differs from it and digests of the chart and itself."""
+        r = self.step("bundled-bundled")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        source = r.evidence["source"].splitlines()
+        head = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(source[0], f"head {head}")
+        self.assertRegex(source[1], r"^chart .*/deploy/helm/owl-mast sha256 [0-9a-f]{64}$")
+        self.assertRegex(source[2], r"^script sha256 [0-9a-f]{64}$")
+        self.assertIn(source[3], ("tree clean", "tree dirty:"))
+        self.assertRegex(r.stdout, r"source: head [0-9a-f]{40}, tree (clean|DIRTY \(see source.txt\)), chart sha256 [0-9a-f]{64}")
 
     def test_first_enable_fails_when_the_bootstrap_admin_is_still_injected_after_the_retirement(self):
         r = self.first_enable(STUB_RETIRE="kept")
