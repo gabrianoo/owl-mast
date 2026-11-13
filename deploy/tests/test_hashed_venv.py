@@ -119,16 +119,31 @@ exit 1
 """
 
 
+# For the lint gate's own shellcheck download (no OWLMAST_SHELLCHECK): a linux-x86_64 host, an archive that passes
+# the checksum, and a tar that extracts a shellcheck reporting the pinned version into the directory given by -C.
+DOWNLOAD_STUBS = {
+    "uname": '#!/usr/bin/env bash\ncase "$1" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo Linux ;; esac\n',
+    "sha256sum": '#!/usr/bin/env bash\ncat >/dev/null; exit 0\n',
+    "tar": '#!/usr/bin/env bash\necho "tar $*" >> "$STUB_LOG"\nwhile [ $# -gt 0 ]; do [ "$1" = -C ] && dir="$2"; shift; done\n'
+           'printf \'#!/usr/bin/env bash\\necho "version: 0.11.0"\\n\' > "$dir/shellcheck"; chmod +x "$dir/shellcheck"\n',
+    "curl": '#!/usr/bin/env bash\necho "curl must not be called" >&2; exit 1\n',
+}
+
+
 class GateCleanupTests(unittest.TestCase):
-    """Review cycle 5: both gates remove the environment of their run on exit, also when they fail, and leave what
-    another run keeps in a shared OWLMAST_TOOLS_DIR alone."""
+    """Review cycles 5 and 6: both gates remove what they create for their run on exit, also when they fail (the
+    hashed environment, the lint gate's extracted shellcheck directory, and the scratch directory used when
+    OWLMAST_TOOLS_DIR is unset), and leave what another run keeps in a shared OWLMAST_TOOLS_DIR alone."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="owlmast-gate-cleanup."))
         self.tools = self.tmp / "tools"; self.tools.mkdir()
-        self.other = self.tools / "deploy-tests-venv.other1"; self.other.mkdir()  # another run's environment
-        (self.tools / "ruff-venv.other1").mkdir()
+        self.kept = ["deploy-tests-venv.other1", "ruff-venv.other1", "shellcheck.other1"]  # another run's entries
+        for name in self.kept:
+            (self.tools / name).mkdir()
+        self.scratch = self.tmp / "tmpdir"; self.scratch.mkdir()  # TMPDIR of the gate
         self.bin = self.tmp / "bin"; self.bin.mkdir()
+        self.download_bin = self.tmp / "download-bin"; self.download_bin.mkdir()
         self.log = self.tmp / "calls"
         stubs = {
             "python3": GATE_PYTHON3_STUB,
@@ -136,34 +151,58 @@ class GateCleanupTests(unittest.TestCase):
             "kubectl": '#!/usr/bin/env bash\necho "Client Version: v1.36.1"\n',
             "shellcheck": '#!/usr/bin/env bash\necho "version: 0.11.0"\n',
         }
-        for name, text in stubs.items():
-            stub = self.bin / name
-            stub.write_text(text); stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+        for directory, texts in ((self.bin, stubs), (self.download_bin, DOWNLOAD_STUBS)):
+            for name, text in texts.items():
+                stub = directory / name
+                stub.write_text(text); stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def run_gate(self, name):
-        env = {"PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": str(self.tmp), "STUB_LOG": str(self.log),
-               "OWLMAST_TOOLS_DIR": str(self.tools), "OWLMAST_HELM": str(self.bin / "helm"),
-               "OWLMAST_KUBECTL": str(self.bin / "kubectl"), "OWLMAST_SHELLCHECK": str(self.bin / "shellcheck")}
+    def run_gate(self, name, tools_dir=True, own_shellcheck=False):
+        path = f"{self.bin}:{os.environ['PATH']}"
+        env = {"PATH": f"{self.download_bin}:{path}" if own_shellcheck else path, "HOME": str(self.tmp), "STUB_LOG": str(self.log),
+               "TMPDIR": str(self.scratch), "OWLMAST_HELM": str(self.bin / "helm"), "OWLMAST_KUBECTL": str(self.bin / "kubectl")}
+        if tools_dir:
+            env["OWLMAST_TOOLS_DIR"] = str(self.tools)
+        if not own_shellcheck:
+            env["OWLMAST_SHELLCHECK"] = str(self.bin / "shellcheck")
         return subprocess.run(["bash", str(REPO / "scripts" / name)], env=env, capture_output=True, text=True, timeout=60)
 
-    def assert_cleaned(self, r, prefix):
+    def assert_cleaned(self, r, prefix, home=None):
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         created = [line.split()[-1] for line in self.log.read_text().splitlines() if line.startswith("python3 -m venv ")]
         self.assertEqual(len(created), 1, created)
         venv = Path(created[0])
-        self.assertEqual(venv.parent, self.tools)
+        if home is not None:
+            self.assertEqual(venv.parent, home)
         self.assertTrue(venv.name.startswith(prefix + "."), venv)
         self.assertFalse(venv.exists(), "the run's environment was left behind")
-        self.assertEqual(sorted(p.name for p in self.tools.iterdir()), ["deploy-tests-venv.other1", "ruff-venv.other1"])
+        self.assertEqual(sorted(p.name for p in self.tools.iterdir()), self.kept)
+        self.assertEqual(list(self.scratch.iterdir()), [], "the run left a scratch directory in TMPDIR")
 
     def test_the_deploy_test_gate_removes_its_environment_when_it_fails(self):
-        self.assert_cleaned(self.run_gate("verify-install-package.sh"), "deploy-tests-venv")
+        self.assert_cleaned(self.run_gate("verify-install-package.sh"), "deploy-tests-venv", self.tools)
 
     def test_the_lint_gate_removes_its_environment_when_it_fails(self):
         r = self.run_gate("verify-script-lint.sh")
+        self.assertIn("is ruff 0.0.0-stub, not ruff", r.stderr)
+        self.assert_cleaned(r, "ruff-venv", self.tools)
+
+    def test_the_lint_gate_removes_the_shellcheck_it_extracted_for_its_run(self):
+        r = self.run_gate("verify-script-lint.sh", own_shellcheck=True)
+        self.assertIn("is ruff 0.0.0-stub, not ruff", r.stderr)
+        extracted = [line.split()[line.split().index("-C") + 1] for line in self.log.read_text().splitlines() if line.startswith("tar ")]
+        self.assertEqual(len(extracted), 1, extracted)
+        self.assertEqual(Path(extracted[0]).parent, self.tools)
+        self.assertTrue(Path(extracted[0]).name.startswith("shellcheck."), extracted)
+        self.assert_cleaned(r, "ruff-venv", self.tools)
+
+    def test_without_a_tools_directory_the_deploy_test_gate_leaves_nothing_in_tmpdir(self):
+        self.assert_cleaned(self.run_gate("verify-install-package.sh", tools_dir=False), "deploy-tests-venv")
+
+    def test_without_a_tools_directory_the_lint_gate_leaves_nothing_in_tmpdir(self):
+        r = self.run_gate("verify-script-lint.sh", tools_dir=False, own_shellcheck=True)
         self.assertIn("is ruff 0.0.0-stub, not ruff", r.stderr)
         self.assert_cleaned(r, "ruff-venv")
 
