@@ -19,6 +19,13 @@ KUBECTL_VERSION=v1.36.1
 KUBECTL_SHA256=629d3f410e09bf49b64ae7079f7f0bda1191efed311f7d37fdbab0ad5b0ec2b7
 
 sha256_ok() { echo "$2  $1" | sha256sum -c --status - 2>/dev/null; }
+# A relative OWLMAST_TOOLS_DIR is resolved once, against the caller's directory, before anything is created in it:
+# the suite runs after `cd "$ROOT"`, where a relative path would name another directory, and the EXIT trap would
+# then miss the Helm directory and the environment this run made there (review cycle 9, R9-2).
+if [ -n "${OWLMAST_TOOLS_DIR:-}" ]; then
+  mkdir -p "$OWLMAST_TOOLS_DIR"
+  OWLMAST_TOOLS_DIR="$(CDPATH='' cd -- "$OWLMAST_TOOLS_DIR" && pwd)"
+fi
 # What this run creates is removed on exit, also when the run fails: the directory it extracts Helm into, the scratch
 # directory for the Helm and kubectl downloads (when OWLMAST_TOOLS_DIR is unset), the hashed environment and the
 # scratch directory that holds it. Each name is cleared here first, so a value inherited from the caller's

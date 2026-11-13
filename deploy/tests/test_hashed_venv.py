@@ -111,6 +111,11 @@ if [ "$3" = install ]; then
   printf '#!/usr/bin/env bash\necho "ruff 0.0.0-stub"\n' > "$bindir/ruff"; chmod +x "$bindir/ruff"
   exit 0
 fi
+# STUB_REACH_SUITE=1: `pip check` and `pip list` pass, so the deploy-test gate gets past `cd "$ROOT"` and fails in
+# its suite instead.
+if [ "${STUB_REACH_SUITE:-}" = 1 ]; then
+  case "$3" in check) exit 0 ;; list) echo "PyYAML==6.0.3"; exit 0 ;; esac
+fi
 exit 1
 PY
   chmod +x "$3/bin/python"
@@ -134,7 +139,7 @@ DOWNLOAD_STUBS = {
 
 
 class GateCleanupTests(unittest.TestCase):
-    """Review cycles 5 to 8: both gates remove what they create for their run on exit, also when they fail (the
+    """Review cycles 5 to 9: both gates remove what they create for their run on exit, also when they fail (the
     hashed environment, the directories the lint gate extracts shellcheck and the deploy-test gate extracts Helm
     into, and, when OWLMAST_TOOLS_DIR is unset, the scratch directories for the environment and for the Helm, kubectl
     and shellcheck downloads), remove nothing they did not create (a HASHED_VENV inherited from the caller), and
@@ -170,7 +175,7 @@ class GateCleanupTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def run_gate(self, name, tools_dir=True, own_shellcheck=False, own_helm=False, own_kubectl=False, **extra):
+    def run_gate(self, name, tools_dir=True, own_shellcheck=False, own_helm=False, own_kubectl=False, cwd=None, **extra):
         path = f"{self.bin}:{os.environ['PATH']}"
         downloads = own_shellcheck or own_helm or own_kubectl
         env = {"PATH": f"{self.download_bin}:{path}" if downloads else path, "HOME": str(self.tmp), "STUB_LOG": str(self.log),
@@ -184,7 +189,7 @@ class GateCleanupTests(unittest.TestCase):
         if not own_kubectl:
             env["OWLMAST_KUBECTL"] = str(self.bin / "kubectl")
         env.update(extra)
-        return subprocess.run(["bash", str(REPO / "scripts" / name)], env=env, capture_output=True, text=True, timeout=60)
+        return subprocess.run(["bash", str(REPO / "scripts" / name)], env=env, capture_output=True, text=True, timeout=60, cwd=cwd)
 
     def assert_cleaned(self, r, prefix, home=None):
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -279,6 +284,40 @@ class GateCleanupTests(unittest.TestCase):
         r = self.run_gate("verify-install-package.sh", HASHED_VENV=str(victim))
         self.assert_cleaned(r, "deploy-tests-venv", self.tools)
         self.assertTrue((victim / "keep").exists(), "the failing run removed the caller's HASHED_VENV")
+
+    def test_the_deploy_test_gate_never_removes_any_name_of_its_trap_that_it_inherited(self):
+        """Review cycle 9 (R9-1): every name the EXIT trap removes, not only HASHED_VENV, is cleared before the trap is
+        set. With OWLMAST_HELM and OWLMAST_KUBECTL supplied and OWLMAST_TOOLS_DIR set, the gate itself assigns none of
+        RUN_HELM, SCRATCH_TOOLS and SCRATCH_HOME, so a value inherited from the caller would reach `rm -rf`."""
+        trap = re.search(r"^trap '(.*)' EXIT$", (REPO / "scripts" / "verify-install-package.sh").read_text(), re.M).group(1)
+        names = sorted(set(re.findall(r"\$\{(\w+):\+", trap)))
+        self.assertEqual(names, ["HASHED_VENV", "RUN_HELM", "SCRATCH_HOME", "SCRATCH_TOOLS"])
+        for name in names:
+            for tools_only in (True, False):
+                with self.subTest(name=name, tools_only=tools_only):
+                    victim = self.tmp / f"callers-{name}"; victim.mkdir(exist_ok=True); (victim / "keep").write_text("x")
+                    self.log.unlink(missing_ok=True)
+                    extra = {name: str(victim)}
+                    if tools_only:
+                        extra["OWLMAST_VERIFY_TOOLS_ONLY"] = "1"
+                    r = self.run_gate("verify-install-package.sh", **extra)
+                    if tools_only:
+                        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                        self.assert_tools_kept()
+                    else:
+                        self.assert_cleaned(r, "deploy-tests-venv", self.tools)
+                    self.assertTrue((victim / "keep").exists(), f"the gate removed the caller's {name}")
+
+    def test_a_relative_tools_directory_is_cleaned_up_after_the_gate_changes_into_the_repository(self):
+        """Review cycle 9 (R9-2): run from another directory with a relative OWLMAST_TOOLS_DIR, the gate creates its
+        Helm directory and environment under the absolute tools directory, and its trap still removes both after the
+        suite (here a stub that fails) ran from $ROOT."""
+        r = self.run_gate("verify-install-package.sh", own_helm=True, cwd=self.tmp, OWLMAST_TOOLS_DIR="tools", STUB_REACH_SUITE="1")
+        self.assertIn("venv-python -m unittest", self.log.read_text(), "the stub suite was not reached")
+        extracted = self.extracted()
+        self.assertEqual(len(extracted), 1, extracted)
+        self.assertEqual(extracted[0].parent, self.tools)  # absolute: resolved against the caller's directory
+        self.assert_cleaned(r, "deploy-tests-venv", self.tools)
 
     def test_without_a_tools_directory_the_lint_gate_leaves_nothing_in_tmpdir(self):
         r = self.run_gate("verify-script-lint.sh", tools_dir=False, own_shellcheck=True)
