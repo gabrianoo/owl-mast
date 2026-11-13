@@ -275,7 +275,7 @@ class UseLedgerTests(LiveCase):
     def test_an_unreadable_ledger_is_a_use(self):
         self.h.coordinator()
         ledger_path(self.h.activation.digest, self.h.activation.path).write_text("{torn", encoding="utf-8")
-        self.assertEqual(activation_use(self.h.activation.digest, self.h.activation.path), {"unreadable": True})
+        self.assertEqual(activation_use(self.h.activation.digest, self.h.activation.path), {"unreadable": True, "field": "json", "why": "the file is not JSON"})  # adapted in round 7 (F5): a file that is not JSON has its own field
         exc = refuses(self, lambda: self.create(self.other(), self.h.activation), "activation-used")
         self.assertIn("cannot be read", str(exc))  # named as a damaged record, not as a run "None under None"
         exc = refuses(self, lambda: record_activation_use(self.h.activation, self.other().state_dir, "run-live", T0), "activation-used")

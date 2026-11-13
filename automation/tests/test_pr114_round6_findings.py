@@ -9,6 +9,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import shutil
 import subprocess
 import unittest
 from pathlib import Path
@@ -259,7 +260,8 @@ class MovedStateDirAdviceTests(LiveCase):
 
     def test_a_directory_that_still_exists_is_opened_through(self):
         other = Path(self.h.h.tmpdir.name) / "copied-from"
-        other.mkdir()
+        (other / "run-live").mkdir(parents=True)
+        (other / "run-live" / "run.json").write_text("{}", encoding="utf-8")  # adapted in round 7 (F6): the advice needs the run itself there, not just a directory
         message = self.mismatch(other)
         self.assertIn("open the run through the directory it was created under", message)
         self.assertNotIn("spent", message)
@@ -330,7 +332,8 @@ class StatusClockStopTests(LiveCase):
     def test_a_clearable_stop(self):
         regress(self, self.h, self.c)
         report = self.c.status()["activation"]["clock_stop"]
-        self.assertEqual(report, {"clearable": True, "clear_spent": False, "high_water": "2026-11-07T12:00:00Z", "expires_at": self.store.load_run().activation["expires_at"], "wait_until": "2026-11-07T11:55:00Z", "reason": None})
+        self.assertEqual(report, {"clearable": True, "clear_spent": False, "high_water": "2026-11-07T12:00:00Z", "expires_at": self.store.load_run().activation["expires_at"], "wait_until": "2026-11-07T11:55:00Z", "reason": None,
+                                  "presented_current": True, "clear_requires": None})  # adapted in round 7 (F7): the clear's activation requirement is reported beside clearable
         self.assertEqual(self.c.status(read_only=True)["activation"]["clock_stop"]["clearable"], True)
 
     def test_a_spent_clear(self):
@@ -390,7 +393,7 @@ class ConfirmTaggedResultTests(LiveCase):
         self.assertEqual(confirm_activation_use(None, self.h.h.state_dir, "run-live"), ("unchanged", None))
         self.h.coordinator()
         binding = self.store.load_run().activation
-        self.assertEqual(confirm_activation_use(binding, self.h.h.state_dir, "run-live"), ("unchanged", None))  # already committed
+        self.assertEqual(confirm_activation_use(binding, self.h.h.state_dir, "run-live"), ("unchanged", {"committed": True}))  # already committed; adapted in round 7 (F4): the caller is told it is this run's committed record
         set_ledger(self.h, state="pending")
         with mock.patch.object(activation_module, "_write_ledger", side_effect=OSError(28, "No space left on device")):
             outcome, detail = confirm_activation_use(binding, self.h.h.state_dir, "run-live")
@@ -438,7 +441,7 @@ class GitTimeoutNamesTheDirectoryTests(ClearanceLocationCase):
     """A git timeout names the directory and the likely cause (thread Jj)."""
 
     def test_the_timeout_names_the_directory_and_a_hung_mount(self):
-        with mock.patch.object(cli_module.subprocess, "run", side_effect=subprocess.TimeoutExpired("git", 30)):
+        with mock.patch.object(cli_module, "_git_answer", side_effect=subprocess.TimeoutExpired("git", 30)):
             with self.assertRaises(cli_module.WorkTreeUnknown) as ctx:
                 cli_module._work_tree(self.outside.parent)
             error = self.assert_refused(self.clear(self.outside))
@@ -457,13 +460,13 @@ class OnlyThePlainAnswerAllowsTests(ClearanceLocationCase):
 
     def test_an_extra_diagnostic_is_unknown_and_refuses(self):
         extra = subprocess.CompletedProcess(["git"], 128, stdout="", stderr="error: something\n" + PLAIN)
-        with mock.patch.object(cli_module.subprocess, "run", return_value=extra):
+        with mock.patch.object(cli_module, "_git_answer", return_value=extra):
             with self.assertRaises(cli_module.WorkTreeUnknown):
                 cli_module._work_tree(self.outside.parent)
             self.assert_refused(self.clear(self.outside))
 
     def test_the_plain_answer_alone_still_allows(self):
-        with mock.patch.object(cli_module.subprocess, "run", return_value=subprocess.CompletedProcess(["git"], 128, stdout="", stderr=PLAIN)):
+        with mock.patch.object(cli_module, "_git_answer", return_value=subprocess.CompletedProcess(["git"], 128, stdout="", stderr=PLAIN)):
             self.assertIsNone(cli_module._work_tree(self.outside.parent))
 
 
@@ -516,15 +519,17 @@ class UnconfirmedVariantKeyTests(LiveCase):
     def test_a_recorded_directory_that_vanishes_after_the_first_line_adds_a_second(self):
         self.h.coordinator()
         other = Path(self.h.h.tmpdir.name) / "copied-from"
-        other.mkdir()
+        (other / "run-live").mkdir(parents=True)
+        (other / "run-live" / "run.json").write_text("{}", encoding="utf-8")
         set_ledger(self.h, state="pending", state_dir=str(other))
         self.h.coordinator(activation=None)
         self.h.coordinator(activation=None)
-        other.rmdir()
+        shutil.rmtree(other)
         self.h.coordinator(activation=None)
         self.h.coordinator(activation=None)
         lines = [d for d in unconfirmed(self.store) if d["type"] == "state-dir-mismatch"]
-        self.assertEqual([d["strerror"] for d in lines], ["recorded directory exists", "recorded directory gone"])
+        # adapted in round 7 (F5, F6): the variant is carried in `field` (strerror is OS text only) and names what is at the recorded path
+        self.assertEqual([(d["field"], d["strerror"]) for d in lines], [("recorded directory holds the run", None), ("recorded directory gone", None)])
         self.assertIn("cannot be settled from here", lines[1]["error"])
 
     def test_another_failing_field_adds_a_line(self):
@@ -536,8 +541,7 @@ class UnconfirmedVariantKeyTests(LiveCase):
         self.h.coordinator(activation=None)
         lines = [d for d in unconfirmed(self.store) if d["type"] == "ledger-unreadable"]
         self.assertEqual(len(lines), 2)
-        self.assertIn("state_dir", lines[0]["strerror"])
-        self.assertIn("attempts", lines[1]["strerror"])
+        self.assertEqual([d["field"] for d in lines], ["state_dir", "attempts"])  # adapted in round 7 (F5): `field`, not `strerror`
 
 
 class AbortClassifiesTheRecordFirstTests(LiveCase):

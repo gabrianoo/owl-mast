@@ -34,7 +34,7 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .activation import Activation, _parse_time, abort_activation_use, confirm_activation_use, record_activation_use, refresh_activation, validate_binding, validate_high_water, validate_stop_record
+from .activation import Activation, _parse_time, abort_activation_use, confirm_activation_use, record_activation_use, refresh_activation, run_json_presence, validate_binding, validate_high_water, validate_stop_record
 from .errors import Refused
 
 # A run id names a directory under the state dir and a marker value: one path segment, no
@@ -139,20 +139,43 @@ def atomic_write_text(path: Path, text: str) -> None:
     fsync_directory(path.parent)
 
 
-def abort_note(reason: str, run_id: str, state_dir) -> str:
+def abort_note(reason: str, run_id: str, state_dir, run_json_exists: bool | None = False) -> str:
     """The note a failed creation carries when its use ledger record was not marked ``aborted``,
     worded for the reason ``abort_activation_use`` returned: each cause needs its own advice, and
-    only an unmarked ``pending`` record of this run is burned."""
+    only an unmarked ``pending`` record of this run is burned.
+
+    ``run_json_exists``: ``save_run`` raised after ``run.json`` was replaced. A retry then reopens
+    the existing run (it creates nothing, so it neither writes a ledger record nor refuses
+    ``activation-used``), whatever the record says: the note keeps its reason, says "run.json
+    exists: reopen the same run" and says what that reopen does with the record, instead of what a
+    retried creation would meet. ``None``: whether ``run.json`` exists could not be examined
+    (``run_json_presence``); the note says so and gives both: what a reopen does if it exists, and
+    the retry advice if it does not."""
     where = f"--run-id {run_id} --state-dir {os.path.realpath(state_dir)}"
+    if reason == "run-json-exists":
+        return f"run.json exists: reopen the same run ({where}), the next open confirms the record; do not re-issue the activation"
+    # (what was found, what a retried creation meets, what a reopen of the existing run does with the record)
     notes = {
-        "run-json-exists": f"run.json exists: reopen the same run ({where}), the next open confirms the record; do not re-issue the activation",
-        "no-record": "the use ledger holds no record of this creation (it was removed); nothing was marked, and a retry writes a new record",
-        "unreadable": "the use ledger record of this document cannot be read or is not a valid record; it was left as it is, and a damaged record is a use: a retry refuses activation-used (inspect or restore that file, or re-issue the activation)",
-        "not-pending": "the use ledger record is no longer pending (another process changed it); it was left as it is, and a retry is judged on its state (check-activation reports it)",
-        "not-this-run": "the use ledger record names another run or state directory; it was left as it is, and this document creates nothing more (a retry refuses activation-used)",
-        "ledger-error": "the use ledger record could not be marked aborted (the ledger could not be written, or the run directory could not be examined); it stays pending and a retry refuses activation-used as an unconfirmed creation (re-issue the activation)",
+        "no-record": ("the use ledger holds no record of this creation (it was removed); nothing was marked", "a retry writes a new record",
+                      "the reopen finds no record to confirm and adds none"),
+        "unreadable": ("the use ledger record of this document cannot be read or is not a valid record; it was left as it is, and a damaged record is a use", "a retry refuses activation-used (inspect or restore that file, or re-issue the activation)",
+                       "the reopen journals the damaged record (ledger-unreadable) and cannot confirm it: inspect or restore that file"),
+        "not-pending": ("the use ledger record is no longer pending (another process changed it); it was left as it is", "a retry is judged on its state (check-activation reports it)",
+                        "the reopen confirms a record of this run that reads aborted and leaves one that is already committed"),
+        "not-this-run": ("the use ledger record names another run or state directory; it was left as it is, and this document creates nothing more", "a retry refuses activation-used",
+                         "the reopen does not confirm a record that is not this run's, and journals it when it names this run id under another state directory (state-dir-mismatch)"),
+        "ledger-error": ("the use ledger record could not be marked aborted (the ledger could not be written, or the run directory could not be examined); it stays pending", "a retry refuses activation-used as an unconfirmed creation (re-issue the activation)",
+                         "the reopen confirms the pending record once the ledger can be written"),
     }
-    return notes.get(reason, f"the use ledger record was not marked aborted ({reason!r}); a retry may refuse activation-used")
+    if reason not in notes:
+        found, retry, reopen = f"the use ledger record was not marked aborted ({reason!r})", "a retry may refuse activation-used", "the reopen confirms a pending record of this run"
+    else:
+        found, retry, reopen = notes[reason]
+    if run_json_exists:
+        return f"{found}; run.json exists: reopen the same run ({where}): the run was created, so nothing is created again; {reopen}"
+    if run_json_exists is None:
+        return f"{found}; whether run.json exists could not be examined: if it does, a retry reopens the same run ({where}) and {reopen}; if it does not, {retry}"
+    return f"{found}; {retry}"
 
 
 class StoreBusy(Refused):
@@ -536,7 +559,10 @@ class Store:
         ``pending``; ``committed`` once ``run.json`` exists; ``aborted`` when ``save_run`` raised with
         no ``run.json``, so only that same creation may be retried): one activation creates exactly
         one run. A confirmation that cannot be written is journaled (``activation-use-unconfirmed``)
-        and retried by every later open; the record stays ``pending`` until then. With
+        and retried by every later open; the record stays ``pending`` until then. A non-creating
+        open of an activated run whose journal has no ``run-started`` line (the creation died
+        between ``run.json`` and its first journal line) journals it with ``recovered: true``,
+        whatever the ledger confirmation of that open finds. With
         ``create=False`` (every caller but an admitting one) a run that does not exist is refused
         ``run-not-found`` and nothing is written: a report or a cleanup command never starts a run
         or spends an approval. ``started_at`` is that same validated moment. Retained
@@ -580,7 +606,8 @@ class Store:
                         try:
                             reason = abort_activation_use(activation, self.state_dir, self.run_id, self.run_path, cause=original)  # known failed, no run.json: only this same creation may retry
                             if reason != "aborted":
-                                original.add_note(abort_note(reason, self.run_id, self.state_dir))
+                                # whatever the record says, a retry reopens the run when run.json exists (save_run raised after the replace)
+                                original.add_note(abort_note(reason, self.run_id, self.state_dir, run_json_exists=run_json_presence(self.run_path)))  # True, False or None (cannot be examined)
                         except BaseException as inner:  # noqa: BLE001 - nothing raised while marking may replace the creation's own error
                             # not journaled: a journal line before run.json would be a retained artifact that refuses the retry
                             original.add_note(f"marking the use ledger record aborted also failed ({type(inner).__name__}: {inner}); it stays pending and refuses as an unconfirmed creation")
@@ -599,9 +626,16 @@ class Store:
                 if not last or (last.get("detail") or {}).get("policy_digest") != policy_digest:
                     self.journal(None, "policy-drift", {"bound_digest": run.policy_digest, "policy_digest": policy_digest, "consequence": "advancing refuses policy-drift; cleanup proceeds under the recorded binding"})
             if not created and environment == "live":
+                if run.activation and not self._journal_has("run-started"):
+                    # the creation died after run.json was written and before its first journal line (``save_run`` raised
+                    # after the replace, or the process was killed before or after the ledger confirmation): this open is
+                    # the first record of when the run started and under which binding, whatever the confirmation below finds
+                    self.journal(None, "run-started", {"repo": run.repo, "policy_digest": run.policy_digest, "environment": run.environment, "activation": run.activation, "instance": run.instance, "started_at": run.started_at, "recovered": True})
                 outcome, unconfirmed = confirm_activation_use(run.activation, self.state_dir, self.run_id)  # settles a creation that died between run.json and the ledger confirmation
                 if outcome == "committed":
                     self._journal_confirmed()
+                elif outcome == "unchanged" and (unconfirmed or {}).get("committed"):
+                    self._journal_confirmed()  # this run's record reads committed (restored by hand, or committed through its own directory): earlier unconfirmed lines are settled, and a recurrence is journaled again
                 elif outcome == "error":
                     self._journal_unconfirmed(unconfirmed)
             if not created and environment == "live" and activation is not None:
@@ -614,20 +648,59 @@ class Store:
                     raise Refused(f"run {self.run_id} was created under activation {run.activation.get('id')!r}; refusing activation {activation.id!r} (digest {activation.digest[:12]})", code="activation-mismatch")
             return run
 
+    def _journal_has(self, event: str) -> bool:
+        """Whether the journal holds a line of ``event``. One read of the file; only lines that
+        contain the event name are parsed. Asked for ``run-started`` by every non-creating open of
+        an activated live run (one more full read of the journal per open, beside the one
+        :meth:`_unconfirmed_since_confirmation` pays)."""
+        if not self.journal_path.exists():
+            return False
+        needle = json.dumps(event)
+        for raw in self.journal_path.read_text(encoding="utf-8").splitlines():
+            if needle not in raw:
+                continue
+            try:
+                entry = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(entry, dict) and entry.get("event") == event:
+                return True
+        return False
+
     @staticmethod
     def _unconfirmed_key(detail: dict) -> tuple:
-        """The stable part of a confirmation failure: its type and errno (the refusal code of a
-        ``Refused``) and, for an ``OSError`` without an errno, its ``strerror``."""
+        """The stable part of a confirmation failure: its type, its errno (the refusal code of a
+        ``Refused``) and its variant. The variant is the ``field`` of a condition that is not an OS
+        error (the field of the record that failed validation, what is at the recorded state
+        directory); without one it is the ``strerror`` of an ``OSError`` that has no errno. A line
+        written before ``field`` existed carried the variant in ``strerror`` and matches the new
+        key only where the variant kept its name (``state_dir``, ``attempts``, ``record``,
+        ``recorded directory gone``). The older variants ``unreadable`` (now ``json`` or ``file``)
+        and ``recorded directory exists`` (now two variants) match no new key: after an upgrade
+        such a condition, still present, is journaled once more."""
         errno = detail.get("errno")
-        return (detail.get("type"), errno, detail.get("strerror") if errno is None else None)
+        field = detail.get("field")
+        return (detail.get("type"), errno, field if field is not None else (detail.get("strerror") if errno is None else None))
 
     def _unconfirmed_since_confirmation(self) -> tuple[list[dict], set[tuple]]:
         """The ``activation-use-unconfirmed`` lines since the last ``activation-use-confirmed``, in
-        journal order. Every open of a live run asks, so the journal is scanned backwards and the
-        scan stops at the first ``activation-use-confirmed`` line; only lines that contain
-        ``"activation-use-`` are parsed (a torn or foreign line is skipped). A permanent condition
-        (a moved state directory, an unwritable ledger) therefore costs one read of the file, which
-        :meth:`journal` already pays to count its lines, not a parse of every line."""
+        journal order. The journal is scanned backwards and the scan stops at the first
+        ``activation-use-confirmed`` line; only lines that contain ``"activation-use-`` are parsed
+        (a torn or foreign line is skipped).
+
+        The cost, as it is: one full read of the journal file per call, of its own (it is not shared
+        with :meth:`journal`, which reads the last byte for a torn tail and then counts every line
+        when it appends). It is paid by every open of a live run whose ledger record is not simply
+        confirmed by that open: an open that meets an error (:meth:`_journal_unconfirmed`), an open
+        that commits the record, and an open whose record already reads ``committed``
+        (:meth:`_journal_confirmed`, so that lines for a condition that has since been repaired are
+        settled); that last one is every ordinary open of a live run. Stopping at the last
+        confirmation bounds what is *parsed*, not what is read; under a permanent condition (a moved
+        state directory, an unwritable ledger) there is no confirmation to stop at, so every open
+        reads the whole file and tests every line for the marker, and an open that then journals
+        pays the two passes of :meth:`journal` as well. Nothing is cached: a run's journal is small
+        (one line per operation), and a cached offset would have to be invalidated by every other
+        writer of the file."""
         if not self.journal_path.exists():
             return [], set()
         lines: list[dict] = []
@@ -647,21 +720,33 @@ class Store:
         lines.reverse()
         return lines, {self._unconfirmed_key(e.get("detail") or {}) for e in lines}
 
+    # The consequence of a confirmation that could not be *written* (an ``OSError`` or a ``Refused`` from the ledger): the
+    # record is intact and pending, and the next open tries again. A damaged record or a record under another state
+    # directory brings its own consequence from ``confirm_activation_use``: no open repairs either.
+    UNCONFIRMED_WRITE_CONSEQUENCE = "the use ledger record stays pending; every later open retries the confirmation; until then a deleted run directory refuses as an unconfirmed creation"
+
     def _journal_unconfirmed(self, error: dict) -> None:
-        """The ledger record of this run's creation could not be marked ``committed``: it stays
-        ``pending``, so deleting the run directory now would leave an unconfirmed creation that
-        refuses every later creation from the document (``activation-used``), never one that
-        creates the run again. Journaled once per distinct :meth:`_unconfirmed_key` since the last
-        successful confirmation (the message names a random temporary file, so it differs on every
-        attempt; alternating causes add no line once each is on record); every later open retries."""
+        """The ledger record of this run's creation could not be marked ``committed``. Journaled
+        once per distinct :meth:`_unconfirmed_key` since the last successful confirmation (the
+        message names a random temporary file, so it differs on every attempt; alternating causes
+        add no line once each is on record). The line carries the ``field`` (the variant, part of
+        the key), ``strerror`` (operating-system text only) and the ``consequence`` of that
+        condition: for a write that failed, the record stays ``pending`` and every later open
+        retries (deleting the run directory meanwhile leaves an unconfirmed creation that refuses
+        every later creation from the document, never one that creates the run again); for a
+        damaged record or a record under another state directory, what ``confirm_activation_use``
+        says of it (no open repairs it)."""
         key = self._unconfirmed_key(error)
         _, seen = self._unconfirmed_since_confirmation()
         if key not in seen:
-            self.journal(None, "activation-use-unconfirmed", {"error": error.get("message"), "type": key[0], "errno": key[1], "strerror": error.get("strerror"), "consequence": "the use ledger record stays pending; every later open retries the confirmation; until then a deleted run directory refuses as an unconfirmed creation"})
+            self.journal(None, "activation-use-unconfirmed", {"error": error.get("message"), "type": key[0], "errno": key[1], "strerror": error.get("strerror"), "field": error.get("field"),
+                                                              "consequence": error.get("consequence") or self.UNCONFIRMED_WRITE_CONSEQUENCE})
 
     def _journal_confirmed(self) -> None:
-        """A later open confirmed the record. Journaled (``activation-use-confirmed``) when an
-        unconfirmed line is on record, which also resets the set :meth:`_journal_unconfirmed` dedupes on."""
+        """This run's record reads ``committed``: a later open confirmed it, or found it confirmed
+        (restored by hand, or committed through the directory it was created under). Journaled
+        (``activation-use-confirmed``) when an unconfirmed line is on record, which also resets the
+        set :meth:`_journal_unconfirmed` dedupes on, so a recurrence is journaled again."""
         lines, _ = self._unconfirmed_since_confirmation()
         if lines:
             self.journal(None, "activation-use-confirmed", {"consequence": "the use ledger record is committed; the earlier activation-use-unconfirmed lines are settled"})
