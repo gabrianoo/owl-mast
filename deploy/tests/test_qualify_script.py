@@ -222,6 +222,13 @@ if [ "${STUB_RUNTIME:-}" = 1 ]; then
     if [[ "$args" == *"openid-configuration"* ]]; then printf '{"issuer":"http://%s:8080/realms/owl-mast"}\n' "$svc"; else printf '{"status":"UP"}\n'; fi
     exit 0
   fi
+  # The release's Keycloak pods that are not being deleted, as `name deletionTimestamp` lines (keycloak_pod_names): a retired
+  # release runs a new pod, unless STUB_RETIRE=same-pod keeps the old one.
+  if [[ "$args" == *" get pods "* && "$args" == *"app.kubernetes.io/component=keycloak"* && "$args" == *'{.metadata.name}{" "}{.metadata.deletionTimestamp}'* ]]; then
+    rel="$(sed -E 's/.*app\.kubernetes\.io\/instance=([^ ,]+).*/\1/' <<<"$args")"
+    if [ -e "$STUB_WORLD.retired" ] && [ "${STUB_RETIRE:-}" != same-pod ]; then printf '%s-keycloak-new-def34 \n' "$rel"; else printf '%s-keycloak-old-abc12 \n' "$rel"; fi
+    exit 0
+  fi
   # The Keycloak container environment as `NAME=<secret or empty>` lines (retire_bootstrap_admin). The helm stub marks the
   # release retired when an upgrade sets bootstrapAdmin.enabled=false; STUB_RETIRE=kept leaves the variables in place.
   if [[ "$args" == *" get deploy "*"-keycloak "* && "$args" == *"{.name}={.valueFrom.secretKeyRef.name}"* ]]; then
@@ -1059,7 +1066,8 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
         # the identifiers are read before the upgrade and again after it
         calls = r.calls.splitlines()
         upgrade = next(i for i, c in enumerate(calls) if "provisionKeycloakDatabase=true" in c)
-        reads = [i for i, c in enumerate(calls) if "'role='||r.oid" in c]
+        retire = next(i for i, c in enumerate(calls) if "bootstrapAdmin.enabled=false" in c)
+        reads = [i for i, c in enumerate(calls) if "'role='||r.oid" in c and i < retire]  # the retirement reads them once more
         self.assertEqual(len(reads), 2, reads); self.assertLess(reads[0], upgrade); self.assertGreater(reads[1], upgrade)
 
     def test_a_direct_read_of_the_succeeded_hook_job_is_not_found_in_the_stub_world(self):
@@ -1135,6 +1143,27 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
         self.assertNotIn("FAIL", r.stdout)
         self.assertEqual(self.direct_hook_reads(r.calls), [])
 
+    def test_every_all_run_retires_the_bootstrap_admin_and_replaces_the_keycloak_pod(self):
+        """Review 5884091345: the re-provisioning upgrade leaves the Keycloak pod template unchanged, so `all` never replaced the
+        pod and proved neither KC_CACHE=local under an overlap nor the terminating-pod wait; the retirement in bundled-bundled does."""
+        r = self.step("bundled-bundled")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok   bb-retire-bootstrap-admin-retired", r.stdout)
+        self.assertEqual(r.evidence["bb-retire-keycloak-pod-replaced"].splitlines(),
+                         ["before: owl-mast-keycloak-old-abc12", "after: owl-mast-keycloak-new-def34"])
+        calls = r.calls.splitlines()
+        retire = [c for c in calls if c.startswith("helm ") and "bootstrapAdmin.enabled=false" in c]
+        self.assertEqual(len(retire), 1, retire)
+        self.assertIn(" --reuse-values", retire[0])
+        provision = [i for i, c in enumerate(calls) if c.startswith("helm ") and "provisionKeycloakDatabase=true" in c]
+        self.assertLess(provision[-1], calls.index(retire[0]))
+
+    def test_the_retirement_fails_when_the_keycloak_pod_was_not_replaced(self):
+        r = self.step("bundled-bundled", STUB_RETIRE="same-pod")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("FAIL bb-retire: the Keycloak pod was not replaced by the retirement (before: owl-mast-keycloak-old-abc12; after: owl-mast-keycloak-old-abc12)", r.stdout)
+        self.assertNotIn("ok   bb-retire-bootstrap-admin-retired", r.stdout)
+
     def test_first_enable_retires_the_bootstrap_admin_and_proves_it_from_the_pod(self):
         """E01-R-01: the switch-off of the Keycloak bootstrap admin was documented as part of the Kind qualification but no step ran it."""
         r = self.first_enable()
@@ -1161,9 +1190,12 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("ok   fe5-bootstrap-admin-retired", r.stdout)
         calls = r.calls.splitlines()
-        waits = [i for i, c in enumerate(calls) if "?(@.metadata.deletionTimestamp)" in c and "owl-mast-fe" in c]
+        waits = [i for i, c in enumerate(calls) if "?(@.metadata.deletionTimestamp)" in c]
         reads = [i for i, c in enumerate(calls) if " get deploy,pods " in c and "-o json" in c]
         self.assertEqual(len(waits), 2, waits)  # one read still saw the terminating pod, the next one none
+        for i in waits:  # review 5884091345: the exact namespace and selector of the release's Keycloak pods
+            self.assertIn(" -n owl-mast-test ", calls[i])
+            self.assertIn(" -l app.kubernetes.io/instance=owl-mast-fe,app.kubernetes.io/component=keycloak ", calls[i])
         self.assertEqual(len(reads), 1, reads)
         self.assertLess(waits[-1], reads[0])
         r = self.first_enable(STUB_TERMINATING="1000", TERMINATING_POD_TIMEOUT="0")
@@ -1411,11 +1443,11 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
     def test_the_step_timeouts_must_be_whole_numbers_without_a_leading_zero(self):
         """Review 5883535263: `08` passed `^[0-9]+$` and then aborted the step in bash's octal arithmetic."""
         for name in ("DURABLE_WORK_TIMEOUT", "TERMINATING_POD_TIMEOUT"):
-            for value in ("08", "030", "-1", "1.5", " ", "2m"):
+            for value in ("08", "030", "-1", "1.5", " ", "2m", "1234567890", "99999999999999999999"):
                 with self.subTest(name=name, value=value):
                     r = self.step("bundled-bundled", **{name: value})
                     self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-                    self.assertIn(f"REFUSED: {name} must be a whole number of seconds (digits only, no leading zero), got '{value}'", r.stderr)
+                    self.assertIn(f"REFUSED: {name} must be a whole number of seconds (digits only, no leading zero, at most 9 digits), got '{value}'", r.stderr)
                     self.assertEqual(r.calls, "")
 
     def test_the_script_reads_no_hook_object_the_chart_deletes_on_success(self):

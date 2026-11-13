@@ -525,8 +525,9 @@ HOOK_GONE_TIMEOUT="${HOOK_GONE_TIMEOUT:-30}"   # seconds to wait for Helm's hook
 DURABLE_WORK_TIMEOUT="${DURABLE_WORK_TIMEOUT:-120}"   # seconds the installed backend has to finish the synthetic work item
 TERMINATING_POD_TIMEOUT="${TERMINATING_POD_TIMEOUT:-180}"   # seconds a replaced pod may take to terminate after an upgrade
 # Digits only, no leading zero: bash arithmetic reads 08 as octal and would abort mid-step instead of refusing here.
+# At most 9 digits: a longer value would overflow the 64-bit deadline arithmetic and put the deadline in the past.
 for timeout_name in DURABLE_WORK_TIMEOUT TERMINATING_POD_TIMEOUT; do
-  [[ "${!timeout_name}" =~ ^(0|[1-9][0-9]*)$ ]] || { echo "REFUSED: $timeout_name must be a whole number of seconds (digits only, no leading zero), got '${!timeout_name}'" >&2; exit 2; }
+  [[ "${!timeout_name}" =~ ^(0|[1-9][0-9]{0,8})$ ]] || { echo "REFUSED: $timeout_name must be a whole number of seconds (digits only, no leading zero, at most 9 digits), got '${!timeout_name}'" >&2; exit 2; }
 done
 KEYCLOAK_IDENTITY_RE='^role=[0-9]+ database=[0-9]+ owner=[0-9]+$'
 keycloak_db_identity() { # keycloak_db_identity <namespace> <deployment>: one line `role=<oid> database=<oid> owner=<oid>`
@@ -806,14 +807,15 @@ check_durable_work() {
   done
 }
 
-# wait_no_terminating_pods <prefix> <release>: waits up to TERMINATING_POD_TIMEOUT seconds until no pod of the
-# release is being deleted.
+# wait_no_terminating_pods <prefix> <release>: waits up to TERMINATING_POD_TIMEOUT seconds until no Keycloak pod of
+# the release is being deleted. Only Keycloak takes the bootstrap Secret, and only its pod is replaced by the
+# retirement, so an unrelated pod stuck in Terminating does not decide the retirement.
 wait_no_terminating_pods() {
   local prefix="$1" rel="$2" deadline terminating
   deadline=$(( $(date -u +%s) + TERMINATING_POD_TIMEOUT ))
   while :; do
-    terminating="$(k get pods -n "$NS" -l "app.kubernetes.io/instance=$rel" -o jsonpath='{range .items[?(@.metadata.deletionTimestamp)]}{.metadata.name}{"\n"}{end}')" \
-      || { log "FAIL $prefix: the release's pods could not be listed"; return 1; }
+    terminating="$(k get pods -n "$NS" -l "app.kubernetes.io/instance=$rel,app.kubernetes.io/component=keycloak" -o jsonpath='{range .items[?(@.metadata.deletionTimestamp)]}{.metadata.name}{"\n"}{end}')" \
+      || { log "FAIL $prefix: the release's Keycloak pods could not be listed"; return 1; }
     [ -z "$terminating" ] && return 0
     if [ "$(date -u +%s)" -ge "$deadline" ]; then
       log "FAIL $prefix: pod(s) still terminating after ${TERMINATING_POD_TIMEOUT}s: $(tr '\n' ' ' <<<"$terminating")"; return 1
@@ -832,6 +834,11 @@ wait_no_terminating_pods() {
 # (container and init-container environment, envFrom, volumes); Keycloak is ready with the same issuer, the
 # backend is ready, and the Keycloak role and database are the ones that existed before. What it does not do: create a permanent
 # administrator or delete the temporary user in Keycloak (operator steps in the admin console).
+keycloak_pod_names() { # keycloak_pod_names <release>: the release's Keycloak pods not being deleted, space-separated
+  k get pods -n "$NS" -l "app.kubernetes.io/instance=$1,app.kubernetes.io/component=keycloak" \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.deletionTimestamp}{"\n"}{end}' \
+    | awk 'NF == 1 { printf "%s%s", sep, $1; sep = " " }'
+}
 retire_bootstrap_admin() {
   local prefix="$1" rel="$2" identity_before="$3"; shift 3
   local secret="$rel-keycloak-bootstrap" env_query
@@ -840,6 +847,8 @@ retire_bootstrap_admin() {
   grep -qx "KC_BOOTSTRAP_ADMIN_USERNAME=$secret" "$OUT/$prefix-keycloak-env-before.txt" && grep -qx "KC_BOOTSTRAP_ADMIN_PASSWORD=$secret" "$OUT/$prefix-keycloak-env-before.txt" \
     || { log "FAIL $prefix: the bootstrap admin was not injected before the retirement, so the switch-off proves nothing"; return 1; }
   record_release_revision "$prefix-revision-before" "$rel" || return 1
+  local pods_before pods_after
+  pods_before="$(keycloak_pod_names "$rel")" && [ -n "$pods_before" ] || { log "FAIL $prefix: the Keycloak pod could not be read before the retirement"; return 1; }
   record "$prefix-retire-upgrade" h upgrade "$rel" "$CHART" -n "$NS" --wait "$@" \
     --set identity.keycloak.bootstrapAdmin.enabled=false --set identity.keycloak.bootstrapExistingSecret=absent-keycloak-bootstrap-secret || return 1
   record_release_revision "$prefix-revision-after" "$rel" || return 1
@@ -852,6 +861,12 @@ retire_bootstrap_admin() {
   # `helm upgrade --wait` can return while the replaced Keycloak pod is still terminating; that pod still
   # names the bootstrap Secret, so the references are read once the release has no terminating pod left.
   wait_no_terminating_pods "$prefix" "$rel" || return 1
+  # The retirement changes the pod template, so the Keycloak pod is replaced: the overlap of the old and the new
+  # pod (RollingUpdate without surge does not wait for the old one to terminate) happened and did not hang.
+  pods_after="$(keycloak_pod_names "$rel")" && [ -n "$pods_after" ] || { log "FAIL $prefix: the Keycloak pod could not be read after the retirement"; return 1; }
+  printf 'before: %s\nafter: %s\n' "$pods_before" "$pods_after" >"$OUT/$prefix-keycloak-pod-replaced.txt"
+  [ -z "$(comm -12 <(tr ' ' '\n' <<<"$pods_before" | sort) <(tr ' ' '\n' <<<"$pods_after" | sort))" ] \
+    || { log "FAIL $prefix: the Keycloak pod was not replaced by the retirement (before: $pods_before; after: $pods_after)"; return 1; }
   # Every place a workload can name a Secret, in the Deployments and in the pods as they run: only the
   # matching name fields reach the evidence, never an object.
   local objects references
@@ -891,6 +906,10 @@ step_bundled_bundled() {
   reprovision_keeps_keycloak provision-keycloak "$RELEASE" provision-keycloak-upgrade --timeout 10m --reuse-values --set postgresql.provisionKeycloakDatabase=true || return 1
   record provision-keycloak-schema-intact pg_exec "$NS" "$RELEASE-postgresql" OWLMAST_KEYCLOAK keycloak "select count(*) > 10 from information_schema.tables where table_schema='public'"
   grep -qx 't' "$OUT/provision-keycloak-schema-intact.txt" && log "ok   provision-keycloak-idempotent (hook run recorded as Succeeded, existing role/database kept by oid, schema intact)" || { log "FAIL keycloak schema after provisioning"; return 1; }
+  # The documented retirement of the bootstrap admin, in every `all` run: it is the upgrade that replaces the
+  # Keycloak pod, so it proves the pod overlap on the shipped chart (KC_CACHE=local) as well as the retirement.
+  log "== retire the Keycloak bootstrap admin on the bundled release"
+  retire_bootstrap_admin bb-retire "$RELEASE" provision-keycloak-identity-after --timeout 10m --reuse-values || return 1
 }
 
 step_persistence() {
