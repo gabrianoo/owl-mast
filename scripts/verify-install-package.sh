@@ -64,20 +64,18 @@ fi
 # against the pinned upstream schema offline). The whole set, with its transitive dependencies, is pinned
 # with hashes in deploy/tests/requirements.txt (generated from requirements.in) and installed with
 # --require-hashes into a virtual environment of its own, so the suite never runs against whatever the
-# interpreter happens to have and nothing is installed into it (E01-R-11). The environment is created afresh on
-# every run, in OWLMAST_TOOLS_DIR when that is set and otherwise in a scratch directory for this run: a reused one
-# could hold a .pth file, sitecustomize or a changed pip that no distribution owns and no reinstall removes
-# (review cycle 3). Only pip's download cache is reused, and --require-hashes checks every file taken from it.
+# interpreter happens to have and nothing is installed into it (E01-R-11). scripts/hashed-venv.sh creates a new
+# environment on every run (never a reused one, wheels only) under OWLMAST_TOOLS_DIR when that is set and
+# otherwise under a scratch directory, and this script removes it on exit.
 REQUIREMENTS="$ROOT/deploy/tests/requirements.txt"
+# shellcheck source=scripts/hashed-venv.sh
+. "$ROOT/scripts/hashed-venv.sh"
 VENV_HOME="${OWLMAST_TOOLS_DIR:-}"
-if [ -z "$VENV_HOME" ]; then
-  VENV_HOME="$(mktemp -d "${TMPDIR:-/tmp}/owlmast-deploy-tests.XXXXXX")"
-  trap 'rm -rf "$VENV_HOME"' EXIT
-fi
-VENV="$VENV_HOME/deploy-tests-venv"
-rm -rf "$VENV"
-python3 -m venv "$VENV"
-"$VENV/bin/python" -m pip install --quiet --disable-pip-version-check --require-hashes --no-deps -r "$REQUIREMENTS"
+SCRATCH_HOME=""
+[ -n "$VENV_HOME" ] || { SCRATCH_HOME="$(mktemp -d "${TMPDIR:-/tmp}/owlmast-deploy-tests.XXXXXX")"; VENV_HOME="$SCRATCH_HOME"; }
+trap 'rm -rf "${HASHED_VENV:-}" ${SCRATCH_HOME:+"$SCRATCH_HOME"}' EXIT
+hashed_venv "$VENV_HOME" deploy-tests-venv "$REQUIREMENTS"
+VENV="$HASHED_VENV"
 "$VENV/bin/python" -m pip check --disable-pip-version-check
 "$VENV/bin/python" -m pip list --format=freeze --disable-pip-version-check 2>/dev/null | grep -iE '^(pyyaml|jsonschema)=='
 cd "$ROOT"

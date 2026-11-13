@@ -23,11 +23,16 @@ RUFF_VERSION="$(sed -n 's/^ruff==\([^ ]*\).*/\1/p' "$ROOT/scripts/lint-requireme
 [ -n "$RUFF_VERSION" ] || { echo "verify-script-lint: scripts/lint-requirements.txt does not pin ruff" >&2; exit 1; }
 cd "$ROOT"
 
+# shellcheck source=scripts/hashed-venv.sh
+. "$ROOT/scripts/hashed-venv.sh"
 TOOLS="${OWLMAST_TOOLS_DIR:-}"
+SCRATCH_TOOLS=""
+RUN_TOOLS=""
+trap 'rm -rf ${RUN_TOOLS:+"$RUN_TOOLS"} ${HASHED_VENV:+"$HASHED_VENV"} ${SCRATCH_TOOLS:+"$SCRATCH_TOOLS"}' EXIT
 scratch_tools() {
   if [ -z "$TOOLS" ]; then
-    TOOLS="$(mktemp -d "${TMPDIR:-/tmp}/owlmast-lint.XXXXXX")"
-    trap 'rm -rf "$TOOLS"' EXIT
+    SCRATCH_TOOLS="$(mktemp -d "${TMPDIR:-/tmp}/owlmast-lint.XXXXXX")"
+    TOOLS="$SCRATCH_TOOLS"
   fi
   mkdir -p "$TOOLS"
 }
@@ -44,23 +49,22 @@ if [ -z "${OWLMAST_SHELLCHECK:-}" ]; then
     curl -fsSL -o "$archive" "https://github.com/koalaman/shellcheck/releases/download/$SHELLCHECK_VERSION/shellcheck-$SHELLCHECK_VERSION.linux.x86_64.tar.xz"
   fi
   echo "$SHELLCHECK_SHA256  $archive" | sha256sum -c -
-  rm -f "$TOOLS/shellcheck"
-  tar -xJf "$archive" -C "$TOOLS" --strip-components=1 "shellcheck-$SHELLCHECK_VERSION/shellcheck"
-  OWLMAST_SHELLCHECK="$TOOLS/shellcheck"
+  # Extracted into a directory of this run (removed on exit), so a run sharing OWLMAST_TOOLS_DIR never
+  # replaces the binary another one is using (review cycle 4).
+  RUN_TOOLS="$(mktemp -d "$TOOLS/shellcheck.XXXXXX")"
+  tar -xJf "$archive" -C "$RUN_TOOLS" --strip-components=1 "shellcheck-$SHELLCHECK_VERSION/shellcheck"
+  OWLMAST_SHELLCHECK="$RUN_TOOLS/shellcheck"
 fi
 shellcheck_version="$("$OWLMAST_SHELLCHECK" --version | sed -n 's/^version: //p')"
 [ "v$shellcheck_version" = "$SHELLCHECK_VERSION" ] || { echo "verify-script-lint: $OWLMAST_SHELLCHECK is shellcheck $shellcheck_version, not $SHELLCHECK_VERSION" >&2; exit 1; }
 
 if [ -z "${OWLMAST_RUFF:-}" ]; then
-  # Never a ruff found on PATH: a version string proves nothing about the binary. The environment is created
-  # afresh on every run (review cycle 3: a reused one can hold a .pth file, sitecustomize or a changed pip that
-  # no distribution owns and no reinstall removes) and ruff is installed into it from the hashed requirements.
-  # Only pip's download cache is reused, and --require-hashes checks every file taken from it.
+  # Never a ruff found on PATH: a version string proves nothing about the binary. scripts/hashed-venv.sh
+  # installs ruff from the hashed requirements into a new environment of this run (never a reused one, wheels
+  # only), removed on exit.
   scratch_tools
-  ruff_venv="$TOOLS/ruff-venv"
-  rm -rf "$ruff_venv"
-  python3 -m venv "$ruff_venv"
-  "$ruff_venv/bin/python" -m pip install --quiet --disable-pip-version-check --require-hashes --no-deps -r scripts/lint-requirements.txt
+  hashed_venv "$TOOLS" ruff-venv scripts/lint-requirements.txt
+  ruff_venv="$HASHED_VENV"
   OWLMAST_RUFF="$ruff_venv/bin/ruff"
 fi
 [ "$("$OWLMAST_RUFF" --version)" = "ruff $RUFF_VERSION" ] || { echo "verify-script-lint: $OWLMAST_RUFF is $("$OWLMAST_RUFF" --version), not ruff $RUFF_VERSION" >&2; exit 1; }
