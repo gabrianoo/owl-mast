@@ -130,6 +130,19 @@ public final class DbProbe {
         .block();
   }
 
+  /** The definition PostgreSQL holds for a table's constraint, as {@code pg_get_constraintdef}. */
+  public String constraintDefinition(String table, String constraint) {
+    return databaseClient
+        .sql(
+            "select pg_get_constraintdef(oid) as def from pg_constraint"
+                + " where conrelid = cast(:table as regclass) and conname = :constraint")
+        .bind("table", table)
+        .bind("constraint", constraint)
+        .map(row -> row.get("def", String.class))
+        .one()
+        .block();
+  }
+
   public void runSql(String sql) {
     databaseClient.sql(sql).then().block();
   }

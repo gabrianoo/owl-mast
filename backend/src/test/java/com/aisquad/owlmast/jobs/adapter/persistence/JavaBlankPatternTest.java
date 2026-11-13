@@ -9,9 +9,9 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Review 5883535263: discovery sorts the ids {@code TenantId} refuses after the real tenants, so
- * its pattern must name exactly the characters {@code String.isBlank} treats as blank. The class is
- * written in syntax PostgreSQL's and Java's regular expressions read alike, so Java checks it here
- * for every code point.
+ * its pattern must name exactly the characters {@code String.isBlank} treats as blank. This checks
+ * the class in Java's engine for every code point; {@code JavaBlankPatternIT} checks it in
+ * PostgreSQL's, which is the one discovery runs it in.
  */
 class JavaBlankPatternTest {
 

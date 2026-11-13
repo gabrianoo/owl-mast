@@ -1617,7 +1617,7 @@ class DurableWorkIT {
   void aBlankTenantRowIsSkippedAndTheOtherTenantsAreStillProcessed(CapturedOutput output) {
     createNote(TENANT_A, Failure.NONE);
     createNote(TENANT_B, Failure.NONE);
-    db.runSql("alter table jobs.work_item drop constraint work_item_tenant_id_not_blank");
+    String migrated = dropTenantCheck();
     try {
       // The oldest due item, so discovery reaches it first.
       db.runSql(
@@ -1643,9 +1643,7 @@ class DurableWorkIT {
           .contains("it is skipped and stays unclaimed until the row is corrected");
     } finally {
       db.runSql("delete from jobs.work_item where tenant_id ~ '^[[:space:]]*$'");
-      db.runSql(
-          "alter table jobs.work_item add constraint work_item_tenant_id_not_blank"
-              + " check (tenant_id !~ '^[[:space:]]*$')");
+      restoreTenantCheck(migrated);
     }
   }
 
@@ -1660,7 +1658,7 @@ class DurableWorkIT {
   void aBlankTenantNeverTakesTheLastSlotOfABoundedDiscovery(String blankTenant) {
     createNote(TENANT_A, Failure.NONE);
     createNote(TENANT_B, Failure.NONE);
-    db.runSql("alter table jobs.work_item drop constraint work_item_tenant_id_not_blank");
+    String migrated = dropTenantCheck();
     try {
       db.runSql(
           "update jobs.work_item set tenant_id = "
@@ -1679,10 +1677,23 @@ class DurableWorkIT {
           .containsExactly(TENANT_B.tenant());
     } finally {
       db.runSql("delete from jobs.work_item where tenant_id not in ('tenant-a', 'tenant-b')");
-      db.runSql(
-          "alter table jobs.work_item add constraint work_item_tenant_id_not_blank"
-              + " check (tenant_id !~ '^[[:space:]]*$')");
+      restoreTenantCheck(migrated);
     }
+  }
+
+  /** Drops V004's check for a test and returns the definition the migrations gave it. */
+  private String dropTenantCheck() {
+    String migrated = db.constraintDefinition("jobs.work_item", "work_item_tenant_id_not_blank");
+    db.runSql("alter table jobs.work_item drop constraint work_item_tenant_id_not_blank");
+    return migrated;
+  }
+
+  /** Puts back exactly the migrated check, so later tests run against the migrated schema. */
+  private void restoreTenantCheck(String migrated) {
+    db.runSql(
+        "alter table jobs.work_item add constraint work_item_tenant_id_not_blank " + migrated);
+    assertThat(db.constraintDefinition("jobs.work_item", "work_item_tenant_id_not_blank"))
+        .isEqualTo(migrated);
   }
 
   /** E01-R-04: V004 and V005 reject a blank tenant id on the jobs and audit tables. */

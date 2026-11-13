@@ -365,7 +365,8 @@ class R2dbcWorkRepository implements WorkRepository {
    * because PostgreSQL's {@code [[:space:]]}, which V004 uses, follows the database's character
    * classification: it leaves out U+001C to U+001F and, under some collations, the Unicode
    * separators, so such ids would sort among the real tenants, take slots of the limit and then be
-   * skipped.
+   * skipped. It is bound as a parameter, never pasted into the SQL: in a string literal its
+   * backslashes would depend on {@code standard_conforming_strings}.
    */
   static final String JAVA_BLANK =
       "^[\\t\\n\\u000b\\f\\r\\u001c-\\u001f \\u1680\\u2000-\\u2006\\u2008-\\u200a"
@@ -379,12 +380,11 @@ class R2dbcWorkRepository implements WorkRepository {
                 + CLAIMABLE
                 // A tenant id no scope can be bound to sorts last, so such rows take a slot of
                 // the limit only when fewer real tenants are due and never starve one.
-                + " group by tenant_id order by (tenant_id ~ '"
-                + JAVA_BLANK
-                + "'),"
+                + " group by tenant_id order by (tenant_id ~ :blank),"
                 + " min(case when status = 'PENDING' then next_attempt_at else lease_expires_at"
                 + " end), tenant_id limit :limit")
         .bind("limit", (long) limit)
+        .bind("blank", JAVA_BLANK)
         .bind("types", typeValues(types))
         .bind("version", WorkItemContract.VERSION)
         .map(row -> Optional.ofNullable(row.get("tenant_id", String.class)))
