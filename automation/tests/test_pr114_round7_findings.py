@@ -16,18 +16,20 @@ from pathlib import Path
 from unittest import mock
 
 from automation.tests import test_pr114_round5_findings as r5
-from automation.tests.support import IMPLEMENTER, REVIEWER, ok_worktree
+from automation.tests.support import IMPLEMENTER, REVIEW_BRANCH, REVIEW_WORKTREE, REVIEWER, ok_worktree, passing_runner
 from automation.tests.test_activation import S, T0
 from automation.tests.test_enabling_repair_1 import claimed, refuses
 from automation.tests.test_pr108_review_findings import review_authorized
 from automation.tests.test_pr114_review_findings import LiveCase, clearance, regress
 from automation.tests.test_pr114_round3_findings import record
 from automation.tests.test_pr114_round4_findings import stop_of
+from automation.tests.test_pr115_review_findings import EARLY, arm_failure_after_claim
 from automation.unattended import activation as activation_module
 from automation.unattended import cli as cli_module
 from automation.unattended import state as state_module
 from automation.unattended.activation import Activation, abort_activation_use, activation_use, confirm_activation_use, ledger_path, record_activation_use, run_json_presence, use_refusal
-from automation.unattended.errors import Refused
+from automation.unattended.errors import Conflict, Outage, Refused
+from automation.unattended.github import Comment, PullRequestRecord, render_marker
 from automation.unattended.state import Store
 
 REPO = "gabrianoo/owl-mast"
@@ -36,6 +38,7 @@ DOCS = ROOT / "docs" / "unattended-execution.md"
 README = ROOT / "automation" / "README.md"
 MARK = "2026-11-07T12:00:00Z"  # the high-water mark `regress` leaves; the clock then reads 11:00
 BEHIND = "2026-11-07T11:00:00Z"
+INSIDE = "2026-11-07T11:57:00Z"  # behind the mark, inside the 5-minute tolerance: no stop is recorded
 
 
 def set_ledger(h, **fields) -> dict:
@@ -627,6 +630,7 @@ class StateStampsUnderAClockStopTests(LiveCase):
         self.assertEqual(state.task_history[-1]["at"], MARK)
         cleanup = [i for i in state.intents if i.kind in ("release", "block")]
         self.assertEqual([i.completed_at for i in cleanup], [MARK])
+        self.assertEqual([i.created_at for i in cleanup], [MARK])  # PR #176 R1-2: never the Store's wall clock, which reads earlier than `blocked.at` saved with it
 
     def test_block(self):
         self.terminal_operation("block")
@@ -687,6 +691,66 @@ class StateStampsUnderAClockStopTests(LiveCase):
         state = c.record_task_terminal(S, self.h.terminal())
         self.assertIsNone(stop_of(self.store))
         self.assertEqual(state.task_history[-1]["at"], MARK)
+
+    def inside_the_tolerance(self):
+        """A live run with no stop whose clock reads 3 minutes behind its high-water mark."""
+        c = self.h.coordinator()
+        self.h.clock[0] = MARK
+        c.status()
+        self.h.clock[0] = INSIDE
+        return c
+
+    def approved(self, c):
+        """Drive the advancing operations up to an approved review, all at `INSIDE`."""
+        c.reserve(S, self.h.h.snapshot, "base")
+        c.bind_receipt(S, IMPLEMENTER, str(self.h.h.worktree), "t3/om-01-02", ok_worktree)
+        c.record_head(S, self.h.h.sha, self.h.terminal())
+        c.run_checks(S, self.h.h.sha, str(self.h.h.worktree), passing_runner)
+        c.authorize_review(S, self.h.h.sha)
+        c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
+        return c.record_review(S, self.h.h.sha, "approved", "report.md", self.h.terminal())
+
+    def test_the_advancing_operations_are_floored_without_a_stop(self):
+        """PR #176 R1-3 (thread PRRT_kwDOVjxExc63TXCx): the advancing operations refuse under a
+        recorded stop, so their floor applies with no stop and the clock inside the tolerance behind
+        the mark. Mutation: the stamp of `issued_at`, `reserved_at`, `checks[].at`, `reviews[].at`,
+        `proposal.at` or an intent's `created_at` / `completed_at` back to `self.now()`. The
+        `blocked.at` of the reserve and resume conflicts is in `ConflictStampsWithoutAStopTests`."""
+        c = self.inside_the_tolerance()
+        state = c.reserve(S, self.h.h.snapshot, "base")
+        self.assertEqual(state.claim["reserved_at"], MARK)
+        self.assertEqual((state.authorizations[-1]["purpose"], state.authorizations[-1]["issued_at"]), ("implementation", MARK))
+        self.assertEqual(state.authorizations[-1]["issued_observed_at"], INSIDE)  # floored, so what the clock read is kept
+        claim = next(i for i in state.intents if i.kind == "claim")
+        self.assertEqual((claim.created_at, claim.completed_at), (MARK, MARK))
+        c.bind_receipt(S, IMPLEMENTER, str(self.h.h.worktree), "t3/om-01-02", ok_worktree)
+        c.record_head(S, self.h.h.sha, self.h.terminal())
+        state = c.run_checks(S, self.h.h.sha, str(self.h.h.worktree), passing_runner)
+        self.assertEqual(state.checks[-1]["at"], MARK)
+        state = c.authorize_review(S, self.h.h.sha)
+        self.assertEqual((state.authorizations[-1]["purpose"], state.authorizations[-1]["issued_at"]), ("review", MARK))
+        c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
+        state = c.record_review(S, self.h.h.sha, "approved", "report.md", self.h.terminal())
+        self.assertEqual(state.reviews[-1]["at"], MARK)
+        self.h.h.fake.pull_requests[7] = PullRequestRecord(7, "OPEN", self.h.h.sha, False, (), "SUCCESS")
+        state = c.propose_evidence(S, self.h.h.sha, 7, [], "s")
+        self.assertEqual(state.proposal["at"], MARK)
+        proposal = next(i for i in state.intents if i.kind == "proposal")
+        self.assertEqual((proposal.created_at, proposal.completed_at), (MARK, MARK))
+        self.assertIsNone(stop_of(self.store))  # the floor was never a stop's doing
+        self.assertEqual(self.h.clock[0], INSIDE)
+
+    def test_a_review_regression_on_github_is_floored_without_a_stop(self):
+        """PR #176 R1-3: the review a GitHub objection records is stamped like a local one."""
+        c = self.inside_the_tolerance()
+        self.approved(c)
+        objection = {"state": "CHANGES_REQUESTED", "commit": self.h.h.sha, "author": "A", "submitted_at": "1"}
+        self.h.h.fake.pull_requests[7] = PullRequestRecord(7, "OPEN", self.h.h.sha, False, (objection,), "SUCCESS")
+        with self.assertRaises(Refused) as ctx:
+            c.propose_evidence(S, self.h.h.sha, 7, [], "s")
+        self.assertIn("outstanding CHANGES_REQUESTED from ['A']", str(ctx.exception))
+        review = self.store.load_story(S).reviews[-1]
+        self.assertEqual((review["regression"], review["at"]), (True, MARK))
 
     def test_a_stamp_after_the_clear_never_sorts_before_one_floored_during_the_stop(self):
         c = review_authorized(self.h)
@@ -916,6 +980,23 @@ class StuckGitIsBoundedTests(unittest.TestCase):
         out = cli_module._git_answer(["sh", "-c", "printf out; printf err >&2; exit 3"], timeout=30, env=dict(os.environ))
         self.assertEqual((out.returncode, out.stdout, out.stderr), (3, "out", "err"))
 
+    def test_git_is_given_the_sanitized_environment_and_no_stdin(self):
+        """PR #176 R1-4 (thread PRRT_kwDOVjxExc63TXC4): `_git_answer` hands the child the
+        environment `_work_tree` built, and no stdin. Mutation: `env=env` or `stdin=DEVNULL`
+        dropped from the `Popen` call."""
+        child = mock.Mock(returncode=128)
+        child.communicate.return_value = ("", "fatal: not a git repository (or any of the parent directories): .git\n")
+        inherited = {"GIT_DIR": "/elsewhere/.git", "GIT_WORK_TREE": "/elsewhere", "LC_ALL": "de_DE.UTF-8", "LANGUAGE": "de", "PATH": os.environ.get("PATH", "")}
+        with mock.patch.dict(os.environ, inherited), mock.patch.object(cli_module.subprocess, "Popen", return_value=child) as popen:
+            self.assertIsNone(cli_module._work_tree("/x"))
+        kwargs = popen.call_args.kwargs
+        env = kwargs["env"]
+        self.assertEqual((env["LC_ALL"], env["LANGUAGE"], env["GIT_DISCOVERY_ACROSS_FILESYSTEM"]), ("C", "", "1"))
+        self.assertEqual([k for k in env if k.startswith("GIT_")], ["GIT_DISCOVERY_ACROSS_FILESYSTEM"])
+        self.assertEqual(env["PATH"], inherited["PATH"])  # the rest of the caller's environment is kept
+        self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
+        self.assertEqual(popen.call_args.args[0], ["git", "-C", "/x", "rev-parse", "--show-toplevel"])
+
     def test_subprocess_run_is_no_longer_used_for_the_work_tree(self):
         with mock.patch.object(cli_module.subprocess, "run", side_effect=AssertionError("subprocess.run waits for a killed child without a limit")):
             self.assertIsNone(cli_module._work_tree("/"))
@@ -1056,7 +1137,7 @@ class StampWithTheClockAheadOfTheMarkTests(LiveCase):
 # -- F17 --------------------------------------------------------------------------------------------------------------------
 class ObservedAtOnlyUnderAClockStopTests(LiveCase):
     """F17 (thread 4542175007): a reconciliation on a cancelled run without a clock stop records no
-    `observed_at`. Mutation: `if under_clock_stop:` replaced by `if True:`."""
+    `observed_at` while its stamp is the clock. Mutation: the condition replaced by `if True:`."""
 
     def test_a_cancelled_run_without_a_clock_stop_records_no_observed_at(self):
         c, auth = r5.ReconcileRevokedUnderClearableStopTests.repair(self)
@@ -1070,6 +1151,57 @@ class ObservedAtOnlyUnderAClockStopTests(LiveCase):
         self.assertNotIn("observed_at", reconciliation)
         self.assertEqual((reconciliation["at"], state.authorization(auth["id"])["bound_at"]), ("2026-11-07T10:30:00Z", "2026-11-07T10:30:00Z"))
 
+    def test_without_a_stop_a_floored_reconciliation_never_sorts_before_the_revocation(self):
+        """PR #176 R1-1 (thread PRRT_kwDOVjxExc63TXCh): with no stop and the clock inside the
+        tolerance behind the mark, the reconciliation is floored like every other stamp, so it never
+        follows a floored `revoked_at` with an earlier time; the raw reading is kept beside it.
+        Mutation: `stamp = observed_at` when no clock stop is recorded."""
+        c, auth = r5.ReconcileRevokedUnderClearableStopTests.repair(self)
+        self.h.clock[0] = MARK
+        c.status()
+        self.h.clock[0] = INSIDE
+        refuses(self, lambda: c.cancel(S, "owner stops the repair"), "authorization-unresolved")  # revoked: floored at the mark
+        c.cancel_run("owner stops the run")
+        self.assertIsNone(stop_of(self.store))
+        receipt, evidence = r5.ReconcileRevokedUnderClearableStopTests.evidence()
+        state = c.reconcile_retained_execution(S, auth["id"], receipt, evidence, "r", "p")
+        recorded = state.authorization(auth["id"])
+        self.assertEqual((recorded["revoked_at"], recorded["bound_at"], recorded["reconciliation"]["at"]), (MARK, MARK, MARK))
+        self.assertGreaterEqual(recorded["reconciliation"]["at"], recorded["revoked_at"])
+        self.assertEqual(recorded["reconciliation"]["observed_at"], INSIDE)  # floored, so what the clock read is kept
+        stamps = [entry["at"] for entry in state.task_history]
+        self.assertEqual((stamps, stamps[-1]), (sorted(stamps), MARK))
+        line = next(e for e in self.store.read_journal() if e["event"] == "retained-execution-reconciled")
+        self.assertIn("-obs2026-11-07T115700Z", line["detail"]["backup"])
+        self.assertIsNone(stop_of(self.store))
+
+    def test_a_run_started_on_the_real_clock_after_a_floored_issue_is_reconciled(self):
+        """A repair authorized with the clock inside the tolerance has `issued_at` at the mark; its
+        task starts on the real clock, before the mark. The reconciliation compares `startedAt`
+        with what the clock read at issue, so the genuine run is not refused
+        `run-precedes-authorization`, and a run that started before the issue still is."""
+        c = review_authorized(self.h)
+        c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
+        c.record_review(S, self.h.h.sha, "changes-requested", "r.md", self.h.terminal())
+        self.h.clock[0] = MARK
+        c.status()
+        self.h.clock[0] = INSIDE
+        auth = c.authorize_repair(S).unresolved_authorization()
+        self.assertEqual((auth["issued_at"], auth["issued_observed_at"]), (MARK, INSIDE))
+        refuses(self, lambda: c.cancel(S, "owner stops the repair"), "authorization-unresolved")
+        c.cancel_run("owner stops the run")
+        receipt, evidence = r5.ReconcileRevokedUnderClearableStopTests.evidence()
+        earlier = {**receipt, "startedAt": "2026-11-07T11:56:59Z"}  # before the clock read 11:57 at issue
+        exc = refuses(self, lambda: c.reconcile_retained_execution(S, auth["id"], earlier, evidence, "r", "p"), "run-precedes-authorization")
+        self.assertEqual(exc.detail["issued_at"], INSIDE)
+        genuine = {**receipt, "startedAt": "2026-11-07T11:57:30Z"}  # after the issue, before the mark
+        state = c.reconcile_retained_execution(S, auth["id"], genuine, evidence, "r", "p")
+        self.assertEqual(state.authorization(auth["id"])["status"], "consumed")
+
+    def test_an_authorization_issued_at_or_past_the_mark_keeps_no_second_reading(self):
+        review_authorized(self.h)
+        self.assertTrue(all("issued_observed_at" not in a for a in self.store.load_story(S).authorizations))
+
     def test_under_a_clock_stop_it_is_recorded(self):
         c, auth = r5.ReconcileRevokedUnderClearableStopTests.repair(self)
         refuses(self, lambda: c.cancel(S, "owner stops the repair"), "authorization-unresolved")
@@ -1077,6 +1209,66 @@ class ObservedAtOnlyUnderAClockStopTests(LiveCase):
         receipt, evidence = r5.ReconcileRevokedUnderClearableStopTests.evidence()
         state = c.reconcile_retained_execution(S, auth["id"], receipt, evidence, "r", "p")
         self.assertEqual(state.authorization(auth["id"])["reconciliation"]["observed_at"], BEHIND)
+
+
+# -- PR #176 R1-3: the conflicts of reserve and resume ------------------------------------------------------------------------
+class ConflictStampsWithoutAStopTests(LiveCase):
+    """PR #176 R1-3: `blocked.at` of a conflict that `reserve` or `resume` records is floored like
+    the other stamps. These operations refuse under a recorded stop, so the floor applies with no
+    stop and the clock inside the tolerance behind the mark. Mutation: the `blocked.at` of the
+    duplicate marker, the unreadable claim, the lost race or the stale claim back to `self.now()`."""
+
+    def setUp(self):
+        super().setUp()
+        self.c = self.h.coordinator()
+        self.h.clock[0] = MARK
+        self.c.status()
+        self.h.clock[0] = INSIDE
+
+    def blocked(self) -> dict:
+        self.assertIsNone(stop_of(self.store))
+        return self.store.load_story(S).blocked
+
+    def test_a_claim_that_is_not_readable_back(self):
+        arm_failure_after_claim(self.h.h, reads_after_post=2, hide_ours=True, run="run-live")
+        refuses(self, lambda: self.c.reserve(S, self.h.h.snapshot, "base"), "claim-unverifiable")
+        self.assertEqual((self.blocked()["race_unsettled"], self.blocked()["at"]), (True, MARK))
+
+    def test_a_duplicate_marker(self):
+        original = self.h.h.fake.post_comment
+
+        def twice(number, body):
+            original(number, body)
+            return original(number, body)
+
+        self.h.h.fake.post_comment = twice
+        with self.assertRaises(Conflict):
+            self.c.reserve(S, self.h.h.snapshot, "base")
+        self.assertIn("duplicate marker for claim", self.blocked()["reason"])
+        self.assertEqual(self.blocked()["at"], MARK)
+
+    def test_a_lost_claim_race(self):
+        original = self.h.h.fake.post_comment
+
+        def interleaved(number, body):
+            if "kind=claim" in body and not any((c.marker or {}).get("run") == "run-other" for c in self.h.h.fake.comments[number]):
+                self.h.h.fake.comments[number].append(Comment(5, render_marker(kind="claim", run="run-other", story=S, op="claim") + "\nearlier", "machine", EARLY))
+            return original(number, body)
+
+        self.h.h.fake.post_comment = interleaved
+        refuses(self, lambda: self.c.reserve(S, self.h.h.snapshot, "base"), "claim-race-lost")
+        self.assertEqual(self.blocked()["at"], MARK)
+        release = self.store.load_story(S).intent("release")
+        self.assertEqual((release.created_at, release.completed_at), (MARK, MARK))
+
+    def test_a_stale_claim_cancelled_by_resume(self):
+        self.h.h.fake.fail_once["post_comment"] = Outage("503")
+        with self.assertRaises(Outage):
+            self.c.reserve(S, self.h.h.snapshot, "base")
+        self.h.h.fake.set_status_externally(21, "Blocked")
+        state = self.c.resume(S, ok_worktree)
+        self.assertEqual((state.phase, state.blocked["from_phase"], state.blocked["at"]), ("cancelled", "claim-incomplete", MARK))
+        self.assertIsNone(stop_of(self.store))
 
 
 # -- the documentation ------------------------------------------------------------------------------------------------------
@@ -1088,6 +1280,15 @@ class DocumentedTests(unittest.TestCase):
         for needle in ("`field`", "`consequence`", "`presented_current`", "`clear_requires`", "`recovered: true`", "recorded directory cannot be examined", "`issues/0`", "5 seconds"):
             self.assertIn(needle, text, needle)
         self.assertNotIn("an `OSError` without an errno told apart by its `strerror`: the message names", text)
+
+    def test_the_guide_states_the_stamp_rule_without_the_reconciliation_exception(self):
+        """PR #176 R1-1, R1-2: the reconciliation and an intent's `created_at` are floored like the rest."""
+        text = DOCS.read_text(encoding="utf-8")
+        for needle in ("an intent's `created_at` and `completed_at`", "One stamp is an exception: a story's `updated_at`", "without one only when `reconciliation.at` was floored",
+                       "`issued_observed_at`", "`claim.reserved_at`, `checks[].at`, `reviews[].at`, `proposal.at`", "`bound_at` and `claim.claimed_at` of a bind (for work or for cleanup)"):
+            self.assertIn(needle, text, needle)
+        for gone in ("Two stamps are exceptions", "floored at the mark only while a `clock-regression` stop is recorded", "is recorded only under a clock stop"):
+            self.assertNotIn(gone, text, gone)
 
     def test_the_readme_names_this_file(self):
         self.assertIn("tests/test_pr114_round7_findings.py", README.read_text(encoding="utf-8"))

@@ -650,9 +650,11 @@ class Coordinator:
         return self.run.last_observed_at or (self.run.activation or {}).get("validated_at")
 
     def _at_least_high_water(self, at: str) -> str:
-        """``at``, or the run's high-water mark when the clock reads earlier: a record written while the
-        clock is behind (a clearable clock-regression stop) is never stamped before what the run already
-        observed."""
+        """``at`` as it was given, or the run's high-water mark when the clock reads earlier: a record
+        written while the clock is behind (under a recorded clock-regression stop, or inside the
+        tolerance with no stop) is never stamped before what the run already observed. The result
+        differs from ``at`` only when the mark won, so a caller can tell a floored stamp by
+        comparing the two."""
         mark = self._high_water_text()
         if mark is None:
             return at
@@ -660,12 +662,12 @@ class Coordinator:
         now, high_water = _parse_time(at, "now", problems), _parse_time(mark, "high-water mark", problems)
         if problems or now is None or high_water is None:
             return at
-        return _utc_text(max(now, high_water))
+        return _utc_text(high_water) if now < high_water else at
 
     def _stamp(self) -> str:
         """The time a state record is stamped with (an authorization's ``issued_at`` / ``revoked_at``
         / ``resolved_at`` / ``bound_at``, a ``task_history`` entry, ``blocked.at``, a claim, a check,
-        a review, a proposal, an intent's ``completed_at``): the clock, and on a live run never
+        a review, a proposal, an intent's ``created_at`` and ``completed_at``): the clock, and on a live run never
         earlier than the run's high-water mark, whether or not a stop is recorded. Under a recorded
         ``clock-regression`` stop the clock may be far behind what the run already observed while
         cleanup still runs (terminal evidence, cancel, block, a cleanup bind, a revocation or a
@@ -674,13 +676,17 @@ class Coordinator:
         would sort before records written earlier, so one story never holds a floored entry followed
         by an earlier one. A fixture run has no mark and is stamped with the clock.
 
-        Two stamps do not go through here. ``StoryState.updated_at`` is written by
-        ``Store.save_story`` from the wall clock (the Store has no injected clock and no mark), like
-        the journal's ``at``: it is the record of what the clock said and is not floored (``seq``
-        orders the journal). ``reconcile_retained_execution`` keeps its own stamp: floored at the
-        mark only while a clock-regression stop is recorded, with the raw reading kept beside it as
-        ``reconciliation.observed_at``."""
-        at = self.now()
+        One stamp is not floored: ``StoryState.updated_at`` is written by ``Store.save_story``
+        from the wall clock (the Store has no injected clock and no mark), like the journal's
+        ``at``: it is the record of what the clock said (``seq`` orders the journal). Two callers
+        read the clock themselves and floor that reading the same way (:meth:`_floored`), because
+        they keep the raw reading beside a floored stamp: ``reconcile_retained_execution``
+        (``reconciliation.observed_at``) and ``_authorize`` (``issued_observed_at``)."""
+        return self._floored(self.now())
+
+    def _floored(self, at: str) -> str:
+        """``at`` as a state stamp: on a live run never earlier than the run's high-water mark
+        (:meth:`_stamp`); a fixture run has no mark."""
         if self.environment == "live" and getattr(self, "run", None) is not None:
             return self._at_least_high_water(at)
         return at
@@ -808,8 +814,13 @@ class Coordinator:
         counts = self._counts()
         if counts["delegated_tasks"] + 1 > self.policy.max_delegated_tasks:
             raise BudgetExhausted(f"delegated task budget {self.policy.max_delegated_tasks} exhausted ({counts['delegated_tasks']} authorizations issued); no task may be launched", issued=counts["delegated_tasks"])
+        observed_at = self.now()
         auth = {"id": f"{self.store.run_id}:{state.story}:{len(state.authorizations) + 1}", "role": role, "purpose": purpose, "sha": sha, "round": round_,
-                "issued_at": self._stamp(), "status": "pending", "task_id": None, "reason": None}
+                "issued_at": self._floored(observed_at), "status": "pending", "task_id": None, "reason": None}
+        if auth["issued_at"] != observed_at:
+            # floored: the task this authorizes starts on the real clock, which reads earlier than ``issued_at``;
+            # the reconciliation's "started at or after it was issued" check compares with what the clock read
+            auth["issued_observed_at"] = observed_at
         state.authorizations.append(auth)
         return auth
 
@@ -1218,7 +1229,7 @@ class Coordinator:
         if existing is not None:
             return existing
         marker = {"kind": kind, "run": self.store.run_id, "story": state.story, "op": op, **({"inst": self.run.instance} if self.run.instance else {}), **extra}
-        intent = Intent(op, kind, marker, body=f"{render_marker(**marker)}\n{body}", preconditions=preconditions or {})
+        intent = Intent(op, kind, marker, body=f"{render_marker(**marker)}\n{body}", preconditions=preconditions or {}, created_at=self._stamp())  # never the Store's wall clock: floored like the stamps saved with it
         state.intents.append(intent)
         return intent
 
@@ -1626,9 +1637,10 @@ class Coordinator:
             completed, completed_dt = correlated_timestamp("completedAt")
             if started_dt is None:
                 raise Refused("startedAt is required to correlate the resumed run with its authorization", code="correlation-missing")
-            issued_dt = parse_timestamp(auth["issued_at"], "authorization.issued_at")
+            issued = auth.get("issued_observed_at") or auth["issued_at"]  # the clock at issue: ``issued_at`` may be floored at the high-water mark, later than a run that started after it
+            issued_dt = parse_timestamp(issued, "authorization.issued_at")
             if started_dt < issued_dt:
-                raise Refused(f"run {run_id} started at {started}, before authorization {auth['id']} was issued at {auth['issued_at']}; an earlier run of the retained task cannot settle a later authorization", code="run-precedes-authorization", started_at=str(started), issued_at=auth["issued_at"])
+                raise Refused(f"run {run_id} started at {started}, before authorization {auth['id']} was issued at {issued}; an earlier run of the retained task cannot settle a later authorization", code="run-precedes-authorization", started_at=str(started), issued_at=issued)
             if completed_dt is not None and completed_dt < started_dt:
                 raise Refused(f"run {run_id} completedAt {completed} precedes startedAt {started}", code="correlation-missing")
             already = auth["status"] == "consumed" and auth.get("task_id") == owner and auth.get("run_id") == run_id
@@ -1661,7 +1673,7 @@ class Coordinator:
                 self.store.journal(story, "retained-execution-already-reconciled", {"authorization": auth["id"], "task": owner, "run": run_id})
                 return state
             observed_at = self.now()
-            stamp = self._at_least_high_water(observed_at) if under_clock_stop else observed_at  # never before events already recorded for the run
+            stamp = self._floored(observed_at)  # never before events already recorded for the run, with or without a recorded stop
             safe_auth = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in auth["id"])
             observed_part = f"-obs{observed_at.replace(':', '')}" if stamp != observed_at else ""  # the mark stays fixed while the clock is behind: the real observation keeps a retry from hitting backup-exists
             backup = self.store.story_path(story).with_name(f"{story}.json.bak-{stamp.replace(':', '')}{observed_part}-{safe_auth}")
@@ -1670,8 +1682,8 @@ class Coordinator:
             backup.write_text(self.store.story_path(story).read_text(encoding="utf-8"), encoding="utf-8")
             reconciliation = {"reason": reason, "provenance": provenance, "evidence_shape": evidence["shape"], "status": evidence["status"], "at": stamp, "previous_status": "revoked" if auth.get("revoked_at") else "pending",
                               "dispatch": {"runId": str(dispatch["runId"]), "messageId": dispatch.get("messageId")}, "startedAt": str(started), "completedAt": str(completed) if completed else None}
-            if under_clock_stop:
-                reconciliation["observed_at"] = observed_at  # what the regressed clock read; ``at`` is the later of it and the high-water mark
+            if under_clock_stop or stamp != observed_at:
+                reconciliation["observed_at"] = observed_at  # what the clock read: always under a clock stop, otherwise only when ``at`` was floored (the later of it and the high-water mark)
             auth.update({"status": "consumed", "task_id": owner, "run_id": run_id, "bound_at": stamp, "cleanup_only": "retained-execution-reconciled", "reconciliation": reconciliation})
             state.implementer_receipts.append({**normalized, "authorization": auth["id"], "reconciled": True})
             state.task_history.append({"taskId": owner, "runId": run_id, "role": "implementer", "status": evidence["status"], "at": stamp, "operation": "reconcile-retained-execution", "authorization": auth["id"], "evidence_shape": evidence["shape"], "provenance": provenance})
