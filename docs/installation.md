@@ -40,7 +40,7 @@ artifact and its smoke check are delivered by OM-01.04, browser realm/client/ses
 6. `all` at `e76e30e` (review 5883535263: Keycloak runs with `KC_CACHE=local`), backend image built from that commit: exit 0, 145 ok, 0 FAIL (2026-11-12, 23:39–23:47Z). Evidence in `e01-r01-qual-20261113-01-evidence/`. This run did **not** exercise the Keycloak fix: its re-provisioning upgrade leaves the Keycloak pod template unchanged, and the same pod ran before and after it. `all` did not include the retirement either.
 7. `all` at `c0e21ec` (review 5884091345: bundled-bundled now ends with the bootstrap-admin retirement, which must replace the Keycloak pod), backend image built from that commit: exit 0, 156 ok, 0 FAIL (2026-11-13, 00:28–00:36Z). The retirement upgrade replaced `owl-mast-keycloak-554bfbdc57-6w5kv` with `owl-mast-keycloak-7667df9c75-wr4fx` and completed in 50 s. So the pod overlap ran on the shipped chart (`KC_CACHE=local`), and the references were read once no Keycloak pod was terminating. Evidence in `e01-r01-qual-20261113-02-evidence/`.
 
-What this does not amount to: one uninterrupted `first-enable` from a fresh volume through the retirement on the fixed chart. That needs a fourth 10 Gi claim in `owl-mast-test`, whose 30 Gi storage quota is used up by the three retained claims; nothing was deleted to make room. Step 4 also implies that `helm upgrade` from chart 0.1.0, whose backend Deployment rolled, would be refused when it meets this chart's `Recreate` backend; that upgrade has still not been run on a cluster (deferred-work ledger).
+What this does not amount to: one uninterrupted `first-enable` from a fresh volume through the retirement on the fixed chart. That needs a fourth 10 Gi claim in `owl-mast-test`, whose 30 Gi storage quota is used up by the three retained claims; nothing was deleted to make room. Step 4 also implies that `helm upgrade` from chart 0.1.0, whose backend Deployment rolled, would be refused when it meets this chart's `Recreate` backend; that upgrade has still not been run on a cluster (deferred work, not filed yet: entry X9 of the [E01-R-12 issue list](https://github.com/gabrianoo/owl-mast/pull/147#issuecomment-6840477318)).
 
 ## Pins
 
@@ -255,8 +255,9 @@ credentials and data cross the pod network unencrypted. Isolation relies on the 
 network. Where the pod network is not trusted, an external PostgreSQL with `sslMode=require` encrypts the
 connection but does not authenticate the server, so it stops a passive listener and not an active interceptor,
 who can pose as the database and collect the application's and Keycloak's credentials. Server authentication
-needs `sslMode=verify-full` with a mounted CA, which the chart does not ship yet; both that mount and TLS for the
-bundled PostgreSQL are tracked as deferred work. The release NOTES state this for every bundled-database
+needs `sslMode=verify-full` with a mounted CA, which the chart does not ship yet; both that mount
+([#121](https://github.com/gabrianoo/owl-mast/issues/121)) and TLS for the bundled PostgreSQL
+([#124](https://github.com/gabrianoo/owl-mast/issues/124)) are tracked as deferred work. The release NOTES state this for every bundled-database
 install.
 
 Rendering refuses PostgreSQL's system databases as `database.name` or `identity.keycloak.database.name`,
@@ -467,7 +468,7 @@ never printed.
 
 This story proves the image contract and the browser → backend path locally and in CI; deploying
 the frontend image onto the Kind target remains a live qualification step that the script does not run
-(deferred-work ledger). `routing.*` defines the path
+(deferred work, not filed yet: entry X5 of the [E01-R-12 issue list](https://github.com/gabrianoo/owl-mast/pull/147#issuecomment-6840477318)). `routing.*` defines the path
 contract: `/api` routes to the backend, `/` to the frontend. The chart renders no rewrite, so the
 prefixes are pinned to what the artifacts serve: `routing.apiPathPrefix` is exactly `/api` (the shell receives
 this value and calls `/api/compatibility`, the path the backend serves; a sub-path such as `/api/v1` would give

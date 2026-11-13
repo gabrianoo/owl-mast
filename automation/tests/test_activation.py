@@ -35,7 +35,7 @@ def activation_text(policy, run_id="run-live", approved=True, issued=T0, expires
     """A valid activation for ``policy`` and ``run_id`` with field overrides for the negative cases."""
     fields = {
         "approved": "true" if approved else "false", "id": '"eng01-test-activation"', "approver": '"owner (fixture)"', "issued_at": f'"{issued}"', "expires_at": f'"{expires}"',
-        "agreement": '"spec-eng-01-trusted-operation.md"', "repository": f'"{policy.repo_slug}"', "policy_digest": f'"{policy.digest}"', "environment": '"live"', "run_id": f'"{run_id}"',
+        "agreement": '"spec-eng-01-trusted-operation (issue #106)"', "repository": f'"{policy.repo_slug}"', "policy_digest": f'"{policy.digest}"', "environment": '"live"', "run_id": f'"{run_id}"',
         "stories": json.dumps(list(policy.allow)), "impl_model": '"claude-fable-5-1"', "rev_model": '"gpt-6-astra"', "max_delegated_tasks": "6", "max_wall_clock_minutes": "240",
         "extra": "", "smoke": f'"https://github.com/{policy.repo_slug}/pull/107#issuecomment-6706853226"', "review": f'"https://github.com/{policy.repo_slug}/pull/107#issuecomment-6706853227"',
     }

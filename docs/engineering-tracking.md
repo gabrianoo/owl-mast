@@ -6,7 +6,7 @@ Browse the [epic issues](https://github.com/gabrianoo/owl-mast/issues?q=is%3Aiss
 
 The [specification](../_bmad-output/specs/spec-owl-mast/SPEC.md) adopts the existing architecture, PRD, UX and backlog. AD-1 through AD-16 and all OM story/task IDs remain stable. The import baseline is commit `b156ad5bb870a0f4cb8659f869ce0e3d8e234113`.
 
-The private Project is linked to this repository. Its fields are Status, Priority, Scope and Stable ID. Status options are Backlog, Ready, In progress, In review, Blocked and Done. Priorities are P1 - Foundation (E01), P2 - Pilot (E02–E16/E18), Optional (E17) and Later (E19). Scope distinguishes v1, Optional and Later evolution. Stable ID retains each E/OM identifier. These fields describe engineering work; they do not enable BMAD synchronization.
+The private Project is linked to this repository. Its fields are Status, Priority, Scope and Stable ID. Status options are Backlog, Ready, In progress, In review, Blocked and Done. Priorities are P1 - Foundation (E01), P2 - Pilot (E02–E16/E18), Optional (E17) and Later (E19). Scope distinguishes v1, Optional and Later evolution. Stable ID retains each E/OM identifier. These fields describe engineering work. The fields alone do not connect BMAD to GitHub: `bmad-loop` and the unattended bridge below do not read or write them. The one automated path that writes Status is the supervised [GitHub delivery workflow](github-delivery-workflow.md).
 
 ## Tracking rules
 
@@ -18,7 +18,7 @@ The private Project is linked to this repository. Its fields are Status, Priorit
 - Keep blocked or operator-waiting work explicit. Preserve issue links to blockers and the missing decision/evidence. Epic completion requires its required children to qualify as complete.
 - The [shared completion rules](../_bmad-output/planning-artifacts/epics.md#shared-story-completion-rules) and [qualification gates](../_bmad-output/planning-artifacts/epics.md#decision-and-qualification-gates) remain binding. Named contract-design work may proceed early with documentation or synthetic fixtures; production implementation and completion retain original dependencies.
 
-## BMAD execution is not yet synchronized
+## Unattended BMAD execution is not yet synchronized
 
 The 2026-11-06 inspection found these compatibility limits:
 
@@ -39,7 +39,9 @@ Before unattended execution, qualify a bridge with these properties:
 5. Test retries, duplicate events, partial writes, stale revisions, restart/resume, review regression, reopened issues, permission failures and GitHub outages. Fail closed when eligibility or synchronization is unknown.
 6. Configure and qualify actual environment probes and verification commands before starting the loop. Their installed policy entries are empty.
 
-Manual supervised development can use GitHub directly while the loop stays off. Do not claim the installed BMAD workflows provide automatic GitHub writeback.
+Supervised development uses GitHub directly while the loop stays off. The BMAD workflows as installed still have no GitHub writeback of their own, and `bmad-loop` has none at all; do not claim otherwise.
+
+The supervised path gets its writeback from team overrides, not from the installed skills. Under the [GitHub delivery workflow](github-delivery-workflow.md), the overrides in `_bmad/custom/` make `bmad-build`, `bmad-review` and `bmad-walkthrough` keep ticket status, specs, review rounds and findings on GitHub through one tested helper, and chain the three skills through fresh T3 threads. That supervised path writes Project Status. The unattended bridge described above and `bmad-loop` stay off.
 
 The [unattended execution foundation](unattended-execution.md) (ENG-01, [#106](https://github.com/gabrianoo/owl-mast/issues/106)) implements a T3-driven tool under `automation/unattended` with passing fixture coverage for properties 1–5; every real-transport state command refuses unless an owner-approved, run-bound activation authorization is presented (explicit opt-in, disabled by default). On 2026-11-06 the owner accepted a trusted-machine operating agreement that supersedes the strict prerequisites of hard child bounds, denial-tested credential confinement and automated Project Status synchronization: those are now accepted residual risks or manual owner steps, recorded in the operator guide, not guarantees. Activation stays disabled until an engineering-only lifecycle smoke with real T3 receipts and a fresh independent review is published and the owner separately authorizes it. Earlier independent review results remain historical. `bmad-loop` stays unused.
 

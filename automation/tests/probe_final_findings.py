@@ -1,8 +1,9 @@
 """Re-run of the six final-disposition scenarios (PR #107 comment 6686575345) against the
 remediated code. Not a unittest module (name deliberately outside ``test*.py``): run with
 ``PYTHONPATH=. python3 automation/tests/probe_final_findings.py``. The same scenarios against
-the reviewed head a0fa769e are recorded in
-``_bmad-output/implementation-artifacts/unattended-execution/evidence/final-findings-repro-before-2026-11-06.txt``.
+the reviewed head a0fa769e are recorded in ``final-findings-repro-before-2026-11-06.txt``, kept at
+https://github.com/gabrianoo/owl-mast/blob/98496d6673250cb51710973359c2c3c51119de10/_bmad-output/implementation-artifacts/unattended-execution/evidence/final-findings-repro-before-2026-11-06.txt
+(the ENG-01 evidence index is https://github.com/gabrianoo/owl-mast/issues/106#issuecomment-6838353971).
 Every scenario uses the in-memory GitHub transport and a real local git worktree; nothing
 touches live GitHub or T3."""
 

@@ -173,7 +173,7 @@ No PRD, architecture or UX edits are proposed.
 
 ## 6. Errata (2026-11-12, drafted; the owner decides)
 
-Added by the E01 retrospective remediation (E01-R-08) after the 47 review threads on [PR #110](https://github.com/gabrianoo/owl-mast/pull/110) were triaged. Sections 1–5 are the proposal as it was approved and applied and are left as written: it is a point-in-time record, and the text it proposed now lives in `epic-01.md`, where the clarifications from the triage were made. Only statements of fact that the review showed to be wrong are corrected here. The proposed disposition of every thread is in [e01-r08-pr110-thread-dispositions.md](../implementation-artifacts/e01-r08-pr110-thread-dispositions.md).
+Added by the E01 retrospective remediation (E01-R-08) after the 47 review threads on [PR #110](https://github.com/gabrianoo/owl-mast/pull/110) were triaged. Sections 1–5 are the proposal as it was approved and applied and are left as written: it is a point-in-time record, and the text it proposed now lives in `epic-01.md`, where the clarifications from the triage were made. Only statements of fact that the review showed to be wrong are corrected here. The proposed disposition of every thread is in the document [`e01-r08-pr110-thread-dispositions`](https://github.com/gabrianoo/owl-mast/pull/147#issuecomment-6840476739) on PR #147.
 
 | Where | Statement | Correction |
 | --- | --- | --- |
