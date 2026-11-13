@@ -115,7 +115,11 @@ VENV_HOME="${OWLMAST_TOOLS_DIR:-}"
 hashed_venv "$VENV_HOME" deploy-tests-venv "$REQUIREMENTS"
 VENV="$HASHED_VENV"
 "$VENV/bin/python" -m pip check --disable-pip-version-check
-"$VENV/bin/python" -m pip list --format=freeze --disable-pip-version-check 2>/dev/null | grep -iE '^(pyyaml|jsonschema)=='
+# Each of PyYAML and jsonschema must be listed on its own: one alone does not pass (review cycle 12, R12-1).
+listing="$("$VENV/bin/python" -m pip list --format=freeze --disable-pip-version-check 2>/dev/null)"
+for package in pyyaml jsonschema; do
+  grep -qiE "^$package==" <<<"$listing" || { echo "verify-install-package: $package is not installed in $VENV" >&2; exit 1; }
+done
 cd "$ROOT"
 # The suite runs the scripts under test (qualify-local-install.sh parses manifests with `python3` and PyYAML), so
 # the environment's interpreter comes first on PATH: the scripts see the pinned packages, never the host's.

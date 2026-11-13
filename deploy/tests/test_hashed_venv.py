@@ -113,11 +113,12 @@ if [ "$3" = install ]; then
 fi
 # STUB_REACH_SUITE=1: `pip check` and `pip list` pass, so the deploy-test gate gets past `cd "$ROOT"` and fails in
 # its suite instead.
-# STUB_PIP_CHECK_FAILS=1 then fails `pip check` alone, and STUB_PIP_LIST_UNPINNED=1 lists no PyYAML/jsonschema.
+# STUB_PIP_CHECK_FAILS=1 then fails `pip check` alone, and STUB_PIP_LIST names the packages `pip list` prints
+# (default: both PyYAML and jsonschema).
 if [ "${STUB_REACH_SUITE:-}" = 1 ]; then
   case "$3" in
     check) [ "${STUB_PIP_CHECK_FAILS:-}" = 1 ] && exit 1; exit 0 ;;
-    list) if [ "${STUB_PIP_LIST_UNPINNED:-}" = 1 ]; then echo "pip==25.3"; else echo "PyYAML==6.0.3"; fi; exit 0 ;;
+    list) echo "pip==25.3"; for p in ${STUB_PIP_LIST-PyYAML jsonschema}; do echo "$p==1.0"; done; exit 0 ;;
   esac
 fi
 exit 1
@@ -425,13 +426,19 @@ class GateCleanupTests(unittest.TestCase):
         steps = [c for c in calls if c.startswith(("-m pip check", "-m pip list", "-m unittest"))]
         self.assertEqual([" ".join(c.split()[:3]) for c in steps], ["-m pip check", "-m pip list", "-m unittest discover"], calls)
         self.assert_cleaned(r, "deploy-tests-venv", self.tools)
-        for stub, step in (("STUB_PIP_CHECK_FAILS", "-m pip check"), ("STUB_PIP_LIST_UNPINNED", "-m pip list")):
+        # Review cycle 12 (R12-1): each package must be listed on its own; one alone, or neither, stops the gate.
+        cases = [({"STUB_PIP_CHECK_FAILS": "1"}, "-m pip check")]
+        cases += [({"STUB_PIP_LIST": listed}, "-m pip list") for listed in ("PyYAML", "jsonschema", "")]
+        for stub, step in cases:
             with self.subTest(stub=stub):
                 self.log.unlink()
-                r = self.run_gate("verify-install-package.sh", STUB_REACH_SUITE="1", **{stub: "1"})
+                r = self.run_gate("verify-install-package.sh", STUB_REACH_SUITE="1", **stub)
                 log = self.log.read_text()
                 self.assertIn(f"venv-python {step}", log)
                 self.assertNotIn("venv-python -m unittest", log, f"the suite ran although {step} failed")
+                if step == "-m pip list":  # the gate names the first package missing from the listing
+                    missing = next(p for p in ("pyyaml", "jsonschema") if p not in stub["STUB_PIP_LIST"].lower())
+                    self.assertIn(f"{missing} is not installed in", r.stderr)
                 self.assert_cleaned(r, "deploy-tests-venv", self.tools)
 
 
