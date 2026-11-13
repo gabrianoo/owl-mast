@@ -1602,8 +1602,9 @@ class Coordinator:
                 raise Refused(f"terminal evidence is for ({evidence['taskId']}, {evidence['runId']}); the receipt is for ({owner}, {run_id})", code="run-mismatch", evidence_run=evidence["runId"], receipt_run=run_id)
             # Explicit correlation of THIS run with THIS authorization: the dispatch record of the resumed
             # run must name the same run, and the run must have started at or after the authorization was
-            # issued. Legacy task-only history carries no run ids, so an older completed run of the same task
-            # (started before the authorization) can never settle a later authorization by task match alone.
+            # issued (as the clock read it, see below). Legacy task-only history carries no run ids, so an
+            # older completed run of the same task (started before that reading) does not settle a later
+            # authorization by task match alone.
             dispatch = receipt.get("dispatch")
             if not isinstance(dispatch, dict) or not dispatch.get("runId"):
                 raise Refused("the receipt needs the dispatch record of the resumed run ({\"dispatch\": {\"runId\": …, \"messageId\": …}}) to correlate it with the authorization", code="correlation-missing")
@@ -1637,10 +1638,22 @@ class Coordinator:
             completed, completed_dt = correlated_timestamp("completedAt")
             if started_dt is None:
                 raise Refused("startedAt is required to correlate the resumed run with its authorization", code="correlation-missing")
-            issued = auth.get("issued_observed_at") or auth["issued_at"]  # the clock at issue: ``issued_at`` may be floored at the high-water mark, later than a run that started after it
-            issued_dt = parse_timestamp(issued, "authorization.issued_at")
+            # The clock at issue: ``issued_at`` may be floored at the high-water mark, later than a run that
+            # started after it, so the comparison uses what the clock read (``issued_observed_at``) when
+            # that was kept. A ``startedAt`` in [issued_observed_at, issued_at) is accepted by design: the
+            # check cannot tell a run that started there after the issue from one that started there
+            # before it. The refusal names the field that was compared and keeps ``issued_at`` as recorded.
+            observed = auth.get("issued_observed_at")
+            compared_field = "issued_at" if observed is None else "issued_observed_at"
+            issued_dt = parse_timestamp(auth["issued_at"], "authorization.issued_at")  # validated also when the reading is compared: it is reported
+            if observed is not None:
+                issued_dt = parse_timestamp(observed, "authorization.issued_observed_at")
             if started_dt < issued_dt:
-                raise Refused(f"run {run_id} started at {started}, before authorization {auth['id']} was issued at {issued}; an earlier run of the retained task cannot settle a later authorization", code="run-precedes-authorization", started_at=str(started), issued_at=issued)
+                when = str(auth["issued_at"]) if observed is None else f"{auth['issued_at']} (the clock read {observed})"
+                detail = {"started_at": str(started), "issued_at": auth["issued_at"], "compared_with": compared_field}
+                if observed is not None:
+                    detail["issued_observed_at"] = observed
+                raise Refused(f"run {run_id} started at {started}, before authorization {auth['id']} was issued at {when}; an earlier run of the retained task cannot settle a later authorization", code="run-precedes-authorization", **detail)
             if completed_dt is not None and completed_dt < started_dt:
                 raise Refused(f"run {run_id} completedAt {completed} precedes startedAt {started}", code="correlation-missing")
             already = auth["status"] == "consumed" and auth.get("task_id") == owner and auth.get("run_id") == run_id

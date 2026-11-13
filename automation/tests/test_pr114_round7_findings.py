@@ -1179,7 +1179,15 @@ class ObservedAtOnlyUnderAClockStopTests(LiveCase):
         """A repair authorized with the clock inside the tolerance has `issued_at` at the mark; its
         task starts on the real clock, before the mark. The reconciliation compares `startedAt`
         with what the clock read at issue, so the genuine run is not refused
-        `run-precedes-authorization`, and a run that started before the issue still is."""
+        `run-precedes-authorization`, and a run that started before that reading still is.
+
+        PR #176 R2-1: a `startedAt` in [`issued_observed_at`, `issued_at`) is accepted by design.
+        The check cannot tell a run that started there after the issue from one that started there
+        before it on a correct clock (up to the tolerance before the mark). The lower edge of the
+        window is pinned on both sides: the reading itself is accepted, one second before it is refused.
+        PR #176 R2-2: the refusal keeps `issued_at` as recorded and names the reading it compared.
+        Mutations: `issued_at=<the compared value>` back in the detail; the label of the compared
+        field back to `authorization.issued_at`; `<` to `<=` in the comparison."""
         c = review_authorized(self.h)
         c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
         c.record_review(S, self.h.h.sha, "changes-requested", "r.md", self.h.terminal())
@@ -1193,14 +1201,34 @@ class ObservedAtOnlyUnderAClockStopTests(LiveCase):
         receipt, evidence = r5.ReconcileRevokedUnderClearableStopTests.evidence()
         earlier = {**receipt, "startedAt": "2026-11-07T11:56:59Z"}  # before the clock read 11:57 at issue
         exc = refuses(self, lambda: c.reconcile_retained_execution(S, auth["id"], earlier, evidence, "r", "p"), "run-precedes-authorization")
-        self.assertEqual(exc.detail["issued_at"], INSIDE)
-        genuine = {**receipt, "startedAt": "2026-11-07T11:57:30Z"}  # after the issue, before the mark
+        self.assertEqual((exc.detail["issued_at"], exc.detail["issued_observed_at"], exc.detail["compared_with"]), (MARK, INSIDE, "issued_observed_at"))
+        self.assertIn(f"issued at {MARK} (the clock read {INSIDE})", str(exc))
+        broken = self.store.load_story(S)
+        broken.authorization(auth["id"])["issued_observed_at"] = "not-a-time"
+        self.store.save_story(broken)
+        exc = refuses(self, lambda: c.reconcile_retained_execution(S, auth["id"], receipt, evidence, "r", "p"), "correlation-missing")
+        self.assertIn("authorization.issued_observed_at", str(exc))  # the field that is malformed, not `issued_at`
+        broken.authorization(auth["id"])["issued_observed_at"] = INSIDE
+        self.store.save_story(broken)
+        genuine = {**receipt, "startedAt": INSIDE}  # the lower edge of the accepted window [issued_observed_at, issued_at): at the reading, before the mark
         state = c.reconcile_retained_execution(S, auth["id"], genuine, evidence, "r", "p")
         self.assertEqual(state.authorization(auth["id"])["status"], "consumed")
 
     def test_an_authorization_issued_at_or_past_the_mark_keeps_no_second_reading(self):
         review_authorized(self.h)
         self.assertTrue(all("issued_observed_at" not in a for a in self.store.load_story(S).authorizations))
+
+    def test_the_refusal_for_an_unfloored_authorization_names_issued_at_only(self):
+        """PR #176 R2-2: with no second reading the refusal compares with `issued_at` and says so."""
+        c, auth = r5.ReconcileRevokedUnderClearableStopTests.repair(self)
+        self.assertNotIn("issued_observed_at", auth)
+        refuses(self, lambda: c.cancel(S, "owner stops the repair"), "authorization-unresolved")
+        c.cancel_run("owner stops the run")
+        receipt, evidence = r5.ReconcileRevokedUnderClearableStopTests.evidence()
+        earlier = {**receipt, "startedAt": "2000-01-01T00:00:00Z"}
+        exc = refuses(self, lambda: c.reconcile_retained_execution(S, auth["id"], earlier, evidence, "r", "p"), "run-precedes-authorization")
+        self.assertEqual(exc.detail, {"started_at": earlier["startedAt"], "issued_at": auth["issued_at"], "compared_with": "issued_at"})
+        self.assertNotIn("the clock read", str(exc))
 
     def test_under_a_clock_stop_it_is_recorded(self):
         c, auth = r5.ReconcileRevokedUnderClearableStopTests.repair(self)
@@ -1288,6 +1316,17 @@ class DocumentedTests(unittest.TestCase):
                        "`issued_observed_at`", "`claim.reserved_at`, `checks[].at`, `reviews[].at`, `proposal.at`", "`bound_at` and `claim.claimed_at` of a bind (for work or for cleanup)"):
             self.assertIn(needle, text, needle)
         for gone in ("Two stamps are exceptions", "floored at the mark only while a `clock-regression` stop is recorded", "is recorded only under a clock stop"):
+            self.assertNotIn(gone, text, gone)
+
+    def test_the_guide_states_what_the_run_order_check_compares_and_its_bound(self):
+        """PR #176 R2-1, R2-2: the reconcile section names the comparison the code makes (the clock's
+        reading at issue), the window it accepts by design and what the refusal reports."""
+        text = DOCS.read_text(encoding="utf-8")
+        for needle in ("`startedAt` at or after the time the clock read when the authorization was issued (`issued_observed_at` when `issued_at` was floored, otherwise `issued_at`",
+                       "a `startedAt` from `issued_observed_at` up to `issued_at` is accepted by design", "cannot be told from one that started after the issue",
+                       "`compared_with` naming the field that was compared, plus `issued_observed_at` when the authorization has one"):
+            self.assertIn(needle, text, needle)
+        for gone in ("`startedAt` at or after the authorization's `issued_at`", "can never settle a later authorization"):
             self.assertNotIn(gone, text, gone)
 
     def test_the_readme_names_this_file(self):
