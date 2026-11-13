@@ -114,13 +114,15 @@ These are the agent-written transitions the owner authorized for this supervised
 
 ## The loop
 
-One issue, one branch (`t3/<spec-slug>`), one PR that closes the issue. Each stage runs in a **new top-level T3 thread** (`t3_thread_launch`, no `projectId` so it inherits this project, `workspaceStrategy: {"type": "existing_worktree", "worktreePath": "<current worktree>"}` when the current checkout is a worktree, otherwise `{"type": "root"}`), titled `<Stable ID> · <stage>`. The launching thread then ends. If `t3_thread_launch` is unavailable (for example in Codex), print the exact next prompt below and stop.
+One issue, one branch (`t3/<spec-slug>`), one PR that closes the issue. Each stage runs in a **new top-level T3 thread** (`t3_thread_launch`, no `projectId` so it inherits this project, `workspaceStrategy: {"type": "existing_worktree", "worktreePath": "<current worktree>"}` when the current checkout is a worktree, otherwise `{"type": "root"}`), titled `<Stable ID> · <stage>`, with the stage's model below passed as `modelSelection` (for example `{"model": "claude-opus-5-5", "options": [{"id": "effort", "value": "medium"}]}`). The launching thread then ends. If the launch is refused because a model or option is unavailable, report the refusal and stop; never fall back to another model. If `t3_thread_launch` is unavailable (for example in Codex), print the exact next prompt below and stop.
 
-| Stage | Prompt of the new thread |
-|---|---|
-| review | `skill:bmad-review GitHub delivery: issue #N, PR #M, round R. Follow docs/github-delivery-workflow.md.` |
-| fix | `/bmad-build GitHub delivery fix round: issue #N, PR #M, after review round R. Resolve the open bmad-review threads. Follow docs/github-delivery-workflow.md.` |
-| walkthrough | `/bmad-walkthrough GitHub delivery: issue #N, PR #M. Follow docs/github-delivery-workflow.md.` |
+| Stage | Model (`modelSelection`) | Prompt of the new thread |
+|---|---|---|
+| review | `claude-opus-5-5`, effort `medium` | `skill:bmad-review GitHub delivery: issue #N, PR #M, round R. Follow docs/github-delivery-workflow.md.` |
+| fix | `claude-fable-5-2`, effort `medium` | `/bmad-build GitHub delivery fix round: issue #N, PR #M, after review round R. Resolve the open bmad-review threads. Follow docs/github-delivery-workflow.md.` |
+| walkthrough | none: inherit the launching thread's model | `/bmad-walkthrough GitHub delivery: issue #N, PR #M. Follow docs/github-delivery-workflow.md.` |
+
+The first build of a ticket is started by the owner, not launched by a stage, so it runs on whatever model the owner's thread uses; start it on `claude-fable-5-2`, effort `medium`, to match the fix rounds. When the next prompt is printed instead of launched (no `t3_thread_launch`), print the stage's model with it.
 
 ### 1. bmad-build
 

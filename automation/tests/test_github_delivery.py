@@ -1182,6 +1182,21 @@ class CustomizationTests(unittest.TestCase):
         self.assertIn("OWL_GH_TRUSTED_AUTHORS", doc)
 
     @unittest.skipIf(sys.version_info < (3, 11), "tomllib needs Python 3.11+")
+    def test_each_launched_stage_names_its_model(self):
+        import tomllib
+        doc = (REPO_ROOT / "docs" / "github-delivery-workflow.md").read_text(encoding="utf-8")
+        rows = {line.split("|")[1].strip(): line.split("|")[2].strip()
+                for line in doc.splitlines() if line.startswith(("| review |", "| fix |", "| walkthrough |"))}
+        self.assertEqual(rows["review"], "`claude-opus-5-5`, effort `medium`")
+        self.assertEqual(rows["fix"], "`claude-fable-5-2`, effort `medium`")
+        self.assertIn("inherit", rows["walkthrough"])
+        self.assertIn("never fall back to another model", doc)
+        for skill in ("bmad-build", "bmad-review", "bmad-walkthrough"):
+            with self.subTest(skill=skill), (REPO_ROOT / "_bmad" / "custom" / f"{skill}.toml").open("rb") as handle:
+                self.assertIn("model from the Loop table of `docs/github-delivery-workflow.md` as `modelSelection`",
+                              tomllib.load(handle)["workflow"]["on_complete"])
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib needs Python 3.11+")
     def test_deferred_work_is_filed_with_defer_wherever_the_workflow_files_it(self):
         import tomllib
         doc = (REPO_ROOT / "docs" / "github-delivery-workflow.md").read_text(encoding="utf-8")
