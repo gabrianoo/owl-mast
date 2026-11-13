@@ -1274,12 +1274,15 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
                                         rf"chart sha256 {chart_digest(CHART)}", r.stdout)), 3)
 
     @staticmethod
-    def throwaway_checkout(h):
+    def throwaway_checkout(h, local_kind=False):
         """A git repository holding a copy of the script and a one-file chart, so a test can change the chart and the
-        tree without touching the real checkout."""
+        tree without touching the real checkout. With local_kind, also the static manifests `main` checks its targets
+        against."""
         repo = h.tmp / "repo"
         (repo / "scripts").mkdir(parents=True)
         shutil.copy(SCRIPT, repo / "scripts" / SCRIPT.name)
+        if local_kind:
+            shutil.copytree(REPO / "deploy" / "local-kind", repo / "deploy" / "local-kind")
         chart = repo / "deploy" / "helm" / "owl-mast"; chart.mkdir(parents=True)
         (chart / "Chart.yaml").write_text("name: owl-mast\n")
         (repo / "settings.gradle.kts").write_text("// root build input\n")
@@ -1313,6 +1316,32 @@ class ProvisioningHookEvidenceTests(unittest.TestCase):
         self.assertIn("FAIL source (before fe5-retire-upgrade): the chart changed during the run", r.stdout)
         self.assertNotIn(" upgrade ", calls)
         self.assertNotIn("ok   fe5-retire-upgrade", r.stdout)
+
+    def test_a_run_whose_chart_changes_after_its_last_retirement_fails_at_the_end_record(self):
+        """Review cycle 7 (R7-3): steps after the retirement (persistence, the external combinations, failure-paths)
+        install the chart with no record right before them, so the end record is what fails a run whose chart was
+        edited during those steps: `main` must exit non-zero and never report the steps complete."""
+        def run(change_chart):
+            h = Harness(BASE_WORLD)
+            try:
+                repo, chart = self.throwaway_checkout(h, local_kind=True)
+                change = f"echo 'version: 2' >> '{chart / 'Chart.yaml'}'; " if change_chart else ""
+                body = (f"source '{repo / 'scripts' / SCRIPT.name}'; step_inventory() {{ {change}log 'ok   inventory-stub'; }}; "
+                        "main inventory; echo \"main returned $?\"")
+                return subprocess.run(["bash", "-c", body], env=h.env(**self.RUNTIME), stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False, timeout=60)
+            finally:
+                h.close()
+        # Control: an unchanged chart completes.
+        r = run(False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok   inventory-stub", r.stdout)
+        self.assertIn("qualification steps complete: inventory", r.stdout)
+        r = run(True)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("ok   inventory-stub", r.stdout)
+        self.assertIn("FAIL source (end: inventory): the chart changed during the run", r.stdout)
+        self.assertNotIn("qualification steps complete", r.stdout)
+        self.assertNotIn("main returned", r.stdout)
 
     def test_the_source_record_names_dirty_paths_keeps_earlier_records_and_fails_on_a_changed_chart(self):
         """Review cycle 5: dirty detection covers the whole tree (a root Gradle file builds the image too), each call
