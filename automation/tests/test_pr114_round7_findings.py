@@ -1186,8 +1186,10 @@ class ObservedAtOnlyUnderAClockStopTests(LiveCase):
         before it on a correct clock (up to the tolerance before the mark). The lower edge of the
         window is pinned on both sides: the reading itself is accepted, one second before it is refused.
         PR #176 R2-2: the refusal keeps `issued_at` as recorded and names the reading it compared.
+        PR #176 R3-2 (a pin of behaviour round 2 added): `issued_at` is validated also when the reading is compared, because it is reported.
         Mutations: `issued_at=<the compared value>` back in the detail; the label of the compared
-        field back to `authorization.issued_at`; `<` to `<=` in the comparison."""
+        field back to `authorization.issued_at`; `<` to `<=` in the comparison; `issued_at` parsed
+        only when the authorization has no reading."""
         c = review_authorized(self.h)
         c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
         c.record_review(S, self.h.h.sha, "changes-requested", "r.md", self.h.terminal())
@@ -1209,10 +1211,80 @@ class ObservedAtOnlyUnderAClockStopTests(LiveCase):
         exc = refuses(self, lambda: c.reconcile_retained_execution(S, auth["id"], receipt, evidence, "r", "p"), "correlation-missing")
         self.assertIn("authorization.issued_observed_at", str(exc))  # the field that is malformed, not `issued_at`
         broken.authorization(auth["id"])["issued_observed_at"] = INSIDE
+        broken.authorization(auth["id"])["issued_at"] = "not-a-time"  # the reading is intact and is what the check compares
+        self.store.save_story(broken)
+        exc = refuses(self, lambda: c.reconcile_retained_execution(S, auth["id"], receipt, evidence, "r", "p"), "correlation-missing")
+        self.assertIn("authorization.issued_at", str(exc))
+        self.assertEqual(self.store.load_story(S).authorization(auth["id"])["status"], "revoked")  # nothing was consumed
+        broken.authorization(auth["id"])["issued_at"] = MARK
         self.store.save_story(broken)
         genuine = {**receipt, "startedAt": INSIDE}  # the lower edge of the accepted window [issued_observed_at, issued_at): at the reading, before the mark
         state = c.reconcile_retained_execution(S, auth["id"], genuine, evidence, "r", "p")
         self.assertEqual(state.authorization(auth["id"])["status"], "consumed")
+
+    def repair_issued_after_a_step_back(self, reading: str):
+        """A coordinator ready for `authorize-repair` with the clock at the mark, and a patch under
+        which the clock reads ``reading`` after the gate and before the authorization is issued
+        (a host resume or an NTP step between the two readings)."""
+        c = review_authorized(self.h)
+        c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
+        c.record_review(S, self.h.h.sha, "changes-requested", "r.md", self.h.terminal())
+        self.h.clock[0] = MARK
+        check = c._require_no_obligation  # runs after the gate, before the authorization is issued
+
+        def step_back(*args, **kwargs):
+            self.h.clock[0] = reading
+            return check(*args, **kwargs)
+
+        return c, mock.patch.object(c, "_require_no_obligation", step_back)
+
+    def test_a_reading_past_the_tolerance_after_the_gate_is_a_recorded_stop_and_issues_nothing(self):
+        """PR #176 R3-1 (thread PRRT_kwDOVjxExc63UHV6): the reading `_authorize` keeps as
+        `issued_observed_at` is taken after the operation's gated observation. Read further behind
+        the mark than the tolerance, it is a clock regression like the gate's: recorded durably,
+        nothing issued, so the window the reconciliation accepts never exceeds the tolerance.
+        Mutations: the `_observe_stop(operation, at=observed_at)` call removed from `_authorize`
+        (an authorization is issued with a reading an hour behind); `at` ignored by `_stop_candidate`."""
+        c, stepped = self.repair_issued_after_a_step_back("2026-11-07T11:54:59Z")  # one second past the 5-minute tolerance
+        before = self.store.load_story(S)
+        with stepped:
+            exc = refuses(self, lambda: c.authorize_repair(S), "clock-regression")
+        stop = stop_of(self.store)
+        self.assertEqual((stop["code"], stop["observed_at"], stop["operation"]), ("clock-regression", "2026-11-07T11:54:59Z", "authorize-repair"))
+        self.assertEqual(exc.detail["stop"], stop)
+        self.assertEqual(self.events().count("activation-stopped"), 1)
+        after = self.store.load_story(S)
+        self.assertEqual((after.authorizations, after.repair_rounds, after.phase), (before.authorizations, before.repair_rounds, before.phase))
+        self.assertEqual(self.store.load_run().last_observed_at, MARK)
+        self.h.clock[0] = MARK  # the clock is back at the mark: only the recorded stop refuses now
+        exc = refuses(self, lambda: c.authorize_repair(S), "clock-regression")
+        self.assertEqual((exc.detail["stop"], stop_of(self.store)), (stop, stop))
+
+    def test_a_reading_at_the_tolerance_after_the_gate_is_issued_with_that_reading(self):
+        """The other side of the edge: exactly the tolerance behind the mark is no stop, here as at the gate."""
+        c, stepped = self.repair_issued_after_a_step_back("2026-11-07T11:55:00Z")
+        with stepped:
+            auth = c.authorize_repair(S).unresolved_authorization()
+        self.assertEqual((auth["issued_at"], auth["issued_observed_at"]), (MARK, "2026-11-07T11:55:00Z"))
+        self.assertIsNone(stop_of(self.store))
+        self.assertEqual((self.store.load_run().last_observed_at, self.events().count("activation-stopped")), (MARK, 0))
+
+    def test_a_review_authorization_judges_its_reading_the_same_way(self):
+        """`authorize-review` reads the worktree between the gate and the issue; the stop names that command."""
+        c = claimed(self.h)
+        c.record_head(S, self.h.h.sha, self.h.terminal())
+        c.run_checks(S, self.h.h.sha, str(self.h.h.worktree), passing_runner)
+        self.h.clock[0] = MARK
+        verify = c._verify_worktree
+
+        def step_back(*args, **kwargs):
+            self.h.clock[0] = "2026-11-07T11:00:00Z"
+            return verify(*args, **kwargs)
+
+        with mock.patch.object(c, "_verify_worktree", step_back):
+            refuses(self, lambda: c.authorize_review(S, self.h.h.sha), "clock-regression")
+        state = self.store.load_story(S)
+        self.assertEqual((stop_of(self.store)["operation"], state.phase, state.unresolved_authorization()), ("authorize-review", "checks-passed", None))
 
     def test_an_authorization_issued_at_or_past_the_mark_keeps_no_second_reading(self):
         review_authorized(self.h)
@@ -1328,6 +1400,15 @@ class DocumentedTests(unittest.TestCase):
             self.assertIn(needle, text, needle)
         for gone in ("`startedAt` at or after the authorization's `issued_at`", "can never settle a later authorization"):
             self.assertNotIn(gone, text, gone)
+
+    def test_the_guide_states_that_the_issue_reading_is_judged_against_the_mark(self):
+        """PR #176 R3-1: the bound the reconcile section gives for the accepted window rests on this rule."""
+        text = " ".join(DOCS.read_text(encoding="utf-8").split())
+        for needle in ("the clock reading an authorization is issued with (`reserve`, `authorize-review`, `authorize-repair`) is taken after that observation",
+                       "records `clock-regression` and issues nothing, so a recorded `issued_observed_at` is never more than the tolerance before `issued_at`",
+                       "That stop names the command as its `operation` and the later reading as its `observed_at`"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, text)
 
     def test_the_readme_names_this_file(self):
         self.assertIn("tests/test_pr114_round7_findings.py", README.read_text(encoding="utf-8"))

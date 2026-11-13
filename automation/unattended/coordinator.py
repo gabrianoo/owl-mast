@@ -448,15 +448,19 @@ class Coordinator:
         (``activation-required``) while cleanup proceeds on the validated recorded binding."""
         self.activation = refresh_activation(self.activation, operation)  # the same re-read Store.ensure_run performs at creation
 
-    def _observe_stop(self, operation: str) -> None:
+    def _observe_stop(self, operation: str, at: str | None = None) -> None:
         """Record, durably and under the lock, the first observation that the recorded approval
         window is over (``activation-expired``) or that the clock moved backwards past an earlier
         observation (``clock-regression``). Once recorded the run never advances again, after a
         clock correction, a rollback or a restart; cleanup, late receipts (cleanup only) and
-        terminal evidence stay allowed; approvals, obligations and budgets are untouched."""
+        terminal evidence stay allowed; approvals, obligations and budgets are untouched.
+
+        ``at`` is a later clock reading of the same operation that is judged the same way
+        (``_authorize``: the reading it keeps as ``issued_observed_at``); by default the
+        operation's own observation."""
         if self.run.activation_stop is not None or self.run.activation is None:
             return
-        stop, now, high_water = self._stop_candidate(operation)
+        stop, now, high_water = self._stop_candidate(operation, at)
         if stop:
             self.run.activation_stop = {**stop, "operation": operation, "stop_id": uuid.uuid4().hex}  # two stops observed at the same second are still two stops (``_clear_spent``)
             self.store.save_run(self.run)
@@ -465,13 +469,13 @@ class Coordinator:
             self.run.last_observed_at = _utc_text(now)
             self.store.save_run(self.run)
 
-    def _stop_candidate(self, operation: str) -> tuple[dict | None, datetime, datetime]:
-        """What this operation's clock observation says about the recorded window, without writing:
+    def _stop_candidate(self, operation: str, at: str | None = None) -> tuple[dict | None, datetime, datetime]:
+        """What a clock reading (``at``; by default this operation's observation) says about the recorded window, without writing:
         the stop it would record (``activation-expired`` / ``clock-regression``) or ``None``, with the
         observation and the high-water mark it was judged against. ``_observe_stop`` persists it;
         ``status --read-only`` only reports it."""
         problems: list[str] = []
-        at = self._at()
+        at = self._at() if at is None else at
         now, expires = _parse_time(at, "now", problems), _parse_time(self.run.activation["expires_at"], "expires_at", problems)
         # the high-water mark is the latest observation, else the validated creation moment (both strict at load); a parse problem refuses, it is never replaced by now
         source = ("last_observed_at", self.run.last_observed_at) if self.run.last_observed_at is not None else ("activation.validated_at", self.run.activation["validated_at"])
@@ -495,7 +499,8 @@ class Coordinator:
         document; an advancing operation additionally needs it present and current (approved,
         bound to this policy digest, run, scope, targets and budgets, inside its window) and no
         durable stop. Cleanup (``advancing=False``) is allowed after expiry, after a recorded stop
-        or without the file, never with a different, changed or malformed one."""
+        or without the file, never with a different, changed or malformed one. One stop can be
+        recorded after this gate passed: ``_authorize`` judges the later reading it issues with."""
         if self.environment != "live":
             self._reload_run()
             return
@@ -511,10 +516,14 @@ class Coordinator:
         if self.store._lock_depth:
             self._observe_stop(operation)
         if advancing:
-            if self.run.activation_stop is not None:
-                stop = self.run.activation_stop
-                raise BudgetExhausted(f"{operation}: {STOP_REASONS[stop['code']]} (observed {stop['observed_at']} during {stop.get('operation')}: {stop['message']}); the run never advances again; only cancel, block, record-task-terminal, record-no-launch, cancel-run, resume (cleanup) and status are allowed", code=stop["code"], stop=stop)
+            self._refuse_stopped(operation)
             self._refuse_unless_current(operation)
+
+    def _refuse_stopped(self, operation: str) -> None:
+        """An advancing operation refuses under a recorded activation stop."""
+        stop = self.run.activation_stop
+        if stop is not None:
+            raise BudgetExhausted(f"{operation}: {STOP_REASONS[stop['code']]} (observed {stop['observed_at']} during {stop.get('operation')}: {stop['message']}); the run never advances again; only cancel, block, record-task-terminal, record-no-launch, cancel-run, resume (cleanup) and status are allowed", code=stop["code"], stop=stop)
 
     def _reload_run(self) -> None:
         """Fresh locked state: the run as persisted now, never a cached object. The repository,
@@ -681,7 +690,8 @@ class Coordinator:
         ``at``: it is the record of what the clock said (``seq`` orders the journal). Two callers
         read the clock themselves and floor that reading the same way (:meth:`_floored`), because
         they keep the raw reading beside a floored stamp: ``reconcile_retained_execution``
-        (``reconciliation.observed_at``) and ``_authorize`` (``issued_observed_at``)."""
+        (``reconciliation.observed_at``) and ``_authorize`` (``issued_observed_at``, which it also
+        judges against the mark: more than the tolerance behind is a recorded ``clock-regression``)."""
         return self._floored(self.now())
 
     def _floored(self, at: str) -> str:
@@ -798,10 +808,12 @@ class Coordinator:
         if len(active) + 1 > self.policy.max_concurrent_implementers:
             raise Refused(f"another story is active in this run: {active}", active=active)
 
-    def _authorize(self, state: StoryState, purpose: str, sha: str | None = None, round_: int | None = None) -> dict:
+    def _authorize(self, state: StoryState, purpose: str, operation: str, sha: str | None = None, round_: int | None = None) -> dict:
         """Issue (or return the already pending) durable task authorization for ``purpose``.
         Refuses BEFORE any launch when the delegated-task budget would be exceeded. The
-        authorization is counted from the moment it is saved, bound or not."""
+        authorization is counted from the moment it is saved, bound or not. ``operation`` names
+        the calling command in a stop this records: a clock reading taken here that is behind the
+        high-water mark by more than the tolerance is a ``clock-regression`` and issues nothing."""
         role = AUTHORIZATION_FLOW[purpose][2]
         self._wall_clock()  # an expired run returns no authorization, pending or new; the pending slot stays spent
         unresolved = state.unresolved_authorization()
@@ -815,9 +827,18 @@ class Coordinator:
         if counts["delegated_tasks"] + 1 > self.policy.max_delegated_tasks:
             raise BudgetExhausted(f"delegated task budget {self.policy.max_delegated_tasks} exhausted ({counts['delegated_tasks']} authorizations issued); no task may be launched", issued=counts["delegated_tasks"])
         observed_at = self.now()
+        issued_at = self._floored(observed_at)
+        if issued_at != observed_at:
+            # This reading is taken after the operation's gated observation (a worktree check or a GitHub
+            # read lies between them) and is kept as ``issued_observed_at``, so it is judged against the
+            # mark like that observation: further behind than the tolerance is a clock regression, recorded
+            # durably, and nothing is issued. A kept reading is therefore never more than the tolerance
+            # before ``issued_at``, which bounds the window the reconciliation accepts.
+            self._observe_stop(operation, at=observed_at)
+            self._refuse_stopped(operation)
         auth = {"id": f"{self.store.run_id}:{state.story}:{len(state.authorizations) + 1}", "role": role, "purpose": purpose, "sha": sha, "round": round_,
-                "issued_at": self._floored(observed_at), "status": "pending", "task_id": None, "reason": None}
-        if auth["issued_at"] != observed_at:
+                "issued_at": issued_at, "status": "pending", "task_id": None, "reason": None}
+        if issued_at != observed_at:
             # floored: the task this authorizes starts on the real clock, which reads earlier than ``issued_at``;
             # the reconciliation's "started at or after it was issued" check compares with what the clock read
             auth["issued_observed_at"] = observed_at
@@ -1308,7 +1329,7 @@ class Coordinator:
             state = StoryState(story=story, issue=entry.number, item_id=entry.item_id, phase="claim-incomplete", run_id=self.store.run_id,
                                claim={"baseline_sha": baseline_sha, "reserved_at": self._stamp(), "scope": decision.outcome, "worktree_path": None, "branch": None, "race_settled": False},
                                revisions=current)
-            auth = self._authorize(state, "implementation")  # refuses before any save or post when the task budget is spent
+            auth = self._authorize(state, "implementation", "reserve")  # refuses before any save or post when the task budget is spent
             intent = self._new_intent(state, "claim", "claim", f"Unattended reservation by run `{self.store.run_id}` from `{baseline_sha}` (scope: {decision.outcome}). An implementer task is delegated only after this reservation; its receipt is bound to the reservation. Project Status is owner-maintained; completion still requires checks, independent review and owner acceptance.", {"revisions": current})
             self.store.save_story(state)
             self.store.journal(story, "reserved", {"issue": entry.number, "baseline": baseline_sha, "scope": decision.outcome, "authorization": auth["id"]})
@@ -1640,7 +1661,8 @@ class Coordinator:
                 raise Refused("startedAt is required to correlate the resumed run with its authorization", code="correlation-missing")
             # The clock at issue: ``issued_at`` may be floored at the high-water mark, later than a run that
             # started after it, so the comparison uses what the clock read (``issued_observed_at``) when
-            # that was kept. A ``startedAt`` in [issued_observed_at, issued_at) is accepted by design: the
+            # that was kept (``_authorize`` keeps it only within the regression tolerance of the mark).
+            # A ``startedAt`` in [issued_observed_at, issued_at) is accepted by design: the
             # check cannot tell a run that started there after the issue from one that started there
             # before it. The refusal names the field that was compared and keeps ``issued_at`` as recorded.
             observed = auth.get("issued_observed_at")
@@ -1792,7 +1814,7 @@ class Coordinator:
             self._require_advancing_evidence(state, "authorize-review")  # no reviewer is authorized for a head that no successful implementer run produced
             self._verify_worktree(state, sha, "authorize-review")
             self._require_no_active_task(state, "authorize-review")
-            auth = self._authorize(state, "review", sha=sha)
+            auth = self._authorize(state, "review", "authorize-review", sha=sha)
             state.phase = "review-authorized"
             self.store.save_story(state)
             self._counts()
@@ -1819,7 +1841,7 @@ class Coordinator:
             if state.repair_rounds + 1 > self.policy.max_repair_rounds:
                 self.store.journal(story, "repair-refused", {"rounds": state.repair_rounds})
                 return self.block(story, f"repair rounds exhausted ({self.policy.max_repair_rounds}); unresolved after {state.phase}")
-            auth = self._authorize(state, "repair", round_=state.repair_rounds + 1)
+            auth = self._authorize(state, "repair", "authorize-repair", round_=state.repair_rounds + 1)
             state.repair_rounds += 1
             state.phase = "repair-authorized"
             self.store.save_story(state)
