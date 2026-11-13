@@ -76,10 +76,20 @@ class PinnedPythonDependenciesTest(unittest.TestCase):
             # a command continued with a backslash is one command
             text = re.sub(r"\\\n\s*", " ", path.read_text(encoding="utf-8"))
             for line in text.splitlines():
-                if self.INSTALL.search(line) and not line.lstrip().startswith("#"):
+                if line.lstrip().startswith("#"):
+                    continue
+                if path.name == "hashed-venv.sh" and self.INSTALL.search(line):
+                    # the one install of the shared helper: hashed, wheels only, from the file its caller names
+                    self.assertIn("--require-hashes", line)
+                    self.assertIn("--only-binary :all:", line)
+                    self.assertRegex(line, r'-r "\$requirements"')
+                elif self.INSTALL.search(line):
                     found += 1
                     self.assertIn("--require-hashes", line, f"{path.name}: {line.strip()}")
                     self.assertRegex(line, r"-r \S*requirements\.txt|-r \"\$REQUIREMENTS\"", f"{path.name}: {line.strip()}")
+                elif re.search(r"^\s*hashed_venv\s", line):  # a caller of the helper (review 5884955290 R4-8)
+                    found += 1
+                    self.assertRegex(line, r"\s(\S*requirements\.txt|\"\$REQUIREMENTS\")$", f"{path.name}: {line.strip()}")
         self.assertGreaterEqual(found, 2, "the deploy suite and the linter each install their pinned set")
 
     def test_the_install_pattern_recognises_the_usual_spellings(self):
