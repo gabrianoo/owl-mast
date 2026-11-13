@@ -1286,6 +1286,40 @@ class ObservedAtOnlyUnderAClockStopTests(LiveCase):
         state = self.store.load_story(S)
         self.assertEqual((stop_of(self.store)["operation"], state.phase, state.unresolved_authorization()), ("authorize-review", "checks-passed", None))
 
+    def test_a_reservation_judges_its_reading_the_same_way_and_leaves_nothing_behind(self):
+        """PR #176 R4-1 (thread PRRT_kwDOVjxExc63UeAe): `reserve` reads GitHub between the gate and
+        the issue. A reading past the tolerance there is a stop that names `reserve`, recorded
+        before any of: the story saved, `reserved` journaled, the claim posted. The story is not
+        admitted, so a later run can still reserve it.
+        Mutations: the operation name that `reserve` passes to `_authorize` replaced by another
+        command's; in `reserve`, `save_story`, the `reserved` journal line or `_post_intent` moved
+        ahead of `_authorize`."""
+        c = self.h.coordinator()
+        self.h.clock[0] = MARK
+        c.status()
+        reading = "2026-11-07T11:54:59Z"  # one second past the 5-minute tolerance
+        comments = self.h.h.fake.comments
+        posted = {number: list(found) for number, found in comments.items()}
+        counts, journaled = self.store.story_counts(), self.events()
+        elsewhere = c._claims_elsewhere  # the last GitHub read after the gate, before the authorization is issued
+
+        def step_back(*args, **kwargs):
+            self.h.clock[0] = reading
+            return elsewhere(*args, **kwargs)
+
+        with mock.patch.object(c, "_claims_elsewhere", step_back):
+            exc = refuses(self, lambda: c.reserve(S, self.h.h.snapshot, "base"), "clock-regression")
+        stop = stop_of(self.store)
+        self.assertEqual((stop["code"], stop["observed_at"], stop["operation"]), ("clock-regression", reading, "reserve"))
+        self.assertEqual(exc.detail["stop"], stop)
+        self.assertEqual({number: list(found) for number, found in comments.items()}, posted)  # no claim comment
+        self.assertIsNone(self.store.load_story(S))
+        self.assertEqual(self.events(), journaled + ["activation-stopped"])  # no `reserved`, no intent
+        self.assertEqual((self.store.story_counts(), self.store.load_run().last_observed_at), (counts, MARK))
+        self.h.clock[0] = MARK  # the clock is back at the mark: only the recorded stop refuses now, and not as `no-reclaim`
+        exc = refuses(self, lambda: c.reserve(S, self.h.h.snapshot, "base"), "clock-regression")
+        self.assertEqual((exc.detail["stop"], stop_of(self.store), self.store.load_story(S)), (stop, stop, None))
+
     def test_an_authorization_issued_at_or_past_the_mark_keeps_no_second_reading(self):
         review_authorized(self.h)
         self.assertTrue(all("issued_observed_at" not in a for a in self.store.load_story(S).authorizations))
