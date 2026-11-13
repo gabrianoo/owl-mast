@@ -53,16 +53,19 @@ shellcheck_version="$("$OWLMAST_SHELLCHECK" --version | sed -n 's/^version: //p'
 
 if [ -z "${OWLMAST_RUFF:-}" ]; then
   # Never a ruff found on PATH: a version string proves nothing about the binary. The environment is reused
-  # from OWLMAST_TOOLS_DIR only while the requirements and the interpreter are the ones it was built from, and
-  # the hashed install runs every time (a no-op when the pinned version is already there).
+  # from OWLMAST_TOOLS_DIR only while the requirements and the interpreter are the ones it was built from and it
+  # holds nothing outside the pinned set, and ruff is reinstalled from the hashed requirements on every run
+  # (--force-reinstall: pip skips an installed version without re-hashing its files).
   scratch_tools
   ruff_venv="$TOOLS/ruff-venv"
   ruff_stamp="$(sha256sum scripts/lint-requirements.txt | cut -d' ' -f1) $(command -v python3) $(python3 -c 'import sys; print(sys.version.split()[0])')"
-  if [ ! -x "$ruff_venv/bin/python" ] || [ "$(cat "$ruff_venv/.owlmast-stamp" 2>/dev/null)" != "$ruff_stamp" ]; then
+  dist_names() { sed -nE 's/^([A-Za-z0-9_.-]+)==.*/\1/p' | tr 'A-Z_.' 'a-z--' | sort -u; }
+  unpinned_in_venv() { comm -23 <("$ruff_venv/bin/python" -m pip list --format=freeze --disable-pip-version-check --exclude pip 2>/dev/null | dist_names) <(dist_names <scripts/lint-requirements.txt); }
+  if [ ! -x "$ruff_venv/bin/python" ] || [ "$(cat "$ruff_venv/.owlmast-stamp" 2>/dev/null)" != "$ruff_stamp" ] || [ -n "$(unpinned_in_venv)" ]; then
     rm -rf "$ruff_venv"
     python3 -m venv "$ruff_venv"
   fi
-  "$ruff_venv/bin/python" -m pip install --quiet --disable-pip-version-check --require-hashes -r scripts/lint-requirements.txt
+  "$ruff_venv/bin/python" -m pip install --quiet --disable-pip-version-check --require-hashes --force-reinstall --no-deps -r scripts/lint-requirements.txt
   printf '%s\n' "$ruff_stamp" >"$ruff_venv/.owlmast-stamp"
   OWLMAST_RUFF="$ruff_venv/bin/ruff"
 fi
