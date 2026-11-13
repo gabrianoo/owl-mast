@@ -236,7 +236,7 @@ class ReviewPayloadTests(unittest.TestCase):
 
     def test_findings_on_header_only_files_are_file_level_threads_on_those_files(self):
         paths = ["pkg/new name.py", "img.png", "logo.png", "run.sh", "pkg/__init__.py", "copy.txt"]
-        findings = [Finding(f"R1-{n}", path, "x", line) for n, (path, line) in enumerate(zip(paths, (3, None, 1, 2, 1, 1)), 1)]
+        findings = [Finding(f"R1-{n}", path, "x", line) for n, (path, line) in enumerate(zip(paths, (3, None, 1, 2, 1, 1), strict=True), 1)]
         payload, file_comments = build_review_payload(1, "changes", "s", findings, HEADER_ONLY, SHA)
         self.assertEqual(payload["comments"], [])
         self.assertEqual([(c["path"], c["subject_type"]) for c in file_comments], [(path, "file") for path in paths])
@@ -296,7 +296,7 @@ class ReviewPayloadTests(unittest.TestCase):
         self.assertIn("`app.py:99` (outside the diff hunks)", file_level["body"])
         self.assertEqual(whole["path"], "app.py")
         self.assertIn("`app.py` (outside the diff hunks)", whole["body"])
-        for comment, finding in zip([line, file_level, whole], findings):
+        for comment, finding in zip([line, file_level, whole], findings, strict=True):
             self.assertTrue(comment["body"].startswith(f"<!-- bmad:finding id={finding.id} -->"))
 
     def test_create_review_comments_use_only_the_fields_that_endpoint_documents(self):
