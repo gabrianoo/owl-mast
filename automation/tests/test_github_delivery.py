@@ -1395,13 +1395,19 @@ class CliTests(unittest.TestCase):
                         self.assertEqual((out.getvalue(), fake.calls, fake.lookups), ("", [], []))
 
     def test_every_read_error_about_the_path_keeps_the_cannot_read_refusal(self):
-        self.assertIn(errno.ENOENT, PATH_ERRNOS)
+        """Pins PATH_ERRNOS to a list written out here, so a code dropped from or added to the set fails."""
+        # A second, hand-written copy of the set, not read from it. It, PATH_ERRNOS and the "cannot read"
+        # causes in docs/github-delivery-workflow.md change together.
+        documented = (errno.ENOENT, errno.EISDIR, errno.ENOTDIR, errno.EACCES, errno.EPERM,
+                      errno.ENAMETOOLONG, errno.ELOOP)
+        self.assertEqual(sorted(errno.errorcode[code] for code in PATH_ERRNOS),
+                         sorted(errno.errorcode[code] for code in documented))
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "flaky.md"
             good = Path(folder) / "good.json"
             good.write_text("[]", encoding="utf-8")
             for name, argv_for in self.input_file_commands(good).items():
-                for code in sorted(PATH_ERRNOS):
+                for code in documented:
                     with self.subTest(command=name, errno=errno.errorcode[code]):
                         fake = FakeGh([])
                         err = io.StringIO()
