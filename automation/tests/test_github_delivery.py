@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -509,12 +509,9 @@ class SpecSyncTests(unittest.TestCase):
 
         fake = FakeGh([("--paginate", comments), ("-X POST", create), ("-X PATCH", edit)])
         gh = GitHub(run=fake)
-        spec = self.dir / "spec-om-01-05-x.md"
-        spec.write_text(SPEC, encoding="utf-8")
-        self.assertTrue(gh.spec_push(42, "spec-om-01-05-x", spec)["changed"])
-        self.assertFalse(gh.spec_push(42, "spec-om-01-05-x", spec)["changed"])
-        spec.write_text(SPEC.replace("in-progress", "done"), encoding="utf-8")
-        self.assertTrue(gh.spec_push(42, "spec-om-01-05-x", spec)["changed"])
+        self.assertTrue(gh.spec_push(42, "spec-om-01-05-x", SPEC)["changed"])
+        self.assertFalse(gh.spec_push(42, "spec-om-01-05-x", SPEC)["changed"])
+        self.assertTrue(gh.spec_push(42, "spec-om-01-05-x", SPEC.replace("in-progress", "done"))["changed"])
         self.assertEqual(len(store), 1)
         self.assertEqual(sum("-X PATCH" in c for c, _ in fake.calls), 1)
         out = self.dir / "hydrated" / "spec.md"
@@ -547,13 +544,10 @@ class SpecSyncTests(unittest.TestCase):
             render_spec_comment("epic-1-context", text)
         fake, store = self.comment_store()
         gh = GitHub(run=fake)
-        doc = self.dir / "epic-1-context.md"
-        doc.write_text(text, encoding="utf-8")
-        self.assertTrue(gh.doc_push(1, "epic-1-context", doc)["changed"])
-        self.assertFalse(gh.doc_push(1, "epic-1-context", doc)["changed"])
-        doc.write_text(text + "more\n", encoding="utf-8")
-        self.assertEqual(gh.doc_push(1, "epic-1-context", doc), {"number": 1, "key": "epic-1-context", "comment": "c1",
-                                                                 "changed": True})
+        self.assertTrue(gh.doc_push(1, "epic-1-context", text)["changed"])
+        self.assertFalse(gh.doc_push(1, "epic-1-context", text)["changed"])
+        self.assertEqual(gh.doc_push(1, "epic-1-context", text + "more\n"),
+                         {"number": 1, "key": "epic-1-context", "comment": "c1", "changed": True})
         self.assertEqual(len(store), 1)
         out = self.dir / "work" / "epic-1-context.md"
         self.assertEqual(gh.doc_pull(1, None, out)["key"], "epic-1-context")
@@ -562,11 +556,8 @@ class SpecSyncTests(unittest.TestCase):
     def test_documents_and_specs_with_the_same_key_do_not_see_each_other(self):
         fake, store = self.comment_store()
         gh = GitHub(run=fake)
-        spec, doc = self.dir / "k.md", self.dir / "k.txt"
-        spec.write_text(SPEC, encoding="utf-8")
-        doc.write_text("plain\n", encoding="utf-8")
-        gh.spec_push(7, "k", spec)
-        gh.doc_push(7, "k", doc)
+        gh.spec_push(7, "k", SPEC)
+        gh.doc_push(7, "k", "plain\n")
         self.assertEqual([c["body"].split("\n")[0] for c in store],
                          ["<!-- bmad:spec key=k -->", "<!-- bmad:doc key=k -->"])
         self.assertEqual([s["key"] for s in gh.spec_list(7)], ["k"])
@@ -599,7 +590,16 @@ class SpecSyncTests(unittest.TestCase):
             twice.doc_pull(1, "k", out)
         outsider = GitHub(run=FakeGh([]), trusted_authors=WRITER)
         with self.assertRaisesRegex(DeliveryError, "not a trusted author.*refusing to write"):
-            outsider.doc_push(1, "k", out)
+            outsider.doc_push(1, "k", "plain\n")
+
+    def test_spec_cli_publishes_the_text_of_the_file_under_its_stem(self):
+        fake, store = self.comment_store()
+        spec = self.dir / "spec-om-01-05-x.md"
+        spec.write_text(SPEC, encoding="utf-8")
+        with redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(main(["spec-push", "42", "--file", str(spec)], client=GitHub(run=fake)), 0)
+        self.assertEqual(json.loads(out.getvalue())["key"], "spec-om-01-05-x")
+        self.assertEqual(parse_spec_comment(store[0]["body"]), ("spec-om-01-05-x", SPEC))
 
     def test_doc_cli_defaults_the_key_to_the_file_stem(self):
         fake, store = self.comment_store()
@@ -645,9 +645,7 @@ class SpecSyncTests(unittest.TestCase):
     def test_push_next_to_a_forged_spec_comment_creates_the_real_one(self):
         forged = {"id": 2, "body": render_spec_comment("k", SPEC), "html_url": "theirs", "user": {"login": OUTSIDER}}
         fake = FakeGh([("--paginate", [[forged]]), ("-X POST", {"html_url": "new"})])
-        spec = self.dir / "k.md"
-        spec.write_text(SPEC, encoding="utf-8")
-        self.assertEqual(GitHub(run=fake).spec_push(1, "k", spec), {"number": 1, "key": "k", "comment": "new", "changed": True})
+        self.assertEqual(GitHub(run=fake).spec_push(1, "k", SPEC), {"number": 1, "key": "k", "comment": "new", "changed": True})
         self.assertFalse([c for c, _ in fake.calls if "-X PATCH" in c])
 
 
@@ -761,13 +759,10 @@ class ReviewStateTests(unittest.TestCase):
         fake = FakeGh([("projectV2(number:$number){ id", {"data": PROJECT}),
                        ("issueOrPullRequest", {"data": item("Ready")["data"]})])
         gh = GitHub(run=fake, trusted_authors=WRITER)
-        with tempfile.TemporaryDirectory() as tmp:
-            spec = Path(tmp) / "k.md"
-            spec.write_text(SPEC, encoding="utf-8")
-            for write in (lambda: gh.spec_push(1, "k", spec), lambda: gh.post_review(12, 1, "clean", "ok", [], HEAD),
-                          lambda: gh.set_status(5, "In progress", ["Ready"], claim=True)):
-                with self.assertRaisesRegex(DeliveryError, "gh user delivery-bot is not a trusted author.*refusing to write"):
-                    write()
+        for write in (lambda: gh.spec_push(1, "k", SPEC), lambda: gh.post_review(12, 1, "clean", "ok", [], HEAD),
+                      lambda: gh.set_status(5, "In progress", ["Ready"], claim=True)):
+            with self.assertRaisesRegex(DeliveryError, "gh user delivery-bot is not a trusted author.*refusing to write"):
+                write()
         self.assertFalse([c for c, _ in fake.calls if "-X POST" in c or "--paginate" in c])
 
     def test_forged_clean_last_round_cannot_end_the_loop_or_be_posted_over(self):
@@ -1286,24 +1281,36 @@ class CliTests(unittest.TestCase):
         folder = Path(folder)
         binary = folder / "latin1.md"
         binary.write_bytes(b"caf\xe9\n")
-        cases = [("missing", folder / "absent.md", os.strerror(errno.ENOENT)),
-                 ("directory", folder, os.strerror(errno.EISDIR)),
-                 ("not UTF-8", binary, "it is not valid UTF-8 (invalid continuation byte at byte 3)")]
-        locked = folder / "locked.md"
+        denied = folder / "denied.md"  # the read is mocked to fail, so the case runs for every user and file system
+        denied.write_text("secret", encoding="utf-8")
+        locked = folder / "locked.md"  # really unreadable, where the system honours the mode
         locked.write_text("secret", encoding="utf-8")
         locked.chmod(0)
-        if not os.access(locked, os.R_OK):  # root, and some file systems, read it anyway
-            cases.append(("unreadable", locked, os.strerror(errno.EACCES)))
-        return cases
+        return [("missing", folder / "absent.md", os.strerror(errno.ENOENT)),
+                ("directory", folder, os.strerror(errno.EISDIR)),
+                ("not UTF-8", binary, "it is not valid UTF-8 (invalid continuation byte at byte 3)"),
+                ("permission denied (mocked)", denied, os.strerror(errno.EACCES)),
+                ("permission denied (chmod 0)", locked, os.strerror(errno.EACCES))]
 
     def assert_refuses_unreadable_input(self, argv_for):
         """``argv_for(path, folder)`` is the command line that reads ``path``; no GitHub call may be made."""
+        real_read = Path.read_text
+
+        def read(path, *args, **kwargs):
+            if path.name == "denied.md":
+                raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(path))
+            return real_read(path, *args, **kwargs)
+
         with tempfile.TemporaryDirectory() as folder:
             for name, path, reason in self.bad_input_files(folder):
                 with self.subTest(case=name):
+                    if path.name == "locked.md" and os.access(path, os.R_OK):
+                        self.skipTest("chmod(0) leaves the file readable here (root, or a file system that ignores "
+                                      "the mode); the mocked case covers EACCES")
                     fake = FakeGh([])  # any gh call fails the test
                     err = io.StringIO()
-                    with redirect_stderr(err), redirect_stdout(io.StringIO()) as out:
+                    patched = mock.patch.object(Path, "read_text", read) if path.name == "denied.md" else nullcontext()
+                    with patched, redirect_stderr(err), redirect_stdout(io.StringIO()) as out:
                         code = main(argv_for(path, Path(folder)), client=GitHub(run=fake))
                     self.assertEqual(code, 2)
                     self.assertTrue(err.getvalue().startswith(f"error: cannot read {path}: "), err.getvalue())
@@ -1340,11 +1347,21 @@ class CliTests(unittest.TestCase):
 
     def test_post_review_refuses_a_findings_file_it_cannot_parse(self):
         not_json = "findings file {path} is not valid JSON: "
-        bad_finding = "each finding needs id, path, body and an optional integer line: "
+        bad_finding = "findings file {path}: each finding needs id, path, body and an optional integer line: "
+        finding = '[{{"id": "R1-1", "path": "app.py", "body": "b"{rest}}}]'
         cases = [("not JSON", "[{'id': 'R1-1'}]", not_json),
                  ("nested too deep", "[" * 100_000, not_json),
-                 ("not an array", "{}", "findings file must hold a JSON array"),
-                 ("line overflows", '[{"id": "R1-1", "path": "app.py", "body": "b", "line": 1e999}]', bad_finding)]
+                 ("not an array", "{}", "findings file {path} must hold a JSON array"),
+                 ("no id", '[{"path": "app.py", "body": "b"}]', bad_finding + "'id'"),
+                 ("no path", '[{"id": "R1-1", "body": "b"}]', bad_finding + "'path'"),
+                 ("no body", '[{"id": "R1-1", "path": "app.py"}]', bad_finding + "'body'"),
+                 ("finding is not an object", "[1]", bad_finding),
+                 ("line is not an integer", finding.format(rest=', "line": "twelve"'), bad_finding),
+                 ("line overflows", finding.format(rest=', "line": 1e999'), bad_finding)]
+        digit_limit = getattr(sys, "get_int_max_str_digits", lambda: 0)()  # 0: no limit, or a Python without one
+        if digit_limit:  # valid JSON, but past the integer digit limit of the parser
+            cases.append(("integer over the digit limit", finding.format(rest=', "line": ' + "1" * (digit_limit + 1)),
+                          "findings file {path} cannot be parsed: "))
         with tempfile.TemporaryDirectory() as tmp:
             summary, findings = Path(tmp) / "s.md", Path(tmp) / "f.json"
             summary.write_text("One problem.", encoding="utf-8")

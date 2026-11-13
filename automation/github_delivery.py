@@ -677,16 +677,17 @@ class GitHub:
     def spec_pull(self, number: int, key: Optional[str], out: Path) -> dict:
         return self._pull(number, key, out, SPEC_MARKER, "spec", parse_spec_comment)
 
-    def spec_push(self, number: int, key: str, spec_file: Path) -> dict:
-        return self._push(number, key, render_spec_comment(key, read_input(spec_file)), SPEC_MARKER, "spec")
+    def spec_push(self, number: int, key: str, text: str) -> dict:
+        """Publish a spec's text. It takes the text, not a path: ``main`` reads every input file before the first call."""
+        return self._push(number, key, render_spec_comment(key, text), SPEC_MARKER, "spec")
 
     def doc_pull(self, number: int, key: Optional[str], out: Path) -> dict:
         """Hydrate a document (epic context, retrospective, design note) from its marked comment."""
         return self._pull(number, key, out, DOC_MARKER, "document", parse_doc_comment)
 
-    def doc_push(self, number: int, key: str, doc_file: Path) -> dict:
-        """Publish any text file as one marked comment, created or edited in place like a spec."""
-        return self._push(number, key, render_doc_comment(key, read_input(doc_file)), DOC_MARKER, "document")
+    def doc_push(self, number: int, key: str, text: str) -> dict:
+        """Publish any text as one marked comment, created or edited in place like a spec. Text, not a path, as above."""
+        return self._push(number, key, render_doc_comment(key, text), DOC_MARKER, "document")
 
     def _pull(self, number: int, key: Optional[str], out: Path, pattern: "re.Pattern[str]", kind: str,
               parse: Callable[[str], Tuple[str, str]]) -> dict:
@@ -867,17 +868,21 @@ class GitHub:
 
 
 def _findings(path: Path) -> List[Finding]:
+    text = read_input(path)
     try:
-        data = json.loads(read_input(path))
-    except (ValueError, RecursionError) as error:  # RecursionError: nested deeper than the parser goes
+        data = json.loads(text)
+    except (json.JSONDecodeError, RecursionError) as error:  # RecursionError: nested deeper than the parser goes
         raise DeliveryError(f"findings file {path} is not valid JSON: {error}") from error
+    except ValueError as error:  # valid JSON the parser refuses: an integer over Python's digit limit
+        raise DeliveryError(f"findings file {path} cannot be parsed: {error}") from error
     if not isinstance(data, list):
-        raise DeliveryError("findings file must hold a JSON array")
+        raise DeliveryError(f"findings file {path} must hold a JSON array")
     try:
         return [Finding(id=str(f["id"]), path=str(f["path"]), body=str(f["body"]),
                         line=int(f["line"]) if f.get("line") else None) for f in data]
     except (KeyError, TypeError, ValueError, OverflowError) as error:  # OverflowError: a line of 1e999
-        raise DeliveryError(f"each finding needs id, path, body and an optional integer line: {error}") from error
+        raise DeliveryError(f"findings file {path}: each finding needs id, path, body and an optional integer "
+                            f"line: {error}") from error
 
 
 def main(argv: Optional[Sequence[str]] = None, client: Optional[GitHub] = None) -> int:
@@ -944,13 +949,13 @@ def main(argv: Optional[Sequence[str]] = None, client: Optional[GitHub] = None) 
         elif args.command == "spec-pull":
             result = gh.spec_pull(args.number, args.key, args.out)
         elif args.command == "spec-push":
-            result = gh.spec_push(args.number, args.key or args.file.stem, args.file)
+            result = gh.spec_push(args.number, args.key or args.file.stem, read_input(args.file))
         elif args.command == "doc-list":
             result = gh.doc_list(args.number)
         elif args.command == "doc-pull":
             result = gh.doc_pull(args.number, args.key, args.out)
         elif args.command == "doc-push":
-            result = gh.doc_push(args.number, args.key or args.file.stem, args.file)
+            result = gh.doc_push(args.number, args.key or args.file.stem, read_input(args.file))
         elif args.command == "spec-list":
             result = gh.spec_list(args.number)
         elif args.command == "review-state":
