@@ -19,6 +19,7 @@ import re
 import stat
 import subprocess
 import sys
+import threading
 import traceback
 from datetime import timedelta
 from pathlib import Path
@@ -156,6 +157,15 @@ GIT_TIMEOUT_SECONDS = 30
 GIT_KILL_WAIT_SECONDS = 5  # how long a killed git is waited for before the call gives up on it
 
 
+def _reap_abandoned(proc: subprocess.Popen) -> threading.Thread:
+    """Wait, on a daemon thread, for a killed child that did not exit within the bounded wait: the
+    wait collects its exit status whenever it comes, so the child is not left unreaped for the rest
+    of the process. The caller does not join the thread (that would be the unbounded wait again)."""
+    reaper = threading.Thread(target=proc.wait, name=f"reap-git-{proc.pid}", daemon=True)
+    reaper.start()
+    return reaper
+
+
 def _git_answer(args: list[str], *, timeout: float, env: dict[str, str]) -> subprocess.CompletedProcess:
     """Run one git command and return its answer, or raise ``subprocess.TimeoutExpired`` no later
     than ``timeout`` plus :data:`GIT_KILL_WAIT_SECONDS` after it started. ``subprocess.run`` cannot
@@ -163,23 +173,42 @@ def _git_answer(args: list[str], *, timeout: float, env: dict[str, str]) -> subp
     in uninterruptible sleep on a hung mount (state D) does not die on SIGKILL until the mount
     answers, so the call would never return. Here the child is killed, waited for at most
     :data:`GIT_KILL_WAIT_SECONDS` and then abandoned: the timeout is raised whether or not it
-    exited (a child that never exits is left to the kernel; its pipes are closed without being
-    drained, which cannot block). Anything else raised while waiting for the answer (an interrupt)
-    ends the child the same way, with the same bounded wait, and propagates."""
+    exited (its pipes are closed without being drained, which cannot block). A child that is
+    abandoned is handed to a daemon thread that waits for it (:func:`_reap_abandoned`), so it is
+    reaped when it does exit and never stays a zombie of a process that keeps running; the thread
+    does not keep the interpreter alive, and a child that outlives the tool is reaped by init.
+    When that thread cannot be started (``RuntimeError``) the child is left to the kernel.
+
+    Anything else raised while waiting for the answer (an interrupt) ends the child the same way,
+    with the same bounded wait, and propagates. Exactly: a ``kill`` that raises ``OSError`` is
+    ignored and the bounded wait still runs; whatever the bounded wait raises hands the child to
+    the reaper, and it is re-raised unless it is that wait's own ``TimeoutExpired`` (so a second
+    interrupt during the wait propagates, with the child reaped later); the pipes are closed
+    whatever happens; otherwise the exception that ended the wait for the answer is raised."""
     proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except BaseException:  # the timeout, or an interrupt: kill, reap within the bound, close the pipes, raise what was raised
-        proc.kill()
         try:
-            proc.wait(timeout=GIT_KILL_WAIT_SECONDS)
-        except subprocess.TimeoutExpired:
-            pass  # still there after SIGKILL: uninterruptible; raise anyway
-        for pipe in (proc.stdout, proc.stderr):
             try:
-                pipe.close()
+                proc.kill()
             except OSError:
-                pass
+                pass  # the kill was refused: the bounded wait still runs, and what was raised stays what is raised
+            try:
+                proc.wait(timeout=GIT_KILL_WAIT_SECONDS)
+            except BaseException as waiting:  # still there after SIGKILL (uninterruptible), or the wait itself was interrupted
+                try:
+                    _reap_abandoned(proc)  # reap it when it exits
+                except RuntimeError:
+                    pass  # no thread can be started (thread limit, interpreter shutdown): the child is left to the kernel
+                if not isinstance(waiting, subprocess.TimeoutExpired):
+                    raise  # a second interrupt: it propagates
+        finally:
+            for pipe in (proc.stdout, proc.stderr):
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
         raise
     return subprocess.CompletedProcess(args, proc.returncode, stdout, stderr)
 

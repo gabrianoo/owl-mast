@@ -650,7 +650,13 @@ def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, r
       unconfirmed record of this run id under a state directory that is not this one
       (``state-dir-mismatch``: a moved or copied directory; another spelling of the same directory is
       the same one), whose ``field`` and message say what is at the recorded path
-      (:func:`_recorded_run`). When the recorded path cannot be examined, the advice follows the
+      (:func:`_recorded_run`); it also carries ``recorded_is_dir``, which is not journaled: whether
+      the recorded path is a directory (asked of every recorded value that is a usable path,
+      whatever is found under it), the one fact a line written before ``field`` existed was keyed
+      on, so the caller can match such a line for the same condition. It is ``None`` for a
+      recorded value that is no usable path: the old code resolved a relative value against the
+      current directory, so what it wrote for such a value cannot be reproduced and no old line
+      is matched. When the recorded path cannot be examined, the advice follows the
       error: search permission for a permission refusal, clearing the error for any other
       ``OSError``, and "the record is damaged" for a recorded value that is no usable path, whose
       consequence says that it is a use until the ledger file is restored (such a value never
@@ -703,7 +709,7 @@ def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, r
                 advice = (f"the recorded directory cannot be examined ({type(problem).__name__}: {strerror or problem}), so whether the run is still there is not known: "
                           f"{remedy} and open the run again; if the run is there, opening it through that directory confirms the record")
                 consequence = "the use ledger record cannot be settled from here, and whether it can be settled at all is not known while the recorded directory cannot be examined; no open through this state directory confirms the record"
-            return ("error", {"type": "state-dir-mismatch", "errno": errno, "strerror": strerror, "field": RECORDED_RUN_VARIANTS[found],
+            return ("error", {"type": "state-dir-mismatch", "errno": errno, "strerror": strerror, "field": RECORDED_RUN_VARIANTS[found], "recorded_is_dir": _is_directory(recorded) if _recorded_dir_defect(recorded) is None else None,  # not journaled: what a line written before ``field`` existed was keyed on (Store._legacy_unconfirmed_key)
                               "message": f"the use ledger record of run {run_id} names the state directory {recorded!r}, not {os.path.realpath(state_dir)!r}; it stays {used.get('state')} ({advice})", "consequence": consequence})
         if not _same_run(used, state_dir, run_id):
             return ("unchanged", None)
@@ -751,6 +757,16 @@ def _recorded_run(recorded, run_id: str) -> tuple[str, BaseException | None]:
     except (OSError, ValueError) as exc:
         return "unknown", exc
     return "no-run", None
+
+
+def _is_directory(path) -> bool:
+    """Whether ``path`` is a directory, as the code that wrote the lines without ``field`` asked
+    it of a recorded state directory (``os.path.isdir``: true also for a directory that cannot be
+    searched, false for a path that cannot be examined)."""
+    try:
+        return os.path.isdir(path)
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 def run_json_presence(run_path) -> bool | None:

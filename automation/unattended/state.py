@@ -672,15 +672,60 @@ class Store:
         """The stable part of a confirmation failure: its type, its errno (the refusal code of a
         ``Refused``) and its variant. The variant is the ``field`` of a condition that is not an OS
         error (the field of the record that failed validation, what is at the recorded state
-        directory); without one it is the ``strerror`` of an ``OSError`` that has no errno. A line
-        written before ``field`` existed carried the variant in ``strerror`` and matches the new
-        key only where the variant kept its name (``state_dir``, ``attempts``, ``record``,
-        ``recorded directory gone``). The older variants ``unreadable`` (now ``json`` or ``file``)
-        and ``recorded directory exists`` (now two variants) match no new key: after an upgrade
-        such a condition, still present, is journaled once more."""
+        directory); without one it is the ``strerror`` of an ``OSError`` that has no errno.
+
+        A line whose detail has no ``field`` key at all was written before ``field`` existed: it
+        carried the variant in ``strerror``, so the key of
+        such a line is the one that format deduped on, ``(type, errno, strerror when errno is
+        None)``, which this formula also yields for it. A present condition is compared with those
+        lines through :meth:`_legacy_unconfirmed_key`, never through this key."""
         errno = detail.get("errno")
         field = detail.get("field")
         return (detail.get("type"), errno, field if field is not None else (detail.get("strerror") if errno is None else None))
+
+    # What a line written before ``field`` existed carried in ``strerror`` for a ``state-dir-mismatch``: "exists" when
+    # ``os.path.isdir`` of the recorded path was true, "gone" for anything else (not a directory, or not examinable).
+    LEGACY_RECORDED_DIR_EXISTS, LEGACY_RECORDED_DIR_GONE = "recorded directory exists", "recorded directory gone"
+
+    @classmethod
+    def _legacy_unconfirmed_key(cls, error: dict) -> tuple | None:
+        """The key of the line the format before ``field`` wrote for the condition ``error``
+        describes, or ``None`` when it wrote none for it or what it wrote cannot be told. A journal started
+        under that format holds such lines (no ``field`` in the detail); after the upgrade the same
+        condition, still present, is matched against them so that it is not journaled a second
+        time (PR #185 R1-5).
+
+        - ``ledger-unreadable``: the old ``strerror`` was ``"unreadable"`` for a file that could
+          not be read or was not JSON (now ``field`` ``file``, with an errno, and ``json``), and
+          the name of the field for a record that failed validation (``record``, ``attempts``,
+          ``state_dir``: unchanged). ``state`` was not validated: no line, ``None``.
+        - ``state-dir-mismatch``: ``"recorded directory exists"`` when the recorded path was a
+          directory, ``"recorded directory gone"`` for everything else. The error carries that one
+          fact as ``recorded_is_dir`` (``confirm_activation_use``), whatever the present variant
+          is: a directory that cannot be searched "cannot be examined" now and "existed" then.
+          For a recorded value that is no usable path the flag is ``None`` and so is the key: the
+          old code resolved a relative value against the current directory, so what it wrote is
+          not reproducible; the damaged record matches no old line and is journaled once.
+        - a confirmation that could not be written (no ``field``): the key did not change.
+
+        The mapping is many to one, as the old lines were: an old ``"unreadable"`` line stands for
+        every unreadable-file condition (a later EACCES and a later EIO alike) and an old
+        ``"gone"`` line for every recorded path that is not a directory, until the next
+        confirmation. A condition the old format keyed differently (a directory that was gone and
+        now holds the run) matches no old line and is journaled."""
+        kind, field = error.get("type"), error.get("field")
+        if field is None:
+            return cls._unconfirmed_key({k: v for k, v in error.items() if k != "field"})
+        if kind == "ledger-unreadable":
+            if field in ("file", "json"):
+                return (kind, None, "unreadable")
+            return (kind, None, field) if field in ("record", "attempts", "state_dir") else None
+        if kind == "state-dir-mismatch":
+            is_dir = error.get("recorded_is_dir")
+            if is_dir is None:
+                return None
+            return (kind, None, cls.LEGACY_RECORDED_DIR_EXISTS if is_dir else cls.LEGACY_RECORDED_DIR_GONE)
+        return None
 
     def _unconfirmed_since_confirmation(self) -> tuple[list[dict], set[tuple]]:
         """The ``activation-use-unconfirmed`` lines since the last ``activation-use-confirmed``, in
@@ -735,10 +780,14 @@ class Store:
         retries (deleting the run directory meanwhile leaves an unconfirmed creation that refuses
         every later creation from the document, never one that creates the run again); for a
         damaged record or a record under another state directory, what ``confirm_activation_use``
-        says of it (no open repairs it)."""
+        says of it (no open repairs it). A line written before ``field`` existed for the same condition
+        counts as that condition on record (:meth:`_legacy_unconfirmed_key`): an upgrade journals
+        it once, not twice."""
         key = self._unconfirmed_key(error)
-        _, seen = self._unconfirmed_since_confirmation()
-        if key not in seen:
+        lines, seen = self._unconfirmed_since_confirmation()
+        legacy_key = self._legacy_unconfirmed_key(error)
+        legacy_seen = {self._unconfirmed_key(d) for d in (e.get("detail") or {} for e in lines) if "field" not in d}  # lines written before ``field`` existed, by the key they were deduped on
+        if key not in seen and not (legacy_key is not None and legacy_key in legacy_seen):
             self.journal(None, "activation-use-unconfirmed", {"error": error.get("message"), "type": key[0], "errno": key[1], "strerror": error.get("strerror"), "field": error.get("field"),
                                                               "consequence": error.get("consequence") or self.UNCONFIRMED_WRITE_CONSEQUENCE})
 

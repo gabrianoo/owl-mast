@@ -3,7 +3,15 @@ per finding, F1 to F17 in the order of the issue, with the review thread id in t
 test is named after the behaviour it pins. F14 to F17 are the assertions the review found missing:
 each fails under the mutation its finding names. Every scenario runs on the fixture transport marked
 live with temporary state and an injected clock; no real GitHub call and no real task is ever made,
-and no test writes to the real use ledger under the home directory."""
+and no test writes to the real use ledger under the home directory.
+
+The six classes before the documentation tests are round 1 of PR #185, the walkthrough risks R1-1
+to R1-5 the owner did not accept, each with its thread id (R1-5 has two classes: the journal lines
+and the git child). R1-1 to R1-3 return the stamp rule to the scope F9 froze (a stamp is the clock
+except under a recorded `clock-regression` stop), so the tests of PR #176 that pinned the floor
+without a stop, the field `issued_observed_at` and the stop `_authorize` recorded are rewritten here
+to pin their absence; an authorization is not issued while the clock reads before the high-water
+mark (`clock-behind-mark`)."""
 
 from __future__ import annotations
 
@@ -13,6 +21,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -22,7 +31,8 @@ from automation.tests import test_pr114_round5_findings as r5
 from automation.tests.support import IMPLEMENTER, REVIEW_BRANCH, REVIEW_WORKTREE, REVIEWER, ok_worktree, passing_runner
 from automation.tests.test_activation import S, T0
 from automation.tests.test_enabling_repair_1 import claimed, refuses
-from automation.tests.test_pr108_review_findings import review_authorized
+from automation.tests.support import controlled_cli_clock
+from automation.tests.test_pr108_review_findings import cli_args, no_gh_calls, review_authorized, run_cli
 from automation.tests.test_pr114_review_findings import LiveCase, clearance, regress
 from automation.tests.test_pr114_round3_findings import record
 from automation.tests.test_pr114_round4_findings import stop_of
@@ -937,7 +947,8 @@ class PastTheWindowReasonTests(LiveCase):
 class StateStampsUnderAClockStopTests(LiveCase):
     """F9 (thread 4542174952): while a clock-regression stop is recorded, every state stamp is at
     least the high-water mark, whichever cleanup operation writes it; the journal `at` stays the
-    clock the Store read and is ordered by `seq` (documented)."""
+    clock the Store read and is ordered by `seq` (documented). Without a recorded stop a stamp is
+    the clock (PR #185 R1-3, `StampIsTheClockWithoutAStopTests`)."""
 
     def test_record_task_terminal(self):
         c = claimed(self.h)
@@ -1006,66 +1017,66 @@ class StateStampsUnderAClockStopTests(LiveCase):
         self.assertIsNone(stop_of(self.store))
         self.assertEqual(state.task_history[-1]["at"], "2026-11-07T12:10:00Z")
 
-    def test_without_a_stop_a_clock_inside_the_tolerance_behind_the_mark_is_floored(self):
+    def test_without_a_stop_a_clock_inside_the_tolerance_behind_the_mark_is_the_stamp(self):
         c = claimed(self.h)
         self.h.clock[0] = MARK
         c.status()
-        self.h.clock[0] = "2026-11-07T11:57:00Z"
+        self.h.clock[0] = INSIDE
         state = c.record_task_terminal(S, self.h.terminal())
         self.assertIsNone(stop_of(self.store))
-        self.assertEqual(state.task_history[-1]["at"], MARK)
+        self.assertEqual(state.task_history[-1]["at"], INSIDE)
 
-    def inside_the_tolerance(self):
-        """A live run with no stop whose clock reads 3 minutes behind its high-water mark."""
-        c = self.h.coordinator()
+    def issued_at_the_mark(self, issue):
+        """Run an issuing operation with the clock at the mark (nothing is issued before it,
+        `clock-behind-mark`), then read 3 minutes behind the mark again: no stop is recorded."""
         self.h.clock[0] = MARK
-        c.status()
+        state = issue()
         self.h.clock[0] = INSIDE
-        return c
+        return state
 
     def approved(self, c):
-        """Drive the advancing operations up to an approved review, all at `INSIDE`."""
-        c.reserve(S, self.h.h.snapshot, "base")
+        """Drive the advancing operations up to an approved review: the two issues at the mark, everything else at `INSIDE`."""
+        self.issued_at_the_mark(lambda: c.reserve(S, self.h.h.snapshot, "base"))
         c.bind_receipt(S, IMPLEMENTER, str(self.h.h.worktree), "t3/om-01-02", ok_worktree)
         c.record_head(S, self.h.h.sha, self.h.terminal())
         c.run_checks(S, self.h.h.sha, str(self.h.h.worktree), passing_runner)
-        c.authorize_review(S, self.h.h.sha)
+        self.issued_at_the_mark(lambda: c.authorize_review(S, self.h.h.sha))
         c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
         return c.record_review(S, self.h.h.sha, "approved", "report.md", self.h.terminal())
 
-    def test_the_advancing_operations_are_floored_without_a_stop(self):
-        """PR #176 R1-3 (thread PRRT_kwDOVjxExc63TXCx): the advancing operations refuse under a
-        recorded stop, so their floor applies with no stop and the clock inside the tolerance behind
-        the mark. Mutation: the stamp of `issued_at`, `reserved_at`, `checks[].at`, `reviews[].at`,
-        `proposal.at` or an intent's `created_at` / `completed_at` back to `self.now()`. The
-        `blocked.at` of the reserve and resume conflicts is in `ConflictStampsWithoutAStopTests`."""
-        c = self.inside_the_tolerance()
-        state = c.reserve(S, self.h.h.snapshot, "base")
-        self.assertEqual(state.claim["reserved_at"], MARK)
-        self.assertEqual((state.authorizations[-1]["purpose"], state.authorizations[-1]["issued_at"]), ("implementation", MARK))
-        self.assertEqual(state.authorizations[-1]["issued_observed_at"], INSIDE)  # floored, so what the clock read is kept
-        claim = next(i for i in state.intents if i.kind == "claim")
-        self.assertEqual((claim.created_at, claim.completed_at), (MARK, MARK))
-        c.bind_receipt(S, IMPLEMENTER, str(self.h.h.worktree), "t3/om-01-02", ok_worktree)
+    def test_the_non_issuing_advancing_operations_stamp_the_clock_without_a_stop(self):
+        """PR #185 R1-3 (rewritten from PR #176 R1-3): the advancing operations refuse under a
+        recorded stop, so they never run where the floor applies: with no stop and the clock inside
+        the tolerance behind the mark every stamp of a bind, a check, a review and a proposal is
+        the clock, earlier than the stamps before it (the second stated cost). The issuing
+        operations do not run there (`AuthorizeIssuesNothingBehindTheMarkTests`): their stamps are
+        at the mark. Mutation: `_floored` flooring without a recorded stop."""
+        c = self.h.coordinator()
+        state = self.issued_at_the_mark(lambda: c.reserve(S, self.h.h.snapshot, "base"))
+        self.assertEqual((state.claim["reserved_at"], state.authorizations[-1]["issued_at"]), (MARK, MARK))
+        state = c.bind_receipt(S, IMPLEMENTER, str(self.h.h.worktree), "t3/om-01-02", ok_worktree)
+        self.assertEqual((state.claim["claimed_at"], state.active_task["bound_at"], state.authorizations[-1]["bound_at"]), (INSIDE, INSIDE, INSIDE))
         c.record_head(S, self.h.h.sha, self.h.terminal())
         state = c.run_checks(S, self.h.h.sha, str(self.h.h.worktree), passing_runner)
-        self.assertEqual(state.checks[-1]["at"], MARK)
-        state = c.authorize_review(S, self.h.h.sha)
+        self.assertEqual(state.checks[-1]["at"], INSIDE)
+        state = self.issued_at_the_mark(lambda: c.authorize_review(S, self.h.h.sha))
         self.assertEqual((state.authorizations[-1]["purpose"], state.authorizations[-1]["issued_at"]), ("review", MARK))
         c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
         state = c.record_review(S, self.h.h.sha, "approved", "report.md", self.h.terminal())
-        self.assertEqual(state.reviews[-1]["at"], MARK)
+        self.assertEqual(state.reviews[-1]["at"], INSIDE)
         self.h.h.fake.pull_requests[7] = PullRequestRecord(7, "OPEN", self.h.h.sha, False, (), "SUCCESS")
         state = c.propose_evidence(S, self.h.h.sha, 7, [], "s")
-        self.assertEqual(state.proposal["at"], MARK)
+        self.assertEqual(state.proposal["at"], INSIDE)
         proposal = next(i for i in state.intents if i.kind == "proposal")
-        self.assertEqual((proposal.created_at, proposal.completed_at), (MARK, MARK))
-        self.assertIsNone(stop_of(self.store))  # the floor was never a stop's doing
-        self.assertEqual(self.h.clock[0], INSIDE)
+        self.assertEqual((proposal.created_at, proposal.completed_at), (INSIDE, INSIDE))
+        self.assertEqual([entry["at"] for entry in state.task_history], [INSIDE, INSIDE])
+        self.assertEqual([a["issued_at"] for a in state.authorizations], [MARK, MARK])  # no authorization is dated before the mark
+        self.assertIsNone(stop_of(self.store))
+        self.assertEqual(self.store.load_run().last_observed_at, MARK)  # the mark is still ahead of every `INSIDE` stamp above
 
-    def test_a_review_regression_on_github_is_floored_without_a_stop(self):
-        """PR #176 R1-3: the review a GitHub objection records is stamped like a local one."""
-        c = self.inside_the_tolerance()
+    def test_a_review_regression_on_github_is_stamped_with_the_clock_without_a_stop(self):
+        """The review a GitHub objection records is stamped like a local one."""
+        c = self.h.coordinator()
         self.approved(c)
         objection = {"state": "CHANGES_REQUESTED", "commit": self.h.h.sha, "author": "A", "submitted_at": "1"}
         self.h.h.fake.pull_requests[7] = PullRequestRecord(7, "OPEN", self.h.h.sha, False, (objection,), "SUCCESS")
@@ -1073,20 +1084,7 @@ class StateStampsUnderAClockStopTests(LiveCase):
             c.propose_evidence(S, self.h.h.sha, 7, [], "s")
         self.assertIn("outstanding CHANGES_REQUESTED from ['A']", str(ctx.exception))
         review = self.store.load_story(S).reviews[-1]
-        self.assertEqual((review["regression"], review["at"]), (True, MARK))
-
-    def test_a_stamp_after_the_clear_never_sorts_before_one_floored_during_the_stop(self):
-        c = review_authorized(self.h)
-        regress(self, self.h, c)
-        refuses(self, lambda: c.cancel(S, "owner stops"), "authorization-unresolved")  # revoked during the stop: floored at the mark
-        self.h.clock[0] = "2026-11-07T11:58:00Z"  # the clear runs inside the tolerance, still behind the mark
-        c.clear_clock_regression(clearance(self.h))
-        self.assertIsNone(stop_of(self.store))
-        auth = self.store.load_story(S).unresolved_authorization()
-        state = c.record_no_launch(S, {"authorization": auth["id"], "reason": "delegate_task was never called"})
-        resolved = state.authorization(auth["id"])
-        self.assertEqual((resolved["revoked_at"], resolved["resolved_at"]), (MARK, MARK))
-        self.assertGreaterEqual(resolved["resolved_at"], resolved["revoked_at"])
+        self.assertEqual((review["regression"], review["at"]), (True, INSIDE))
 
     def test_a_cleanup_bind_of_the_implementer_floors_claimed_at(self):
         c = self.h.coordinator()
@@ -1238,6 +1236,11 @@ class EvidenceNumberTests(LiveCase):
         self.assertIsNone(self.store.load_run())
 
 
+def reapers_of(child) -> list[threading.Thread]:
+    """The live threads that wait for ``child`` (`cli._reap_abandoned`), found by their target: the child's `wait`."""
+    return [t for t in threading.enumerate() if getattr(t, "_target", None) == child.wait]
+
+
 # -- F13 --------------------------------------------------------------------------------------------------------------------
 class StuckGitIsBoundedTests(unittest.TestCase):
     """F13 (thread 4542174977): a git that survives `kill()` no longer hangs the call: the timeout is
@@ -1248,6 +1251,7 @@ class StuckGitIsBoundedTests(unittest.TestCase):
 
         def __init__(self, exits_after_kill: bool):
             self.exits_after_kill, self.calls = exits_after_kill, []
+            self.exited, self.pid = threading.Event(), 4242  # `exited` is set when the child dies after all; the pid only names the reaper thread
             self.stdout = self.stderr = mock.Mock()
             self.returncode = None
 
@@ -1261,13 +1265,17 @@ class StuckGitIsBoundedTests(unittest.TestCase):
         def wait(self, timeout=None):
             self.calls.append(("wait", timeout))
             if timeout is None:
-                raise AssertionError("an unbounded wait on a child that ignores SIGKILL never returns")
+                if threading.current_thread() is threading.main_thread():
+                    raise AssertionError("an unbounded wait on a child that ignores SIGKILL never returns")
+                self.exited.wait()  # the reaper's wait (PR #185 R1-5): it returns when the child exits
+                return -9
             if not self.exits_after_kill:
                 raise subprocess.TimeoutExpired("git", timeout)
             return -9
 
     def run_stuck(self, exits_after_kill: bool) -> "StuckGitIsBoundedTests.Stuck":
         child = self.Stuck(exits_after_kill)
+        self.addCleanup(child.exited.set)  # whatever the test asserts, a thread waiting for this child ends
         with mock.patch.object(cli_module.subprocess, "Popen", return_value=child):
             with self.assertRaises(cli_module.WorkTreeUnknown) as ctx:
                 cli_module._work_tree("/somewhere/owner")
@@ -1277,7 +1285,11 @@ class StuckGitIsBoundedTests(unittest.TestCase):
 
     def test_a_child_that_survives_the_kill_still_raises(self):
         child = self.run_stuck(exits_after_kill=False)
-        self.assertEqual(child.calls, [("communicate", cli_module.GIT_TIMEOUT_SECONDS), ("kill", None), ("wait", 5)])
+        reapers = reapers_of(child)  # the abandoned child is waited for on a thread of its own (`AbandonedGitIsReapedTests`)
+        child.exited.set()
+        for reaper in reapers:
+            reaper.join(timeout=10)
+        self.assertEqual(child.calls[:3], [("communicate", cli_module.GIT_TIMEOUT_SECONDS), ("kill", None), ("wait", 5)])
 
     def test_a_child_that_dies_raises_too(self):
         child = self.run_stuck(exits_after_kill=True)
@@ -1474,181 +1486,36 @@ class ObservedAtOnlyUnderAClockStopTests(LiveCase):
         self.assertNotIn("observed_at", reconciliation)
         self.assertEqual((reconciliation["at"], state.authorization(auth["id"])["bound_at"]), ("2026-11-07T10:30:00Z", "2026-11-07T10:30:00Z"))
 
-    def test_without_a_stop_a_floored_reconciliation_never_sorts_before_the_revocation(self):
-        """PR #176 R1-1 (thread PRRT_kwDOVjxExc63TXCh): with no stop and the clock inside the
-        tolerance behind the mark, the reconciliation is floored like every other stamp, so it never
-        follows a floored `revoked_at` with an earlier time; the raw reading is kept beside it.
-        Mutation: `stamp = observed_at` when no clock stop is recorded."""
+    def test_without_a_stop_a_clock_inside_the_tolerance_is_the_stamp_and_no_observed_at_is_recorded(self):
+        """PR #185 R1-3 (rewritten from PR #176 R1-1): with no stop and the clock inside the
+        tolerance behind the mark, the reconciliation is stamped with the clock like every other
+        stamp, records no `observed_at` and its backup name carries no second observation.
+        Mutations: `_floored` flooring without a recorded stop; `observed_at` recorded whenever the
+        stamp differs from the reading."""
         c, auth = r5.ReconcileRevokedUnderClearableStopTests.repair(self)
         self.h.clock[0] = MARK
         c.status()
         self.h.clock[0] = INSIDE
-        refuses(self, lambda: c.cancel(S, "owner stops the repair"), "authorization-unresolved")  # revoked: floored at the mark
+        refuses(self, lambda: c.cancel(S, "owner stops the repair"), "authorization-unresolved")  # revoked, stamped with the clock
         c.cancel_run("owner stops the run")
         self.assertIsNone(stop_of(self.store))
         receipt, evidence = r5.ReconcileRevokedUnderClearableStopTests.evidence()
         state = c.reconcile_retained_execution(S, auth["id"], receipt, evidence, "r", "p")
         recorded = state.authorization(auth["id"])
-        self.assertEqual((recorded["revoked_at"], recorded["bound_at"], recorded["reconciliation"]["at"]), (MARK, MARK, MARK))
-        self.assertGreaterEqual(recorded["reconciliation"]["at"], recorded["revoked_at"])
-        self.assertEqual(recorded["reconciliation"]["observed_at"], INSIDE)  # floored, so what the clock read is kept
-        stamps = [entry["at"] for entry in state.task_history]
-        self.assertEqual((stamps, stamps[-1]), (sorted(stamps), MARK))
+        self.assertEqual((recorded["revoked_at"], recorded["bound_at"], recorded["reconciliation"]["at"]), (INSIDE, INSIDE, INSIDE))
+        self.assertNotIn("observed_at", recorded["reconciliation"])
+        self.assertEqual(state.task_history[-1]["at"], INSIDE)
         line = next(e for e in self.store.read_journal() if e["event"] == "retained-execution-reconciled")
-        self.assertIn("-obs2026-11-07T115700Z", line["detail"]["backup"])
+        self.assertNotIn("-obs", line["detail"]["backup"])
+        self.assertIn("2026-11-07T115700Z", line["detail"]["backup"])
         self.assertIsNone(stop_of(self.store))
 
-    def test_a_run_started_on_the_real_clock_after_a_floored_issue_is_reconciled(self):
-        """A repair authorized with the clock inside the tolerance has `issued_at` at the mark; its
-        task starts on the real clock, before the mark. The reconciliation compares `startedAt`
-        with what the clock read at issue, so the genuine run is not refused
-        `run-precedes-authorization`, and a run that started before that reading still is.
-
-        PR #176 R2-1: a `startedAt` in [`issued_observed_at`, `issued_at`) is accepted by design.
-        The check cannot tell a run that started there after the issue from one that started there
-        before it on a correct clock (up to the tolerance before the mark). The lower edge of the
-        window is pinned on both sides: the reading itself is accepted, one second before it is refused.
-        PR #176 R2-2: the refusal keeps `issued_at` as recorded and names the reading it compared.
-        PR #176 R3-2 (a pin of behaviour round 2 added): `issued_at` is validated also when the reading is compared, because it is reported.
-        Mutations: `issued_at=<the compared value>` back in the detail; the label of the compared
-        field back to `authorization.issued_at`; `<` to `<=` in the comparison; `issued_at` parsed
-        only when the authorization has no reading."""
-        c = review_authorized(self.h)
-        c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
-        c.record_review(S, self.h.h.sha, "changes-requested", "r.md", self.h.terminal())
-        self.h.clock[0] = MARK
-        c.status()
-        self.h.clock[0] = INSIDE
-        auth = c.authorize_repair(S).unresolved_authorization()
-        self.assertEqual((auth["issued_at"], auth["issued_observed_at"]), (MARK, INSIDE))
-        refuses(self, lambda: c.cancel(S, "owner stops the repair"), "authorization-unresolved")
-        c.cancel_run("owner stops the run")
-        receipt, evidence = r5.ReconcileRevokedUnderClearableStopTests.evidence()
-        earlier = {**receipt, "startedAt": "2026-11-07T11:56:59Z"}  # before the clock read 11:57 at issue
-        exc = refuses(self, lambda: c.reconcile_retained_execution(S, auth["id"], earlier, evidence, "r", "p"), "run-precedes-authorization")
-        self.assertEqual((exc.detail["issued_at"], exc.detail["issued_observed_at"], exc.detail["compared_with"]), (MARK, INSIDE, "issued_observed_at"))
-        self.assertIn(f"issued at {MARK} (the clock read {INSIDE})", str(exc))
-        broken = self.store.load_story(S)
-        broken.authorization(auth["id"])["issued_observed_at"] = "not-a-time"
-        self.store.save_story(broken)
-        exc = refuses(self, lambda: c.reconcile_retained_execution(S, auth["id"], receipt, evidence, "r", "p"), "correlation-missing")
-        self.assertIn("authorization.issued_observed_at", str(exc))  # the field that is malformed, not `issued_at`
-        broken.authorization(auth["id"])["issued_observed_at"] = INSIDE
-        broken.authorization(auth["id"])["issued_at"] = "not-a-time"  # the reading is intact and is what the check compares
-        self.store.save_story(broken)
-        exc = refuses(self, lambda: c.reconcile_retained_execution(S, auth["id"], receipt, evidence, "r", "p"), "correlation-missing")
-        self.assertIn("authorization.issued_at", str(exc))
-        self.assertEqual(self.store.load_story(S).authorization(auth["id"])["status"], "revoked")  # nothing was consumed
-        broken.authorization(auth["id"])["issued_at"] = MARK
-        self.store.save_story(broken)
-        genuine = {**receipt, "startedAt": INSIDE}  # the lower edge of the accepted window [issued_observed_at, issued_at): at the reading, before the mark
-        state = c.reconcile_retained_execution(S, auth["id"], genuine, evidence, "r", "p")
-        self.assertEqual(state.authorization(auth["id"])["status"], "consumed")
-
-    def repair_issued_after_a_step_back(self, reading: str):
-        """A coordinator ready for `authorize-repair` with the clock at the mark, and a patch under
-        which the clock reads ``reading`` after the gate and before the authorization is issued
-        (a host resume or an NTP step between the two readings)."""
-        c = review_authorized(self.h)
-        c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
-        c.record_review(S, self.h.h.sha, "changes-requested", "r.md", self.h.terminal())
-        self.h.clock[0] = MARK
-        check = c._require_no_obligation  # runs after the gate, before the authorization is issued
-
-        def step_back(*args, **kwargs):
-            self.h.clock[0] = reading
-            return check(*args, **kwargs)
-
-        return c, mock.patch.object(c, "_require_no_obligation", step_back)
-
-    def test_a_reading_past_the_tolerance_after_the_gate_is_a_recorded_stop_and_issues_nothing(self):
-        """PR #176 R3-1 (thread PRRT_kwDOVjxExc63UHV6): the reading `_authorize` keeps as
-        `issued_observed_at` is taken after the operation's gated observation. Read further behind
-        the mark than the tolerance, it is a clock regression like the gate's: recorded durably,
-        nothing issued, so the window the reconciliation accepts never exceeds the tolerance.
-        Mutations: the `_observe_stop(operation, at=observed_at)` call removed from `_authorize`
-        (an authorization is issued with a reading an hour behind); `at` ignored by `_stop_candidate`."""
-        c, stepped = self.repair_issued_after_a_step_back("2026-11-07T11:54:59Z")  # one second past the 5-minute tolerance
-        before = self.store.load_story(S)
-        with stepped:
-            exc = refuses(self, lambda: c.authorize_repair(S), "clock-regression")
-        stop = stop_of(self.store)
-        self.assertEqual((stop["code"], stop["observed_at"], stop["operation"]), ("clock-regression", "2026-11-07T11:54:59Z", "authorize-repair"))
-        self.assertEqual(exc.detail["stop"], stop)
-        self.assertEqual(self.events().count("activation-stopped"), 1)
-        after = self.store.load_story(S)
-        self.assertEqual((after.authorizations, after.repair_rounds, after.phase), (before.authorizations, before.repair_rounds, before.phase))
-        self.assertEqual(self.store.load_run().last_observed_at, MARK)
-        self.h.clock[0] = MARK  # the clock is back at the mark: only the recorded stop refuses now
-        exc = refuses(self, lambda: c.authorize_repair(S), "clock-regression")
-        self.assertEqual((exc.detail["stop"], stop_of(self.store)), (stop, stop))
-
-    def test_a_reading_at_the_tolerance_after_the_gate_is_issued_with_that_reading(self):
-        """The other side of the edge: exactly the tolerance behind the mark is no stop, here as at the gate."""
-        c, stepped = self.repair_issued_after_a_step_back("2026-11-07T11:55:00Z")
-        with stepped:
-            auth = c.authorize_repair(S).unresolved_authorization()
-        self.assertEqual((auth["issued_at"], auth["issued_observed_at"]), (MARK, "2026-11-07T11:55:00Z"))
-        self.assertIsNone(stop_of(self.store))
-        self.assertEqual((self.store.load_run().last_observed_at, self.events().count("activation-stopped")), (MARK, 0))
-
-    def test_a_review_authorization_judges_its_reading_the_same_way(self):
-        """`authorize-review` reads the worktree between the gate and the issue; the stop names that command."""
-        c = claimed(self.h)
-        c.record_head(S, self.h.h.sha, self.h.terminal())
-        c.run_checks(S, self.h.h.sha, str(self.h.h.worktree), passing_runner)
-        self.h.clock[0] = MARK
-        verify = c._verify_worktree
-
-        def step_back(*args, **kwargs):
-            self.h.clock[0] = "2026-11-07T11:00:00Z"
-            return verify(*args, **kwargs)
-
-        with mock.patch.object(c, "_verify_worktree", step_back):
-            refuses(self, lambda: c.authorize_review(S, self.h.h.sha), "clock-regression")
-        state = self.store.load_story(S)
-        self.assertEqual((stop_of(self.store)["operation"], state.phase, state.unresolved_authorization()), ("authorize-review", "checks-passed", None))
-
-    def test_a_reservation_judges_its_reading_the_same_way_and_leaves_nothing_behind(self):
-        """PR #176 R4-1 (thread PRRT_kwDOVjxExc63UeAe): `reserve` reads GitHub between the gate and
-        the issue. A reading past the tolerance there is a stop that names `reserve`, recorded
-        before any of: the story saved, `reserved` journaled, the claim posted. The story is not
-        admitted, so a later run can still reserve it.
-        Mutations: the operation name that `reserve` passes to `_authorize` replaced by another
-        command's; in `reserve`, `save_story`, the `reserved` journal line or `_post_intent` moved
-        ahead of `_authorize`."""
-        c = self.h.coordinator()
-        self.h.clock[0] = MARK
-        c.status()
-        reading = "2026-11-07T11:54:59Z"  # one second past the 5-minute tolerance
-        comments = self.h.h.fake.comments
-        posted = {number: list(found) for number, found in comments.items()}
-        counts, journaled = self.store.story_counts(), self.events()
-        elsewhere = c._claims_elsewhere  # the last GitHub read after the gate, before the authorization is issued
-
-        def step_back(*args, **kwargs):
-            self.h.clock[0] = reading
-            return elsewhere(*args, **kwargs)
-
-        with mock.patch.object(c, "_claims_elsewhere", step_back):
-            exc = refuses(self, lambda: c.reserve(S, self.h.h.snapshot, "base"), "clock-regression")
-        stop = stop_of(self.store)
-        self.assertEqual((stop["code"], stop["observed_at"], stop["operation"]), ("clock-regression", reading, "reserve"))
-        self.assertEqual(exc.detail["stop"], stop)
-        self.assertEqual({number: list(found) for number, found in comments.items()}, posted)  # no claim comment
-        self.assertIsNone(self.store.load_story(S))
-        self.assertEqual(self.events(), journaled + ["activation-stopped"])  # no `reserved`, no intent
-        self.assertEqual((self.store.story_counts(), self.store.load_run().last_observed_at), (counts, MARK))
-        self.h.clock[0] = MARK  # the clock is back at the mark: only the recorded stop refuses now, and not as `no-reclaim`
-        exc = refuses(self, lambda: c.reserve(S, self.h.h.snapshot, "base"), "clock-regression")
-        self.assertEqual((exc.detail["stop"], stop_of(self.store), self.store.load_story(S)), (stop, stop, None))
-
-    def test_an_authorization_issued_at_or_past_the_mark_keeps_no_second_reading(self):
+    def test_an_authorization_has_no_issued_observed_at(self):
         review_authorized(self.h)
         self.assertTrue(all("issued_observed_at" not in a for a in self.store.load_story(S).authorizations))
 
-    def test_the_refusal_for_an_unfloored_authorization_names_issued_at_only(self):
-        """PR #176 R2-2: with no second reading the refusal compares with `issued_at` and says so."""
+    def test_the_refusal_reports_started_at_and_issued_at(self):
+        """The `run-precedes-authorization` refusal is `main`'s: the two times it compared, nothing else."""
         c, auth = r5.ReconcileRevokedUnderClearableStopTests.repair(self)
         self.assertNotIn("issued_observed_at", auth)
         refuses(self, lambda: c.cancel(S, "owner stops the repair"), "authorization-unresolved")
@@ -1656,7 +1523,7 @@ class ObservedAtOnlyUnderAClockStopTests(LiveCase):
         receipt, evidence = r5.ReconcileRevokedUnderClearableStopTests.evidence()
         earlier = {**receipt, "startedAt": "2000-01-01T00:00:00Z"}
         exc = refuses(self, lambda: c.reconcile_retained_execution(S, auth["id"], earlier, evidence, "r", "p"), "run-precedes-authorization")
-        self.assertEqual(exc.detail, {"started_at": earlier["startedAt"], "issued_at": auth["issued_at"], "compared_with": "issued_at"})
+        self.assertEqual(exc.detail, {"started_at": earlier["startedAt"], "issued_at": auth["issued_at"]})
         self.assertNotIn("the clock read", str(exc))
 
     def test_under_a_clock_stop_it_is_recorded(self):
@@ -1668,19 +1535,26 @@ class ObservedAtOnlyUnderAClockStopTests(LiveCase):
         self.assertEqual(state.authorization(auth["id"])["reconciliation"]["observed_at"], BEHIND)
 
 
-# -- PR #176 R1-3: the conflicts of reserve and resume ------------------------------------------------------------------------
+# -- PR #185 R1-3: the conflicts of reserve and resume ------------------------------------------------------------------------
 class ConflictStampsWithoutAStopTests(LiveCase):
-    """PR #176 R1-3: `blocked.at` of a conflict that `reserve` or `resume` records is floored like
-    the other stamps. These operations refuse under a recorded stop, so the floor applies with no
-    stop and the clock inside the tolerance behind the mark. Mutation: the `blocked.at` of the
-    duplicate marker, the unreadable claim, the lost race or the stale claim back to `self.now()`."""
+    """PR #185 R1-3 (rewritten from PR #176 R1-3): `blocked.at` of a conflict that `reserve` or
+    `resume` records is the clock, like the other stamps. These operations refuse under a recorded
+    stop, so they only ever run without one. `reserve` issues nothing before the mark, so here it
+    starts at the mark and the clock reads inside the tolerance behind it from the moment the
+    claim is posted. Mutation: `_floored` flooring without a recorded stop."""
 
     def setUp(self):
         super().setUp()
         self.c = self.h.coordinator()
         self.h.clock[0] = MARK
         self.c.status()
-        self.h.clock[0] = INSIDE
+        original = self.h.h.fake.post_comment
+
+        def post(number, body):
+            self.h.clock[0] = INSIDE  # after the issue: every stamp from here on is written with the clock behind the mark
+            return original(number, body)
+
+        self.h.h.fake.post_comment = post
 
     def blocked(self) -> dict:
         self.assertIsNone(stop_of(self.store))
@@ -1689,7 +1563,7 @@ class ConflictStampsWithoutAStopTests(LiveCase):
     def test_a_claim_that_is_not_readable_back(self):
         arm_failure_after_claim(self.h.h, reads_after_post=2, hide_ours=True, run="run-live")
         refuses(self, lambda: self.c.reserve(S, self.h.h.snapshot, "base"), "claim-unverifiable")
-        self.assertEqual((self.blocked()["race_unsettled"], self.blocked()["at"]), (True, MARK))
+        self.assertEqual((self.blocked()["race_unsettled"], self.blocked()["at"]), (True, INSIDE))
 
     def test_a_duplicate_marker(self):
         original = self.h.h.fake.post_comment
@@ -1702,7 +1576,7 @@ class ConflictStampsWithoutAStopTests(LiveCase):
         with self.assertRaises(Conflict):
             self.c.reserve(S, self.h.h.snapshot, "base")
         self.assertIn("duplicate marker for claim", self.blocked()["reason"])
-        self.assertEqual(self.blocked()["at"], MARK)
+        self.assertEqual(self.blocked()["at"], INSIDE)
 
     def test_a_lost_claim_race(self):
         original = self.h.h.fake.post_comment
@@ -1714,18 +1588,725 @@ class ConflictStampsWithoutAStopTests(LiveCase):
 
         self.h.h.fake.post_comment = interleaved
         refuses(self, lambda: self.c.reserve(S, self.h.h.snapshot, "base"), "claim-race-lost")
-        self.assertEqual(self.blocked()["at"], MARK)
+        self.assertEqual(self.blocked()["at"], INSIDE)
         release = self.store.load_story(S).intent("release")
-        self.assertEqual((release.created_at, release.completed_at), (MARK, MARK))
+        self.assertEqual((release.created_at, release.completed_at), (INSIDE, INSIDE))
 
     def test_a_stale_claim_cancelled_by_resume(self):
         self.h.h.fake.fail_once["post_comment"] = Outage("503")
         with self.assertRaises(Outage):
             self.c.reserve(S, self.h.h.snapshot, "base")
         self.h.h.fake.set_status_externally(21, "Blocked")
+        self.h.clock[0] = INSIDE
         state = self.c.resume(S, ok_worktree)
-        self.assertEqual((state.phase, state.blocked["from_phase"], state.blocked["at"]), ("cancelled", "claim-incomplete", MARK))
+        self.assertEqual((state.phase, state.blocked["from_phase"], state.blocked["at"]), ("cancelled", "claim-incomplete", INSIDE))
         self.assertIsNone(stop_of(self.store))
+
+
+# == PR #185 round 1: the walkthrough risks the owner did not accept ===========================================================
+STEPPED = "2026-11-07T11:00:00Z"  # an hour behind the mark: far past the 5-minute tolerance
+
+
+class AuthorizeIssuesNothingBehindTheMarkTests(LiveCase):
+    """PR #185 R1-1 (thread PRRT_kwDOVjxExc63YAc7): `_authorize` records no clock stop of its own,
+    and it issues nothing while the clock reads before the run's high-water mark, whether the
+    clock stepped back between the operation's gate and the issue or still reads inside the
+    tolerance: it refuses `clock-behind-mark`, naming the mark as the time to retry at. Nothing is
+    saved, journaled or posted; the gate of the next operation judges the clock; at or past the
+    mark the issue goes through. Mutations: the guard removed from `_authorize` (an authorization
+    dated before the mark is issued); a stop recorded from `_authorize`."""
+
+    def repair_ready(self):
+        c = review_authorized(self.h)
+        c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
+        c.record_review(S, self.h.h.sha, "changes-requested", "r.md", self.h.terminal())
+        return c, lambda: c.authorize_repair(S), "_require_no_obligation"
+
+    def review_ready(self):
+        c = claimed(self.h)
+        c.record_head(S, self.h.h.sha, self.h.terminal())
+        c.run_checks(S, self.h.h.sha, str(self.h.h.worktree), passing_runner)
+        return c, lambda: c.authorize_review(S, self.h.h.sha), "_verify_worktree"
+
+    def reserve_ready(self):
+        c = self.h.coordinator()
+        return c, lambda: c.reserve(S, self.h.h.snapshot, "base"), "_claims_elsewhere"
+
+    def snapshot(self) -> tuple:
+        path = self.store.story_path(S)
+        return (path.read_text(encoding="utf-8") if path.exists() else None, self.events(), {number: list(found) for number, found in self.h.h.fake.comments.items()}, self.store.story_counts())
+
+    def refused_then_issued(self, ready, reading: str, step_back: bool) -> None:
+        """``reading`` is what the clock reads at the issue: from the operation's gate on, or, with
+        ``step_back``, only after the gate passed at the mark (``method`` runs between the two)."""
+        c, issue, method = ready()
+        self.h.clock[0] = MARK
+        c.status()
+        before = self.snapshot()
+        if step_back:
+            original = getattr(c, method)
+
+            def stepping(*args, **kwargs):
+                self.h.clock[0] = reading
+                return original(*args, **kwargs)
+
+            with mock.patch.object(c, method, stepping):
+                exc = refuses(self, issue, "clock-behind-mark")
+        else:
+            self.h.clock[0] = reading
+            exc = refuses(self, issue, "clock-behind-mark")
+        self.assertEqual(exc.detail, {"observed_at": reading, "high_water": MARK, "retry_at": MARK})
+        self.assertIn(f"nothing was issued and no stop is recorded; retry once the clock reads {MARK} or later", str(exc))
+        self.assertIsNone(stop_of(self.store))  # no stop of its own
+        self.assertEqual(self.snapshot(), before)  # no story change, no journal line, no posted comment, no slot counted
+        self.assertEqual(self.store.load_run().last_observed_at, MARK)
+        self.h.clock[0] = MARK  # exactly at the mark: the issue goes through
+        state = issue()
+        auth = state.unresolved_authorization()
+        self.assertEqual((auth["status"], auth["issued_at"]), ("pending", MARK))
+        self.assertIsNone(stop_of(self.store))
+
+    def test_reserve_after_a_step_back(self):
+        self.refused_then_issued(self.reserve_ready, STEPPED, step_back=True)
+
+    def test_authorize_review_after_a_step_back(self):
+        self.refused_then_issued(self.review_ready, STEPPED, step_back=True)
+
+    def test_authorize_repair_after_a_step_back(self):
+        self.refused_then_issued(self.repair_ready, STEPPED, step_back=True)
+
+    def test_a_step_back_of_one_second_refuses_too(self):
+        self.refused_then_issued(self.repair_ready, "2026-11-07T11:59:59Z", step_back=True)
+
+    def test_reserve_with_the_clock_inside_the_tolerance(self):
+        self.refused_then_issued(self.reserve_ready, INSIDE, step_back=False)
+
+    def test_authorize_review_with_the_clock_inside_the_tolerance(self):
+        self.refused_then_issued(self.review_ready, INSIDE, step_back=False)
+
+    def test_authorize_repair_with_the_clock_inside_the_tolerance(self):
+        self.refused_then_issued(self.repair_ready, INSIDE, step_back=False)
+
+    def test_reserve_after_a_step_back_on_a_run_with_no_later_observation(self):
+        """The mark of a run with no later observation is the validated creation moment.
+        Mutation: the guard reading `self.run.last_observed_at` instead of `_high_water_text()`."""
+        c, issue, method = self.reserve_ready()
+        self.assertIsNone(self.store.load_run().last_observed_at)
+        before = self.snapshot()
+        original = getattr(c, method)
+
+        def stepping(*args, **kwargs):
+            self.h.clock[0] = "2026-11-07T09:59:00Z"  # a minute before the creation at 10:00
+            return original(*args, **kwargs)
+
+        with mock.patch.object(c, method, stepping):
+            exc = refuses(self, issue, "clock-behind-mark")
+        self.assertEqual(exc.detail, {"observed_at": "2026-11-07T09:59:00Z", "high_water": T0, "retry_at": T0})
+        self.assertIsNone(self.store.load_run().last_observed_at)
+        self.assertEqual((self.snapshot(), stop_of(self.store)), (before, None))  # nothing saved, journaled or posted
+
+    def test_a_reading_or_a_mark_that_cannot_be_parsed_issues_nothing(self):
+        """The guard never passes on a comparison it cannot make. Mutation: the comparison made
+        through `_at_least_high_water`, which hands its input back on a parse problem. The
+        wall-clock check that runs first in `_authorize` is stood in for: it does not survive such
+        a value either (a load refuses such a record), and the guard must not rest on that."""
+        c, _, _ = self.repair_ready()
+        self.h.clock[0] = MARK
+        c.status()
+        state = self.store.load_story(S)
+        issued = len(state.authorizations)
+        with c.operation(), mock.patch.object(c, "_wall_clock", lambda: None):
+            c._reload_run()
+            with mock.patch.object(c, "now", lambda: "not-a-time"):
+                exc = refuses(self, lambda: c._authorize(state, "repair", round_=1), "activation-invalid")
+            self.assertIn("now 'not-a-time'", str(exc))
+            c.run.last_observed_at = "not-a-time"  # LABELLED MUTATION in memory (a load refuses such a record)
+            exc = refuses(self, lambda: c._authorize(state, "repair", round_=1), "activation-invalid")
+            self.assertIn("high-water mark 'not-a-time'", str(exc))
+            self.assertIn("nothing was issued", str(exc))
+            c.run.last_observed_at, c.run.activation = None, {**c.run.activation, "validated_at": None}  # LABELLED MUTATION in memory: no mark at all
+            refuses(self, lambda: c._authorize(state, "repair", round_=1), "activation-invalid")
+        self.assertEqual(len(state.authorizations), issued)
+
+    def test_the_cli_reports_the_refusal_with_its_detail(self):
+        """Through the command line: exit 3 (a refusal) and the JSON error with the times a caller retries on."""
+        self.repair_ready()
+        self.h.clock[0] = MARK
+        with controlled_cli_clock(self.h.clock), no_gh_calls() as calls:
+            self.assertEqual(run_cli(cli_args(self.h, "status"))[0], 0)  # the mark is 12:00
+            self.h.clock[0] = INSIDE
+            code, out = run_cli(cli_args(self.h, "--live", "authorize-repair", S))
+        error = out["error"]
+        self.assertEqual((code, error["code"], error["observed_at"], error["high_water"], error["retry_at"]), (3, "clock-behind-mark", INSIDE, MARK, MARK))
+        self.assertIn(f"retry once the clock reads {MARK} or later", error["message"])
+        self.assertEqual((calls, stop_of(self.store), self.store.load_story(S).unresolved_authorization()), ([], None, None))
+
+    def test_after_a_step_back_the_next_gate_judges_the_clock(self):
+        c, issue, method = self.repair_ready()
+        self.h.clock[0] = MARK
+        original = getattr(c, method)
+
+        def stepping(*args, **kwargs):
+            self.h.clock[0] = STEPPED
+            return original(*args, **kwargs)
+
+        with mock.patch.object(c, method, stepping):
+            refuses(self, issue, "clock-behind-mark")
+        self.assertEqual((stop_of(self.store), self.events().count("activation-stopped")), (None, 0))
+        exc = refuses(self, issue, "clock-regression")  # the gate of the next operation
+        stop = stop_of(self.store)
+        self.assertEqual((stop["code"], stop["observed_at"], stop["operation"]), ("clock-regression", STEPPED, "authorize-repair"))
+        self.assertEqual((exc.detail["stop"], self.events().count("activation-stopped")), (stop, 1))
+
+    def test_a_pending_authorization_is_returned_while_the_clock_is_behind(self):
+        """Nothing is issued by the idempotent answer, so it is not guarded."""
+        c, issue, _ = self.repair_ready()
+        self.h.clock[0] = MARK
+        auth = issue().unresolved_authorization()
+        self.h.clock[0] = INSIDE
+        with c.operation():
+            c._reload_run()
+            self.assertEqual(c._authorize(self.store.load_story(S), "repair", round_=1), auth)
+
+    def test_a_fixture_run_has_no_mark_and_is_not_guarded(self):
+        c, _, _ = self.repair_ready()
+        self.h.clock[0] = MARK
+        c.status()
+        self.h.clock[0] = INSIDE
+        with c.operation():
+            c._reload_run()
+            c.environment = "fixture"  # LABELLED MUTATION in memory
+            self.assertEqual(c._authorize(self.store.load_story(S), "repair", round_=1)["issued_at"], INSIDE)
+
+    def test_authorize_has_the_signature_of_main_and_judges_no_reading(self):
+        c, _, _ = self.repair_ready()
+        state = self.store.load_story(S)
+        readings = []
+        with c.operation(), mock.patch.object(c, "now", lambda: readings.append(1) or self.h.clock[0]), \
+                mock.patch.object(c, "_observe_stop", side_effect=AssertionError("_authorize judges no reading")):
+            c._reload_run()
+            auth = c._authorize(state, "repair", round_=1)
+        self.assertEqual((len(readings), auth["issued_at"], sorted(auth)), (1, T0, ["id", "issued_at", "purpose", "reason", "role", "round", "sha", "status", "task_id"]))
+
+
+class RunOrderComparesIssuedAtTests(LiveCase):
+    """PR #185 R1-2 (thread PRRT_kwDOVjxExc63YAc-): the `run-precedes-authorization` check, which
+    is `main`'s, accepts no run that started before the issue. `issued_at` is the clock and is
+    never before the high-water mark (`clock-behind-mark`), so a retained run that started at a
+    reading before the mark can no longer settle an authorization, also inside the 5 minutes
+    before the mark; at `issued_at` or later it is accepted. Mutations: the `clock-behind-mark`
+    guard removed (the authorization is dated `INSIDE` and the early run is accepted); `<` to `<=`."""
+
+    def repair_asked_for_behind_the_mark(self):
+        c = review_authorized(self.h)
+        c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
+        c.record_review(S, self.h.h.sha, "changes-requested", "r.md", self.h.terminal())
+        self.h.clock[0] = MARK
+        c.status()
+        self.h.clock[0] = INSIDE  # 3 minutes behind the mark: where the old window was
+        refuses(self, lambda: c.authorize_repair(S), "clock-behind-mark")  # nothing is dated inside the old window
+        self.h.clock[0] = MARK
+        auth = c.authorize_repair(S).unresolved_authorization()
+        self.assertNotIn("issued_observed_at", auth)
+        refuses(self, lambda: c.cancel(S, "owner stops the repair"), "authorization-unresolved")
+        c.cancel_run("owner stops the run")
+        self.assertIsNone(stop_of(self.store))
+        return c, auth
+
+    def test_a_run_that_started_before_the_mark_settles_nothing_and_one_at_the_issue_does(self):
+        c, auth = self.repair_asked_for_behind_the_mark()
+        self.assertEqual(auth["issued_at"], MARK)
+        receipt, evidence = r5.ReconcileRevokedUnderClearableStopTests.evidence()
+        for started in ("2026-11-07T11:59:59Z", INSIDE, "2026-11-07T11:55:00Z", "2026-11-07T11:00:00Z"):  # one second before the issue, inside the old window, its edge, long before
+            with self.subTest(started=started):
+                exc = refuses(self, lambda: c.reconcile_retained_execution(S, auth["id"], {**receipt, "startedAt": started}, evidence, "r", "p"), "run-precedes-authorization")
+                self.assertEqual(exc.detail, {"started_at": started, "issued_at": MARK})
+                self.assertIn(f"was issued at {MARK};", str(exc))
+        self.assertEqual(self.store.load_story(S).authorization(auth["id"])["status"], "revoked")  # nothing was consumed
+        state = c.reconcile_retained_execution(S, auth["id"], {**receipt, "startedAt": MARK}, evidence, "r", "p")  # at the issue
+        self.assertEqual(state.authorization(auth["id"])["status"], "consumed")
+        self.assertTrue(all("issued_observed_at" not in a for a in state.authorizations))
+
+    def test_a_field_named_issued_observed_at_is_never_read(self):
+        """A value left in a story file by a build of PR #176 is not read: the check compares `issued_at`."""
+        c, auth = self.repair_asked_for_behind_the_mark()
+        story = self.store.load_story(S)
+        story.authorization(auth["id"])["issued_observed_at"] = "2026-11-07T11:00:00Z"  # LABELLED MUTATION of the story file
+        self.store.save_story(story)
+        receipt, evidence = r5.ReconcileRevokedUnderClearableStopTests.evidence()
+        exc = refuses(self, lambda: c.reconcile_retained_execution(S, auth["id"], {**receipt, "startedAt": "2026-11-07T11:30:00Z"}, evidence, "r", "p"), "run-precedes-authorization")
+        self.assertEqual(exc.detail, {"started_at": "2026-11-07T11:30:00Z", "issued_at": MARK})
+
+    def test_a_malformed_issued_at_refuses(self):
+        c, auth = self.repair_asked_for_behind_the_mark()
+        story = self.store.load_story(S)
+        story.authorization(auth["id"])["issued_at"] = "not-a-time"  # LABELLED MUTATION of the story file
+        self.store.save_story(story)
+        receipt, evidence = r5.ReconcileRevokedUnderClearableStopTests.evidence()
+        exc = refuses(self, lambda: c.reconcile_retained_execution(S, auth["id"], receipt, evidence, "r", "p"), "correlation-missing")
+        self.assertIn("authorization.issued_at", str(exc))
+
+
+class StampIsTheClockWithoutAStopTests(LiveCase):
+    """PR #185 R1-3 (thread PRRT_kwDOVjxExc63YAdC): a state stamp is floored at the high-water mark
+    only while a `clock-regression` stop is recorded (F9). With no stop it is the clock, equal to
+    what the journal line and `updated_at` of the same operation record; after a clear it is the
+    clock again. Mutation: `_floored` flooring without a recorded stop (the F9 extension restored)."""
+
+    def test_without_a_stop_the_stamp_the_journal_line_and_updated_at_agree(self):
+        c = claimed(self.h)
+        self.h.clock[0] = MARK
+        c.status()
+        self.h.clock[0] = INSIDE  # 3 minutes behind the mark: no stop
+        with mock.patch.object(state_module, "utcnow", return_value=INSIDE):  # the Store's wall clock is the same clock
+            state = c.record_task_terminal(S, self.h.terminal())
+        self.assertIsNone(stop_of(self.store))
+        line = next(e for e in reversed(self.store.read_journal()) if e["event"] == "task-terminal")
+        self.assertEqual((state.task_history[-1]["at"], line["detail"]["at"], line["at"], self.store.load_story(S).updated_at), (INSIDE, INSIDE, INSIDE, INSIDE))
+        self.assertEqual(self.store.load_run().last_observed_at, MARK)
+
+    def test_every_cleanup_stamp_is_the_clock_without_a_stop(self):
+        c = review_authorized(self.h)
+        self.h.clock[0] = MARK
+        c.status()
+        self.h.clock[0] = INSIDE
+        refuses(self, lambda: c.cancel(S, "owner stops"), "authorization-unresolved")  # revokes the pending review authorization
+        auth = self.store.load_story(S).unresolved_authorization()
+        self.assertEqual(auth["revoked_at"], INSIDE)
+        state = c.record_no_launch(S, {"authorization": auth["id"], "reason": "delegate_task was never called"})
+        self.assertEqual(state.authorization(auth["id"])["resolved_at"], INSIDE)
+        state = c.cancel(S, "owner stops")
+        self.assertEqual(state.blocked["at"], INSIDE)
+        release = state.intent("release")
+        self.assertEqual((release.created_at, release.completed_at), (INSIDE, INSIDE))
+        self.assertIsNone(stop_of(self.store))
+
+    def test_under_a_stop_the_stamp_is_the_mark(self):
+        """F9, unchanged: the other side of the rule, in the same scenario."""
+        c = review_authorized(self.h)
+        regress(self, self.h, c)
+        refuses(self, lambda: c.cancel(S, "owner stops"), "authorization-unresolved")
+        self.assertEqual(self.store.load_story(S).unresolved_authorization()["revoked_at"], MARK)
+        with c.operation():
+            c._reload_run()
+            self.assertEqual((c._stamp(), c._floored(BEHIND), c._floored("2026-11-07T12:20:00Z")), (MARK, MARK, "2026-11-07T12:20:00Z"))
+
+    def test_after_a_clear_the_stamp_is_the_clock_again(self):
+        """The stated cost: a stamp written after a clear that ran inside the tolerance reads
+        before one floored during the stop. Nothing orders state stamps; list position does."""
+        c = review_authorized(self.h)
+        regress(self, self.h, c)
+        refuses(self, lambda: c.cancel(S, "owner stops"), "authorization-unresolved")  # revoked during the stop: floored at the mark
+        self.h.clock[0] = "2026-11-07T11:58:00Z"  # the clear runs inside the tolerance, still behind the mark
+        c.clear_clock_regression(clearance(self.h))
+        self.assertIsNone(stop_of(self.store))
+        auth = self.store.load_story(S).unresolved_authorization()
+        state = c.record_no_launch(S, {"authorization": auth["id"], "reason": "delegate_task was never called"})
+        resolved = state.authorization(auth["id"])
+        self.assertEqual((resolved["revoked_at"], resolved["resolved_at"]), (MARK, "2026-11-07T11:58:00Z"))
+
+    def test_an_expired_stop_does_not_floor(self):
+        """The floor has the F9 scope, the `clock-regression` stop. Under an `activation-expired`
+        stop a later regression of the clock is not recorded (`_observe_stop` returns once a stop
+        is recorded, as on `main`), so the clock may read behind the mark there, and the stamp is
+        the clock, as on `main`."""
+        c = claimed(self.h)
+        with c.operation():
+            c._reload_run()
+            c.run.last_observed_at = MARK  # LABELLED MUTATION in memory
+            c.run.activation_stop = {"code": "activation-expired", "observed_at": MARK, "message": "m", "operation": "status"}
+            self.assertEqual(c._floored(INSIDE), INSIDE)
+            c.run.activation_stop = {**c.run.activation_stop, "code": "clock-regression"}
+            self.assertEqual(c._floored(INSIDE), MARK)
+            c.run.activation_stop = None
+            self.assertEqual(c._floored(INSIDE), INSIDE)
+
+
+class DamagedRecordRuleSpendsNoApprovalTests(LiveCase):
+    """PR #185 R1-4 (thread PRRT_kwDOVjxExc63YAdF): the damaged-record rule (`_recorded_dir_defect`,
+    the `aborted` refusal that names no retry) is not changed; this is the evidence that it cannot
+    spend an approval by mistake. It never fires on a record the tool wrote, whatever the state
+    directory is called, and a record that was damaged is repaired by restoring the ledger file:
+    the same creation is then retried under the same document."""
+
+    def directories(self) -> list[tuple[str, str]]:
+        base = Path(self.h.h.tmpdir.name)
+        named = [("a space", os.fspath(base / "state dir")), ("non-ASCII", os.fspath(base / "stäte-дир-状態")),
+                 ("a non-UTF-8 byte", os.fsdecode(os.fsencode(base) + b"/st\xffate")), ("a symlink", os.fspath(base / "link"))]
+        for label, path in named:
+            if label == "a symlink":
+                os.mkdir(os.fspath(base / "link-target"))
+                os.symlink(os.fspath(base / "link-target"), path)
+            else:
+                os.mkdir(path)
+        return named
+
+    def test_a_record_the_tool_wrote_has_no_defect_and_an_aborted_one_is_retried(self):
+        ledger = ledger_path(self.h.activation.digest, self.h.activation.path)
+        for label, state_dir in self.directories():
+            with self.subTest(directory=label):
+                written = record_activation_use(self.h.activation, state_dir, "run-live", T0)
+                self.assertEqual(written["state_dir"], os.path.realpath(state_dir))
+                on_file = record(self.h)  # read back from the ledger file, as every later operation reads it
+                self.assertEqual((on_file["state"], on_file["state_dir"]), ("pending", os.path.realpath(state_dir)))
+                self.assertIsNone(activation_module._recorded_dir_defect(on_file["state_dir"]))
+                self.assertEqual(abort_activation_use(self.h.activation, state_dir, "run-live", Path(state_dir) / "run-live" / "run.json", cause=OSError(28, "No space left on device")), "aborted")
+                aborted = record(self.h)
+                self.assertEqual(aborted["state"], "aborted")
+                message = use_refusal(aborted, ledger)
+                self.assertIn("only that same creation may be retried (--run-id run-live --state-dir ", message)
+                self.assertNotIn("damaged", message)
+                self.assertTrue(activation_module._retryable_creation(aborted, state_dir, "run-live"))
+                self.assertEqual([m for code, m in self.h.activation.creation_problems(self.h.h.policy, "run-live", T0, state_dir=state_dir) if code == "activation-used"], [])
+                retried = record_activation_use(self.h.activation, aborted["state_dir"], "run-live", T0)  # the retry the refusal names
+                self.assertEqual((retried["state"], len(retried["attempts"])), ("pending", 2))
+                self.assertEqual(confirm_activation_use(self.h.activation.binding(validated_at=T0), state_dir, "run-live")[0], "committed")
+                self.assertEqual(record(self.h)["state"], "committed")
+                ledger.unlink()  # LABELLED RESET: the next directory starts from an unused document
+
+    def aborted_creation(self) -> str:
+        """An `aborted` record of this run written by the tool; the recorded state directory."""
+        real = os.path.realpath(self.h.h.state_dir)
+        record_activation_use(self.h.activation, real, "run-live", T0)
+        self.assertEqual(abort_activation_use(self.h.activation, real, "run-live", Path(real) / "run-live" / "run.json", cause=OSError(28, "No space left on device")), "aborted")
+        return real
+
+    def assert_restored_record_creates_the_run(self) -> None:
+        self.h.coordinator()  # the same creation, retried under the same document
+        self.assertEqual((record(self.h)["state"], record(self.h)["run_id"], len(record(self.h)["attempts"])), ("committed", "run-live", 2))
+        self.assertEqual(self.store.load_run().activation["digest"], self.h.activation.digest)
+        self.assertEqual(self.events().count("run-started"), 1)
+
+    def test_a_damaged_state_dir_restored_by_hand_is_retried(self):
+        real = self.aborted_creation()
+        for damaged in ("rel", real + "\0x", real + os.sep + "\ud800", 7):
+            with self.subTest(damaged=damaged):
+                set_ledger(self.h, state_dir=damaged)  # LABELLED MUTATION: the damage
+                refused = refuses(self, lambda: self.h.coordinator(), "activation-used")
+                self.assertNotIn("only that same creation may be retried", str(refused))
+                self.assertIsNone(self.store.load_run())
+        set_ledger(self.h, state_dir=real)  # restored by hand, as the refusal says
+        self.assert_restored_record_creates_the_run()
+
+    def test_a_damaged_state_restored_by_hand_is_retried(self):
+        self.aborted_creation()
+        for damaged in ("abortd", None, 3):
+            with self.subTest(damaged=damaged):
+                set_ledger(self.h, state=damaged)  # LABELLED MUTATION: the damage
+                refused = refuses(self, lambda: self.h.coordinator(), "activation-used")
+                self.assertIn("inspect or restore that file", str(refused))
+                self.assertIsNone(self.store.load_run())
+        set_ledger(self.h, state="aborted")  # restored by hand
+        self.assert_restored_record_creates_the_run()
+
+
+class LinesWrittenBeforeFieldStillDedupeTests(LiveCase):
+    """PR #185 R1-5 (thread PRRT_kwDOVjxExc63YAdI), first half: a journal started before `field`
+    existed holds `activation-use-unconfirmed` lines without
+    `field`, whose variant is in `strerror` (`unreadable`, `recorded directory exists`, `recorded
+    directory gone`, or the name of the field that failed validation). After the upgrade the same
+    condition, still present, adds no line; a different condition is still journaled. Mutation:
+    `_legacy_unconfirmed_key` returning `None` (the old-line mapping removed)."""
+
+    def setUp(self):
+        super().setUp()
+        self.h.coordinator()
+        self.recorded = Path(self.h.h.tmpdir.name) / "created-under"
+        self.ledger = ledger_path(self.h.activation.digest, self.h.activation.path)
+
+    def legacy_line(self, kind: str, strerror: str) -> None:
+        """A line of the format before `field`: `{error, type, errno, strerror, consequence}`."""
+        self.store.journal(None, "activation-use-unconfirmed", {"error": "as it was worded then", "type": kind, "errno": None, "strerror": strerror,
+                                                              "consequence": "the use ledger record stays pending; every later open retries the confirmation; until then a deleted run directory refuses as an unconfirmed creation"})
+
+    def new_lines(self) -> list[tuple]:
+        self.h.coordinator(activation=None)
+        self.h.coordinator(activation=None)  # a second open adds nothing either way
+        return [(d["type"], d["field"]) for d in unconfirmed(self.store) if "field" in d]
+
+    def reading_fails(self, error: OSError):
+        return VariantFieldAndReadErrnoTests.reading_fails(self, error)
+
+    def test_an_unreadable_file_on_record_covers_a_torn_file(self):
+        self.legacy_line("ledger-unreadable", "unreadable")
+        self.ledger.write_text("{torn", encoding="utf-8")  # LABELLED MUTATION
+        self.assertEqual(self.new_lines(), [])
+
+    def test_an_unreadable_file_on_record_covers_a_refused_read(self):
+        self.legacy_line("ledger-unreadable", "unreadable")
+        with self.reading_fails(PermissionError(13, "Permission denied")):
+            self.assertEqual(self.new_lines(), [])
+
+    def test_a_directory_that_exists_on_record_covers_the_run_and_a_directory_without_it(self):
+        self.legacy_line("state-dir-mismatch", "recorded directory exists")
+        set_ledger(self.h, state="pending", state_dir=str(self.recorded))
+        self.recorded.mkdir()
+        self.assertEqual(self.new_lines(), [])  # exists without the run
+        (self.recorded / "run-live").mkdir()
+        (self.recorded / "run-live" / "run.json").write_text("{}", encoding="utf-8")
+        self.assertEqual(self.new_lines(), [])  # holds the run
+
+    def test_a_directory_that_is_gone_on_record_covers_what_was_called_gone(self):
+        self.legacy_line("state-dir-mismatch", "recorded directory gone")
+        set_ledger(self.h, state="pending", state_dir=str(self.recorded))
+        self.assertEqual(self.new_lines(), [])  # gone
+        with stat_refusing(self.recorded, PermissionError(13, "Permission denied")):
+            self.assertEqual(self.new_lines(), [])  # cannot be examined, and `os.path.isdir` is false for it, as it was then
+        self.recorded.write_text("a file", encoding="utf-8")
+        self.assertEqual(self.new_lines(), [])  # exists, and is not a directory: `os.path.isdir` is false, as it was then
+
+    def test_a_field_name_on_record_still_covers_that_field(self):
+        self.legacy_line("ledger-unreadable", "attempts")
+        set_ledger(self.h, state="pending", attempts="x")
+        self.assertEqual(self.new_lines(), [])
+
+    def test_a_different_condition_is_still_journaled(self):
+        cases = [(("state-dir-mismatch", "recorded directory gone"), "holds", ("state-dir-mismatch", "recorded directory holds the run")),
+                 (("state-dir-mismatch", "recorded directory gone"), "directory", ("state-dir-mismatch", "recorded path exists without the run")),
+                 (("state-dir-mismatch", "recorded directory exists"), "gone", ("state-dir-mismatch", "recorded directory gone")),
+                 (("state-dir-mismatch", "recorded directory exists"), "file", ("state-dir-mismatch", "recorded path exists without the run")),
+                 (("ledger-unreadable", "unreadable"), "state_dir", ("ledger-unreadable", "state_dir")),
+                 (("ledger-unreadable", "unreadable"), "state", ("ledger-unreadable", "state")),  # `state` was not validated then: no old line stands for it
+                 (("ledger-unreadable", "state_dir"), "torn", ("ledger-unreadable", "json"))]  # last: the ledger file is not JSON afterwards
+        for number, (on_record, now, expected) in enumerate(cases):
+            with self.subTest(on_record=on_record, now=now):
+                self.store.journal(None, "activation-use-confirmed", {})  # each case starts after a confirmation
+                self.legacy_line(*on_record)
+                recorded = Path(self.h.h.tmpdir.name) / f"created-under-{number}"
+                set_ledger(self.h, state="pending", state_dir=str(recorded), attempts=[{"at": T0}])
+                if now in ("holds", "directory"):
+                    (recorded / ("run-live" if now == "holds" else "run-else")).mkdir(parents=True)
+                    (recorded / ("run-live" if now == "holds" else "run-else") / "run.json").write_text("{}", encoding="utf-8")
+                elif now == "file":
+                    recorded.write_text("a file", encoding="utf-8")
+                elif now == "state_dir":
+                    set_ledger(self.h, state_dir=7)
+                elif now == "state":
+                    set_ledger(self.h, state="unknown")
+                elif now == "torn":
+                    self.ledger.write_text("{torn", encoding="utf-8")  # LABELLED MUTATION
+                before = len(unconfirmed(self.store))
+                self.h.coordinator(activation=None)
+                self.h.coordinator(activation=None)
+                added = unconfirmed(self.store)[before:]  # past the old line this case wrote
+                self.assertEqual([(d["type"], d["field"]) for d in added], [expected])
+
+    def test_the_key_the_old_format_wrote_for_each_condition(self):
+        key = Store._legacy_unconfirmed_key
+        sdm, lu = "state-dir-mismatch", "ledger-unreadable"
+        self.assertEqual(key({"type": lu, "errno": 13, "strerror": "Permission denied", "field": "file"}), (lu, None, "unreadable"))
+        self.assertEqual(key({"type": lu, "errno": None, "strerror": None, "field": "json"}), (lu, None, "unreadable"))
+        for name in ("record", "attempts", "state_dir"):
+            self.assertEqual(key({"type": lu, "errno": None, "strerror": None, "field": name}), (lu, None, name))
+        self.assertIsNone(key({"type": lu, "errno": None, "strerror": None, "field": "state"}))
+        for field in activation_module.RECORDED_RUN_VARIANTS.values():  # the flag alone decides, whatever the present variant is
+            self.assertEqual(key({"type": sdm, "errno": None, "field": field, "recorded_is_dir": True}), (sdm, None, "recorded directory exists"))
+            self.assertEqual(key({"type": sdm, "errno": 13, "field": field, "recorded_is_dir": False}), (sdm, None, "recorded directory gone"))
+            self.assertIsNone(key({"type": sdm, "errno": None, "field": field, "recorded_is_dir": None}))  # no usable path: what the old code wrote cannot be told
+            self.assertIsNone(key({"type": sdm, "errno": None, "field": field}))
+        self.assertEqual(key({"type": "OSError", "errno": 28, "strerror": None, "field": None}), ("OSError", 28, None))  # a failed write: the key did not change
+        self.assertEqual(key({"type": "OSError", "errno": None, "strerror": "odd", "field": None}), ("OSError", None, "odd"))
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root searches every directory")
+    def test_a_directory_that_exists_on_record_covers_one_that_cannot_be_searched(self):
+        """An existing directory without search permission "cannot be examined" now; the old code
+        asked `os.path.isdir`, which is true for it, and wrote "recorded directory exists".
+        Mutation: `recorded_is_dir` forced `False` unless the run or a directory without it was found."""
+        self.legacy_line("state-dir-mismatch", "recorded directory exists")
+        set_ledger(self.h, state="pending", state_dir=str(self.recorded))
+        self.recorded.mkdir()
+        self.recorded.chmod(0)
+        try:
+            outcome, error = confirm_activation_use(self.store.load_run().activation, self.h.h.state_dir, "run-live")
+            added = self.new_lines()
+        finally:
+            self.recorded.chmod(0o700)  # before the harness removes the directory
+        self.assertEqual((outcome, error["field"], error["errno"], error["recorded_is_dir"]), ("error", "recorded directory cannot be examined", errno.EACCES, True))
+        self.assertEqual(added, [])
+
+    def test_a_recorded_value_that_is_no_usable_path_matches_no_old_line(self):
+        """The old code resolved a relative value against the current directory, so what it wrote
+        for a damaged value cannot be reproduced: the flag is `None`, no old line stands for the
+        condition and the damaged record is journaled once after an upgrade. Mutation: the flag
+        `False` for such a value (an old "gone" line would suppress the damaged-record line)."""
+        here = Path(self.h.h.tmpdir.name)
+        (here / "rel").mkdir()
+        real = os.path.realpath(self.h.h.state_dir)
+        for damaged in ("rel", real + "\0x", real + os.sep + "\ud800"):
+            with self.subTest(damaged=damaged):
+                self.store.journal(None, "activation-use-confirmed", {})  # each case starts after a confirmation
+                self.legacy_line("state-dir-mismatch", "recorded directory gone")
+                self.legacy_line("state-dir-mismatch", "recorded directory exists")
+                set_ledger(self.h, state="pending", state_dir=damaged)
+                with contextlib.chdir(here):  # the relative value lines up with a directory: it is still not asked about
+                    _, error = confirm_activation_use(self.store.load_run().activation, self.h.h.state_dir, "run-live")
+                    self.assertEqual((error["field"], error["recorded_is_dir"]), ("recorded directory cannot be examined", None))
+                    before = len(unconfirmed(self.store))
+                    self.h.coordinator(activation=None)
+                    self.h.coordinator(activation=None)
+                added = unconfirmed(self.store)[before:]
+                self.assertEqual([(d["type"], d["field"]) for d in added], [("state-dir-mismatch", "recorded directory cannot be examined")])
+                self.assertIn("the use ledger record is damaged", added[0]["consequence"])
+
+    def test_a_line_with_field_never_stands_for_another_variant_of_its_old_class(self):
+        """Only a line without `field` is matched through the old key. A present-format "gone"
+        line and a later file at that path are two conditions of one old class ("gone"): both are
+        journaled. Mutation: the `"field" not in d` filter removed."""
+        set_ledger(self.h, state="pending", state_dir=str(self.recorded))
+        self.h.coordinator(activation=None)
+        self.recorded.write_text("a file", encoding="utf-8")
+        self.h.coordinator(activation=None)
+        self.assertEqual([(d["type"], d["field"]) for d in unconfirmed(self.store)],
+                         [("state-dir-mismatch", "recorded directory gone"), ("state-dir-mismatch", "recorded path exists without the run")])
+
+    def test_recorded_is_dir_never_reaches_the_journal(self):
+        """The exact keys of a journaled `state-dir-mismatch` line. Mutation: the flag copied into the line."""
+        for make in (lambda: None, self.recorded.mkdir, lambda: ((self.recorded / "run-live").mkdir(), (self.recorded / "run-live" / "run.json").write_text("{}", encoding="utf-8"))):
+            make()
+            set_ledger(self.h, state="pending", state_dir=str(self.recorded))
+            self.h.coordinator(activation=None)
+        lines = [d for d in unconfirmed(self.store) if d["type"] == "state-dir-mismatch"]
+        self.assertEqual(len(lines), 3)
+        for line in lines:
+            self.assertEqual(set(line), {"error", "type", "errno", "strerror", "field", "consequence"})
+
+    def test_one_old_line_covers_every_later_variant_of_its_class_until_a_confirmation(self):
+        """The stated caveat for a journal started before `field`: an old `unreadable` line does not
+        say which condition it recorded, so a later EACCES and a later EIO add no line; after the
+        next confirmation they are two lines again."""
+        self.legacy_line("ledger-unreadable", "unreadable")
+        for error in (PermissionError(13, "Permission denied"), OSError(5, "Input/output error")):
+            with self.reading_fails(error):
+                self.assertEqual(self.new_lines(), [])
+        self.store.journal(None, "activation-use-confirmed", {})
+        for error in (PermissionError(13, "Permission denied"), OSError(5, "Input/output error")):
+            with self.reading_fails(error):
+                self.h.coordinator(activation=None)
+        self.assertEqual([(d["field"], d["errno"]) for d in unconfirmed(self.store) if "field" in d], [("file", 13), ("file", 5)])
+
+    def test_a_failed_write_on_record_still_covers_the_same_failed_write(self):
+        self.store.journal(None, "activation-use-unconfirmed", {"error": "OSError: [Errno 28] ...", "type": "OSError", "errno": 28, "strerror": None, "consequence": "c"})
+        set_ledger(self.h, state="pending")
+        with mock.patch.object(activation_module, "_write_ledger", side_effect=OSError(28, "No space left on device")):
+            self.assertEqual(self.new_lines(), [])
+        with mock.patch.object(activation_module, "_write_ledger", side_effect=OSError(30, "Read-only file system")):
+            self.assertEqual(self.new_lines(), [("OSError", None)])  # another errno is another condition
+
+
+class AbandonedGitIsReapedTests(unittest.TestCase):
+    """PR #185 R1-5 (thread PRRT_kwDOVjxExc63YAdI), second half: a git that survives SIGKILL past
+    the bounded wait still raises `TimeoutExpired` within the bound, and is handed to a daemon
+    thread that waits for it, so it is reaped when it does exit. Mutation: the `_reap_abandoned`
+    call removed from `_git_answer`."""
+
+    def stuck(self, exits_after_kill: bool = False) -> "StuckGitIsBoundedTests.Stuck":
+        child = StuckGitIsBoundedTests.Stuck(exits_after_kill)
+        self.addCleanup(child.exited.set)  # registered before anything can start a reaper: no assertion below can leave one waiting
+        return child
+
+    def test_a_child_that_survives_the_kill_is_waited_for_on_a_daemon_thread(self):
+        child = self.stuck()
+        with mock.patch.object(cli_module.subprocess, "Popen", return_value=child):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                cli_module._git_answer(["git", "status"], timeout=30, env={})
+        (reaper,) = reapers_of(child)
+        self.assertTrue(reaper.daemon)  # it never keeps the interpreter alive
+        self.assertTrue(reaper.is_alive())  # the child has not exited: it is still being waited for
+        self.assertEqual(child.calls[:3], [("communicate", 30), ("kill", None), ("wait", cli_module.GIT_KILL_WAIT_SECONDS)])
+        child.exited.set()  # the mount answers and the child dies
+        reaper.join(timeout=10)
+        self.assertFalse(reaper.is_alive())
+        self.assertEqual(child.calls, [("communicate", 30), ("kill", None), ("wait", cli_module.GIT_KILL_WAIT_SECONDS), ("wait", None)])
+
+    def test_a_child_that_dies_within_the_bound_needs_no_reaper(self):
+        child = self.stuck(exits_after_kill=True)
+        with mock.patch.object(cli_module.subprocess, "Popen", return_value=child), mock.patch.object(cli_module, "_reap_abandoned", side_effect=AssertionError("already reaped")):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                cli_module._git_answer(["git", "status"], timeout=30, env={})
+        self.assertEqual(child.calls, [("communicate", 30), ("kill", None), ("wait", 5)])
+
+    def test_an_interrupted_call_reaps_an_abandoned_child_too(self):
+        child = self.stuck()
+        child.communicate = lambda timeout=None: (_ for _ in ()).throw(KeyboardInterrupt())
+        with mock.patch.object(cli_module.subprocess, "Popen", return_value=child):
+            with self.assertRaises(KeyboardInterrupt):
+                cli_module._git_answer(["git", "status"], timeout=30, env={})
+        reapers = reapers_of(child)
+        self.assertEqual(len(reapers), 1)
+        child.exited.set()
+        reapers[0].join(timeout=10)
+        self.assertEqual(child.calls, [("kill", None), ("wait", 5), ("wait", None)])
+
+    def test_a_reaper_that_cannot_be_started_replaces_nothing_and_the_pipes_are_closed(self):
+        """`Thread.start` raises `RuntimeError` when no thread can be started. The child is then
+        left to the kernel: what was raised (the timeout, or an interrupt) is still what is raised,
+        and both pipes are closed. Mutations: the `RuntimeError` guard removed; the pipes closed
+        only when the reaper started."""
+        for raised, communicate in ((subprocess.TimeoutExpired, None), (KeyboardInterrupt, lambda timeout=None: (_ for _ in ()).throw(KeyboardInterrupt()))):
+            with self.subTest(raised=raised.__name__):
+                child = self.stuck()
+                if communicate is not None:
+                    child.communicate = communicate
+                with mock.patch.object(cli_module.subprocess, "Popen", return_value=child), \
+                        mock.patch.object(cli_module, "_reap_abandoned", side_effect=RuntimeError("can't start new thread")) as reap:
+                    with self.assertRaises(raised):
+                        cli_module._git_answer(["git", "status"], timeout=30, env={})
+                self.assertEqual(reap.call_count, 1)
+                self.assertEqual((child.stdout.close.call_count, child.stderr.close.call_count), (2, 2))  # one mock stands for both pipes: each was closed
+                self.assertEqual(reapers_of(child), [])
+
+    INTERRUPT = staticmethod(lambda timeout=None: (_ for _ in ()).throw(KeyboardInterrupt()))
+
+    def test_a_kill_that_raises_replaces_nothing(self):
+        """A refused `kill` is ignored: the bounded wait still runs, the pipes are closed and what
+        ended the wait for the answer (the timeout, or an interrupt) is what is raised.
+        Mutation: the `OSError` guard around `proc.kill()` removed."""
+        for raised, communicate in ((subprocess.TimeoutExpired, None), (KeyboardInterrupt, self.INTERRUPT)):
+            with self.subTest(raised=raised.__name__):
+                child = self.stuck(exits_after_kill=True)
+                if communicate is not None:
+                    child.communicate = communicate
+                child.kill = mock.Mock(side_effect=PermissionError(1, "Operation not permitted"))
+                with mock.patch.object(cli_module.subprocess, "Popen", return_value=child):
+                    with self.assertRaises(raised):
+                        cli_module._git_answer(["git", "status"], timeout=30, env={})
+                self.assertEqual((child.kill.call_count, child.calls[-1], child.stdout.close.call_count), (1, ("wait", 5), 2))
+
+    def test_a_second_interrupt_during_the_bounded_wait_still_leaves_a_reaper(self):
+        """The bounded wait is interrupted: that interrupt propagates (not the timeout it
+        interrupted), the child is handed to the reaper and the pipes are closed. Mutation: the
+        reaper started only on the wait's own `TimeoutExpired`."""
+        child = self.stuck()
+        bounded = child.wait
+
+        def wait(timeout=None):
+            if timeout is None:
+                return bounded(timeout)
+            child.calls.append(("wait", timeout))
+            raise KeyboardInterrupt()
+
+        child.wait = wait
+        with mock.patch.object(cli_module.subprocess, "Popen", return_value=child):
+            with self.assertRaises(KeyboardInterrupt):
+                cli_module._git_answer(["git", "status"], timeout=30, env={})
+        reapers = reapers_of(child)
+        self.assertEqual((len(reapers), child.stdout.close.call_count), (1, 2))
+        child.exited.set()
+        reapers[0].join(timeout=10)
+        self.assertEqual(child.calls, [("communicate", 30), ("kill", None), ("wait", 5), ("wait", None)])
+
+    def test_a_real_child_is_reaped_when_it_exits(self):
+        """The thread's wait collects a real exit status: the child is no zombie afterwards."""
+        proc = subprocess.Popen(["sleep", "60"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        reaper = cli_module._reap_abandoned(proc)
+        self.addCleanup(proc.kill)
+        self.assertEqual((reaper.daemon, reaper.name, reaper.is_alive()), (True, f"reap-git-{proc.pid}", True))
+        proc.kill()
+        reaper.join(timeout=10)
+        self.assertFalse(reaper.is_alive())
+        self.assertEqual(proc.returncode, -9)  # collected by the thread, not by this test
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(proc.pid, os.WNOHANG)  # nothing is left to reap
 
 
 # -- the documentation ------------------------------------------------------------------------------------------------------
@@ -1738,34 +2319,73 @@ class DocumentedTests(unittest.TestCase):
             self.assertIn(needle, text, needle)
         self.assertNotIn("an `OSError` without an errno told apart by its `strerror`: the message names", text)
 
-    def test_the_guide_states_the_stamp_rule_without_the_reconciliation_exception(self):
-        """PR #176 R1-1, R1-2: the reconciliation and an intent's `created_at` are floored like the rest."""
-        text = DOCS.read_text(encoding="utf-8")
-        for needle in ("an intent's `created_at` and `completed_at`", "One stamp is an exception: a story's `updated_at`", "without one only when `reconciliation.at` was floored",
-                       "`issued_observed_at`", "`claim.reserved_at`, `checks[].at`, `reviews[].at`, `proposal.at`", "`bound_at` and `claim.claimed_at` of a bind (for work or for cleanup)"):
-            self.assertIn(needle, text, needle)
-        for gone in ("Two stamps are exceptions", "floored at the mark only while a `clock-regression` stop is recorded", "is recorded only under a clock stop"):
-            self.assertNotIn(gone, text, gone)
-
-    def test_the_guide_states_what_the_run_order_check_compares_and_its_bound(self):
-        """PR #176 R2-1, R2-2: the reconcile section names the comparison the code makes (the clock's
-        reading at issue), the window it accepts by design and what the refusal reports."""
-        text = DOCS.read_text(encoding="utf-8")
-        for needle in ("`startedAt` at or after the time the clock read when the authorization was issued (`issued_observed_at` when `issued_at` was floored, otherwise `issued_at`",
-                       "a `startedAt` from `issued_observed_at` up to `issued_at` is accepted by design", "cannot be told from one that started after the issue",
-                       "`compared_with` naming the field that was compared, plus `issued_observed_at` when the authorization has one"):
-            self.assertIn(needle, text, needle)
-        for gone in ("`startedAt` at or after the authorization's `issued_at`", "can never settle a later authorization"):
-            self.assertNotIn(gone, text, gone)
-
-    def test_the_guide_states_that_the_issue_reading_is_judged_against_the_mark(self):
-        """PR #176 R3-1: the bound the reconcile section gives for the accepted window rests on this rule."""
+    def test_the_guide_states_the_stamp_rule(self):
+        """PR #185 R1-3: one rule, a stamp is the clock except under a recorded `clock-regression`
+        stop; the stamps it covers are still listed, and the cost after a clear is stated."""
         text = " ".join(DOCS.read_text(encoding="utf-8").split())
-        for needle in ("the clock reading an authorization is issued with (`reserve`, `authorize-review`, `authorize-repair`) is taken after that observation",
-                       "records `clock-regression` and issues nothing, so a recorded `issued_observed_at` is never more than the tolerance before `issued_at`",
-                       "That stop names the command as its `operation` and the later reading as its `observed_at`"):
+        for needle in ("every state stamp the coordinator writes is the clock, except while a `clock-regression` stop is recorded",
+                       "an intent's `created_at` and `completed_at`", "`bound_at` and `claim.claimed_at` of a cleanup bind",
+                       "`claim.reserved_at`, `checks[].at`, `reviews[].at`, `proposal.at`", "are therefore always the clock",
+                       "a stamp can read up to 5 minutes before one that was floored during the stop",
+                       "No code orders or compares state stamps", "`reconciliation.observed_at` keeps what the regressed clock read; it is recorded only under a clock stop"):
             with self.subTest(needle=needle):
                 self.assertIn(needle, text)
+        for gone in ("whether or not a stop is recorded and whichever operation writes it", "One stamp is an exception", "without one only when `reconciliation.at` was floored",
+                     "one story therefore never holds a floored entry followed by an earlier one"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, text)
+
+    def test_the_guide_states_what_the_run_order_check_compares(self):
+        """PR #185 R1-2: the reconcile section names the one comparison the code makes, with no accepted window before the issue."""
+        text = " ".join(DOCS.read_text(encoding="utf-8").split())
+        for needle in ("`startedAt` at or after the authorization's `issued_at`", "`issued_at` is the clock as it read when the authorization was issued and is never before the run's high-water mark",
+                       "a run that started at a reading before the mark settles nothing"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, text)
+        for gone in ("is accepted by design", "cannot be told from one that started after the issue", "when `issued_at` was floored", "compared_with"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, text)
+
+    def test_the_guide_states_that_nothing_is_issued_before_the_mark_and_no_stop_is_recorded_for_it(self):
+        """PR #185 R1-1: one observation per operation decides; a reading before the mark at the issue refuses `clock-behind-mark`."""
+        text = " ".join(DOCS.read_text(encoding="utf-8").split())
+        for needle in ("No later reading of the same operation is judged for a stop", "refuses `clock-behind-mark`", "nothing is issued, saved, journaled or posted and no stop is recorded",
+                       "the gate of the next operation judges the clock", "| `clock-behind-mark` | `reserve`, `authorize-review`, `authorize-repair` |", "`retry_at` (the mark)",
+                       "whenever the clock reads before the mark", "the caller retries at `retry_at`", "`check-activation` (`current`, `--expect advance`) and `status` do not report this temporary refusal",
+                       "A reading or a mark that cannot be parsed refuses `activation-invalid`",
+                       "A known limit, unchanged: a clock that steps back after the issue makes a genuine run start before `issued_at`"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, text)
+        for gone in ("One later reading is also judged for a regression", "records `clock-regression` and issues nothing", "That stop names the command as its `operation`", "`wait_until` (the mark)"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, text)
+
+    def test_the_guide_states_the_caveats_of_the_stamp_rule_and_of_the_old_lines(self):
+        text = " ".join(DOCS.read_text(encoding="utf-8").split())
+        for needle in ("writes stamps that read earlier than previous ones", "Under an `activation-expired` stop a later regression of the clock is not recorded",
+                       "a reading taken later in the same operation is not judged", "the same clock, read separately",
+                       "one old line suppresses every later variant of its class until the next confirmation", "keeps the `consequence` text of the old line",
+                       "A recorded value that is no usable path matches no old line"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, text)
+        for gone in ("by `main`", "`main` wrote", "`main` keyed", "397c783", "all three are the clock"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, text)
+
+    def test_the_guide_records_the_five_decisions_after_the_walkthrough(self):
+        """PR #185 round 1: each risk the owner did not accept has its decision in the guide, and the
+        field the first three removed is named there only."""
+        text = " ".join(DOCS.read_text(encoding="utf-8").split())
+        self.assertIn("**Decisions after the walkthrough (PR #185, round 1).**", text)
+        start = text.index("**Decisions after the walkthrough (PR #185, round 1).**")
+        paragraph = text[start:text.index("- **Trust model.**", start)]
+        for needle in ("PR #176, continued as PR #185", "R1-1", "R1-2", "R1-3", "R1-4", "R1-5", "`issued_observed_at`", "`clock-behind-mark`", "not changed", "a daemon thread", "`recorded directory exists`"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, paragraph)
+        self.assertEqual(text.count("issued_observed_at"), paragraph.count("issued_observed_at"))  # named in the decision text only
+        readme = README.read_text(encoding="utf-8")
+        for needle in ("round 1 of PR #185", "R1-1 to R1-5"):
+            self.assertIn(needle, readme)
 
     def test_the_readme_names_this_file(self):
         self.assertIn("tests/test_pr114_round7_findings.py", README.read_text(encoding="utf-8"))
