@@ -810,6 +810,17 @@ class ReviewCycle1Test(unittest.TestCase):
             self.assertEqual(backend["spec"]["replicas"], 1, name)
         self.assertIn("schema", refused(*sets("backend.replicas=2")).lower())
 
+    def test_backend_can_be_stopped_with_zero_replicas(self):
+        """189/4574894147 (#162): the guide stops the backend before an incompatible migration with `backend.replicas=0` and
+        starts it again with a second upgrade. Zero replicas must render, with the same strategy, in every combination, on
+        install and on upgrade; a negative count is refused."""
+        for name, args in COMBINATIONS.items():
+            for mode in ([], UPGRADE):
+                backend = deployments_of(render(*args, *mode, *sets("backend.replicas=0")))["t-owl-mast-backend"]
+                self.assertEqual(backend["spec"]["replicas"], 0, (name, mode))
+                self.assertEqual(backend["spec"]["strategy"], NO_SURGE, (name, mode))
+        self.assertIn("schema", refused(*sets("backend.replicas=-1")).lower())
+
     def test_only_the_deployment_that_was_recreate_in_chart_0_1_0_is_recreate(self):
         """#162: `type: Recreate` cannot be applied to a Deployment that chart 0.1.0 installed without a strategy. Only the
         bundled PostgreSQL had `Recreate` in 0.1.0, so it is the only Deployment that may render it, with the frontend deployed too."""
