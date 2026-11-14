@@ -28,6 +28,7 @@ import json
 import os
 import pwd
 import re
+import sys
 import tempfile
 import tomllib
 from dataclasses import dataclass
@@ -68,7 +69,10 @@ TIME_CODES = ("activation-expired", "activation-not-yet-valid")
 # it and whether it is the smoke or the review stay the approver's statement. The comment or review
 # id is 1 to 20 digits, leading zeros included: a sanity limit (GitHub ids are far shorter); a longer
 # value is not a citation, and neither is an id whose value is 0 (``-0``, ``-000``: GitHub never issues it).
-EVIDENCE_URL_RE = re.compile(r"https://github\.com/([^/\s#?]+/[^/\s#?]+)/(?:issues/[0-9]+#issuecomment|pull/[0-9]+#(?:issuecomment|pullrequestreview))-([0-9]{1,20})", re.ASCII)
+# The issue or pull request number is a positive integer without leading zeros (``issues/0``, ``pull/0`` and
+# ``issues/007`` are not citations: GitHub never issues number 0, and a leading zero would spell one
+# publication two ways) of at most 20 digits, the same sanity limit as the id.
+EVIDENCE_URL_RE = re.compile(r"https://github\.com/([^/\s#?]+/[^/\s#?]+)/(?:issues/[1-9][0-9]{0,19}#issuecomment|pull/[1-9][0-9]{0,19}#(?:issuecomment|pullrequestreview))-([0-9]{1,20})", re.ASCII)
 PLACEHOLDER_RE = re.compile(r"^\s*REPLACE|[<>]")
 # The use ledger: one record per activation **digest** in one directory per user account and machine
 # (the home directory of the account running the tool), written when a live run is created from the
@@ -224,7 +228,7 @@ class Activation:
         """:meth:`problems` plus the conditions that hold only when a run is created, none of
         which a mid-run operation ever applies: the evidence citations (:meth:`evidence_problems`),
         the use ledger (``activation-used``: this document already created a run; an interrupted
-        creation of this same run under this same ``state_dir`` may be retried), and a remaining
+        creation of this same run under this same ``state_dir`` may be retried, unless the record names no usable path: one that is not absolute, or one the file system cannot take), and a remaining
         window that covers the run's wall-clock budget (``activation-window-short``), without which
         the run would reserve work and launch a worker only to hit a durable expiry stop partway
         through, spending the slot and keeping the story owned."""
@@ -403,32 +407,70 @@ def ledger_path(digest: str, source_path: str) -> Path:
 
 def activation_use(digest: str, source_path: str) -> dict | None:
     """The use on record for a document digest: ``None`` when it never created a run, the ledger
-    record otherwise. A ledger that cannot be read is a use (``{"unreadable": True}``), never the
-    absence of one; a record that parses but fails validation also carries ``why``, naming the field
-    (``use_refusal`` prints it, and a reopen journals it as ``ledger-unreadable``)."""
+    record otherwise. A ledger that cannot be read is a use (``{"unreadable": True, ...}``), never
+    the absence of one, and always carries ``field`` and ``why``. A read the operating system
+    refuses carries ``field: "file"`` and the ``errno`` and ``strerror`` of that error (a permission
+    problem and a disk error are two conditions; whether the file exists is not claimed: a parent
+    directory that cannot be searched refuses the same way); a file that is not JSON carries
+    ``field: "json"``; a record that parses but fails validation carries ``field`` and ``why``, naming
+    the field: ``record``, ``attempts``, ``state_dir`` or ``state`` (a ``state`` that is missing or
+    not one of :data:`LEDGER_STATES` is a damaged record like the others). ``use_refusal`` prints
+    ``why``, and a reopen journals it as ``ledger-unreadable``."""
     path = ledger_path(digest, source_path)
     try:
         used = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, NotADirectoryError):  # no record, or no ledger directory at all (creating it is refused separately)
         return None
-    except (OSError, ValueError):
-        return {"unreadable": True}
+    except OSError as exc:  # the read was refused (the file, or a directory on its path): the errno tells EACCES from EIO; the record itself may be intact
+        return {"unreadable": True, "field": "file", "errno": exc.errno, "strerror": exc.strerror, "why": f"{type(exc).__name__}: {exc.strerror or exc}"}
+    except ValueError:  # read, and not JSON (a torn or overwritten file): a condition of its own, never keyed like a refused read
+        return {"unreadable": True, "field": "json", "why": "the file is not JSON"}
     if not isinstance(used, dict):
         return {"unreadable": True, "field": "record", "why": f"the record is a JSON {type(used).__name__}, not an object"}
     if "attempts" in used and not (isinstance(used["attempts"], list) and used["attempts"] and all(isinstance(a, dict) and "at" in a for a in used["attempts"])):
         return {"unreadable": True, "field": "attempts", "why": "attempts is not a non-empty list of attempt records (objects with an at)"}  # only this tool writes the history: anything else is a damaged record, a use
     if not isinstance(used.get("state_dir"), str):
         return {"unreadable": True, "field": "state_dir", "why": "state_dir is missing" if "state_dir" not in used else f"state_dir is not a string (it is {json.dumps(used['state_dir'])[:80]})"}  # every record names its state directory: without one it cannot be matched to a run
+    state = used.get("state")
+    if not isinstance(state, str) or state not in LEDGER_STATES:
+        # only this tool writes the state: anything else is a damaged record, a use; it is never read as "already committed" or as another process's change
+        return {"unreadable": True, "field": "state", "why": "state is missing" if "state" not in used else f"the record has the unknown state {json.dumps(state)[:80] if not isinstance(state, str) else repr(state[:80])} (expected one of {list(LEDGER_STATES)})"}
     return used
+
+
+def _recorded_dir_defect(recorded) -> str | None:
+    """Why the state directory a ledger record names is no usable path, in words that follow the
+    value (``'rel' is not an absolute path``), or ``None`` when it is one. Every record this tool
+    writes carries a real path (``os.path.realpath``), so a value that is not a string, is not
+    absolute, or is one the file system cannot take (an embedded NUL, or text that cannot be
+    encoded as a file name in this process's file system encoding: the two values ``os.stat``
+    refuses with a ``ValueError`` instead of an ``OSError``) means the record is damaged. The one
+    rule for it: such a record never matches a run (:func:`_same_state_dir`), the
+    ``activation-used`` refusal names no retry for it (:func:`use_refusal`), and the journaled
+    line reports it in the same words, without asking the file system (:func:`_recorded_run`)."""
+    if not isinstance(recorded, str):
+        return "is not a path"
+    if not os.path.isabs(recorded):
+        return "is not an absolute path"
+    if "\0" in recorded:
+        return "is a path the file system cannot take: it holds a NUL character"
+    try:
+        os.fsencode(recorded)
+    except ValueError:  # UnicodeEncodeError: a lone surrogate, as a ``\ud800`` escape in the ledger JSON leaves
+        return f"is a path the file system cannot take: it cannot be encoded as a file name ({sys.getfilesystemencoding()})"
+    return None
 
 
 def _same_state_dir(recorded, state_dir) -> bool:
     """Whether the recorded state directory is ``state_dir``: the same real path, or, when both
     exist, the same directory (``os.path.samefile``, which also matches another spelling of it on a
     case-insensitive mount). Never by case-folding: on a case-sensitive file system ``State`` and
-    ``state`` are two directories. A value that is not a path (not a string, an embedded NUL) is
-    never the same directory, and never an error."""
-    if state_dir is None or not isinstance(recorded, str):
+    ``state`` are two directories. A recorded value that is no usable path
+    (:func:`_recorded_dir_defect`: not a string, not absolute, or one the file system cannot take)
+    is never the same directory, and never an error: every record this tool writes carries a real
+    path, and ``exists`` / ``samefile`` would resolve a relative one against the current directory,
+    so whether a damaged record matches would depend on where the tool was started (#183)."""
+    if state_dir is None or _recorded_dir_defect(recorded) is not None:
         return False
     try:
         mine = os.path.realpath(state_dir)
@@ -446,15 +488,16 @@ def _same_run(used: dict, state_dir, run_id) -> bool:
 
 
 def _same_run_id_other_state_dir(used: dict, state_dir, run_id) -> bool:
-    """The record names this run id under another state directory (a moved or copied directory):
-    this run cannot confirm it."""
+    """The record names this run id under another state directory (a moved or copied directory),
+    or under a value that is never one (no usable path, :func:`_recorded_dir_defect`: a damaged record): this run cannot
+    confirm it."""
     return state_dir is not None and used.get("run_id") == run_id and not _same_run(used, state_dir, run_id)
 
 
 def _retryable_creation(used: dict, state_dir, run_id) -> bool:
     """Whether the use on record is a creation of exactly this run that is known to have failed:
     ``aborted`` (``save_run`` raised and ``run.json`` was absent) under the same state directory
-    (the same real path, or ``os.path.samefile`` when both exist: :func:`_same_state_dir`) and run id. Only that creation may be retried. A ``pending`` record is
+    (the same real path, or ``os.path.samefile`` when both exist; a recorded value that is no usable path is never the same: :func:`_same_state_dir`) and run id. Only that creation may be retried. A ``pending`` record is
     never retryable: it is what a process that died between the ledger and ``run.json``, or a run
     directory deleted after a creation whose confirmation failed, leaves behind, and the two cannot
     be told apart."""
@@ -463,8 +506,14 @@ def _retryable_creation(used: dict, state_dir, run_id) -> bool:
 
 def use_refusal(used: dict, path) -> str:
     """Why a use on record refuses another creation, in the words of its state."""
+    # Unreachable through ``activation_use`` since it validates ``state`` (such a record comes back ``unreadable`` with
+    # ``field: "state"``): this branch only guards a record passed in directly.
     if not used.get("unreadable") and used.get("state") not in LEDGER_STATES:  # fail closed like a damaged record: a use, never "already created"
         return f"the use ledger record of this document ({path}) has the unknown state {used.get('state')!r} (expected one of {list(LEDGER_STATES)}); a record that cannot be interpreted is a use, never the absence of one (inspect or restore that file; re-issuing the activation creates a new record)"
+    if used.get("unreadable") and used.get("field") == "file":  # no claim that the file exists: a parent directory that cannot be searched refuses the same way
+        return f"the use ledger record of this document ({path}) cannot be read ({used.get('why')}); a record that cannot be read is a use, never the absence of one (make that file readable; re-issuing the activation creates a new record)"
+    if used.get("unreadable") and used.get("field") == "json":
+        return f"the use ledger record of this document ({path}) cannot be read as a record: {used.get('why')}; a damaged record is a use, never the absence of one (inspect or restore that file; re-issuing the activation creates a new record)"
     if used.get("unreadable") and used.get("why"):
         return f"the use ledger record of this document ({path}) reads, but is not a valid record: {used['why']}; a damaged record is a use, never the absence of one (inspect or restore that file; re-issuing the activation creates a new record)"
     if used.get("unreadable"):
@@ -472,6 +521,10 @@ def use_refusal(used: dict, path) -> str:
     run, where, at = used.get("run_id"), used.get("state_dir"), used.get("created_at")
     if used.get("state") == "pending":
         return f"this document's creation of live run {run!r} under {where!r} at {at} is unconfirmed (use ledger {path} is still pending: the process died between the ledger record and run.json, or the run directory was deleted after a creation whose confirmation failed); whether that run was created cannot be told, so this document creates nothing more: re-issue the activation"
+    defect = _recorded_dir_defect(where)
+    if used.get("state") == "aborted" and defect is not None:
+        # never the same state directory (:func:`_same_state_dir`): naming a retry would advertise one that every directory refuses
+        return f"this document's creation of live run {run!r} failed at {at} before its run.json was written (use ledger {path}: aborted), but the record names no usable state directory ({where!r} {defect}): it is damaged, so that creation cannot be retried (inspect or restore that file: its state_dir is the absolute path of the directory the run was created under; re-issuing the activation creates a new record)"
     if used.get("state") == "aborted":
         return f"this document's creation of live run {run!r} under {where!r} failed at {at} before its run.json was written (use ledger {path}: aborted); only that same creation may be retried (--run-id {run} --state-dir {where}); any other run needs a newly issued activation"
     return f"this document already created live run {run!r} under {where!r} at {at} (use ledger {path}); one activation creates exactly one run, and a new run needs a newly issued activation (any change to the document, such as a later window, is a new document)"
@@ -571,16 +624,44 @@ def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, r
 
     - ``("committed", None)``: this call marked the record ``committed``;
     - ``("unchanged", None)``: nothing to confirm (no binding, no record: a run created before the
-      ledger existed, a record already ``committed``, or a record of another run id);
-    - ``("error", {type, errno, strerror, message})``: the record could not be confirmed and stays
-      as it is; the caller journals ``activation-use-unconfirmed`` once per ``(type, errno)``, the
-      refusal code standing in for the errno of a ``Refused`` (the message carries the random name
-      of the temporary file and differs on every attempt; an ``OSError`` without an errno is told
-      apart by its ``strerror``). Two conditions that no write can fix are errors too: a record that
-      cannot be read or fails validation (``ledger-unreadable``, the message names the field), and
-      an unconfirmed record of this run id under a state directory that is not this one
+      ledger existed, or a record of another run);
+    - ``("unchanged", {"committed": True})``: nothing to confirm because the record of this run id
+      already reads ``committed``, whatever state directory it names (the caller settles unconfirmed
+      lines still on record: the record was restored by hand, or committed through the directory it
+      was created under, which also settles the ``state-dir-mismatch`` line of a copy);
+    - ``("error", {type, errno, strerror, field, message, consequence})``: the record could not be
+      confirmed and stays as it is; the caller journals ``activation-use-unconfirmed`` once per
+      ``(type, errno, variant)``, the refusal code standing in for the errno of a ``Refused`` (the
+      message carries the random name of the temporary file and differs on every attempt).
+      ``strerror`` holds operating-system text only, and not for every OS error: a failed *read*
+      of the ledger file (``ledger-unreadable``, ``field: "file"``) or a recorded directory that
+      cannot be examined carries the text of that error beside its errno; a failed *write* (an
+      ``OSError`` from the confirmation) carries it only when the error has no errno, where it
+      is what tells two such errors apart, and ``None`` when it has one (the errno identifies it);
+      every other condition carries ``None``. ``field`` is the variant of a condition that is not
+      a failed write; ``consequence`` says
+      what the condition means for the record (the caller's "stays pending, every open retries"
+      text is right only for a failed write, so it is the fallback for ``OSError`` / ``Refused``).
+      Two conditions that no write can fix are errors too: a record that cannot be read or fails
+      validation (``ledger-unreadable``: ``field`` names the field that failed, ``json`` for a file
+      that is not JSON, or ``file`` with the ``errno`` of a read the operating system refused, so a
+      permission problem and a disk error are two lines; a refused read says nothing about the
+      record, so its consequence is that every later open tries again), and an
+      unconfirmed record of this run id under a state directory that is not this one
       (``state-dir-mismatch``: a moved or copied directory; another spelling of the same directory is
-      the same one), whose message says whether the recorded directory still exists."""
+      the same one), whose ``field`` and message say what is at the recorded path
+      (:func:`_recorded_run`); it also carries ``recorded_is_dir``, which is not journaled: whether
+      the recorded path is a directory (asked of every recorded value that is a usable path,
+      whatever is found under it), the one fact a line written before ``field`` existed was keyed
+      on, so the caller can match such a line for the same condition. It is ``None`` for a
+      recorded value that is no usable path: the old code resolved a relative value against the
+      current directory, so what it wrote for such a value cannot be reproduced and no old line
+      is matched. When the recorded path cannot be examined, the advice follows the
+      error: search permission for a permission refusal, clearing the error for any other
+      ``OSError``, and "the record is damaged" for a recorded value that is no usable path, whose
+      consequence says that it is a use until the ledger file is restored (such a value never
+      matches a run, :func:`_same_state_dir`, and the ``activation-used`` refusal of an ``aborted``
+      record that names one says the same: :func:`use_refusal`)."""
     if not isinstance(binding, dict) or not isinstance(binding.get("digest"), str) or not isinstance(binding.get("path"), str):
         return ("unchanged", None)
     try:
@@ -588,20 +669,48 @@ def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, r
         used = activation_use(binding["digest"], binding["path"])
         if used is None:
             return ("unchanged", None)
+        if used.get("unreadable") and used.get("field") == "file":
+            # a refused read says nothing about the record: it may be intact, and the next open reads it again
+            return ("error", {"type": "ledger-unreadable", "errno": used.get("errno"), "strerror": used.get("strerror"), "field": "file",
+                              "message": f"the use ledger record of run {run_id} ({path}) cannot be read ({used.get('why')}); it cannot be confirmed while it cannot be read, and a record that cannot be read is a use: a later creation from this document refuses activation-used (make that file readable)",
+                              "consequence": "what the use ledger record says is unknown while the file cannot be read; every later open tries again; until then it is a use, so a later creation from this document refuses activation-used"})
         if used.get("unreadable"):
-            why = used.get("why") or "the file cannot be read or is not JSON"
-            return ("error", {"type": "ledger-unreadable", "errno": None, "strerror": used.get("field") or "unreadable", "message": f"the use ledger record of run {run_id} ({path}) is not a valid record: {why}; it cannot be confirmed, and a damaged record is a use: a later creation from this document refuses activation-used (inspect or restore that file)"})
-        if used.get("state") not in ("pending", "aborted"):
-            return ("unchanged", None)
+            why = used.get("why") or "the file is not JSON"
+            return ("error", {"type": "ledger-unreadable", "errno": used.get("errno"), "strerror": used.get("strerror"), "field": used.get("field") or "json",
+                              "message": f"the use ledger record of run {run_id} ({path}) is not a valid record: {why}; it cannot be confirmed, and a damaged record is a use: a later creation from this document refuses activation-used (inspect or restore that file)",
+                              "consequence": "the use ledger record is damaged, not pending: no open repairs it and no confirmation is retried on it; until the file is restored it is a use, so a later creation from this document refuses activation-used"})
+        if used.get("state") == "committed":
+            return ("unchanged", {"committed": True} if used.get("run_id") == run_id else None)  # whatever state directory it names: a copy's state-dir-mismatch line is settled once the original committed
         if _same_run_id_other_state_dir(used, state_dir, run_id):
             recorded = used.get("state_dir")
-            exists = _directory_exists(recorded)
-            if exists:
+            found, problem = _recorded_run(recorded, run_id)
+            errno, strerror = (getattr(problem, "errno", None), getattr(problem, "strerror", None)) if isinstance(problem, OSError) else (None, None)
+            if found == "run":
                 advice = "open the run through the directory it was created under to confirm it"
-            else:
+                consequence = f"the use ledger record stays {used.get('state')} and cannot be settled from this state directory: an open of the run through the recorded directory confirms it; an open through this one never does"
+            elif found == "no-run":
+                advice = (f"the recorded path exists but holds no run {run_id!r} (no {run_id}/run.json: another directory now sits there, or the run was moved out of it), so the record cannot be settled from here: "
+                          f"this document is spent (it creates no other run); moving the run back under {recorded!r} and opening it there is the only way to confirm it")
+                consequence = f"the use ledger record cannot be settled from here: the recorded path holds no run {run_id!r}; the document is spent, and no open through this state directory confirms the record"
+            elif found == "gone":
                 advice = (f"the recorded directory no longer exists, so the record cannot be settled from here: this document is spent "
                           f"(it creates no other run); moving the directory back to {recorded!r} and opening the run there is the only way to confirm it")
-            return ("error", {"type": "state-dir-mismatch", "errno": None, "strerror": "recorded directory exists" if exists else "recorded directory gone", "message": f"the use ledger record of run {run_id} names the state directory {recorded!r}, not {os.path.realpath(state_dir)!r}; it stays {used.get('state')} ({advice})"})
+                consequence = "the use ledger record cannot be settled from here: the recorded directory is gone; the document is spent, and no open through this state directory confirms the record"
+            elif not isinstance(problem, OSError):
+                # not a path the file system was asked about (relative, or one it cannot take): every record this tool writes carries a real path, so the record is damaged and no permission change helps
+                advice = (f"the record names no usable state directory ({type(problem).__name__}: {problem}): it is damaged, and neither a permission change nor moving the run settles it; "
+                          f"inspect or restore the ledger file {str(path)!r} (its state_dir is the absolute path of the directory the run was created under)")
+                consequence = "the use ledger record is damaged: the state directory it names is not a usable path, so there is no recorded directory to open the run through; it is not settled until the ledger file is restored; until then it is a use: a later creation from this document refuses activation-used"
+            else:
+                if isinstance(problem, PermissionError):  # EACCES / EPERM: a directory on the path refuses the search
+                    remedy = f"make {recorded!r} and the run directory {run_id!r} under it reachable (every directory on the path searchable)"
+                else:  # any other error (a disk error, a symlink loop, a stale mount): no permission change clears it, and the reason names it
+                    remedy = f"clear that error on the path to {recorded!r} and the run directory {run_id!r} under it"
+                advice = (f"the recorded directory cannot be examined ({type(problem).__name__}: {strerror or problem}), so whether the run is still there is not known: "
+                          f"{remedy} and open the run again; if the run is there, opening it through that directory confirms the record")
+                consequence = "the use ledger record cannot be settled from here, and whether it can be settled at all is not known while the recorded directory cannot be examined; no open through this state directory confirms the record"
+            return ("error", {"type": "state-dir-mismatch", "errno": errno, "strerror": strerror, "field": RECORDED_RUN_VARIANTS[found], "recorded_is_dir": _is_directory(recorded) if _recorded_dir_defect(recorded) is None else None,  # not journaled: what a line written before ``field`` existed was keyed on (Store._legacy_unconfirmed_key)
+                              "message": f"the use ledger record of run {run_id} names the state directory {recorded!r}, not {os.path.realpath(state_dir)!r}; it stays {used.get('state')} ({advice})", "consequence": consequence})
         if not _same_run(used, state_dir, run_id):
             return ("unchanged", None)
         _write_ledger(path, {**used, "state": "committed"}, replace=True)
@@ -609,16 +718,68 @@ def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, r
         # errno identifies an OSError; a Refused is identified by its code (two different refusals are two lines)
         errno = exc.code if isinstance(exc, Refused) else getattr(exc, "errno", None)
         strerror = getattr(exc, "strerror", None) if isinstance(exc, OSError) and errno is None else None  # never str(exc): it names a random temporary file
-        return ("error", {"type": type(exc).__name__, "errno": errno, "strerror": strerror, "message": f"{type(exc).__name__}: {exc}"})
+        return ("error", {"type": type(exc).__name__, "errno": errno, "strerror": strerror, "field": None, "message": f"{type(exc).__name__}: {exc}", "consequence": None})  # no consequence of its own: the caller's "stays pending, every open retries" is right for a failed write
     return ("committed", None)
 
 
-def _directory_exists(path) -> bool:
-    """Whether a recorded path names an existing directory; a value that is not a path never does."""
+# What is at the state directory a record names, as the ``field`` of a ``state-dir-mismatch`` line: each has its own advice.
+RECORDED_RUN_VARIANTS = {"run": "recorded directory holds the run", "no-run": "recorded path exists without the run", "gone": "recorded directory gone", "unknown": "recorded directory cannot be examined"}
+
+
+def _recorded_run(recorded, run_id: str) -> tuple[str, BaseException | None]:
+    """What the state directory a ledger record names holds now, for the advice after a move:
+
+    - ``run``: ``<recorded>/<run_id>/run.json`` exists (the run can be opened through it);
+    - ``no-run``: the recorded path exists but holds no such run (an unrelated directory now sits
+      there, the run was moved out of it, or the path is not a directory);
+    - ``gone``: the recorded path does not exist. Only ``FileNotFoundError`` / ``NotADirectoryError``
+      mean that;
+    - ``unknown``: it cannot be examined (any other ``OSError``, such as ``EACCES`` on a parent, or a
+      recorded value that is no usable path, :func:`_recorded_dir_defect`: the file system is not
+      asked about it, so a relative one is never resolved against the current directory); the
+      error is returned with it and is never read as "gone". The caller's advice follows the
+      error: a permission refusal (``PermissionError``: ``EACCES`` / ``EPERM``), another
+      ``OSError``, or an error that is not an ``OSError`` (the record is damaged)."""
+    defect = _recorded_dir_defect(recorded)
+    if defect is not None:  # every record carries a real path: the same rule, in the same words, as the match and the refusal
+        return "unknown", (ValueError if isinstance(recorded, str) else TypeError)(f"the recorded state directory {recorded!r} {defect}")
     try:
-        return isinstance(path, str) and os.path.isdir(path)
+        os.stat(os.path.join(recorded, run_id, "run.json"))
+        return "run", None
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    except (OSError, ValueError) as exc:
+        return "unknown", exc
+    try:
+        os.stat(recorded)
+    except (FileNotFoundError, NotADirectoryError):
+        return "gone", None
+    except (OSError, ValueError) as exc:
+        return "unknown", exc
+    return "no-run", None
+
+
+def _is_directory(path) -> bool:
+    """Whether ``path`` is a directory, as the code that wrote the lines without ``field`` asked
+    it of a recorded state directory (``os.path.isdir``: true also for a directory that cannot be
+    searched, false for a path that cannot be examined)."""
+    try:
+        return os.path.isdir(path)
     except (OSError, ValueError, TypeError):
         return False
+
+
+def run_json_presence(run_path) -> bool | None:
+    """Whether ``run.json`` exists: ``True``, ``False`` (only ``FileNotFoundError`` /
+    ``NotADirectoryError`` from ``os.stat`` mean it is absent: ``Path.exists()`` answers ``False``
+    for an unreadable run directory from Python 3.13 on) or ``None`` when it cannot be examined."""
+    try:
+        os.stat(run_path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError:
+        return None
+    return True
 
 
 # Why ``abort_activation_use`` did or did not mark the record ``aborted``. Only ``aborted`` makes the creation
@@ -642,12 +803,18 @@ def abort_activation_use(activation: Activation, state_dir: str | os.PathLike, r
     - ``ledger-error``: the ledger could not be written, or ``run.json`` could not be examined; the
       record stays ``pending`` and refuses as an unconfirmed creation.
 
-    Only ``FileNotFoundError`` / ``NotADirectoryError`` from ``os.stat`` mean the file is absent:
-    ``Path.exists()`` answers ``False`` for an unreadable run directory from Python 3.13 on, which
-    would mark a creation aborted whose ``run.json`` may exist. The caller (``Store.ensure_run``)
-    also guards against anything else raised here, so the original error is never replaced."""
+    Only ``FileNotFoundError`` / ``NotADirectoryError`` from ``os.stat`` mean the file is absent
+    (:func:`run_json_presence`): ``Path.exists()`` answers ``False`` for an unreadable run directory
+    from Python 3.13 on, which would mark a creation aborted whose ``run.json`` may exist.
+    ``run.json`` is examined first and the answer kept: the record is then classified on its own, so
+    ``run-json-exists`` is said only of a pending record of this run, and for every other reason the
+    caller words its note for whether ``run.json`` exists (``Store.ensure_run`` asks
+    :func:`run_json_presence` itself: when the file exists a retry reopens the run, whatever the
+    record says). The caller also guards against anything else raised here, so the original error is
+    never replaced."""
+    present = run_json_presence(run_path)  # first, and kept: what a retry meets depends on it whatever the record turns out to be
     try:
-        # the record first: the run.json advice ("the next open confirms the record") holds only for a pending record of this run
+        # the record is classified on its own: the run.json advice ("the next open confirms the record") holds only for a pending record of this run
         path = ledger_path(activation.digest, activation.path)
         used = activation_use(activation.digest, activation.path)
         if used is None:
@@ -658,12 +825,10 @@ def abort_activation_use(activation: Activation, state_dir: str | os.PathLike, r
             return "not-this-run"
         if used.get("state") != "pending":
             return "not-pending"
-        try:
-            os.stat(run_path)
-        except (FileNotFoundError, NotADirectoryError):
-            pass  # known absent
-        else:
+        if present:
             return "run-json-exists"  # the creation is not known to have failed
+        if present is None:
+            return "ledger-error"  # run.json could not be examined: the creation is not known to have failed either
         marked = {**used, "state": "aborted"}
         if cause is not None:
             marked["abort_cause"] = f"{type(cause).__name__}: {cause}"[:500]
