@@ -821,8 +821,11 @@ class Coordinator:
         fixture run has no mark): ``issued_at`` is the clock, and the reconciliation accepts a run
         that started at or after it, so an authorization dated before the mark would accept runs
         that started before it was issued. That is all the guard proves, and it proves it against
-        the mark as it stood at the issue (a later gate that reads after the mark, with no stop
-        recorded, raises it past a stored ``issued_at``): a clock that steps back and still reads
+        the mark as it stood at the issue (a later gate raises the mark only when it runs under
+        the lock, which ``status --read-only`` does not, its reading is after the mark and not
+        after ``expires_at`` and no stop is recorded; ``issued_at`` is a fresh reading that can be
+        later than the mark, so the mark passes it only once such a reading, or the clear's, is
+        after ``issued_at``): a clock that steps back and still reads
         at or after the mark dates the authorization before a run that started earlier (the mark
         is moved only by a gate and by ``clear_clock_regression``, which sets it to the later of
         the clock and the mark; no reading taken after a gate raises it, #181). The refusal
