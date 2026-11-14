@@ -687,7 +687,8 @@ class Coordinator:
         tolerance, a stamp can read up to the tolerance before one floored during the stop; and
         with no stop at all, a clock inside the tolerance writes stamps that read earlier than
         previous ones (the journal agrees with them). Nothing orders or compares state stamps
-        (list position and the journal ``seq`` are the order).
+        (list position and the journal ``seq`` are the order), with one exception: the run-order
+        check of ``reconcile_retained_execution`` compares ``issued_at`` with ``startedAt``.
 
         ``StoryState.updated_at`` and the journal's ``at`` are never floored: the Store writes them
         from the wall clock, the record of what the clock said. ``_authorize`` stamps ``issued_at``
@@ -819,8 +820,12 @@ class Coordinator:
         Nothing is issued while the clock reads before the run's high-water mark (live runs; a
         fixture run has no mark): ``issued_at`` is the clock, and the reconciliation accepts a run
         that started at or after it, so an authorization dated before the mark would accept runs
-        that started before it was issued. The refusal (``clock-behind-mark``) is not a stop:
-        nothing is recorded or saved, the next operation's gate judges the clock, and the issue
+        that started before it was issued. That is all the guard proves: a clock that steps back
+        and still reads at or after the mark dates the authorization before a run that started
+        earlier (the mark is moved by a gate only, #181). The refusal (``clock-behind-mark``) is
+        not a stop: the guard records and saves nothing (the operation's gate, which ran first,
+        may already have saved its observation in ``run.json``), the next operation's gate judges
+        the clock, and the issue
         goes through once the clock reads the mark or later (``retry_at`` in the detail; not
         ``wait_until``, which in ``status`` is the mark minus the tolerance). A reading or a mark
         that cannot be parsed refuses ``activation-invalid`` and issues nothing. A pending
