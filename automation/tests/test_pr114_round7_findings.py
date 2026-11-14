@@ -665,9 +665,77 @@ class MovedDirectoryFourAdvicesTests(LiveCase):
         line = self.line(state_dir=recorded)
         self.assert_names_no_usable_state_directory(line, f"ValueError: {refused.exception}")
 
+    def mismatch_lines(self) -> list[dict]:
+        return [d for d in unconfirmed(self.store) if d["type"] == "state-dir-mismatch"]
+
+    def test_a_relative_recorded_path_that_lines_up_with_the_current_directory_is_not_confirmed(self):
+        """PR #176 R8-1 (#183): the damaged-record line says that moving the run does not settle the
+        record, so the match must not depend on the current directory. Here the current directory
+        is the parent of the state directory, so its bare name, resolved against it, is the state
+        directory itself. The mutation it pins: the `os.path.isabs(recorded)` guard removed from
+        `_same_state_dir`, which commits the record and journals no line."""
+        real = Path(os.path.realpath(self.h.h.state_dir))
+        with contextlib.chdir(real.parent):
+            self.assertTrue(os.path.samefile(real.name, real))  # the precondition: resolved against the cwd, the relative name would match
+            set_ledger(self.h, state="pending", state_dir=real.name)
+            self.h.coordinator(activation=None)
+            self.assertEqual((record(self.h)["state"], record(self.h)["state_dir"]), ("pending", real.name))
+            lines = self.mismatch_lines()
+            self.assertEqual(len(lines), 1)
+            self.assert_names_no_usable_state_directory(lines[0], f"ValueError: the recorded state directory {real.name!r} is not an absolute path")
+
+    def test_no_relative_spelling_of_the_state_directory_is_the_same_run(self):
+        """PR #176 R8-1 (#183): every relative spelling that the current directory would resolve to
+        the state directory, from its parent and from inside it. A relative `--state-dir` is still
+        resolved: only the recorded value must be absolute."""
+        real = Path(os.path.realpath(self.h.h.state_dir))
+        cases = [(real.parent, s) for s in (real.name, os.path.join(".", real.name), os.path.join(real.name, ""), os.path.join("..", real.parent.name, real.name))]
+        cases += [(real, s) for s in (".", "", os.path.join("..", real.name))]
+        for cwd, relative in cases:
+            with self.subTest(cwd=str(cwd), relative=relative), contextlib.chdir(cwd):
+                if relative:
+                    self.assertTrue(os.path.samefile(relative, real))  # the precondition
+                for state in ("pending", "aborted"):
+                    used = {"run_id": "run-live", "state_dir": relative, "state": state}
+                    self.assertFalse(activation_module._same_run(used, real, "run-live"))
+                    self.assertTrue(activation_module._same_run_id_other_state_dir(used, real, "run-live"))
+                    self.assertFalse(activation_module._retryable_creation(used, real, "run-live"))
+        with contextlib.chdir(real.parent):
+            self.assertTrue(activation_module._same_run({"run_id": "run-live", "state_dir": str(real), "state": "pending"}, real.name, "run-live"))
+
+    def test_an_aborted_record_with_a_relative_path_is_a_use_and_is_never_retried(self):
+        """PR #176 R8-1 (#183): "until then it is a use: a later creation from this document refuses
+        activation-used" holds from every current directory, in the preflight and in the creation,
+        and the refusal does not name a retry that no directory accepts. The mutation it pins: the
+        guard removed, so the preflight reports nothing and the creation is retried (the record
+        goes back to `pending`)."""
+        real = Path(os.path.realpath(self.h.h.state_dir))
+        ledger = ledger_path(self.h.activation.digest, self.h.activation.path)
+        with contextlib.chdir(real.parent):
+            set_ledger(self.h, state="aborted", state_dir=real.name)
+            preflight = [m for code, m in self.h.activation.creation_problems(self.h.h.policy, "run-live", T0, state_dir=real) if code == "activation-used"]
+            refused = refuses(self, lambda: record_activation_use(self.h.activation, real, "run-live", T0), "activation-used")
+            self.assertEqual(record(self.h)["state"], "aborted")
+        self.assertEqual(len(preflight), 1)
+        for message in (preflight[0], str(refused)):
+            self.assertIn(f"the record names no usable state directory ({real.name!r} is not an absolute path): it is damaged, so that creation cannot be retried", message)
+            self.assertIn(f"use ledger {ledger}: aborted", message)
+            self.assertIn("inspect or restore that file", message)
+            for other in ("only that same creation may be retried", "--state-dir"):
+                self.assertNotIn(other, message)
+
+    def test_an_aborted_record_with_an_absolute_path_still_names_the_retry(self):
+        """The other side of the R8-1 refusal: a record that names an absolute directory keeps the
+        retry advice, also when it is refused for another run id."""
+        set_ledger(self.h, state="aborted")
+        message = use_refusal(record(self.h), "/l/x.json")
+        self.assertIn(f"only that same creation may be retried (--run-id run-live --state-dir {record(self.h)['state_dir']})", message)
+        self.assertNotIn("damaged", message)
+
     def assert_names_no_usable_state_directory(self, line: dict, reason: str) -> None:
         """PR #176 R7-1. A recorded state directory that is not a usable path means the record is
-        damaged: no permission change and no move of the run settles it, and that is known. The
+        damaged: no permission change and no move of the run settles it, and that is known. Until
+        the ledger file is restored the record is a use (PR #176 R8-1). The
         mutation it pins: the `not isinstance(problem, OSError)` branch removed, so the line falls
         back to the "cannot be examined ... is not known" advice and a remedy on the path."""
         self.assertEqual((line["field"], line["errno"], line["strerror"]), ("recorded directory cannot be examined", None, None))
@@ -677,7 +745,7 @@ class MovedDirectoryFourAdvicesTests(LiveCase):
         for other in ("reachable", "searchable", "clear that error", "open the run again", "is not known", "cannot be examined (", "is spent"):
             self.assertNotIn(other, line["error"])
         self.assertIn("the use ledger record is damaged", line["consequence"])
-        self.assertIn("not settled until the ledger file is restored", line["consequence"])
+        self.assertIn("not settled until the ledger file is restored; until then it is a use: a later creation from this document refuses activation-used", line["consequence"])
         for other in ("is not known", "from here", "every later open retries"):
             self.assertNotIn(other, line["consequence"])
 

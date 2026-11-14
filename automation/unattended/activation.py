@@ -227,7 +227,7 @@ class Activation:
         """:meth:`problems` plus the conditions that hold only when a run is created, none of
         which a mid-run operation ever applies: the evidence citations (:meth:`evidence_problems`),
         the use ledger (``activation-used``: this document already created a run; an interrupted
-        creation of this same run under this same ``state_dir`` may be retried), and a remaining
+        creation of this same run under this same ``state_dir`` may be retried, unless the record names a path that is not absolute), and a remaining
         window that covers the run's wall-clock budget (``activation-window-short``), without which
         the run would reserve work and launch a worker only to hit a durable expiry stop partway
         through, spending the slot and keeping the story owned."""
@@ -442,8 +442,11 @@ def _same_state_dir(recorded, state_dir) -> bool:
     exist, the same directory (``os.path.samefile``, which also matches another spelling of it on a
     case-insensitive mount). Never by case-folding: on a case-sensitive file system ``State`` and
     ``state`` are two directories. A value that is not a path (not a string, an embedded NUL) is
-    never the same directory, and never an error."""
-    if state_dir is None or not isinstance(recorded, str):
+    never the same directory, and never an error. Neither is a recorded value that is not an
+    absolute path: every record this tool writes carries a real path, and ``exists`` / ``samefile``
+    would resolve a relative one against the current directory, so whether a damaged record
+    matches would depend on where the tool was started (#183)."""
+    if state_dir is None or not isinstance(recorded, str) or not os.path.isabs(recorded):
         return False
     try:
         mine = os.path.realpath(state_dir)
@@ -461,15 +464,16 @@ def _same_run(used: dict, state_dir, run_id) -> bool:
 
 
 def _same_run_id_other_state_dir(used: dict, state_dir, run_id) -> bool:
-    """The record names this run id under another state directory (a moved or copied directory):
-    this run cannot confirm it."""
+    """The record names this run id under another state directory (a moved or copied directory),
+    or under a value that is never one (not an absolute path: a damaged record): this run cannot
+    confirm it."""
     return state_dir is not None and used.get("run_id") == run_id and not _same_run(used, state_dir, run_id)
 
 
 def _retryable_creation(used: dict, state_dir, run_id) -> bool:
     """Whether the use on record is a creation of exactly this run that is known to have failed:
     ``aborted`` (``save_run`` raised and ``run.json`` was absent) under the same state directory
-    (the same real path, or ``os.path.samefile`` when both exist: :func:`_same_state_dir`) and run id. Only that creation may be retried. A ``pending`` record is
+    (the same real path, or ``os.path.samefile`` when both exist; a recorded path that is not absolute is never the same: :func:`_same_state_dir`) and run id. Only that creation may be retried. A ``pending`` record is
     never retryable: it is what a process that died between the ledger and ``run.json``, or a run
     directory deleted after a creation whose confirmation failed, leaves behind, and the two cannot
     be told apart."""
@@ -493,6 +497,9 @@ def use_refusal(used: dict, path) -> str:
     run, where, at = used.get("run_id"), used.get("state_dir"), used.get("created_at")
     if used.get("state") == "pending":
         return f"this document's creation of live run {run!r} under {where!r} at {at} is unconfirmed (use ledger {path} is still pending: the process died between the ledger record and run.json, or the run directory was deleted after a creation whose confirmation failed); whether that run was created cannot be told, so this document creates nothing more: re-issue the activation"
+    if used.get("state") == "aborted" and not (isinstance(where, str) and os.path.isabs(where)):
+        # never the same state directory (:func:`_same_state_dir`): naming a retry would advertise one that every directory refuses
+        return f"this document's creation of live run {run!r} failed at {at} before its run.json was written (use ledger {path}: aborted), but the record names no usable state directory ({where!r} is not an absolute path): it is damaged, so that creation cannot be retried (inspect or restore that file: its state_dir is the absolute path of the directory the run was created under; re-issuing the activation creates a new record)"
     if used.get("state") == "aborted":
         return f"this document's creation of live run {run!r} under {where!r} failed at {at} before its run.json was written (use ledger {path}: aborted); only that same creation may be retried (--run-id {run} --state-dir {where}); any other run needs a newly issued activation"
     return f"this document already created live run {run!r} under {where!r} at {at} (use ledger {path}); one activation creates exactly one run, and a new run needs a newly issued activation (any change to the document, such as a later window, is a new document)"
@@ -620,7 +627,9 @@ def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, r
       the same one), whose ``field`` and message say what is at the recorded path
       (:func:`_recorded_run`). When the recorded path cannot be examined, the advice follows the
       error: search permission for a permission refusal, clearing the error for any other
-      ``OSError``, and "the record is damaged" for a recorded value that is no usable path."""
+      ``OSError``, and "the record is damaged" for a recorded value that is no usable path, whose
+      consequence says that it is a use until the ledger file is restored (such a value never
+      matches a run: :func:`_same_state_dir`)."""
     if not isinstance(binding, dict) or not isinstance(binding.get("digest"), str) or not isinstance(binding.get("path"), str):
         return ("unchanged", None)
     try:
@@ -659,7 +668,7 @@ def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, r
                 # not a path the file system was asked about (relative, or one it cannot take): every record this tool writes carries a real path, so the record is damaged and no permission change helps
                 advice = (f"the record names no usable state directory ({type(problem).__name__}: {problem}): it is damaged, and neither a permission change nor moving the run settles it; "
                           f"inspect or restore the ledger file {str(path)!r} (its state_dir is the absolute path of the directory the run was created under)")
-                consequence = "the use ledger record is damaged: the state directory it names is not a usable path, so there is no recorded directory to open the run through; it is not settled until the ledger file is restored"
+                consequence = "the use ledger record is damaged: the state directory it names is not a usable path, so there is no recorded directory to open the run through; it is not settled until the ledger file is restored; until then it is a use: a later creation from this document refuses activation-used"
             else:
                 if isinstance(problem, PermissionError):  # EACCES / EPERM: a directory on the path refuses the search
                     remedy = f"make {recorded!r} and the run directory {run_id!r} under it reachable (every directory on the path searchable)"
