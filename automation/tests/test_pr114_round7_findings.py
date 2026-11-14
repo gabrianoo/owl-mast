@@ -6,8 +6,10 @@ live with temporary state and an injected clock; no real GitHub call and no real
 and no test writes to the real use ledger under the home directory.
 
 The six classes before the documentation tests are round 1 of PR #185, the walkthrough risks R1-1
-to R1-5 the owner did not accept (with the corrections of its review round 2, R2-1 to R2-3), each with its thread id (R1-5 has two classes: the journal lines
-and the git child). R1-1 to R1-3 return the stamp rule to the scope F9 froze (a stamp is the clock
+to R1-5 the owner did not accept, each with its thread id (R1-5 has two classes: the journal lines
+and the git child). The R1-1 to R1-3 classes and the documentation tests also carry the corrections
+of its review round 2 (R2-1 to R2-3); the R1-2 class and the documentation tests carry those of
+round 3 (R3-1 to R3-5). R1-1 to R1-3 return the stamp rule to the scope F9 froze (a stamp is the clock
 except under a recorded `clock-regression` stop), so the tests of PR #176 that pinned the floor
 without a stop, the field `issued_observed_at` and the stop `_authorize` recorded are rewritten here
 to pin their absence; an authorization is not issued while the clock reads before the high-water
@@ -1830,11 +1832,16 @@ class RunOrderComparesIssuedAtTests(LiveCase):
     is `main`'s, accepts no run whose `startedAt` reads before `issued_at`. It compares clock
     readings, not the order of events (PR #185 R2-1, thread PRRT_kwDOVjxExc63YqHw: a clock that
     steps back and reads at or after the mark again dates a later authorization before a run that
-    started earlier; the guide states it, no test can observe it). `issued_at` is the clock and is
-    never before the high-water mark (`clock-behind-mark`), so a retained run that started at a
-    reading before the mark can no longer settle an authorization, also inside the 5 minutes
-    before the mark; at `issued_at` or later it is accepted. Mutations: the `clock-behind-mark`
-    guard removed (the authorization is dated `INSIDE` and the early run is accepted); `<` to `<=`."""
+    started earlier; the guide states it and
+    `test_a_clock_that_steps_back_and_still_reads_after_the_mark_dates_the_issue_before_an_earlier_run`
+    pins it as the documented limit, PR #185 R3-5, thread PRRT_kwDOVjxExc63Y0Et). `issued_at` is
+    the clock and is never before the high-water mark as it stood at the issue
+    (`clock-behind-mark`; PR #185 R3-2, thread PRRT_kwDOVjxExc63Y0Ep: a later gate raises the
+    mark), so a retained run that started at a reading before that mark can no longer settle an
+    authorization, also inside the 5 minutes before the mark; at `issued_at` or later it is
+    accepted. The class also holds the round 3 tests of the two writers of the mark (R3-1) and
+    of a forward skew past the tolerance (R3-3). Mutations: the `clock-behind-mark` guard
+    removed (the authorization is dated `INSIDE` and the early run is accepted); `<` to `<=`."""
 
     def repair_asked_for_behind_the_mark(self):
         c = review_authorized(self.h)
@@ -1865,6 +1872,84 @@ class RunOrderComparesIssuedAtTests(LiveCase):
         state = c.reconcile_retained_execution(S, auth["id"], {**receipt, "startedAt": MARK}, evidence, "r", "p")  # at the issue
         self.assertEqual(state.authorization(auth["id"])["status"], "consumed")
         self.assertTrue(all("issued_observed_at" not in a for a in state.authorizations))
+
+    def test_a_clock_that_steps_back_and_still_reads_after_the_mark_dates_the_issue_before_an_earlier_run(self):
+        """PR #185 R3-5 (thread PRRT_kwDOVjxExc63Y0Et). This pins the documented limit of the
+        check (the guide's "Narrowed, not closed", #181 and #188), not a behaviour anyone wants:
+        the run really started before the authorization was issued and is accepted, because the
+        clock read later at its start than at the issue and never read before the mark while an
+        operation ran. The run's start is simulated by its `startedAt`: the coordinator never
+        observes it. If the limit is ever closed, this test is the one to turn around."""
+        started, stepped_back = "2026-11-07T12:10:00Z", "2026-11-07T12:01:00Z"
+        c = review_authorized(self.h)
+        c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
+        c.record_review(S, self.h.h.sha, "changes-requested", "r.md", self.h.terminal())
+        self.h.clock[0] = MARK
+        c.status()  # the gate that leaves the mark at 12:00
+        # the clock runs on to 12:10, where the retained owner starts a run; no operation runs, so the mark stays at 12:00
+        self.assertEqual(self.store.load_run().last_observed_at, MARK)
+        self.h.clock[0] = stepped_back  # a step back of nine minutes that still reads after the mark
+        auth = c.authorize_repair(S).unresolved_authorization()  # issued after the run started, dated before it
+        self.assertEqual((auth["issued_at"], stop_of(self.store)), (stepped_back, None))  # no refusal and no stop: the coordinator saw nothing of the step
+        self.assertEqual(self.store.load_run().last_observed_at, stepped_back)
+        refuses(self, lambda: c.cancel(S, "owner stops the repair"), "authorization-unresolved")  # setup: this revokes the authorization
+        c.cancel_run("owner stops the run")  # setup: the reconciliation is cleanup for a stopped run
+        receipt, evidence = r5.ReconcileRevokedUnderClearableStopTests.evidence()
+        state = c.reconcile_retained_execution(S, auth["id"], {**receipt, "startedAt": started}, evidence, "r", "p")
+        self.assertEqual(state.authorization(auth["id"])["status"], "consumed")  # the limit: two readings are compared, not the order of events
+
+    def test_the_issue_is_guarded_by_the_mark_at_the_issue_and_later_gates_raise_it(self):
+        """PR #185 R3-2 (thread PRRT_kwDOVjxExc63Y0Ep): a stored `issued_at` is not before the mark
+        as it stood at the issue; it is before the mark a later gate leaves, and a run that started
+        between the two is accepted."""
+        c, auth = self.repair_asked_for_behind_the_mark()
+        later = "2026-11-07T12:20:00Z"
+        self.h.clock[0] = later
+        c.status()  # a later gate raises the mark past the stored `issued_at`
+        self.assertEqual((auth["issued_at"], self.store.load_run().last_observed_at), (MARK, later))
+        receipt, evidence = r5.ReconcileRevokedUnderClearableStopTests.evidence()
+        refuses(self, lambda: c.reconcile_retained_execution(S, auth["id"], {**receipt, "startedAt": "2026-11-07T11:59:59Z"}, evidence, "r", "p"), "run-precedes-authorization")  # the raised mark changes nothing: `issued_at` is compared
+        state = c.reconcile_retained_execution(S, auth["id"], {**receipt, "startedAt": "2026-11-07T12:05:00Z"}, evidence, "r", "p")  # after the issue, before today's mark
+        self.assertEqual(state.authorization(auth["id"])["status"], "consumed")
+
+    def test_a_clear_is_the_second_writer_of_the_mark(self):
+        """PR #185 R3-1 (thread PRRT_kwDOVjxExc63Y0El): the gate saves nothing while a stop is
+        recorded, and the clear sets the mark to the later of the clock and the mark. Mutation:
+        `judged_at` replaced by `high_water` in the clear's save (the mark stays at 12:00)."""
+        ahead = "2026-11-07T12:03:00Z"
+        c = self.h.coordinator()
+        regress(self, self.h, c)  # mark 12:00, a recorded clock-regression stop
+        self.h.clock[0] = ahead
+        c.status()  # a gate under the stop: it does not move the mark
+        self.assertEqual(self.store.load_run().last_observed_at, MARK)
+        c.clear_clock_regression(clearance(self.h))
+        run = self.store.load_run()
+        self.assertEqual((run.activation_stop, run.last_observed_at), (None, ahead))  # moved by the clear, not by a gate
+
+    def test_a_forward_skew_past_the_tolerance_is_a_stop_that_waiting_does_not_end(self):
+        """PR #185 R3-3 (thread PRRT_kwDOVjxExc63Y0Eq): an observation 10 minutes ahead becomes the
+        mark; once the clock is corrected the next gate records `clock-regression`, the clear
+        refuses until the clock is within the tolerance of the mark, and after the clear the issue
+        still waits for the mark (`clock-behind-mark`)."""
+        skewed, true_time = "2026-11-07T12:10:00Z", MARK
+        c = review_authorized(self.h)
+        c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
+        c.record_review(S, self.h.h.sha, "changes-requested", "r.md", self.h.terminal())
+        self.h.clock[0] = skewed
+        c.status()  # the forward-skewed observation is the mark
+        self.h.clock[0] = true_time  # corrected: 10 minutes behind the mark
+        refuses(self, lambda: c.authorize_repair(S), "clock-regression")
+        self.assertEqual((stop_of(self.store)["code"], self.store.load_run().last_observed_at), ("clock-regression", skewed))
+        self.h.clock[0] = "2026-11-07T12:04:59Z"  # one second outside the tolerance
+        refuses(self, lambda: c.clear_clock_regression(clearance(self.h)), "clock-regression")
+        self.assertEqual(stop_of(self.store)["code"], "clock-regression")  # waiting did not end it
+        self.h.clock[0] = "2026-11-07T12:05:00Z"
+        c.clear_clock_regression(clearance(self.h))
+        self.assertEqual((stop_of(self.store), self.store.load_run().last_observed_at), (None, skewed))  # the mark is not lowered
+        exc = refuses(self, lambda: c.authorize_repair(S), "clock-behind-mark")
+        self.assertEqual(exc.detail["retry_at"], skewed)
+        self.h.clock[0] = skewed
+        self.assertEqual(c.authorize_repair(S).unresolved_authorization()["issued_at"], skewed)
 
     def test_a_field_named_issued_observed_at_is_never_read(self):
         """A value left in a story file by a build of PR #176 is not read: the check compares `issued_at`."""
@@ -2379,15 +2464,16 @@ class DocumentedTests(unittest.TestCase):
     def test_the_guide_states_what_the_run_order_check_compares(self):
         """PR #185 R1-2: the reconcile section names the one comparison the code makes, with no accepted window before the issue."""
         text = " ".join(DOCS.read_text(encoding="utf-8").split())
-        for needle in ("`startedAt` at or after the authorization's `issued_at`", "`issued_at` is the clock as it read when the authorization was issued and is never before the run's high-water mark",
-                       "a run that started at a reading before the mark settles nothing",
+        for needle in ("`startedAt` at or after the authorization's `issued_at`", "`issued_at` is the clock as it read when the authorization was issued and is never before the run's high-water mark as it stood at the issue",
+                       "a run that started at a reading before that mark settles nothing", "A later gate that reads after the mark, with no stop recorded, raises it, so a stored `issued_at` is usually before the mark as later operations leave it (`last_observed_at` in `run.json`)",  # PR #185 R3-2, thread PRRT_kwDOVjxExc63Y0Ep
+                       "The mark is moved only by an operation's gate and by `clear-clock-regression` (to the later of the clock and the mark)",  # PR #185 R3-1, thread PRRT_kwDOVjxExc63Y0El
                        "it compares two clock readings, not the order in which the two things happened",
                        "Narrowed, not closed: a clock that steps back before the issue and still reads at or after the mark dates the authorization before the `startedAt` of a run that really started earlier, and the check accepts that run",
                        "do not raise it (#181)", "The step back has no bound of its own",
                        "a clock that is back at or after the mark by the next operation shows neither"):
             with self.subTest(needle=needle):
                 self.assertIn(needle, text)
-        for gone in ("Such a step back is smaller than", "has no window before the issue in which a run is accepted", "no authorization is dated before a run that started earlier", "is accepted by design", "cannot be told from one that started after the issue", "when `issued_at` was floored", "compared_with"):
+        for gone in ("Such a step back is smaller than", "has no window before the issue in which a run is accepted", "no authorization is dated before a run that started earlier", "is accepted by design", "The mark is moved only by an operation's gate;", "that `status` reports afterwards", "cannot be told from one that started after the issue", "when `issued_at` was floored", "compared_with"):
             with self.subTest(gone=gone):
                 self.assertNotIn(gone, text)
 
@@ -2432,10 +2518,27 @@ class DocumentedTests(unittest.TestCase):
                        "the run-order check is the one comparison of a state stamp (R2-2)", "can follow a gate that already saved its observation in `run.json` (R2-3)"):  # PR #185 round 2
             with self.subTest(needle=needle):
                 self.assertIn(needle, paragraph)
+        for needle in ("so no authorization is dated before the mark as it stood at the issue",
+                       "after a forward-skewed observation of up to 5 minutes it is as long as the skew was",
+                       "A larger skew is waited out the same way only when no gate runs while the clock reads more than 5 minutes behind the mark",
+                       "the run advances again only after `clear-clock-regression` (described above: owner by convention, once per run, refused until the clock reads within 5 minutes of the mark; the mark is not lowered, so issuing still waits for the clock to reach it)",
+                       "A forward-skewed observation past `expires_at` or past the wall-clock budget is not a wait at all",  # PR #185 R3-3, thread PRRT_kwDOVjxExc63Y0Eq
+                       "the round 2 corrections are pinned in the R1-1 to R1-3 classes and in its documentation tests",  # PR #185 R3-4, thread PRRT_kwDOVjxExc63Y0Es
+                       "Round 3 changed no behaviour", "Its tests are in the R1-2 class and the documentation tests"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, paragraph)
+        for gone in ("dated before the mark and a run", "after a forward-skewed observation it is as long as the skew was", "pinned in the same classes", "is not waited out", "only the owner's clear ends"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, paragraph)
         self.assertEqual(text.count("issued_observed_at"), paragraph.count("issued_observed_at"))  # named in the decision text only
         readme = README.read_text(encoding="utf-8")
-        for needle in ("round 1 of PR #185", "R1-1 to R1-5", "R2-1 to R2-3"):
-            self.assertIn(needle, readme)
+        for needle in ("round 1 of PR #185", "R1-1 to R1-5", "R2-1 to R2-3", "R3-1 to R3-5",
+                       "(R1-5 has two); the R1-1 to R1-3 classes and the documentation tests also carry the corrections of review round 2",
+                       "the R1-2 class and the documentation tests those of round 3",
+                       "never before the mark as it stood at the issue"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, readme)
+        self.assertNotIn("they also carry the corrections", readme)  # PR #185 R3-4: the R1-5 classes hold no round 2 pin
 
     def test_the_readme_names_this_file(self):
         self.assertIn("tests/test_pr114_round7_findings.py", README.read_text(encoding="utf-8"))

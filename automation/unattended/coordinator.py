@@ -820,16 +820,19 @@ class Coordinator:
         Nothing is issued while the clock reads before the run's high-water mark (live runs; a
         fixture run has no mark): ``issued_at`` is the clock, and the reconciliation accepts a run
         that started at or after it, so an authorization dated before the mark would accept runs
-        that started before it was issued. That is all the guard proves: a clock that steps back
-        and still reads at or after the mark dates the authorization before a run that started
-        earlier (the mark is moved by a gate only, #181). The refusal (``clock-behind-mark``) is
-        not a stop: the guard records and saves nothing (the operation's gate, which ran first,
-        may already have saved its observation in ``run.json``), the next operation's gate judges
-        the clock, and the issue
-        goes through once the clock reads the mark or later (``retry_at`` in the detail; not
-        ``wait_until``, which in ``status`` is the mark minus the tolerance). A reading or a mark
-        that cannot be parsed refuses ``activation-invalid`` and issues nothing. A pending
-        authorization returned idempotently is not guarded: nothing is issued."""
+        that started before it was issued. That is all the guard proves, and it proves it against
+        the mark as it stood at the issue (a later gate that reads after the mark, with no stop
+        recorded, raises it past a stored ``issued_at``): a clock that steps back and still reads
+        at or after the mark dates the authorization before a run that started earlier (the mark
+        is moved only by a gate and by ``clear_clock_regression``, which sets it to the later of
+        the clock and the mark; no reading taken after a gate raises it, #181). The refusal
+        (``clock-behind-mark``) is not a stop: the guard records and saves nothing (the
+        operation's gate, which ran first, may already have saved its observation in
+        ``run.json``), the next operation's gate judges the clock, and the issue goes through once
+        the clock reads the mark or later (``retry_at`` in the detail; not ``wait_until``, which
+        in ``status`` is the mark minus the tolerance). A reading or a mark that cannot be parsed
+        refuses ``activation-invalid`` and issues nothing. A pending authorization returned
+        idempotently is not guarded: nothing is issued."""
         role = AUTHORIZATION_FLOW[purpose][2]
         self._wall_clock()  # an expired run returns no authorization, pending or new; the pending slot stays spent
         unresolved = state.unresolved_authorization()
@@ -2287,8 +2290,8 @@ class Coordinator:
 
         A clock that is still behind is never trusted: the clear refuses (``clock-regression``)
         while this observation is more than the tolerance (``CLOCK_REGRESSION_TOLERANCE_MINUTES``)
-        behind the high-water mark the stop was judged against, and that mark is kept, never
-        lowered; the wall-clock budget is judged on the later of the two, so a clock still within the
+        behind the high-water mark the stop was judged against, and that mark is never lowered
+        (the clear sets it to the later of the clock and the mark); the wall-clock budget is judged on the later of the two, so a clock still within the
         tolerance behind never buys time. A run is cleared at most once (``clock-clear-exhausted``):
         the clear is journaled ``activation-stop-clear-started`` (naming the stop) before ``run.json``
         is saved and ``activation-stop-cleared`` after; a save that fails before ``run.json`` is replaced
