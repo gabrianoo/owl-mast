@@ -618,7 +618,9 @@ def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, r
       unconfirmed record of this run id under a state directory that is not this one
       (``state-dir-mismatch``: a moved or copied directory; another spelling of the same directory is
       the same one), whose ``field`` and message say what is at the recorded path
-      (:func:`_recorded_run`)."""
+      (:func:`_recorded_run`). When the recorded path cannot be examined, the advice follows the
+      error: search permission for a permission refusal, clearing the error for any other
+      ``OSError``, and "the record is damaged" for a recorded value that is no usable path."""
     if not isinstance(binding, dict) or not isinstance(binding.get("digest"), str) or not isinstance(binding.get("path"), str):
         return ("unchanged", None)
     try:
@@ -653,9 +655,18 @@ def confirm_activation_use(binding: dict | None, state_dir: str | os.PathLike, r
                 advice = (f"the recorded directory no longer exists, so the record cannot be settled from here: this document is spent "
                           f"(it creates no other run); moving the directory back to {recorded!r} and opening the run there is the only way to confirm it")
                 consequence = "the use ledger record cannot be settled from here: the recorded directory is gone; the document is spent, and no open through this state directory confirms the record"
+            elif not isinstance(problem, OSError):
+                # not a path the file system was asked about (relative, or one it cannot take): every record this tool writes carries a real path, so the record is damaged and no permission change helps
+                advice = (f"the record names no usable state directory ({type(problem).__name__}: {problem}): it is damaged, and neither a permission change nor moving the run settles it; "
+                          f"inspect or restore the ledger file {str(path)!r} (its state_dir is the absolute path of the directory the run was created under)")
+                consequence = "the use ledger record is damaged: the state directory it names is not a usable path, so there is no recorded directory to open the run through; it is not settled until the ledger file is restored"
             else:
+                if isinstance(problem, PermissionError):  # EACCES / EPERM: a directory on the path refuses the search
+                    remedy = f"make {recorded!r} and the run directory {run_id!r} under it reachable (every directory on the path searchable)"
+                else:  # any other error (a disk error, a symlink loop, a stale mount): no permission change clears it, and the reason names it
+                    remedy = f"clear that error on the path to {recorded!r} and the run directory {run_id!r} under it"
                 advice = (f"the recorded directory cannot be examined ({type(problem).__name__}: {strerror or problem}), so whether the run is still there is not known: "
-                          f"make {recorded!r} and the run directory {run_id!r} under it reachable (every directory on the path searchable) and open the run again; if the run is there, opening it through that directory confirms the record")
+                          f"{remedy} and open the run again; if the run is there, opening it through that directory confirms the record")
                 consequence = "the use ledger record cannot be settled from here, and whether it can be settled at all is not known while the recorded directory cannot be examined; no open through this state directory confirms the record"
             return ("error", {"type": "state-dir-mismatch", "errno": errno, "strerror": strerror, "field": RECORDED_RUN_VARIANTS[found],
                               "message": f"the use ledger record of run {run_id} names the state directory {recorded!r}, not {os.path.realpath(state_dir)!r}; it stays {used.get('state')} ({advice})", "consequence": consequence})
@@ -684,7 +695,9 @@ def _recorded_run(recorded, run_id: str) -> tuple[str, BaseException | None]:
       mean that;
     - ``unknown``: it cannot be examined (any other ``OSError``, such as ``EACCES`` on a parent, or a
       value that is not an absolute path: never resolved against the current directory); the error
-      is returned with it and is never read as "gone"."""
+      is returned with it and is never read as "gone". The caller's advice follows the error: a
+      permission refusal (``PermissionError``: ``EACCES`` / ``EPERM``), another ``OSError``, or a
+      value that is no usable path at all (not an ``OSError``: the record is damaged)."""
     if not isinstance(recorded, str):
         return "unknown", TypeError(f"the recorded state directory is a {type(recorded).__name__}, not a path")
     if not os.path.isabs(recorded):  # every record carries a real path: an empty or relative one would be resolved against the current directory

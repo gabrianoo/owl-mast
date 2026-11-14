@@ -8,6 +8,7 @@ and no test writes to the real use ledger under the home directory."""
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import subprocess
@@ -507,7 +508,7 @@ class MovedDirectoryFourAdvicesTests(LiveCase):
     def test_a_recorded_directory_that_cannot_be_examined_is_not_gone(self):
         with stat_refusing(self.recorded, PermissionError(13, "Permission denied")):
             line = self.line()
-        self.assert_cannot_be_examined(line, 13, "Permission denied", "PermissionError: Permission denied")
+        self.assert_cannot_be_examined(line, errno.EACCES, "Permission denied", "PermissionError: Permission denied", permission=True)
 
     def test_a_recorded_path_that_is_not_absolute_is_never_resolved_against_the_current_directory(self):
         here = Path(self.h.h.tmpdir.name) / "cwd"
@@ -549,22 +550,55 @@ class MovedDirectoryFourAdvicesTests(LiveCase):
             line = self.line()
         self.assertEqual(found, "unknown")
         self.assertIs(problem, error)
-        self.assert_cannot_be_examined(line, 13, "Permission denied", "PermissionError: Permission denied")
+        self.assert_cannot_be_examined(line, errno.EACCES, "Permission denied", "PermissionError: Permission denied", permission=True)
 
-    def assert_cannot_be_examined(self, line: dict, errno: int, strerror: str, reason: str) -> None:
+    def assert_cannot_be_examined(self, line: dict, errno: int | None, strerror: str | None, reason: str, *, permission: bool) -> None:
         """PR #176 R6-2. The advice names both paths the probe stats, the recorded directory and the
-        run directory under it (either may be the one refused, or a directory above them: what the
-        operator needs is search permission along the path, not read permission), and carries the
-        reason of the error: `<type>: <text>`. The mutations it pins: the run directory dropped
-        from the advice, and the reason cut down to the type alone."""
+        run directory under it (either may be the one refused, or a directory above them), and
+        carries the reason of the error: `<type>: <text>`. The mutations it pins: the run directory
+        dropped from the advice, and the reason cut down to the type alone.
+
+        PR #176 R7-1. The remedy follows the error: search permission along the path for a
+        permission refusal (`permission=True`: `EACCES` / `EPERM`) and only for one; any other
+        `OSError` is told to clear that error and is not sent to the permissions. The mutation it
+        pins: the `PermissionError` test dropped, so every `OSError` gets the search-permission
+        remedy."""
         self.assertEqual((line["field"], line["errno"], line["strerror"]), ("recorded directory cannot be examined", errno, strerror))
         self.assertIn("cannot be examined", line["error"])
-        self.assertIn(f"make {str(self.recorded)!r} and the run directory 'run-live' under it reachable (every directory on the path searchable)", line["error"])
+        paths = f"{str(self.recorded)!r} and the run directory 'run-live' under it"
+        if permission:
+            self.assertIn(f"make {paths} reachable (every directory on the path searchable) and open the run again", line["error"])
+        else:
+            self.assertIn(f"clear that error on the path to {paths} and open the run again", line["error"])
+            for other in ("searchable", "reachable", "permission"):
+                self.assertNotIn(other, line["error"])
         self.assertIn(f"cannot be examined ({reason}), so whether the run is still there is not known", line["error"])
-        for other in ("is spent", "holds no run", "no longer exists"):
+        for other in ("is spent", "holds no run", "no longer exists", "damaged"):
             self.assertNotIn(other, line["error"])
         self.assertIn("cannot be settled from here", line["consequence"])
+        self.assertIn("is not known", line["consequence"])
         self.assertNotIn("every later open retries", line["consequence"])
+
+    def test_an_operation_not_permitted_gets_the_search_permission_remedy_too(self):
+        """PR #176 R7-1: `EPERM` is a permission refusal like `EACCES`."""
+        with stat_refusing(self.recorded, PermissionError(errno.EPERM, "Operation not permitted")):
+            line = self.line()
+        self.assert_cannot_be_examined(line, errno.EPERM, "Operation not permitted", "PermissionError: Operation not permitted", permission=True)
+
+    def test_an_error_without_an_errno_is_not_sent_to_the_permissions(self):
+        """PR #176 R7-1 review. An `OSError` that carries neither errno nor strerror: the reason
+        falls back to the text of the error, and nothing says it is a permission refusal. The
+        mutation it pins: `{strerror or problem}` cut down to `{strerror}`, which leaves
+        `(OSError: None)`."""
+        with stat_refusing(self.recorded, OSError("an odd failure")):
+            line = self.line()
+        self.assert_cannot_be_examined(line, None, None, "OSError: an odd failure", permission=False)
+
+    def test_a_symlink_loop_is_not_sent_to_the_permissions(self):
+        """PR #176 R7-1 review: an errno that is neither a permission refusal nor a disk error."""
+        with stat_refusing(self.recorded, OSError(errno.ELOOP, "Too many levels of symbolic links")):
+            line = self.line()
+        self.assert_cannot_be_examined(line, errno.ELOOP, "Too many levels of symbolic links", "OSError: Too many levels of symbolic links", permission=False)
 
     def test_a_recorded_directory_that_cannot_be_examined_is_unknown_though_the_run_is_absent(self):
         """PR #176 R5-1, the second stat (`<recorded>`). The mutation it pins: its handlers folded
@@ -577,7 +611,7 @@ class MovedDirectoryFourAdvicesTests(LiveCase):
             line = self.line()
         self.assertEqual(found, "unknown")
         self.assertIs(problem, error)
-        self.assert_cannot_be_examined(line, 5, "Input/output error", "OSError: Input/output error")
+        self.assert_cannot_be_examined(line, errno.EIO, "Input/output error", "OSError: Input/output error", permission=False)
 
     def test_a_value_the_file_system_cannot_take_is_unknown_at_either_stat(self):
         """PR #176 R5-1 review. The mutation it pins: `except (OSError, ValueError)` narrowed to
@@ -616,12 +650,36 @@ class MovedDirectoryFourAdvicesTests(LiveCase):
         self.assertNotIn("an open of the run through the recorded directory confirms it", line["consequence"])
 
     def test_a_recorded_path_that_is_not_absolute_says_so_in_the_journaled_line(self):
-        """PR #176 R6-2, the reason of an error that has neither errno nor strerror. The mutation it
-        pins: `({type(problem).__name__}: {strerror or problem})` cut down to the type, which
-        leaves `(ValueError)` and drops what is wrong with the recorded path."""
+        """PR #176 R6-2 and R7-1: a recorded path that is not absolute is a damaged record, and the
+        line says what is wrong with the path. The mutation it pins: `({type(problem).__name__}:
+        {problem})` cut down to the type, which leaves `(ValueError)`."""
         line = self.line(state_dir="rel")
+        self.assert_names_no_usable_state_directory(line, "ValueError: the recorded state directory 'rel' is not an absolute path")
+
+    def test_a_recorded_path_the_file_system_cannot_take_is_a_damaged_record_in_the_journaled_line(self):
+        """PR #176 R7-1, the other value that is no usable path: absolute, so the first stat is
+        reached and raises the `ValueError` itself."""
+        recorded = str(self.recorded) + "\0x"
+        with self.assertRaises(ValueError) as refused:  # the text differs between Python versions: take it from the stat itself
+            os.stat(os.path.join(recorded, "run-live", "run.json"))
+        line = self.line(state_dir=recorded)
+        self.assert_names_no_usable_state_directory(line, f"ValueError: {refused.exception}")
+
+    def assert_names_no_usable_state_directory(self, line: dict, reason: str) -> None:
+        """PR #176 R7-1. A recorded state directory that is not a usable path means the record is
+        damaged: no permission change and no move of the run settles it, and that is known. The
+        mutation it pins: the `not isinstance(problem, OSError)` branch removed, so the line falls
+        back to the "cannot be examined ... is not known" advice and a remedy on the path."""
         self.assertEqual((line["field"], line["errno"], line["strerror"]), ("recorded directory cannot be examined", None, None))
-        self.assertIn("cannot be examined (ValueError: the recorded state directory 'rel' is not an absolute path), so whether", line["error"])
+        ledger = str(ledger_path(self.h.activation.digest, self.h.activation.path))
+        self.assertIn(f"the record names no usable state directory ({reason}): it is damaged, and neither a permission change nor moving the run settles it; "
+                      f"inspect or restore the ledger file {ledger!r} (its state_dir is the absolute path of the directory the run was created under)", line["error"])
+        for other in ("reachable", "searchable", "clear that error", "open the run again", "is not known", "cannot be examined (", "is spent"):
+            self.assertNotIn(other, line["error"])
+        self.assertIn("the use ledger record is damaged", line["consequence"])
+        self.assertIn("not settled until the ledger file is restored", line["consequence"])
+        for other in ("is not known", "from here", "every later open retries"):
+            self.assertNotIn(other, line["consequence"])
 
     def test_each_variant_is_its_own_line(self):
         fields = [self.line()["field"]]  # gone
