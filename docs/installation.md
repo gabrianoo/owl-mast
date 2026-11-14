@@ -20,12 +20,12 @@ artifact and its smoke check are delivered by OM-01.04, browser realm/client/ses
 | Keycloak on a read-only root against the pinned image (Docker) | not applicable | passed (CI `package-checks`) |
 | Backend image: UID, JDK, application start on a read-only root with the environment the chart renders, up to the first database connection (image-level proof; the beans created after database initialisation, migrations, the listener and runtime writes are part of the Kind run) | not checked | passed (CI `build`) |
 | NetworkPolicy enforcement on a disposable kindnet cluster | not applicable | one run on 2026-11-09, before the changes of 2026-11-11 |
-| Kind qualification (`scripts/qualify-local-install.sh all`): four combinations, persistence, failure paths | passed 2026-11-07 | passed 2026-11-12, four times: at `f188d51` (PR #116, before OM-01.03; 131 ok), at `4fc415b` (141 ok, 0 FAIL), at `00b4853` (145 ok, 0 FAIL) and at `e76e30e` (Keycloak with `KC_CACHE=local`, 145 ok, 0 FAIL); passed 2026-11-13 at `c0e21ec` (now ending bundled-bundled with the bootstrap-admin retirement, 156 ok, 0 FAIL) at `9be72ee` (exit 0, 156 ok, 0 FAIL) and at `a2c3051` (exit 0, 156 ok, 0 FAIL; the script recorded `deploy`, `scripts` and `backend` as clean) and at `639d2b6` (exit 0, 156 ok, 0 FAIL; three source records, whole tree clean, one chart digest); passed 2026-11-14 at `681a125`, the first run with the backend rolling without surge (exit 0, 156 ok, 0 FAIL; see the 2026-11-14 upgrade runs below) |
+| Kind qualification (`scripts/qualify-local-install.sh all`): four combinations, persistence, failure paths | passed 2026-11-07 | passed 2026-11-12, four times: at `f188d51` (PR #116, before OM-01.03; 131 ok), at `4fc415b` (141 ok, 0 FAIL), at `00b4853` (145 ok, 0 FAIL) and at `e76e30e` (Keycloak with `KC_CACHE=local`, 145 ok, 0 FAIL); passed 2026-11-13 at `c0e21ec` (now ending bundled-bundled with the bootstrap-admin retirement, 156 ok, 0 FAIL) at `9be72ee` (exit 0, 156 ok, 0 FAIL) and at `a2c3051` (exit 0, 156 ok, 0 FAIL; the script recorded `deploy`, `scripts` and `backend` as clean) and at `639d2b6` (exit 0, 156 ok, 0 FAIL; three source records, whole tree clean, one chart digest) |
 | Kind qualification, `first-enable`: fresh volume, identity bundle enabled through the pre-upgrade hook, retry | passed 2026-11-07 | passed 2026-11-12 at `00b4853` up to and including the retry (fresh volume `owl-mast-fe-e01r01`); the run then stopped at the retirement, see the next rows and the note below. Passed 2026-11-13 at `d314fa3`, uninterrupted from a fresh volume (`owl-mast-fe-e01x10`) through the retirement: 63 ok, 0 FAIL (run 11 below) |
 | Kind qualification: every migration applied by `owlmast_app`, durable work published by the installed backend (in all four combinations and first-enable). The probe writes a synthetic intent and its `audit.publish` item in SQL as `owlmast_app`, so it proves discovery, the claim, the handler transaction and the publisher, not the application's enqueue path; its rows are kept | not applicable (no durable work before OM-01.03) | passed 2026-11-12 at `00b4853`: migrations 001–005 applied by `owlmast_app` on the bundled and the external database (V002–V005 as an upgrade of the databases the earlier runs left at V001); durable work published in bundled-bundled, bundled-external, external-bundled, external-external and first-enable. Rechecked 2026-11-13 at `c0e21ec`, `9be72ee`, `a2c3051` and `639d2b6` (`all` only, on the retained databases: no migration was pending, so these runs re-read the history and table owners that the `00b4853` run left, and migrations were last applied at `00b4853`; durable work was published in the four combinations; `first-enable` was last run at `00b4853`). Passed 2026-11-13 at `d314fa3` in `first-enable` on a fresh database: migrations 001–005 applied by `owlmast_app`, durable work published |
 | Kind qualification: Keycloak bootstrap admin retired (`identity.keycloak.bootstrapAdmin.enabled=false`), chart side only | not applicable | **failed** in the scripted run at `00b4853` (`helm upgrade --wait` timed out: chart defect). `31ee127` (no surge) only narrowed the overlap of the two Keycloak pods; the fix is `d954b21` (`KC_CACHE=local`). The manual rerun at 22:39Z passed on an uncommitted no-surge chart without `KC_CACHE=local`: its log names `bf6126b` (whose chart has `type: Recreate`), the deployed strategy was `RollingUpdate 0 1`, and the change was committed two minutes after the rerun ended, as `31ee127`, so no commit reproduces that pass. **Passed** on the shipped chart in the scripted `all` run at `c0e21ec`, on the bundled release: the retirement replaced the Keycloak pod (names before and after recorded) and `helm upgrade --wait` completed in 50 s. That run did not record whether the old pod was still terminating beside the new one, so it shows the replacement completing on the shipped chart, not that `KC_CACHE=local` was needed; the script now records every read of its terminating-pod wait. Rerun at `9be72ee`: the pod was replaced again, and the wait's first read (01:25:58Z, a few seconds after `helm upgrade --wait` returned) found no terminating Keycloak pod, so the old pod was gone by that read; an overlap is still not shown. Rerun at `a2c3051`, which records when the upgrade returned: the pod was replaced, and the upgrade's return and the wait's one read (`none`) fall in the same second (02:13:31Z). Rerun at `639d2b6`: the same, at 03:11:43Z. **Passed** as part of one complete `first-enable` on a fresh volume at `d314fa3` (run 11 below): `helm upgrade --wait` returned in about 26 s with the new Keycloak pod ready; an overlap of the two pods is still not shown |
 | Frontend image deployed on the Kind target | not run | **not run** by the script (`frontend.enabled=false`); deferred |
-| `helm upgrade` of a release installed from chart 0.1.0 | not applicable | **passed** 2026-11-14 in manual runs (not steps of the script) on the bundled-bundled combination: with explicit values, with `--reuse-values --set backend.image.tag=…`, and on a release that a refused upgrade had left `failed` (see the 2026-11-14 upgrade runs below). Until then the upgrade was refused, because the backend Deployment was `type: Recreate` (#162). **Not run**: the three combinations with an external service, an upgrade with durable work in flight, an upgrade with the backend stopped first ([Stopping the backend before an upgrade](#stopping-the-backend-before-an-upgrade)), `helm rollback` to the 0.1.0 revision, and a release installed or upgraded with Helm 3 |
+| `helm upgrade` of a release installed from chart 0.1.0 | not applicable | **refused**, and not supported. Run on the Kind target on 2026-11-14 (bundled-bundled, Helm 4.3.1): the API server refuses the backend Deployment's change to `type: Recreate` (`spec.strategy.rollingUpdate: Forbidden: may not be specified when strategy type is 'Recreate'`), and the refused upgrade has already replaced the PostgreSQL and Keycloak pods (run 3 of the 2026-11-14 upgrade runs below). Chart 0.1.0 was never released, so the chart keeps `Recreate` and has no in-place upgrade from it (#162, decided 2026-11-15 in PR #189); see [Upgrading a release installed from chart 0.1.0](#upgrading-a-release-installed-from-chart-010) |
 | Gateway API: HTTPRoute accepted by an API server with the CRDs (server-side CEL) | not run | **not run** (manifest validation only) |
 | Gateway API: controller and data plane | not run | not run |
 
@@ -47,16 +47,16 @@ artifact and its smoke check are delivered by OM-01.04, browser realm/client/ses
 
 The `00b4853` failure (run 3) did not recur: `first-enable` has now run uninterrupted from a fresh volume through the retirement on the fixed chart (run 11). What this does not amount to: proof that the two Keycloak pods overlapped and that `KC_CACHE=local` is what prevents the failure; no run has recorded an overlap. Run 11 used the fourth claim in `owl-mast-test`, made room for by deleting the 2026-11-07 fixture claim `owl-mast-fe-postgresql-data`; the 30 Gi storage quota is used up again by three retained claims, so the next fresh-volume run needs a claim freed first.
 
-**The 2026-11-14 upgrade runs (#162), exactly.** Run by hand, not by the script, on the same cluster (`owl-mast-om0102`) with Helm 4.3.1 and a run-local kubeconfig, in a namespace of their own (`owl-mast-gh162`, default `standard` StorageClass, removed afterwards). Evidence in `~/.local/state/owlmast-eng01/product-runs/gh-162-upgrade-20261114-01-evidence/` (private, not in the repository): one directory per run, and the two scripts that made the runs (`upgrade-run.sh` for runs 1 and 2, `upgrade-run-2.sh` for runs 3 and 4). Every release was bundled-bundled with the example values. Three charts appear. "Chart 0.1.0" is the chart tree of `137e084`, the parent of the commit that made the chart 0.2.0, with the backend image of 2026-11-07 (`owl-mast/backend:0.1.0`). "The `Recreate` chart" is the chart at `397c783` (sha256 `4a0a7522…`, the chart of runs 9–11 above), whose backend Deployment is `type: Recreate`. "This chart" has the backend rolling without surge (sha256 `335117b8…`); it was taken from the working tree at `397c783` before the change was committed, so each run's `source.txt` records head `397c783` and a dirty tree. The chart that was committed differs from it only in the comment above the backend Deployment's strategy (sha256 `49fbe62d…`); the rendered manifests are the same. The upgrades used the backend image `0.1.0-e01x10-d314fa3` (the backend sources have not changed since `d314fa3`). None of these runs called the script's node-image check.
+**The 2026-11-14 upgrade runs (#162), exactly.** Run by hand, not by the script, on the same cluster (`owl-mast-om0102`) with Helm 4.3.1 and a run-local kubeconfig, in a namespace of their own (`owl-mast-gh162`, default `standard` StorageClass, removed afterwards). Evidence in `~/.local/state/owlmast-eng01/product-runs/gh-162-upgrade-20261114-01-evidence/` (private, not in the repository): one directory per run, and the two scripts that made the runs (`upgrade-run.sh` for runs 1 and 2, `upgrade-run-2.sh` for runs 3 and 4). Every release was bundled-bundled with the example values. Three charts appear. "Chart 0.1.0" is the chart tree of `137e084`, the parent of the commit that made the chart 0.2.0, with the backend image of 2026-11-07 (`owl-mast/backend:0.1.0`). "This chart" is the chart as it is now and as it was at `397c783` (sha256 `4a0a7522…`, the chart of runs 9–11 above), whose backend Deployment is `type: Recreate`. "The no-surge variant" is a chart that was tried for #162 and **not kept**: this chart with the backend rolling without surge (`maxSurge: 0`, `maxUnavailable: 1`; sha256 `335117b8…`, taken from the working tree at `397c783`, so each run's `source.txt` records head `397c783` and a dirty tree; committed on the #162 branch as `681a125` with a different comment, sha256 `49fbe62d…`, and withdrawn on 2026-11-15). The upgrades used the backend image `0.1.0-e01x10-d314fa3` (the backend sources have not changed since `d314fa3`). None of these runs called the script's node-image check.
 
-1. `explicit/` (16:59–17:01Z): chart 0.1.0 installed and ready, then `helm upgrade --wait` to this chart with the example values (17:00:27Z–17:01:13Z). Completed as revision 2.
-2. `reuse-values/` (17:01–17:03Z): the same on a fresh release and volume, with `--reuse-values --set backend.image.tag=0.1.0-e01x10-d314fa3` (17:02:28Z–17:03:04Z). Completed as revision 2. After runs 1 and 2 the backend and Keycloak Deployments had `RollingUpdate` with `maxSurge: 0` and `maxUnavailable: 1`, all three pods were new and ready, backend readiness was `UP`, no pod was terminating when the upgrade returned, the claim was bound to the same volume, PostgreSQL reported the same system identifier and the same database oids, and `flyway_schema_history` had gone from version 001 to 001–005, each applied by `owlmast_app`.
-3. `failed-then-fixed/` (17:15–17:17Z): chart 0.1.0 installed and ready, then upgraded to the `Recreate` chart. Refused within a second with `spec.strategy.rollingUpdate: Forbidden: may not be specified when strategy type is 'Recreate'`; revision 2 is `failed`. The refusal is not atomic: Helm had already applied the PostgreSQL and Keycloak Deployments, so both pods had been replaced (the new ones were not ready yet when the state was read 3 s later), while the backend Deployment and its pod were as chart 0.1.0 left them. The upgrade of that release to this chart completed as revision 3 (17:16:37Z–17:17:18Z), with the end state of runs 1 and 2. Its pod watch shows the two backends overlapping: the new container started at 17:16:37Z and the old one ended at 17:16:39Z.
-4. `from-recreate/` (17:17–17:18Z): the `Recreate` chart installed and ready, upgraded to this chart (revision 2), rolled back to revision 1 with `helm rollback` (the strategy was `Recreate` again), and upgraded to this chart again (revision 4). All three were applied and the strategy was read after each. The backend pod was the same pod throughout: a strategy change alone does not change the pod template.
+1. `explicit/` (16:59–17:01Z): chart 0.1.0 installed and ready, then `helm upgrade --wait` to the no-surge variant with the example values (17:00:27Z–17:01:13Z). Completed as revision 2.
+2. `reuse-values/` (17:01–17:03Z): the same upgrade to the no-surge variant on a fresh release and volume, with `--reuse-values --set backend.image.tag=0.1.0-e01x10-d314fa3` (17:02:28Z–17:03:04Z). Completed as revision 2. After runs 1 and 2 the backend and Keycloak Deployments had `RollingUpdate` with `maxSurge: 0` and `maxUnavailable: 1`, all three pods were new and ready, backend readiness was `UP`, no pod was terminating when the upgrade returned, the claim was bound to the same volume, PostgreSQL reported the same system identifier and the same database oids, and `flyway_schema_history` had gone from version 001 to 001–005, each applied by `owlmast_app`.
+3. `failed-then-fixed/` (17:15–17:17Z): chart 0.1.0 installed and ready, then upgraded to this chart. Refused within a second with `spec.strategy.rollingUpdate: Forbidden: may not be specified when strategy type is 'Recreate'`; revision 2 is `failed`. The refusal is not atomic: Helm had already applied the PostgreSQL and Keycloak Deployments, so both pods had been replaced (the new ones were not ready yet when the state was read 3 s later), while the backend Deployment and its pod were as chart 0.1.0 left them. The upgrade of that release to the no-surge variant completed as revision 3 (17:16:37Z–17:17:18Z), with the end state of runs 1 and 2. Its pod watch shows the two backends overlapping: the new container started at 17:16:37Z and the old one ended at 17:16:39Z.
+4. `from-recreate/` (17:17–17:18Z): this chart installed and ready, upgraded to the no-surge variant (revision 2), rolled back to revision 1 with `helm rollback` (the strategy was `Recreate` again), and upgraded to the no-surge variant again (revision 4). All three were applied and the strategy was read after each. The backend pod was the same pod throughout: a strategy change alone does not change the pod template.
 
-What this does not amount to: nothing was run for the combinations with an external database or identity provider (the backend Deployment comes from the same template in all four, which a render test checks), for an upgrade with durable work in flight during the overlap (the 0.1.0 backend has none), for `helm rollback` to a chart 0.1.0 revision, or for a release installed or upgraded with Helm 3. Before run 1 the refusal was reproduced once, and an explicit `rollingUpdate: null` next to `type: Recreate` was tried and refused with the same message (16:56Z, external-external values, pods not started, namespace `owl-mast-gh162-probe`, removed): server-side apply does not remove a field that no manager owns. Those two attempts left no evidence files; run 3 repeats the refusal with evidence, the `null` attempt is recorded here only.
+What the runs show: `helm upgrade` from chart 0.1.0 to this chart is refused (run 3), and a backend that rolls without surge is accepted but runs the old and the new backend together during a rollout (about 2 s in run 3). Because of that overlap the no-surge variant was withdrawn, and because chart 0.1.0 was never released the upgrade from it is not supported (#162, decided 2026-11-15 in PR #189). Only run 3 watched the backend pods, so runs 1, 2 and 4 say nothing about an overlap. What this does not amount to: nothing was run for the combinations with an external database or identity provider, for `helm rollback` to a chart 0.1.0 revision, or for a release installed or upgraded with Helm 3, and no run measured a rollout of this chart's `Recreate` backend for an overlap. Other ways to get a 0.1.0 release past the refusal (deleting the backend Deployment before the upgrade, a forced replacement by Helm) were not tried. Before run 1 the refusal was reproduced once, and an explicit `rollingUpdate: null` next to `type: Recreate` was tried and refused with the same message (16:56Z, external-external values, pods not started, namespace `owl-mast-gh162-probe`, removed): server-side apply does not remove a field that no manager owns. Those two attempts left no evidence files; run 3 repeats the refusal with evidence, the `null` attempt is recorded here only.
 
-The scripted qualification was run again on the committed chart: `all` at `681a125` with the backend image `0.1.0-e01x10-d314fa3` (node image id `b95e0292…`, compared by the script in every combination): exit 0 (recorded), 156 ok, 0 FAIL (2026-11-14, 17:22–17:31Z). The three source records each hold head `681a125`, tree clean and chart sha256 `49fbe62d…`. Every backend in that run was installed by this chart, so it shows the four combinations, the re-provisioning upgrade and the bootstrap-admin retirement on the new strategy, not an upgrade from chart 0.1.0. `first-enable` has not been run since the strategy changed. Evidence in `gh-162-qual-20261114-01-evidence/`.
+The scripted qualification was also run on the no-surge variant: `all` at `681a125` with the backend image `0.1.0-e01x10-d314fa3` (node image id `b95e0292…`, compared by the script in every combination): exit 0 (recorded), 156 ok, 0 FAIL (2026-11-14, 17:22–17:31Z; the three source records each hold head `681a125`, tree clean and chart sha256 `49fbe62d…`; evidence in `gh-162-qual-20261114-01-evidence/`). It is a run of a chart that was not kept, so it is not counted in the table above. The chart directory as it is now has the sha256 of runs 9–11 (`4a0a7522…`, computed as the script does), so those runs are the last qualification of this chart.
 
 ## Pins
 
@@ -202,21 +202,36 @@ read the result of the same request (smaller values are refused at render).
 
 ## Upgrading a release installed from chart 0.1.0
 
-Chart 0.2.0 (appVersion unchanged) closes the PR #109 review findings and changes these defaults; check each
-against the release's values before `helm upgrade`.
+**An in-place `helm upgrade` from chart 0.1.0 is refused and is not supported.** The backend Deployment rolled
+in chart 0.1.0 and is `type: Recreate` now. A Deployment that was created without a strategy carries the API
+server's default `rollingUpdate` block, and the server refuses an apply that changes only the type
+(`spec.strategy.rollingUpdate: Forbidden: may not be specified when strategy type is 'Recreate'`). On the Kind
+target (2026-11-14, bundled-bundled, Helm 4.3.1) the upgrade failed within a second, and not atomically: the
+PostgreSQL and Keycloak pods had already been replaced, the release was `failed`, and the 0.1.0 backend kept
+running (run 3 of the 2026-11-14 upgrade runs under [Qualification status](#qualification-status)). Chart
+0.1.0 was never released, so the chart keeps `Recreate` instead of giving up the single-instance rollout for
+that upgrade (#162, decided 2026-11-15 in PR #189). Replace a 0.1.0 installation by uninstalling it and
+installing this chart under the same release name, so that `<fullname>` and with it the claim and Secret names
+stay the same. The bundled PostgreSQL claim survives the uninstall and is selected again with
+`postgresql.persistence.existingClaim` (see
+[Persistent volumes and retention](#persistent-volumes-and-retention-t3)); the Secrets the operator created are
+not Helm's and stay. The provisioning hook cannot serve such a reinstall: install with the identity mode the
+volume was initialised with (see [Database and identity isolation](#database-and-identity-isolation-ac3)). A
+release that the refused upgrade left `failed` is replaced in the same way. The Kind qualification proves the
+uninstall retention and the reinstall on the existing claim for a release of chart 0.2.0. Not run: the same
+for a release that chart 0.1.0 installed, and `helm rollback` of a `failed` release to its 0.1.0 revision.
 
-Values flags: `helm upgrade` with explicit values (`-f`/`--set`) or with `--reset-then-reuse-values` (Helm 3.14
-or later) applies the 0.2.0 defaults for the new keys. Plain `--reuse-values` renders from the 0.1.0 values,
-which lack every key added in 0.2.0; the templates read those keys with their 0.2.0 defaults
-(`bootstrapAdmin.enabled=true`, `networkPolicy.enabled=true`, the probe timeouts, `exposeActuator=false`), and
-the schema requires none of them, so that upgrade renders too. A render test applies the 0.1.0 `values.yaml`
-with no new defaults. What `--reuse-values` cannot carry over are defaults that 0.2.0 refuses: a 0.1.0
-external database still has `sslMode: prefer` and is refused until the mode is set (first row below). The
-upgrade itself was run on the Kind target on 2026-11-14 for the bundled-bundled combination, with explicit
-values and with `--reuse-values --set backend.image.tag=…` (the 2026-11-14 upgrade runs under
-[Qualification status](#qualification-status)); for the combinations with an external service it is render
-support only. The scripted Kind qualification installs
-chart 0.2.0 on retained volumes; it does not upgrade a 0.1.0 release.
+Chart 0.2.0 (appVersion unchanged) closes the PR #109 review findings and changes these defaults; check each
+against the values of the 0.1.0 installation before installing this chart with them. The rows that name
+`helm upgrade` or `helm rollback` apply to a release of chart 0.2.0 (an upgrade between its revisions), not to
+a 0.1.0 release.
+
+Values: the 0.1.0 `values.yaml` lacks every key added in 0.2.0. The templates read those keys with their
+0.2.0 defaults (`bootstrapAdmin.enabled=true`, `networkPolicy.enabled=true`, the probe timeouts,
+`exposeActuator=false`), and the schema requires none of them, so the chart renders from 0.1.0 values; a render
+test applies the 0.1.0 `values.yaml` with no new defaults. What 0.1.0 values cannot carry over are defaults
+that 0.2.0 refuses: a 0.1.0 external database still has `sslMode: prefer` and is refused until the mode is set
+(first row below).
 
 | Change in 0.2.0 | What to set |
 | --- | --- |
@@ -236,7 +251,7 @@ chart 0.2.0 on retained volumes; it does not upgrade a 0.1.0 release.
 | `backend.probes.readiness.periodSeconds` must be greater than 5 | Raise a smaller period |
 | `backend.extraEnv` refuses every `LD_*` name; `identity.keycloak.bootstrapAdmin.enabled` must be `true` or `false` (also with `--skip-schema-validation`) | Remove loader variables; write the boolean |
 | `commonLabels` are no longer copied into the PostgreSQL pod template | Nothing; select the database pod by the chart's own labels |
-| The backend pod is replaced, not rolled (single instance: `maxSurge: 0`, `maxUnavailable: 1`). Chart 0.2.0 first had the backend as `type: Recreate` (up to `397c783`), which the API server refuses on a release installed from chart 0.1.0: that Deployment carries the server's default `rollingUpdate` block, and `helm upgrade` failed on it (#162). The chart version is 0.2.0 in both cases; on a release, `kubectl get deploy <fullname>-backend -o jsonpath='{.spec.strategy.type}'` prints `Recreate` or `RollingUpdate` | Expect the backend to be down for the length of its restart on every rollout, and expect two backends for part of it: the new pod starts while the old one is still terminating, so the outgoing and the incoming backend can run together, normally for up to the old pod's termination grace period (30 s, the Kubernetes default: the chart sets none; about 2 s on the Kind target). [Probes and resources](#probes-and-resources-ac1) says what limits that overlap. If the new version brings a migration that the running version cannot work against, stop the backend first: [Stopping the backend before an upgrade](#stopping-the-backend-before-an-upgrade). The 2026-11-14 runs upgraded from chart 0.1.0 without stopping it, with no durable work in flight. The refused upgrade (`rollingUpdate: Forbidden: may not be specified when strategy type is 'Recreate'`) is not atomic: it has already replaced the PostgreSQL and Keycloak pods and leaves the release `failed` with the 0.1.0 backend running. Such a release, and a release installed from the `Recreate` chart, upgrade to this chart as they are (both run on the Kind target, 2026-11-14) |
+| The backend Deployment uses the `Recreate` strategy (single instance). This is the change the API server refuses on a release installed from chart 0.1.0 (above) | Expect the backend to be down for the length of its restart on every rollout |
 | The bundled Keycloak pod is replaced, not rolled (`maxSurge: 0`, `maxUnavailable: 1`). Under the default rolling update the new pod waited for a cluster with the old one, which the NetworkPolicy does not allow, and never became ready, so any upgrade that changed the Keycloak pod (for example retiring the bootstrap admin) hung until `--wait` timed out. Found and fixed by the Kind qualification of 2026-11-12 | Expect sign-in and backend readiness to be down while Keycloak restarts on such an upgrade. A release stuck in that state recovers with `helm rollback` to its last deployed revision and an upgrade to this chart |
 | `frontend.containerPort` is fixed at 8080, the only port the frontend image listens on (also with `--skip-schema-validation`); any other value pointed the probes and the Service at a port without a listener | Remove an override; use `frontend.service.port` to change the Service port |
 | The backend image starts the JVM with `--enable-native-access=ALL-UNNAMED` (Netty's native libraries on JDK 24+) | Nothing. Do not try to pass it through `backend.javaToolOptions`: the allow-list refuses it, and the image already sets it |
@@ -395,22 +410,12 @@ first-initialisation server on the socket only: a TCP probe failed for that whol
 kill a slow initialisation midway. Readiness stays on TCP, so the initialisation server is never Ready. The
 Docker suite holds a container in that phase and runs the rendered probe commands in it.
 
-The backend is a single instance (`backend.replicas` at most 1, AD-14) and its Deployment rolls without surge
-(`maxSurge: 0`, `maxUnavailable: 1`): a rollout deletes the old pod before it creates the new one, so there are
-never two backends that are both meant to run, at the cost of the backend being down while it restarts. The
-Deployment controller does not wait for the deleted pod to be gone, so the new pod starts while the old one is
-still shutting down. On the Kind target the two containers overlapped for about 2 s (2026-11-14). The old pod
-normally has at most its termination grace period (the chart sets none and has no value for it, so the
-Kubernetes default of 30 s applies), and longer when its node stops reporting. During the overlap the old backend finishes its
-requests and work against a schema the new one may be migrating. Two things limit what can go wrong: Flyway
-takes its own lock, so each migration is applied once, and durable work is claimed under expiring, fenced
-leases, so only the holder of a work item's current lease can complete it. They do not cover a migration that
-the previous backend version cannot run against: for such an upgrade stop the backend first, which takes two
-upgrades (see [Stopping the backend before an upgrade](#stopping-the-backend-before-an-upgrade)). The overlap
-has not been exercised with durable work in flight. The strategy is not
-`type: Recreate`, which would wait for the old pod to be gone, because the API server refuses that change on a
-release installed from chart 0.1.0 (see
-[Upgrading a release installed from chart 0.1.0](#upgrading-a-release-installed-from-chart-010)). The actuator serves these probes inside the
+The backend is a single instance (`backend.replicas` at most 1, AD-14) and its Deployment uses the `Recreate`
+strategy: a rollout stops the old pod before it starts the new one, so two backends never run against one
+database, at the cost of the backend being down while it restarts. That covers rollouts (an upgrade that
+changes the backend pod). A backend pod that is deleted or evicted outside a rollout is replaced at once,
+while it may still be shutting down; then Flyway's own lock and the expiring, fenced leases on durable work are
+what keep the two apart. The actuator serves these probes inside the
 cluster and is not routed externally (see routing below).
 
 The backend may restart once on a cold install because it starts before the database accepts
@@ -435,52 +440,6 @@ prefix of at least `/8` for IPv4 or `/32` for IPv6. The chart cannot check that 
 to the proxy and to nothing else; that stays with the operator. With
 `identity.keycloak.importRealm=false` the issuer realm exists only if an operator creates it, so rendering
 requires the acknowledgement `identity.keycloak.realmManagedByOperator=true`.
-
-### Stopping the backend before an upgrade
-
-Use this when the new backend version brings a migration that the running version cannot work against, so
-that the two must not overlap. It takes two upgrades, and the second one is required. Back up the database
-first: once the new backend has migrated the schema, the previous revision's backend cannot run against it.
-
-1. Upgrade to the new chart and image with the backend at zero replicas, then wait until no backend pod is
-   left. Do not take `--wait` as that check: Helm 3 counts a Deployment at zero replicas as ready whatever its
-   last pod is doing, and this has not been observed with Helm 4.
-
-   ```sh
-   helm upgrade <release> deploy/helm/owl-mast -n <namespace> <values flags> --set backend.replicas=0 --wait
-   kubectl wait --for=delete pod -n <namespace> --timeout=120s \
-     -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=backend
-   kubectl get pods -n <namespace> -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=backend
-   ```
-
-   `kubectl wait` prints nothing and exits 0 when the pod is already gone (kubectl 1.36.1). The last command
-   must print `No resources found in <namespace> namespace.` If the wait times out or a pod is still listed, do
-   not go on to step 2: the old backend is still shutting down (a pod on a node that stopped reporting can
-   outlive its grace period). This upgrade already replaces the other pods the new chart changes (PostgreSQL,
-   Keycloak); the schema is not migrated yet, because the backend applies its migrations when it starts.
-2. Upgrade again with the same chart and values flags and `--set backend.replicas=1`, then wait for the
-   rollout. The new backend starts alone and migrates the schema.
-
-   ```sh
-   helm upgrade <release> deploy/helm/owl-mast -n <namespace> <values flags> --set backend.replicas=1 --wait
-   kubectl rollout status deploy/<fullname>-backend -n <namespace> --timeout=300s
-   kubectl get deploy <fullname>-backend -n <namespace>
-   ```
-
-   The last command must show `1/1`. `kubectl rollout status` is there because Helm 3's `--wait` accepts this
-   Deployment with no ready pod (`maxUnavailable: 1` of one replica).
-
-Step 2 is not optional. Helm stores `backend.replicas=0` in the release's values. A later upgrade with
-`--reuse-values`, with `--reset-then-reuse-values` or with no values flag at all keeps the backend at zero
-replicas, and `--wait` reports success on it: the release is `deployed` and nothing serves the API. Only an
-upgrade with explicit values (`-f`/`--set`) and none of those flags returns to the chart default of 1. So
-pass `--set backend.replicas=1` explicitly in step 2, also next to `--reuse-values`. For the same reason
-`helm rollback` to the revision of step 1 gives a release with no backend. The backend is down from step 1
-until the new pod is ready in step 2.
-
-This procedure has not been run on the Kind target, with either Helm. Render tests cover what the chart
-contributes: with `backend.replicas=0` the backend Deployment renders with zero replicas and the same
-strategy, on install and on upgrade.
 
 ## Persistent volumes and retention (T3)
 
