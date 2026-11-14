@@ -12,6 +12,7 @@ import errno
 import json
 import os
 import subprocess
+import sys
 import time
 import unittest
 from pathlib import Path
@@ -656,14 +657,25 @@ class MovedDirectoryFourAdvicesTests(LiveCase):
         line = self.line(state_dir="rel")
         self.assert_names_no_usable_state_directory(line, "ValueError: the recorded state directory 'rel' is not an absolute path")
 
-    def test_a_recorded_path_the_file_system_cannot_take_is_a_damaged_record_in_the_journaled_line(self):
-        """PR #176 R7-1, the other value that is no usable path: absolute, so the first stat is
-        reached and raises the `ValueError` itself."""
-        recorded = str(self.recorded) + "\0x"
-        with self.assertRaises(ValueError) as refused:  # the text differs between Python versions: take it from the stat itself
+    def cannot_take_line(self, suffix: str, defect: str) -> None:
+        """PR #176 R7-1, the other values that are no usable path: absolute, but `os.stat` refuses
+        them with a `ValueError`. PR #176 R9-1: the line names the value and its defect in the words
+        of the refusal (`_recorded_dir_defect`), not in those of the Python version's `os.stat`.
+        One value per test: a second line of the same variant is not journaled again."""
+        recorded = str(self.recorded) + suffix
+        with self.assertRaises(ValueError):
             os.stat(os.path.join(recorded, "run-live", "run.json"))
         line = self.line(state_dir=recorded)
-        self.assert_names_no_usable_state_directory(line, f"ValueError: {refused.exception}")
+        self.assertIn(f"names the state directory {recorded!r}, not ", line["error"])
+        self.assert_names_no_usable_state_directory(line, f"ValueError: the recorded state directory {recorded!r} {defect}")
+        for raw in ("\0", "\ud800"):  # the line names the value escaped, never raw
+            self.assertNotIn(raw, line["error"])
+
+    def test_a_recorded_path_the_file_system_cannot_take_is_a_damaged_record_in_the_journaled_line(self):
+        self.cannot_take_line(*self.UNUSABLE_ABSOLUTE[0])
+
+    def test_a_recorded_path_that_cannot_be_encoded_is_a_damaged_record_in_the_journaled_line(self):
+        self.cannot_take_line(*self.UNUSABLE_ABSOLUTE[1])
 
     def mismatch_lines(self) -> list[dict]:
         return [d for d in unconfirmed(self.store) if d["type"] == "state-dir-mismatch"]
@@ -724,13 +736,95 @@ class MovedDirectoryFourAdvicesTests(LiveCase):
             for other in ("only that same creation may be retried", "--state-dir"):
                 self.assertNotIn(other, message)
 
+    # Absolute, so the R8-1 `isabs` test passes them, but no path the file system can take: `os.stat` refuses both with a `ValueError`.
+    UNUSABLE_ABSOLUTE = (("\0x", "is a path the file system cannot take: it holds a NUL character"),
+                         (os.sep + "\ud800", f"is a path the file system cannot take: it cannot be encoded as a file name ({sys.getfilesystemencoding()})"))
+
+    def test_an_aborted_record_with_an_absolute_path_the_file_system_cannot_take_is_a_use_and_is_never_retried(self):
+        """PR #176 R9-1: the second kind of unusable path. Such a record never matches a run, so the
+        `activation-used` refusal, in the preflight and in the creation, says the record is damaged
+        and names no retry: no directory accepts one, not even the recorded value itself. The
+        mutation it pins: the NUL or the encoding test removed from `_recorded_dir_defect` (or the
+        `use_refusal` branch back on `os.path.isabs` alone), which brings the retry advice back,
+        with the raw NUL in the suggested command."""
+        real = Path(os.path.realpath(self.h.h.state_dir))
+        ledger = ledger_path(self.h.activation.digest, self.h.activation.path)
+        for suffix, defect in self.UNUSABLE_ABSOLUTE:
+            recorded = str(real) + suffix
+            with self.subTest(recorded=recorded):
+                self.assertTrue(os.path.isabs(recorded))  # the precondition: the R8-1 test alone lets it through
+                with self.assertRaises(ValueError):
+                    os.stat(recorded)
+                set_ledger(self.h, state="aborted", state_dir=recorded)
+                self.assertEqual(record(self.h)["state_dir"], recorded)  # the ledger file carries the value as it is
+                for state_dir in (real, recorded):  # this run's directory, and the retry the old advice named
+                    self.assertFalse(activation_module._same_state_dir(recorded, state_dir))
+                    self.assertFalse(activation_module._retryable_creation(record(self.h), state_dir, "run-live"))
+                # The match is refused by the rule itself, not because `realpath` happens to raise on such a value: with
+                # one that hands the value back (as string equality would then match), the record is still not this run.
+                with mock.patch.object(os.path, "realpath", lambda path, **_: os.fspath(path)):
+                    self.assertFalse(activation_module._same_state_dir(recorded, recorded))
+                    self.assertTrue(activation_module._same_state_dir(str(real), str(real)))  # the stand-in still matches a usable path
+                preflight = [m for code, m in self.h.activation.creation_problems(self.h.h.policy, "run-live", T0, state_dir=real) if code == "activation-used"]
+                refused = refuses(self, lambda: record_activation_use(self.h.activation, real, "run-live", T0), "activation-used")
+                self.assertEqual(record(self.h)["state"], "aborted")
+                self.assertEqual(len(preflight), 1)
+                for message in (preflight[0], str(refused)):
+                    self.assertIn(f"the record names no usable state directory ({recorded!r} {defect}): it is damaged, so that creation cannot be retried", message)
+                    self.assertIn(f"use ledger {ledger}: aborted", message)
+                    self.assertIn("inspect or restore that file", message)
+                    for other in ("only that same creation may be retried", "--state-dir", "\0", "\ud800"):  # the value is named escaped, never raw
+                        self.assertNotIn(other, message)
+
+    def test_the_refusal_and_the_probe_of_the_recorded_directory_agree_on_what_is_no_usable_path(self):
+        """PR #176 R9-1: one rule for a damaged record, for the recorded state directory. A value
+        with a defect (`_recorded_dir_defect`) is what `_recorded_run` reports as no usable path
+        (an error that is not an `OSError`, which `confirm_activation_use` journals as a damaged
+        record), in the same words as the `aborted` refusal, which names no retry for it. A path
+        the file system is asked about has no defect, also when it answers with an error. The
+        mutation it pins: either side taking a value the other refuses, or wording it differently."""
+        real = os.path.realpath(self.h.h.state_dir)
+        cannot_take = dict((real + suffix, defect) for suffix, defect in self.UNUSABLE_ABSOLUTE)
+        unusable = {7: "is not a path", None: "is not a path", "": "is not an absolute path", ".": "is not an absolute path", "rel": "is not an absolute path",
+                    os.path.join("..", "rel"): "is not an absolute path", **cannot_take}
+        too_long = os.path.join(real, "x" * 300)  # the file system is asked and refuses: an `OSError`, not a damaged record
+        with self.assertRaises(OSError) as refused:
+            os.stat(too_long)
+        self.assertEqual(refused.exception.errno, errno.ENAMETOOLONG)
+        usable = {real: "run", str(self.recorded): "gone", os.path.join(real, "no", "such", "directory"): "gone", too_long: "unknown"}
+        for value, expected in {**unusable, **usable}.items():
+            with self.subTest(value=value):
+                defect = activation_module._recorded_dir_defect(value)
+                found, problem = activation_module._recorded_run(value, "run-live")
+                message = use_refusal({"run_id": "run-live", "state_dir": value, "state": "aborted", "created_at": T0}, "/l/x.json")
+                if value in unusable:
+                    self.assertEqual(defect, expected)
+                    self.assertEqual((found, type(problem)), ("unknown", ValueError if isinstance(value, str) else TypeError))
+                    self.assertEqual(str(problem), f"the recorded state directory {value!r} {expected}")
+                    self.assertIn(f"names no usable state directory ({value!r} {expected}): it is damaged, so that creation cannot be retried", message)
+                    self.assertNotIn("only that same creation may be retried", message)
+                else:
+                    self.assertIsNone(defect)
+                    self.assertEqual(found, expected)
+                    self.assertEqual(problem is None, expected != "unknown")
+                    self.assertIsInstance(problem, (OSError, type(None)))
+                    self.assertIn("only that same creation may be retried", message)
+                    self.assertNotIn("damaged", message)
+
     def test_an_aborted_record_with_an_absolute_path_still_names_the_retry(self):
         """The other side of the R8-1 refusal: a record that names an absolute directory keeps the
         retry advice, also when it is refused for another run id."""
         set_ledger(self.h, state="aborted")
+        retry = f"only that same creation may be retried (--run-id run-live --state-dir {record(self.h)['state_dir']})"
         message = use_refusal(record(self.h), "/l/x.json")
-        self.assertIn(f"only that same creation may be retried (--run-id run-live --state-dir {record(self.h)['state_dir']})", message)
+        self.assertIn(retry, message)
         self.assertNotIn("damaged", message)
+        real = Path(os.path.realpath(self.h.h.state_dir))
+        self.assertEqual([m for code, m in self.h.activation.creation_problems(self.h.h.policy, "run-live", T0, state_dir=real) if code == "activation-used"], [])  # that creation is the retry
+        other = [m for code, m in self.h.activation.creation_problems(self.h.h.policy, "run-other", T0, state_dir=real) if code == "activation-used"]
+        self.assertEqual(len(other), 1)
+        self.assertIn(retry, other[0])
+        self.assertNotIn("damaged", other[0])
 
     def assert_names_no_usable_state_directory(self, line: dict, reason: str) -> None:
         """PR #176 R7-1. A recorded state directory that is not a usable path means the record is
