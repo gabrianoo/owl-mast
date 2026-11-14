@@ -8,10 +8,16 @@ metadata:
     app.kubernetes.io/component: backend
 spec:
   replicas: {{ .Values.backend.replicas }}
-  # Single instance (AD-14): the old pod stops before the new one starts, so a rollout never runs two
-  # backends (and two startup migrations) against the same database.
+  # Single instance (AD-14): no surge, so a rollout deletes the old pod before it creates the new one. The new
+  # pod can start while the old one is still shutting down (docs/installation.md says what limits that overlap).
+  # Deliberately not `type: Recreate`: a release installed from chart 0.1.0 carries the API server's default
+  # rollingUpdate block, and a server-side apply that only changes the type is refused ("rollingUpdate may not
+  # be specified when strategy type is Recreate"), so `helm upgrade` from 0.1.0 failed (#162).
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       {{- include "owl-mast.selectorLabels" . | nindent 6 }}

@@ -23,6 +23,8 @@ HELM = os.environ.get("OWLMAST_HELM") or shutil.which("helm")
 GATEWAY_API = ["--api-versions", "gateway.networking.k8s.io/v1/HTTPRoute"]
 # The provisioning hook is refused on install; its renders model the upgrade it belongs to.
 UPGRADE = ["--is-upgrade"]
+# A single-instance pod that is replaced, not rolled: the old pod is deleted before the new one is created.
+NO_SURGE = {"type": "RollingUpdate", "rollingUpdate": {"maxSurge": 0, "maxUnavailable": 1}}
 
 COMBINATIONS = {
     "bundled-bundled": [],
@@ -796,12 +798,36 @@ class ReviewCycle1Test(unittest.TestCase):
             self.assertIn("is an IP address", refused(*GATEWAY_API, "--skip-schema-validation", *bad), host)
         render(*GATEWAY_API, *sets("routing.gateway.enabled=true", "routing.gateway.parentRefs[0].name=gw", "routing.gateway.hostnames[0]=10.0.0.example"))
 
-    def test_backend_rollout_never_runs_two_instances(self):
-        """109/4543776391: the single-instance cap with the default RollingUpdate surged to two backends on every rollout."""
-        backend = deployments_of(render())["t-owl-mast-backend"]
-        self.assertEqual(backend["spec"]["strategy"], {"type": "Recreate"})
-        self.assertEqual(backend["spec"]["replicas"], 1)
+    def test_backend_is_replaced_not_rolled(self):
+        """109/4543776391: the single-instance cap with the default RollingUpdate surged to two backends on every rollout.
+        #162: the strategy is a rolling update without surge, not `type: Recreate`. A release installed from chart 0.1.0 has the
+        API server's default rollingUpdate block, and the server refuses an apply that changes only the type to Recreate, so
+        `helm upgrade` from 0.1.0 failed (reproduced on the Kind target 2026-11-14). Without surge the old pod is deleted before
+        the new one is created, in every combination (the render with the values a 0.1.0 release reuses is checked in ReviewCycle2Test)."""
+        for name, args in COMBINATIONS.items():
+            backend = deployments_of(render(*args))["t-owl-mast-backend"]
+            self.assertEqual(backend["spec"]["strategy"], NO_SURGE, name)
+            self.assertEqual(backend["spec"]["replicas"], 1, name)
         self.assertIn("schema", refused(*sets("backend.replicas=2")).lower())
+
+    def test_backend_can_be_stopped_with_zero_replicas(self):
+        """189/4574894147 (#162): the guide stops the backend before an incompatible migration with `backend.replicas=0` and
+        starts it again with a second upgrade. Zero replicas must render, with the same strategy, in every combination, on
+        install and on upgrade; a negative count is refused."""
+        for name, args in COMBINATIONS.items():
+            for mode in ([], UPGRADE):
+                backend = deployments_of(render(*args, *mode, *sets("backend.replicas=0")))["t-owl-mast-backend"]
+                self.assertEqual(backend["spec"]["replicas"], 0, (name, mode))
+                self.assertEqual(backend["spec"]["strategy"], NO_SURGE, (name, mode))
+        self.assertIn("schema", refused(*sets("backend.replicas=-1")).lower())
+
+    def test_only_the_deployment_that_was_recreate_in_chart_0_1_0_is_recreate(self):
+        """#162: `type: Recreate` cannot be applied to a Deployment that chart 0.1.0 installed without a strategy. Only the
+        bundled PostgreSQL had `Recreate` in 0.1.0, so it is the only Deployment that may render it, with the frontend deployed too."""
+        docs = render(*sets("frontend.enabled=true", "frontend.image.tag=0.0.1-shell"))
+        recreate = {name for name, d in deployments_of(docs).items() if d["spec"].get("strategy", {}).get("type") == "Recreate"}
+        self.assertEqual(set(deployments_of(docs)), {"t-owl-mast-backend", "t-owl-mast-frontend", "t-owl-mast-keycloak", "t-owl-mast-postgresql"})
+        self.assertEqual(recreate, {"t-owl-mast-postgresql"})
 
     def test_postgresql_volume_ownership_is_not_walked_on_every_start(self):
         """109/4543776402"""
@@ -953,9 +979,15 @@ class ReviewCycle1Test(unittest.TestCase):
         self.assertNotIn("Qualified on 2026-11-07 for GitHub issue #21 on a disposable local Kind target;", doc)  # that was chart 0.1.0
         # E01-R-01: the qualification status is stated as it is, per revision, including what failed and what was not run.
         self.assertNotIn("qualification of chart 0.2.0 is pending", doc)
-        for phrase in ("**The 2026-11-12 and 2026-11-13 runs, exactly.**", "What this does not amount to:", "**not run** on a cluster (render support only)",
+        for phrase in ("**The 2026-11-12 and 2026-11-13 runs, exactly.**", "What this does not amount to:", "**passed** 2026-11-14 in manual runs (not steps of the script) on the bundled-bundled combination",
+                       "**The 2026-11-14 upgrade runs (#162), exactly.**", "for the combinations with an external service it is render support only",
+                       "or for a release installed or upgraded with Helm 3",
                        "**not run** by the script (`frontend.enabled=false`)"):
             self.assertIn(phrase, doc, phrase)
+        # #162: the statements the upgrade runs of 2026-11-14 replaced
+        for phrase in ("**not run** on a cluster (render support only)", "has still not been run on a cluster",
+                       "uses the `Recreate` strategy (single instance)", "so two backends never run against one database"):
+            self.assertNotIn(phrase, doc, phrase)
 
 
 ISSUER_REASONS = ("host", "port", "userinfo", "query")  # the refusal reasons a sample line may name (IdentityPropertiesTest.REASONS)
@@ -1197,6 +1229,8 @@ class ReviewCycle2Test(unittest.TestCase):
         docs = template()
         d = deployments_of(docs)
         self.assertIn("KC_BOOTSTRAP_ADMIN_PASSWORD", env_of(d["t-owl-mast-keycloak"]))  # bootstrapAdmin.enabled defaults to true
+        # #162: the strategy a 0.1.0 release is upgraded to; `type: Recreate` here was refused by the API server
+        self.assertEqual(d["t-owl-mast-backend"]["spec"]["strategy"], NO_SURGE)
         self.assertEqual({p["metadata"]["name"] for p in by_kind(docs, "NetworkPolicy")}, {"t-owl-mast-postgresql", "t-owl-mast-keycloak"})  # default on
         backend = d["t-owl-mast-backend"]["spec"]["template"]["spec"]["containers"][0]
         self.assertEqual(backend["readinessProbe"]["timeoutSeconds"], 5)  # still longer than the discovery timeout
@@ -1833,7 +1867,7 @@ class ReviewCycle6Test(unittest.TestCase):
         existing release cannot be upgraded to `type: Recreate` (the server refuses it next to the defaulted rollingUpdate block).
         Review 5883535263: no surge does not stop the two pods overlapping, so Keycloak runs with a local cache and never waits for a cluster."""
         keycloak = deployments_of(render())["t-owl-mast-keycloak"]
-        self.assertEqual(keycloak["spec"]["strategy"], {"type": "RollingUpdate", "rollingUpdate": {"maxSurge": 0, "maxUnavailable": 1}})
+        self.assertEqual(keycloak["spec"]["strategy"], NO_SURGE)
         self.assertEqual(keycloak["spec"]["replicas"], 1)
         policy = next(p for p in by_kind(render(), "NetworkPolicy") if p["metadata"]["name"] == "t-owl-mast-keycloak")
         ports = [p["port"] for rule in policy["spec"]["ingress"] for p in rule["ports"]]
