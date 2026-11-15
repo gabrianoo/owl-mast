@@ -46,9 +46,10 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  *
  * <p>The follow-up handler's effect is a row per invocation in {@value
  * RestartFixtureProcess#EFFECT_LOG_TABLE}, written outside the handler's transaction, so the tests
- * count how often each item's effect was applied across both processes. This proves two processes
- * with Testcontainers; it does not run Kubernetes, a pod eviction or a paused container. A process
- * killed while it holds a lease is covered by {@link ProcessRestartRecoveryIT}.
+ * count raw deliveries across both processes. Additional tests use a durable unique-key receiver,
+ * SIGSTOP/SIGCONT across real lease expiry, and shutdown during a statement. These are process
+ * tests with Testcontainers, not Kubernetes tests. A process killed while it holds a lease is
+ * covered by {@link ProcessRestartRecoveryIT}.
  */
 class OverlappingBackendsIT {
 
@@ -396,6 +397,197 @@ class OverlappingBackendsIT {
         .isEqualTo(1);
     assertThat(count("select count(*) from jobs.work_item where status <> 'SUCCEEDED'")).isZero();
     assertEveryOtherFollowUpWasAppliedOnce(held.id());
+  }
+
+  @Test
+  void receiverDeduplicatesAfterRealProcessPausePastLeaseExpiry() throws Exception {
+    interruptedAfterEffect(true);
+  }
+
+  @Test
+  void receiverDeduplicatesAfterShutdownBetweenEffectAndCompletion() throws Exception {
+    interruptedAfterEffect(false);
+  }
+
+  private void interruptedAfterEffect(boolean pause) throws Exception {
+    Process old =
+        launch(
+            "receiver-old",
+            Duration.ofSeconds(30),
+            "old",
+            RestartFixtureProcess.MODE_EFFECT_THEN_WAIT,
+            RestartFixtureProcess.EFFECT_LOG,
+            RestartFixtureProcess.DEDUPLICATE,
+            RestartFixtureProcess.SEED);
+    Lease held = awaitTheOnlyLiveLease(old, "receiver-old");
+    await()
+        .atMost(Duration.ofSeconds(10))
+        .untilAsserted(() ->
+            assertThat(
+                    count(
+                        "select count(*) from "
+                            + RestartFixtureProcess.RECEIVER_TABLE
+                            + " where item_id = '"
+                            + held.id()
+                            + "'"))
+                .isEqualTo(1));
+    if (pause) signal(old, "STOP");
+    Process replacement =
+        launch(
+            "receiver-new",
+            Duration.ofSeconds(30),
+            "new",
+            RestartFixtureProcess.MODE_NORMAL,
+            RestartFixtureProcess.EFFECT_LOG,
+            RestartFixtureProcess.DEDUPLICATE);
+    try {
+      if (!pause) {
+        old.destroy();
+        assertThat(old.waitFor(1, TimeUnit.MINUTES)).isTrue();
+      }
+      await()
+          .atMost(Duration.ofMinutes(2))
+          .untilAsserted(() -> {
+            assertThat(replacement.isAlive()).as(processes.tail("receiver-new")).isTrue();
+            assertThat(count("select count(*) from jobs.work_item where status <> 'SUCCEEDED'"))
+                .isZero();
+          });
+      Lease completed = lease(held.id());
+      assertThat(completed.owner()).startsWith(OWNER_PREFIX + "new/");
+      assertThat(completed.attempts()).isEqualTo(pause ? 2 : 1);
+      assertThat(effects(held.id())).hasSize(2);
+      assertThat(
+              count(
+                  "select count(*) from "
+                      + RestartFixtureProcess.RECEIVER_TABLE
+                      + " where item_id = '"
+                      + held.id()
+                      + "'"))
+          .isEqualTo(1);
+      if (pause) {
+        signal(old, "CONT");
+        await()
+            .during(Duration.ofSeconds(3))
+            .atMost(Duration.ofSeconds(10))
+            .untilAsserted(() -> assertThat(lease(held.id())).isEqualTo(completed));
+      }
+      assertThat(count("select count(*) from " + RestartFixtureProcess.RECEIVER_TABLE))
+          .isEqualTo(RestartFixtureProcess.SEEDED_FOLLOW_UPS);
+    } finally {
+      if (pause && old.isAlive()) signal(old, "CONT");
+    }
+  }
+
+  @Test
+  void shutdownDuringDatabaseStatementRollsBackOldTransaction() throws Exception {
+    Process old =
+        launch(
+            "statement-old",
+            Duration.ofSeconds(30),
+            "old",
+            RestartFixtureProcess.MODE_STATEMENT_WAIT,
+            RestartFixtureProcess.EFFECT_LOG,
+            RestartFixtureProcess.SEED);
+    Lease held = awaitTheOnlyLiveLease(old, "statement-old");
+    await()
+        .atMost(Duration.ofSeconds(10))
+        .untilAsserted(() ->
+            assertThat(
+                    count(
+                        "select count(*) from pg_stat_activity where state = 'active'"
+                            + " and wait_event = 'PgSleep' and query like '%fixture-in-statement%'"))
+                .isEqualTo(1));
+    Process replacement =
+        launch(
+            "statement-new",
+            LONG_LEASE,
+            "new",
+            RestartFixtureProcess.MODE_NORMAL,
+            RestartFixtureProcess.EFFECT_LOG);
+    awaitEverythingElseSucceeded(old, replacement, "statement-old", "statement-new");
+    old.destroy();
+    assertThat(old.waitFor(1, TimeUnit.MINUTES)).as(processes.tail("statement-old")).isTrue();
+    await()
+        .atMost(Duration.ofMinutes(1))
+        .untilAsserted(() -> {
+          assertThat(count("select count(*) from jobs.work_item where status <> 'SUCCEEDED'"))
+              .isZero();
+          assertThat(
+                  count(
+                      "select count(*) from pg_stat_activity where state = 'active'"
+                          + " and wait_event = 'PgSleep' and query like '%fixture-in-statement%'"))
+              .isZero();
+        });
+    assertThat(count("select count(*) from " + RestartFixtureProcess.TRANSACTION_TABLE))
+        .as("the old handler inserted before its blocked statement; shutdown rolled it back")
+        .isZero();
+    assertThat(effects(held.id())).containsExactly(new Effect("new", 1));
+    assertThat(lease(held.id()).owner()).startsWith(OWNER_PREFIX + "new/");
+  }
+
+  private static void signal(Process process, String signal) throws Exception {
+    Process command =
+        new ProcessBuilder("kill", "-" + signal, Long.toString(process.pid())).start();
+    assertThat(command.waitFor(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(command.exitValue()).isZero();
+  }
+
+  @Test
+  void migrationLockRetryBudgetFailsBoundedlyAndRestartCanRecover() throws Exception {
+    try (Connection blocker = database.createConnection("");
+        Statement statement = blocker.createStatement()) {
+      blocker.setAutoCommit(false);
+      statement.execute("create schema bootstrap");
+      Process holder =
+          launch("migration-holder", LONG_LEASE, "holder", RestartFixtureProcess.MODE_NORMAL);
+      await()
+          .atMost(STARTUP)
+          .untilAsserted(() ->
+              assertThat(
+                      count(
+                          "select count(*) from pg_locks where locktype = 'advisory' and granted"))
+                  .isEqualTo(1));
+      Process shortBudget =
+          launch(
+              "migration-short",
+              LONG_LEASE,
+              "short",
+              "--spring.flyway.lock-retry-count=1",
+              RestartFixtureProcess.MODE_NORMAL);
+      assertThat(shortBudget.waitFor(30, TimeUnit.SECONDS))
+          .as("bounded startup failure under a held migration lock")
+          .isTrue();
+      assertThat(shortBudget.exitValue()).isNotZero();
+      assertThat(processes.log("migration-short"))
+          .contains("lockRetryCount")
+          .doesNotContain(RestartFixtureProcess.STARTED);
+      Process restarted =
+          launch(
+              "migration-restart",
+              LONG_LEASE,
+              "restart",
+              "--spring.flyway.lock-retry-count=10",
+              RestartFixtureProcess.MODE_NORMAL);
+      await()
+          .atMost(STARTUP)
+          .untilAsserted(() -> {
+            assertThat(restarted.isAlive()).isTrue();
+            assertThat(
+                    count(
+                        "select count(*) from pg_stat_activity where query like '%pg_try_advisory%'"
+                            + " and pid <> pg_backend_pid() and pid not in (select pid from pg_locks"
+                            + " where locktype = 'advisory' and granted)"))
+                .isPositive();
+          });
+      blocker.rollback();
+      await()
+          .atMost(STARTUP)
+          .untilAsserted(() -> {
+            assertBothAlive(holder, restarted, "migration-holder", "migration-restart");
+            assertThat(processes.log("migration-restart")).contains(RestartFixtureProcess.STARTED);
+            assertThat(processes.log("migration-holder")).contains(RestartFixtureProcess.STARTED);
+          });
+    }
   }
 
   private Process launch(String name, Duration lease, String instance, String... fixtureArguments)

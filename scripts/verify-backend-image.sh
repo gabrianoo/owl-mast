@@ -92,6 +92,7 @@ smoke() { # smoke <issuer> <allow-insecure-issuer>: sets smoke_log and smoke_rc
   smoke_log="$(timeout 180 docker run --name "$name" --network none --read-only --tmpfs /tmp:rw,size=64m \
     --user "$chart_uid:$chart_gid" --cap-drop ALL --security-opt no-new-privileges \
     -e SERVER_PORT=8080 \
+    -e SPRING_FLYWAY_LOCK_RETRY_COUNT=50 \
     -e JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=75 \
     -e "OWLMAST_DATABASE_R2DBC_URL=r2dbc:postgresql://127.0.0.1:1/owlmast?sslMode=disable" \
     -e "OWLMAST_DATABASE_JDBC_URL=jdbc:postgresql://127.0.0.1:1/owlmast?sslmode=disable" \

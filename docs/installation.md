@@ -510,31 +510,71 @@ A backend that is killed while it holds a lease (the grace period ran out, or th
 then another backend reclaims the item. A node that is cut off while its backend keeps running is the second
 case above: that backend is not killed.
 
-What these tests do not prove:
+Additional fault coverage in `OverlappingBackendsIT`:
 
-- They run two processes against Testcontainers, not pods. No pod deletion or eviction has been run on a
-  cluster, and the Kind runs never had durable work in flight while two backends overlapped.
-- No node was cut off from the API server. That its backend keeps running next to a replacement, when the
-  replacement starts and when the old backend is stopped are Kubernetes behaviour that was read, not run.
-  The Kind cluster used for qualification has one node, so it cannot run the case. The tests ran two
-  backends together for seconds, not for the minutes or longer such a cut-off can last. A rollout that is
-  started while a node is cut off was not looked at.
-- The lease in the late-write test is set to the past by the test. A running backend cancels a handler at
-  its handler deadline (`owlmast.jobs.handler-deadline`, by default nine tenths of the lease). The deadline
-  is always shorter than the lease, because the backend does not start with one that is not. So on its own
-  the case arises only for a backend that was paused or stalled past its lease, and no test pauses a
-  process.
-- A handler that is stopped in the middle of a database statement, or after its effect and before its
-  completion write, is not run with two processes.
-- Two backends of different builds (an eviction replacement started from a tag that was pushed again): not
-  run. With an image digest it does not arise, and a rollout is kept to one backend at a time by `Recreate`.
-- How long a backend waits for another one's migrations. Flyway 12.4.0 asks for its lock once and then
-  once a second, and gives up after 50 retries (its `lockRetryCount`, default 50; read from its code, not
-  tested): 51 tries, and it fails about 51 s after the first. The tries are counted anew each time a backend
-  asks for the lock, which it does once per migration, so one migration of the other backend that takes
-  longer than 51 s is enough. Nothing in this repository sets or tests the limit, and the chart has no
-  value for it. A backend that gives up fails to start (seen once while the test was written, after 51 s,
-  when the test held the first migration open too long) and the kubelet restarts the container.
+- **Receiver deduplication after interruption.** A durable fixture receiver inserts one effect row under a
+  unique idempotency key on a separate connection, outside the handler transaction. The old process applies
+  that effect and waits before completion. One test sends SIGTERM; another sends SIGSTOP, lets the real
+  30-second lease expire without editing it, waits for the replacement to complete, then sends SIGCONT.
+  Both assert two deliveries of the held item but one receiver effect, and completion by the replacement.
+  The resumed process cannot overwrite that completion. This is a receiver contract example, not a guarantee
+  that an arbitrary external API deduplicates requests.
+- **Statement in flight.** The old handler inserts a transactional row and waits in `pg_sleep(120)`.
+  The test observes the active statement before SIGTERM while the replacement runs. It asserts eventual
+  removal of the statement, rollback of that row, and recovery by the replacement. Cancellation need not
+  immediately stop PostgreSQL: the test uses the normal 30-second lease and its server-side transaction
+  deadline, and allows up to a minute to observe cleanup. The existing late-write test still deliberately
+  changes lease expiry and proves a different interleaving.
+- **Migration contention budget.** A test holds the first migration open, observes another process fail
+  startup with `spring.flyway.lock-retry-count=1`, then starts a process with a budget of 10 and releases
+  the lock after observing contention. Both surviving processes start. This tests bounded failure and
+  recovery after release; it does not benchmark long migrations.
+
+For installations that require identical image content across replacement pods, set
+`backend.requireImageDigest=true` and `backend.image.digest=sha256:<64 lowercase hex digits>`.
+Rendering then refuses a missing or malformed digest, including with schema validation disabled.
+The rendered image includes that digest even when a tag is also set. The opt-in defaults to false for
+existing local-image installations; tag-only replacements still have no different-build compatibility
+qualification. A digest pins image content, not configuration or mutable external services.
+
+`backend.migrationLockRetryCount` exposes Flyway's bounded lock budget: default 50, allowed integers
+0–120. It renders `SPRING_FLYWAY_LOCK_RETRY_COUNT`; old release values missing the field use 50.
+Flyway retries approximately once a second per lock acquisition. Zero requests no retry; negative
+(unlimited) values are refused. This is **not** a bound on migration SQL or total startup: migrations
+acquire locks separately, and connection setup and SQL execution add time. Size
+`backend.probes.startup.periodSeconds × failureThreshold` for the complete expected startup, including
+all migrations; the default is 180 seconds. A retry budget cannot make an incompatible migration safe,
+and a process that exhausts it fails startup and can be restarted by Kubernetes.
+
+**Kubernetes fixture run, 2026-11-15 (#189).** On Kind `owl-mast-om0102` (Kubernetes 1.36.4),
+namespace `owl-mast-pr189-r16b`, two pods ran the real application plus the integration fixture against a
+fresh PostgreSQL. A separate seeder queued 604 follow-ups and three audit publications. While work was
+in flight, `kubectl delete pod --wait=false` removed pod UID `191fe2fc-9427-4317-b45f-dd53690b9468`,
+then a `policy/v1` Eviction removed a distinct live pod, UID `903fa8ae-12eb-4e13-bd7a-1ff45f018358`.
+The worker Deployment restored two running pods after each fault. Successful items advanced 8→12 across
+the deletion and 13→17 across the eviction; eventually all 607 succeeded, with 604 distinct receiver
+effects, 604 deliveries, and three audit events. No duplicate delivery happened in this run; the JVM
+interruption tests above deliberately force that window. Workers were then scaled to zero; the isolated
+namespace and database were retained for inspection.
+
+This was an integration-fixture Deployment with two replicas, not the production chart (which remains
+single-replica `Recreate`). It used synthetic handlers and stub identity, image
+`owl-mast/overlap-fixture:pr189-r16`, local image ID
+`sha256:480b75d2061484ee4716ac1aa2c3ecc84c94f8fda67fd206e044c3f01bc4d9ad`.
+It qualifies those deletion/eviction queue-recovery cases only, not node-pressure eviction, production
+routing/identity, or chart rollout behavior. Probe script and raw evidence are retained under the
+coordinator's ignored `.bmad-work/pr189-cluster-*` files. An initial probe mistakenly selected the already
+terminating pod for eviction; it is excluded from this eviction claim and was rerun on the fresh namespace.
+
+Remaining qualification limits:
+
+- Process tests use two JVMs on Testcontainers. Cluster fixture evidence is recorded separately below;
+  it does not turn these tests into a production chart rollout qualification.
+- No node was cut off from the API server. The available Kind cluster has one node. No prolonged partition with
+  a replacement on another node, or rollout during that partition is qualified. Isolating this cluster's
+  only control-plane node would also affect unrelated retained fixtures. These remain unaccepted gaps.
+- Two different backend builds sharing one schema are not tested. Use the digest guard for same-content
+  replacement; it does not establish compatibility across an intentional image change.
 
 ## Persistent volumes and retention (T3)
 

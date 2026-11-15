@@ -85,6 +85,24 @@ class ChartRenderTest(unittest.TestCase):
         if not version.stdout.startswith("v4."):
             raise AssertionError(f"Helm 4.x required for Kubernetes 1.36 (found {version.stdout!r})")
 
+    def test_replacement_digest_guard_and_bounded_migration_retry(self):
+        for bypass in ([], ["--skip-schema-validation"]):
+            self.assertIn("requireImageDigest", refused(*bypass, *sets("backend.requireImageDigest=true")))
+            for invalid in ("-1", "121", "1.5", "true"):
+                self.assertIn("migrationLockRetryCount", refused(*bypass, *sets(f"backend.migrationLockRetryCount={invalid}")))
+        for bypass in ([], ["--skip-schema-validation"]):
+            self.assertIn("digest", refused(*bypass, *sets("backend.requireImageDigest=true", "backend.image.digest=sha256:bad")))
+        legacy = render(*sets("backend.requireImageDigest=null", "backend.migrationLockRetryCount=null"))
+        legacy_backend = next(d for d in by_kind(legacy, "Deployment") if d["metadata"]["name"].endswith("-backend"))
+        self.assertEqual(env_of(legacy_backend)["SPRING_FLYWAY_LOCK_RETRY_COUNT"]["value"], "50")
+        digest = "sha256:" + "a" * 64
+        for retry in (0, 50, 120):
+            docs = render(*sets("backend.requireImageDigest=true", f"backend.image.digest={digest}",
+                                "backend.image.tag=mutable", f"backend.migrationLockRetryCount={retry}"))
+            backend = next(d for d in by_kind(docs, "Deployment") if d["metadata"]["name"].endswith("-backend"))
+            self.assertTrue(backend["spec"]["template"]["spec"]["containers"][0]["image"].endswith("@" + digest))
+            self.assertEqual(env_of(backend)["SPRING_FLYWAY_LOCK_RETRY_COUNT"]["value"], str(retry))
+
     def test_lint_passes(self):
         result = helm("lint", str(CHART))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -1611,7 +1629,7 @@ class ReviewCycle3Test(unittest.TestCase):
         schema = json.loads((CHART / "values.schema.json").read_text())
         self.assertEqual(schema["$defs"]["ingressHost"]["not"]["pattern"], helper)
         self.assertNotIn("[0-9]+(\\\\.[0-9]+){3}", (CHART / "values.schema.json").read_text())  # no second, looser copy
-        self.assertNotIn('"^[0-9]+', (CHART / "templates" / "_helpers.tpl").read_text())
+        self.assertNotIn('"^[0-9]+(', (CHART / "templates" / "_helpers.tpl").read_text())
         for host in ("999.1.1.1", "256.0.0.1", "1.2.3.256", "300.300.300.300", "1.2.3.4.5", "1.2.3"):
             for skip in ([], ["--skip-schema-validation"]):
                 docs = render(*skip, *sets("routing.ingress.enabled=true", f"routing.ingress.host={host}"))

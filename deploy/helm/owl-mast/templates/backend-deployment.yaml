@@ -50,6 +50,8 @@ spec:
           env:
             - name: SERVER_PORT
               value: {{ .Values.backend.containerPort | quote }}
+            - name: SPRING_FLYWAY_LOCK_RETRY_COUNT
+              value: {{ dig "migrationLockRetryCount" 50 .Values.backend | quote }}
             - name: JAVA_TOOL_OPTIONS
               value: {{ .Values.backend.javaToolOptions | quote }}
             - name: OWLMAST_DATABASE_R2DBC_URL

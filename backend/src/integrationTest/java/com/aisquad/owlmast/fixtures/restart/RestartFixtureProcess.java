@@ -53,6 +53,12 @@ import reactor.util.context.Context;
  *   <li>{@code --fixture.mode=finish-after-reclaimed}: the first follow-up this process is handed
  *       waits until another process has completed that same item, and only then applies its effect
  *       and returns, so its completion write arrives under a lease that was lost.
+ *   <li>{@code --fixture.mode=effect-then-wait}: commit the external effect, then wait without
+ *       completing the work row, for interruption tests.
+ *   <li>{@code --fixture.mode=statement-wait}: insert in the handler transaction, then wait in a
+ *       database statement, for rollback-on-shutdown tests.
+ *   <li>{@code --fixture.deduplicate=true}: additionally deliver to a durable unique-key receiver;
+ *       the raw effect log still counts every delivery. Use with {@code --fixture.effect-log=true}.
  *   <li>{@code --fixture.effect-log=true}: the follow-up handler's effect is one row in {@value
  *       #EFFECT_LOG_TABLE} per invocation that reached the effect, written outside the handler's
  *       transaction as an external system would record it, with the instance that wrote it. A
@@ -75,6 +81,11 @@ public final class RestartFixtureProcess {
   public static final String MODE_NORMAL = "--fixture.mode=normal";
   public static final String MODE_SLOW = "--fixture.mode=slow";
   public static final String MODE_FINISH_AFTER_RECLAIMED = "--fixture.mode=finish-after-reclaimed";
+  public static final String MODE_EFFECT_THEN_WAIT = "--fixture.mode=effect-then-wait";
+  public static final String MODE_STATEMENT_WAIT = "--fixture.mode=statement-wait";
+  public static final String DEDUPLICATE = "--fixture.deduplicate=true";
+  public static final String RECEIVER_TABLE = "fixture_receiver_effect";
+  public static final String TRANSACTION_TABLE = "fixture_transaction_effect";
   public static final String EFFECT_LOG = "--fixture.effect-log=true";
   public static final String SEED = "--fixture.seed=true";
   public static final String EXTRA_FOLLOW_UPS = "--fixture.extra-follow-ups=";
@@ -93,7 +104,9 @@ public final class RestartFixtureProcess {
           MODE_HALT_WHILE_LEASED,
           MODE_HANG_WHILE_LEASED,
           MODE_SLOW,
-          MODE_FINISH_AFTER_RECLAIMED);
+          MODE_FINISH_AFTER_RECLAIMED,
+          MODE_EFFECT_THEN_WAIT,
+          MODE_STATEMENT_WAIT);
 
   private static final ScopeContext TENANT_A = ScopeContext.of("tenant-a", "person-a");
   private static final ScopeContext TENANT_B = ScopeContext.of("tenant-b", "person-b");
@@ -128,7 +141,14 @@ public final class RestartFixtureProcess {
                           @Override
                           public Object postProcessAfterInitialization(Object bean, String name) {
                             if (bean instanceof FollowUpHandler handler) {
-                              handler.behave(behaviour(mode, effectLog, handler, starting, seeded));
+                              handler.behave(
+                                  behaviour(
+                                      mode,
+                                      effectLog,
+                                      arguments.contains(DEDUPLICATE),
+                                      handler,
+                                      starting,
+                                      seeded));
                             }
                             return bean;
                           }
@@ -154,6 +174,7 @@ public final class RestartFixtureProcess {
   private static Function<WorkItem, Mono<EffectOutcome>> behaviour(
       String mode,
       boolean effectLog,
+      boolean deduplicate,
       FollowUpHandler handler,
       ConfigurableApplicationContext context,
       CompletableFuture<Void> seeded) {
@@ -163,9 +184,37 @@ public final class RestartFixtureProcess {
                 recordEffect(
                     context.getBean(DatabaseClient.class),
                     context.getEnvironment().getProperty("owlmast.jobs.instance-id", "unnamed"),
-                    item)
+                    item,
+                    deduplicate)
             : handler::applyEffect;
     return switch (mode) {
+      case MODE_EFFECT_THEN_WAIT ->
+          item ->
+              Mono.fromFuture(seeded).then(Mono.defer(() -> effect.apply(item))).then(Mono.never());
+      case MODE_STATEMENT_WAIT ->
+          item ->
+              Mono.fromFuture(seeded)
+                  .then(
+                      context
+                          .getBean(DatabaseClient.class)
+                          .sql(
+                              "insert into "
+                                  + TRANSACTION_TABLE
+                                  + " (item_id, instance) values (:id, :instance)")
+                          .bind("id", item.id())
+                          .bind(
+                              "instance",
+                              context
+                                  .getEnvironment()
+                                  .getProperty("owlmast.jobs.instance-id", "unnamed"))
+                          .then())
+                  .then(
+                      context
+                          .getBean(DatabaseClient.class)
+                          .sql("select pg_sleep(120) /* fixture-in-statement */")
+                          .then())
+                  .then(Mono.defer(() -> effect.apply(item)));
+
       // Waits (without blocking a thread) until every seeded row exists, then dies mid-attempt.
       case MODE_HALT_WHILE_LEASED ->
           item ->
@@ -210,20 +259,35 @@ public final class RestartFixtureProcess {
    * rejected and the handler's transaction rolls back.
    */
   private static Mono<EffectOutcome> recordEffect(
-      DatabaseClient database, String instance, WorkItem item) {
-    return database
-        .sql(
-            "insert into "
-                + EFFECT_LOG_TABLE
-                + " (idempotency_key, item_id, instance, attempt)"
-                + " values (:key, :item, :instance, :attempt)")
-        .bind("key", item.idempotencyKey())
-        .bind("item", item.id())
-        .bind("instance", instance)
-        .bind("attempt", item.attempt())
-        .then()
-        .contextWrite(context -> Context.empty())
-        .thenReturn(EffectOutcome.applied(item.idempotencyKey()));
+      DatabaseClient database, String instance, WorkItem item, boolean deduplicate) {
+    Mono<Void> delivery =
+        database
+            .sql(
+                "insert into "
+                    + EFFECT_LOG_TABLE
+                    + " (idempotency_key, item_id, instance, attempt)"
+                    + " values (:key, :item, :instance, :attempt)")
+            .bind("key", item.idempotencyKey())
+            .bind("item", item.id())
+            .bind("instance", instance)
+            .bind("attempt", item.attempt())
+            .then()
+            .contextWrite(context -> Context.empty());
+    // Receiver owns this unique constraint. Receipt and effect are the same atomic insert here;
+    // real receivers must atomically store their receipt with the business effect too.
+    Mono<Void> receipt =
+        deduplicate
+            ? database
+                .sql(
+                    "insert into "
+                        + RECEIVER_TABLE
+                        + " (idempotency_key, item_id) values (:key, :item) on conflict (idempotency_key) do nothing")
+                .bind("key", item.idempotencyKey())
+                .bind("item", item.id())
+                .then()
+                .contextWrite(context -> Context.empty())
+            : Mono.empty();
+    return delivery.then(receipt).thenReturn(EffectOutcome.applied(item.idempotencyKey()));
   }
 
   /** Completes once the item is {@code SUCCEEDED}, which only another process can have written. */
@@ -248,6 +312,20 @@ public final class RestartFixtureProcess {
                 + " (idempotency_key text not null, item_id uuid not null, instance text not null,"
                 + " attempt integer not null,"
                 + " recorded_at timestamptz not null default clock_timestamp())")
+        .then()
+        .block();
+    database
+        .sql(
+            "create table if not exists "
+                + RECEIVER_TABLE
+                + " (idempotency_key text primary key, item_id uuid not null)")
+        .then()
+        .block();
+    database
+        .sql(
+            "create table if not exists "
+                + TRANSACTION_TABLE
+                + " (item_id uuid not null, instance text not null)")
         .then()
         .block();
     AuditActor actor = AuditActor.of(ActorKind.HUMAN, "person-a");
