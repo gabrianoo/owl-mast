@@ -433,7 +433,20 @@ class OverlappingBackendsIT {
                             + held.id()
                             + "'"))
                 .isEqualTo(1));
-    if (pause) signal(old, "STOP");
+    if (pause) {
+      signal(old, "STOP");
+      assertThat(old.isAlive()).as(processes.tail(oldName)).isTrue();
+      assertThat(lease(held.id()))
+          .as("original RUNNING token still owns the paused attempt")
+          .isEqualTo(held);
+      assertThat(
+              count(
+                  "select count(*) from jobs.work_item where id = '"
+                      + held.id()
+                      + "' and lease_expires_at > clock_timestamp()"))
+          .as("SIGSTOP happened before natural expiry, not after an ordinary failed attempt")
+          .isEqualTo(1);
+    }
     Process replacement =
         launch(
             newName,
@@ -457,7 +470,8 @@ class OverlappingBackendsIT {
       Lease completed = lease(held.id());
       assertThat(completed.owner()).startsWith(OWNER_PREFIX + "new/");
       assertThat(completed.attempts()).isEqualTo(pause ? 2 : 1);
-      assertThat(effects(held.id())).hasSize(2);
+      assertThat(effects(held.id()))
+          .containsExactly(new Effect("old", 1), new Effect("new", pause ? 2 : 1));
       assertThat(
               count(
                   "select count(*) from "
@@ -471,7 +485,10 @@ class OverlappingBackendsIT {
         await()
             .during(Duration.ofSeconds(3))
             .atMost(Duration.ofSeconds(10))
-            .untilAsserted(() -> assertThat(lease(held.id())).isEqualTo(completed));
+            .untilAsserted(() -> {
+              assertThat(old.isAlive()).as(processes.tail(oldName)).isTrue();
+              assertThat(lease(held.id())).isEqualTo(completed);
+            });
       }
       assertThat(count("select count(*) from " + RestartFixtureProcess.RECEIVER_TABLE))
           .isEqualTo(RestartFixtureProcess.SEEDED_FOLLOW_UPS);
