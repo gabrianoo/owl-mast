@@ -420,9 +420,9 @@ The backend is a single instance (`backend.replicas` at most 1, AD-14) and its D
 strategy: a rollout stops the old pod before it starts the new one, so two backends never run against one
 database, at the cost of the backend being down while it restarts. That covers rollouts (an upgrade that
 changes the backend pod). A backend pod that is deleted or evicted outside a rollout is replaced at once,
-while it may still be shutting down; then Flyway's own lock and the expiring, fenced leases on durable work are
-what keep the two apart. The actuator serves these probes inside the
-cluster and is not routed externally (see routing below).
+while it may still be shutting down, so for that time two backends share the database: see
+[Two backends on one database](#two-backends-on-one-database) below. The actuator serves these probes inside
+the cluster and is not routed externally (see routing below).
 
 The backend may restart once on a cold install because it starts before the database accepts
 connections; Flyway fails fast, the kubelet restarts the container and the second start succeeds.
@@ -446,6 +446,50 @@ prefix of at least `/8` for IPv4 or `/32` for IPv6. The chart cannot check that 
 to the proxy and to nothing else; that stays with the operator. With
 `identity.keycloak.importRealm=false` the issuer realm exists only if an operator creates it, so rendering
 requires the acknowledgement `identity.keycloak.realmManagedByOperator=true`.
+
+### Two backends on one database
+
+`Recreate` keeps a rollout to one backend at a time. A backend pod that is deleted or evicted outside a rollout
+is replaced while it may still be shutting down, and then two backends share the database. They are the same
+build as long as the image reference is immutable (a digest, see [Pins](#pins)); with a tag that was pushed
+again the replacement can be another build, which is not covered here. `OverlappingBackendsIT` (backend
+integration suite, part of `./gradlew build` and of the CI `build` job) runs the overlap with two separate
+processes of the real application on one PostgreSQL and proves these four things:
+
+- **Migrations.** Two backends started together on an empty database both run Flyway, and every migration is
+  recorded once. While one of them is inside a migration it holds Flyway's advisory lock; the other one asks
+  for the lock and is refused until the first has finished, then finds the schema up to date.
+- **One queue.** Two running backends drain one queue of durable work with every item claimed once
+  (`attempt_count` 1), its effect applied once and every publication intent published once.
+- **Stopping.** A backend that is asked to stop (SIGTERM) while it holds an item gives the item back, and the
+  backend that is already running completes it, with the effect applied once. Until then the running backend
+  leaves the item alone, because its lease is live. The handler in this test is waiting when the stop arrives:
+  it has no statement in flight and has written nothing in its transaction.
+- **A late write.** A backend that is still inside a handler when its lease has expired, and finishes after the
+  other backend has reclaimed and completed the item, cannot change the item: its completion write is rejected.
+  An effect the handler applied outside its database transaction has then been applied twice, under the same
+  idempotency key. That is the contract's at-least-once delivery
+  ([durable work contract](durable-work-and-audit-contract.md)): a handler has to deduplicate such an effect by
+  that key. The contract also says that what the handler wrote inside its transaction rolls back with the
+  rejected write; this test does not assert that.
+
+A backend that is killed while it holds a lease (the grace period ran out, or the node failed) is covered by
+`ProcessRestartRecoveryIT`: the lease stays until it expires (`owlmast.jobs.lease-duration`, 30 s by default),
+then another backend reclaims the item.
+
+What these tests do not prove:
+
+- They run two processes against Testcontainers, not pods. No pod deletion or eviction has been run on a
+  cluster, and the Kind runs never had durable work in flight while two backends overlapped.
+- The lease in the late-write test is set to the past by the test. A running backend cancels a handler at
+  nine tenths of the lease, so on its own the case arises only for a backend that was paused or stalled past
+  its lease, and no test pauses a process.
+- A handler that is stopped in the middle of a database statement, or after its effect and before its
+  completion write, is not run with two processes.
+- Two backends of different builds: that is a rollout, which `Recreate` keeps to one backend at a time.
+- How long a backend waits for another one's migration. Flyway 12.4.0 asks for its lock once a second and
+  gives up after 50 tries by default; nothing in this repository sets or tests that. A backend that gives up
+  fails to start (seen once while the test was written, after 51 s) and the kubelet restarts the container.
 
 ## Persistent volumes and retention (T3)
 

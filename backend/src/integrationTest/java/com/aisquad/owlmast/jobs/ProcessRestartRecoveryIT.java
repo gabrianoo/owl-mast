@@ -3,18 +3,16 @@ package com.aisquad.owlmast.jobs;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
+import com.aisquad.owlmast.fixtures.restart.FixtureProcesses;
 import com.aisquad.owlmast.fixtures.restart.RestartFixtureProcess;
 import com.aisquad.owlmast.testing.OwlMastPostgres;
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterAll;
@@ -44,19 +42,20 @@ class ProcessRestartRecoveryIT {
       RestartFixtureProcess.SEEDED_FOLLOW_UPS + RestartFixtureProcess.SEEDED_MUTATIONS;
 
   private static PostgreSQLContainer database;
-  private static final List<Process> started = new ArrayList<>();
-  private static Path logs;
+  private static FixtureProcesses processes;
 
   @BeforeAll
   static void startDatabase() throws IOException {
     database = OwlMastPostgres.vectorChord();
     database.start();
-    logs = Files.createDirectories(Path.of("build", "restart-processes"));
+    processes = new FixtureProcesses(Path.of("build", "restart-processes"));
   }
 
   @AfterAll
   static void stopEverything() {
-    started.forEach(Process::destroyForcibly);
+    if (processes != null) {
+      processes.stopAll();
+    }
     if (database != null) {
       database.stop();
     }
@@ -104,7 +103,7 @@ class ProcessRestartRecoveryIT {
     assertThat(count("select count(*) from audit.publication_intent where published_at is null"))
         .isEqualTo(RestartFixtureProcess.SEEDED_MUTATIONS);
 
-    Process second = launch("second", "--fixture.mode=normal", "--fixture.seed=false");
+    Process second = launch("second", RestartFixtureProcess.MODE_NORMAL, "--fixture.seed=false");
     try {
       await()
           .atMost(Duration.ofMinutes(2))
@@ -201,43 +200,7 @@ class ProcessRestartRecoveryIT {
 
   private static Process launch(String name, Duration lease, String... fixtureArguments)
       throws IOException {
-    String java =
-        ProcessHandle.current()
-            .info()
-            .command()
-            .orElse(Path.of(System.getProperty("java.home"), "bin", "java").toString());
-    List<String> command = new ArrayList<>();
-    command.add(java);
-    command.add("--enable-native-access=ALL-UNNAMED");
-    command.add("-Xmx512m");
-    command.add("-cp");
-    command.add(System.getProperty("java.class.path"));
-    command.add(RestartFixtureProcess.class.getName());
-    command.add(
-        "--spring.r2dbc.url=r2dbc:postgresql://"
-            + database.getHost()
-            + ":"
-            + database.getFirstMappedPort()
-            + "/"
-            + database.getDatabaseName());
-    command.add("--spring.r2dbc.username=" + database.getUsername());
-    command.add("--spring.r2dbc.password=" + database.getPassword());
-    command.add("--spring.flyway.url=" + database.getJdbcUrl());
-    command.add("--spring.flyway.user=" + database.getUsername());
-    command.add("--spring.flyway.password=" + database.getPassword());
-    command.add("--server.port=0");
-    command.add("--spring.main.banner-mode=off");
-    command.add("--owlmast.jobs.scheduler.enabled=true");
-    command.add("--owlmast.jobs.poll-interval=PT0.2S");
-    command.add("--owlmast.jobs.lease-duration=" + lease);
-    command.addAll(List.of(fixtureArguments));
-    Process process =
-        new ProcessBuilder(command)
-            .redirectErrorStream(true)
-            .redirectOutput(logs.resolve(name + ".log").toFile())
-            .start();
-    started.add(process);
-    return process;
+    return processes.launch(database, name, lease, fixtureArguments);
   }
 
   private static long count(String sql) throws SQLException {
@@ -280,11 +243,6 @@ class ProcessRestartRecoveryIT {
   }
 
   private static String tail(String name) {
-    try {
-      List<String> lines = Files.readAllLines(logs.resolve(name + ".log"));
-      return String.join("\n", lines.subList(Math.max(0, lines.size() - 15), lines.size()));
-    } catch (IOException unreadable) {
-      return "(log unavailable)";
-    }
+    return processes.tail(name);
   }
 }
