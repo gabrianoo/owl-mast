@@ -784,7 +784,7 @@ def run_json_presence(run_path) -> bool | None:
 
 # Why ``abort_activation_use`` did or did not mark the record ``aborted``. Only ``aborted`` makes the creation
 # retryable; ``Store.ensure_run`` words a note for every other reason.
-ABORT_REASONS = ("aborted", "run-json-exists", "no-record", "unreadable", "not-pending", "not-this-run", "ledger-error")
+ABORT_REASONS = ("aborted", "run-json-exists", "no-record", "unreadable-file", "unreadable", "not-pending", "not-this-run", "ledger-error")
 
 
 def abort_activation_use(activation: Activation, state_dir: str | os.PathLike, run_id: str, run_path: Path, cause: BaseException | None = None) -> str:
@@ -797,7 +797,10 @@ def abort_activation_use(activation: Activation, state_dir: str | os.PathLike, r
       directory fsync failed); the record stays ``pending`` and the next open of the same run
       confirms it, so the document is not burned;
     - ``no-record``: the ledger holds no record for the document (nothing to mark);
-    - ``unreadable``: the record cannot be read or fails validation (a use; left as it is);
+    - ``unreadable-file``: the system refuses to read the record's file (``field: "file"``); the
+      record may be intact, and it is a use while it cannot be read (left as it is);
+    - ``unreadable``: the file reads but is not a valid record: a damaged record (a use; left as
+      it is);
     - ``not-pending``: the record is no longer ``pending`` (another process changed it; left as it is);
     - ``not-this-run``: the record names another run id or state directory (left as it is);
     - ``ledger-error``: the ledger could not be written, or ``run.json`` could not be examined; the
@@ -819,6 +822,8 @@ def abort_activation_use(activation: Activation, state_dir: str | os.PathLike, r
         used = activation_use(activation.digest, activation.path)
         if used is None:
             return "no-record"
+        if used.get("unreadable") and used.get("field") == "file":
+            return "unreadable-file"  # a refused read says nothing about the record: it may be intact (the reopen tells the two apart the same way)
         if used.get("unreadable"):
             return "unreadable"
         if not _same_run(used, state_dir, run_id):

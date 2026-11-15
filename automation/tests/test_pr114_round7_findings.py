@@ -11,8 +11,9 @@ stamps and the stamp rule; R1-5 has two: the journal lines and the git child; tw
 rewritten from PR #176, sit in the F9 and F17 classes). The R1-1 and R1-2
 classes, `StampIsTheClockWithoutAStopTests` (R1-3) and the documentation tests also carry the
 corrections of its review round 2 (R2-1 to R2-3); the R1-2 class and the documentation tests carry
-those of rounds 3 and 4 (R3-1 to R3-5, R4-1 to R4-5; R4-4 also put the thread id into the
-docstrings of the R1-3 tests that lacked it). R1-1 to R1-3 return the stamp rule to the scope F9 froze (a stamp is the clock
+those of rounds 3 to 5 (R3-1 to R3-5, R4-1 to R4-5, R5-1 and R5-2; R4-4 also put the thread id
+into the docstrings of the R1-3 tests that lacked it; R5-3 and R5-4, the abort note of a record
+that cannot be read and of one that is not this run's, are pinned in the F2 class). R1-1 to R1-3 return the stamp rule to the scope F9 froze (a stamp is the clock
 except under a recorded `clock-regression` stop), so the tests of PR #176 that pinned the floor
 without a stop, the field `issued_observed_at` and the stop `_authorize` recorded are rewritten here
 to pin their absence; an authorization is not issued while the clock reads before the high-water
@@ -179,7 +180,7 @@ class AbortNoteWhenRunJsonExistsTests(LiveCase):
     reason and says "run.json exists: reopen the same run"; it never promises a retry that writes a
     record or refuses."""
 
-    REASONS = (("no-record", "no record"), ("unreadable", "not a valid record"), ("not-pending", "no longer pending"), ("not-this-run", "another run"), ("ledger-error", "could not be marked aborted"))
+    REASONS = (("no-record", "no record"), ("unreadable-file", "may be intact"), ("unreadable", "not a valid record"), ("not-pending", "no longer pending"), ("not-this-run", "another run"), ("ledger-error", "could not be marked aborted"))
 
     def creation_note(self, after) -> str:
         with save_then_fail(after):
@@ -242,6 +243,84 @@ class AbortNoteWhenRunJsonExistsTests(LiveCase):
         self.assert_reopen(self.creation_note(lambda: set_ledger(self.h, state_dir=7)), "not a valid record")
         self.h.coordinator()
         self.assertEqual([d["type"] for d in unconfirmed(self.store)], ["ledger-unreadable"])  # as the note says
+
+    def test_a_record_the_system_refuses_to_read_is_not_called_damaged(self):
+        """PR #185 R5-3 (thread PRRT_kwDOVjxExc63ZLEf): a ledger file the system refuses to read has
+        its own reason and note. The record may be intact, the remedy is to make the file readable,
+        and every later open tries again, as the reopen itself says; "damaged" and "inspect or
+        restore" are said only of a file that reads and is not a valid record. Mutations:
+        `abort_activation_use` returning `unreadable` for a refused read; the `unreadable-file`
+        entry of `abort_note` removed (the note falls back to the unnamed-reason text)."""
+        refused = VariantFieldAndReadErrnoTests.reading_fails(self, PermissionError(13, "Permission denied"))
+        record_activation_use(self.h.activation, self.h.h.state_dir, "run-live", T0)
+        with refused:
+            self.assertEqual(abort_activation_use(self.h.activation, self.h.h.state_dir, "run-live", self.store.run_path), "unreadable-file")
+        self.assertEqual(record(self.h)["state"], "pending")  # left as it is
+        set_ledger(self.h, state_dir=7)
+        self.assertEqual(abort_activation_use(self.h.activation, self.h.h.state_dir, "run-live", self.store.run_path), "unreadable")
+        for run_json_exists in (False, True, None):
+            file_note = state_module.abort_note("unreadable-file", "run-live", self.h.h.state_dir, run_json_exists=run_json_exists)
+            damaged_note = state_module.abort_note("unreadable", "run-live", self.h.h.state_dir, run_json_exists=run_json_exists)
+            with self.subTest(run_json_exists=run_json_exists):
+                self.assertIn("the system refuses to read its file", file_note)
+                self.assertIn("it may be intact", file_note)
+                self.assertIn("make that file readable", file_note)
+                for wrong in ("damaged", "inspect or restore", "not a valid record"):
+                    self.assertNotIn(wrong, file_note)
+                self.assertIn("reads but is not a valid record", damaged_note)
+                self.assertIn("a damaged record is a use", damaged_note)
+                self.assertIn("inspect or restore that file", damaged_note)
+                for wrong in ("make that file readable", "may be intact", "tries again"):
+                    self.assertNotIn(wrong, damaged_note)
+        self.assertIn("a retry refuses activation-used while it cannot be read (make that file readable, or re-issue the activation)", state_module.abort_note("unreadable-file", "run-live", self.h.h.state_dir))
+        self.assertIn("every later open tries again", state_module.abort_note("unreadable-file", "run-live", self.h.h.state_dir, run_json_exists=True))
+
+    def test_a_creation_whose_record_cannot_be_read_says_so_and_the_reopen_does_what_the_note_says(self):
+        """PR #185 R5-3: the creation's own note, end to end. The reopen journals the refused read
+        (`ledger-unreadable`, field `file`) and, once the file reads again, confirms the record."""
+        refused = VariantFieldAndReadErrnoTests.reading_fails(self, PermissionError(13, "Permission denied"))
+        note = self.creation_note(refused.start)
+        self.addCleanup(mock.patch.stopall)
+        self.assert_reopen(note, "it may be intact")
+        self.assertNotIn("damaged", note)
+        self.h.coordinator()  # the reopen while the file still cannot be read
+        self.assertEqual([(d["type"], d["field"], d["errno"]) for d in unconfirmed(self.store)], [("ledger-unreadable", "file", 13)])
+        refused.stop()
+        self.assertEqual(record(self.h)["state"], "pending")  # intact all along
+        self.h.coordinator()  # a later open tries again
+        self.assertEqual(record(self.h)["state"], "committed")
+
+    def test_every_reason_that_leaves_the_record_unmarked_has_its_own_note(self):
+        """PR #185 R5-3: a reason added to `ABORT_REASONS` without a note would get the unnamed-reason text."""
+        for reason in activation_module.ABORT_REASONS:
+            if reason == "aborted":  # the one reason that carries no note: the record was marked
+                continue
+            with self.subTest(reason=reason):
+                self.assertNotIn("was not marked aborted (", state_module.abort_note(reason, "run-live", self.h.h.state_dir))
+
+    def test_the_not_this_run_reopen_text_promises_a_mismatch_line_only_for_a_pending_or_aborted_record(self):
+        """PR #185 R5-4 (thread PRRT_kwDOVjxExc63ZLEh): `not-this-run` is returned before the state
+        is looked at, so the record can be committed, and the reopen journals `state-dir-mismatch`
+        only for a pending or aborted record of this run id under another state directory; a
+        committed one is left as it is. Mutation: the committed branch of `confirm_activation_use`
+        moved below the mismatch branch (a committed record is journaled too)."""
+        note = state_module.abort_note("not-this-run", "run-live", self.h.h.state_dir, run_json_exists=True)
+        self.assertIn("when it names this run id under another state directory, journals it (state-dir-mismatch) while the record is pending or aborted; a committed one is left as it is", note)
+        self.assertNotIn("journals it when it names this run id under another state directory (state-dir-mismatch)", note)
+        self.h.coordinator()
+        binding = self.store.load_run().activation
+        elsewhere = str(Path(self.h.h.tmpdir.name) / "moved-away")
+        for state in ("pending", "aborted"):
+            set_ledger(self.h, state=state, state_dir=elsewhere)
+            with self.subTest(state=state):
+                self.assertEqual(abort_activation_use(self.h.activation, self.h.h.state_dir, "run-live", self.store.run_path), "not-this-run")
+                outcome, detail = confirm_activation_use(binding, self.h.h.state_dir, "run-live")
+                self.assertEqual((outcome, detail["type"]), ("error", "state-dir-mismatch"))
+        set_ledger(self.h, state="committed", state_dir=elsewhere)
+        self.assertEqual(abort_activation_use(self.h.activation, self.h.h.state_dir, "run-live", self.store.run_path), "not-this-run")
+        self.assertEqual(confirm_activation_use(binding, self.h.h.state_dir, "run-live"), ("unchanged", {"committed": True}))  # no mismatch line
+        self.h.coordinator(activation=None)
+        self.assertEqual([d["type"] for d in unconfirmed(self.store)], [])
 
     def test_run_json_is_examined_first_and_only_absence_marks_the_record(self):
         self.assertIs(run_json_presence(self.store.run_path), False)
@@ -1841,7 +1920,8 @@ class RunOrderComparesIssuedAtTests(LiveCase):
     the clock and, issued under the `clock-behind-mark` guard, is never before the high-water
     mark as it stood at the issue (PR #185 R3-2, thread PRRT_kwDOVjxExc63Y0Ep: later gates raise
     the mark; PR #185 R4-1, thread PRRT_kwDOVjxExc63Y_Bl: an authorization an earlier build dated
-    before the mark is compared unchanged), so a retained run that started at a reading before
+    before the mark is compared unchanged; PR #185 R5-1, thread PRRT_kwDOVjxExc63ZLEX: the
+    historical record is a fixture run with no mark, so its `issued_at` has no lower bound), so a retained run that started at a reading before
     that mark can no longer settle an authorization issued under the guard, also inside the 5
     minutes before the mark; at `issued_at` or later it is accepted. The class also holds the
     round 3 tests of the two writers of the mark (R3-1) and of a forward skew past the tolerance
@@ -1936,6 +2016,15 @@ class RunOrderComparesIssuedAtTests(LiveCase):
         state = c.reconcile_retained_execution(S, auth["id"], {**receipt, "startedAt": "2026-11-07T11:55:00Z"}, evidence, "r", "p")  # before the mark (12:00), after the stored `issued_at`
         self.assertEqual(state.authorization(auth["id"])["status"], "consumed")
 
+    def test_the_historical_record_is_a_fixture_run_with_no_mark(self):
+        """PR #185 R5-1 (thread PRRT_kwDOVjxExc63ZLEX): the one record the command exists to clean
+        up has no mark to be dated before: a fixture run, no activation and no `last_observed_at`,
+        so `_high_water_text()` is `None` and its `issued_at` has no lower bound at all. The guide
+        says so; the test above models the other case, an earlier build's authorization on a live
+        run."""
+        run = json.loads((ROOT / "automation" / "tests" / "fixtures" / "historical-eng01-trusted-20261106" / "runs" / "eng01-trusted-20261106" / "run.json").read_text(encoding="utf-8"))
+        self.assertEqual((run["environment"], run.get("activation"), run.get("last_observed_at")), ("fixture", None, None))
+
     def test_a_later_gate_raises_the_mark_only_up_to_its_reading_and_not_past_expires_at(self):
         """PR #185 R4-2 (thread PRRT_kwDOVjxExc63Y_Bp): `issued_at` is a fresh reading and can be
         later than the mark its operation's gate left. A later gate that reads between the two
@@ -2013,9 +2102,19 @@ class RunOrderComparesIssuedAtTests(LiveCase):
         refuses until the clock is within the tolerance of the mark, and after the clear the issue
         still waits for the mark (`clock-behind-mark`). PR #185 R4-5 (thread
         PRRT_kwDOVjxExc63Y_CC): without a clear `authorize-repair` stays refused, also once the
-        clock has waited into the tolerance, up to the mark and past it. Mutation: a recorded
-        `clock-regression` stop ignored once the clock is back within the tolerance, in all three
-        places that read it (`_refuse_stopped`, `_durable_run_stop`, `_activation_stop`)."""
+        clock has waited into the tolerance, up to the mark and past it. Mutation (PR #185 R5-2,
+        thread PRRT_kwDOVjxExc63ZLEb): a recorded `clock-regression` stop ignored, once the clock
+        is back within the tolerance, by all three checks that refuse an advancing operation on
+        it: `_refuse_stopped`, `_durable_run_stop` and the recorded-stop branch of
+        `_activation_stop` (which `_run_stop` reaches only when `_durable_run_stop` returned
+        nothing). Any one of them refuses `authorize-repair`, so this test fails only when all
+        three ignore the stop; with one or two of them weakened it passes. Run one at a time
+        against the whole suite: `_durable_run_stop` weakened alone fails tests of the cleanup
+        consequences it drives (`RunStopOrderTests` among them), not this one; `_refuse_stopped`
+        or the `_activation_stop` branch weakened alone, or both together, fail no test, since
+        both are redundant behind `_durable_run_stop`. The other readers of the recorded stop
+        (`_observe_stop`, `_clearable_clock_stop`, `_floored`, the reports and `status`) refuse
+        nothing."""
         skewed, true_time = "2026-11-07T12:10:00Z", MARK
         c = review_authorized(self.h)
         c.bind_receipt(S, REVIEWER, REVIEW_WORKTREE, REVIEW_BRANCH, ok_worktree)
@@ -2556,7 +2655,7 @@ class DocumentedTests(unittest.TestCase):
         text = " ".join(DOCS.read_text(encoding="utf-8").split())
         for needle in ("`startedAt` at or after the authorization's `issued_at`", "`issued_at` is the clock as it read when the authorization was issued and, for an authorization issued by a build that has the `clock-behind-mark` guard (below; live runs, a fixture run has no mark), is never before the run's high-water mark as it stood at the issue",
                        "a run that started at a reading before that mark settles no authorization issued under the guard",
-                       "An authorization issued before the guard existed, as in the historical case, went through no such check and may be dated before the mark as it stood then; its `issued_at` is compared unchanged",  # PR #185 R4-1, thread PRRT_kwDOVjxExc63Y_Bl
+                       "An authorization issued before the guard existed went through no such check. In the historical case the run is a fixture run with no mark (its `run.json` holds neither `last_observed_at` nor an activation), so its `issued_at` has no lower bound at all; an authorization that an earlier build issued on a live run may be dated before the mark as it stood then. In both cases `issued_at` is compared unchanged",  # PR #185 R4-1, thread PRRT_kwDOVjxExc63Y_Bl; R5-1, thread PRRT_kwDOVjxExc63ZLEX
                        "Later gates raise the mark, each only when it runs under the operation lock (`status --read-only` takes none and writes nothing) and reads after the mark and not after `expires_at`, with no stop recorded (a gate that reads after `expires_at` records `activation-expired` instead and raises nothing), so a stored `issued_at` is usually before the mark as later operations leave it (`last_observed_at` in `run.json`)",  # PR #185 R3-2 and R4-2, threads PRRT_kwDOVjxExc63Y0Ep and PRRT_kwDOVjxExc63Y_Bp
                        "The mark is moved only by an operation's gate and by `clear-clock-regression` (to the later of the clock and the mark)",  # PR #185 R3-1, thread PRRT_kwDOVjxExc63Y0El
                        "it compares two clock readings, not the order in which the two things happened",
@@ -2610,7 +2709,7 @@ class DocumentedTests(unittest.TestCase):
                        "the run-order check is the one comparison of a state stamp (R2-2)", "can follow a gate that already saved its observation in `run.json` (R2-3)"):  # PR #185 round 2
             with self.subTest(needle=needle):
                 self.assertIn(needle, paragraph)
-        for needle in ("so no authorization issued under that guard is dated before the mark as it stood at the issue (one issued by an earlier build went through no guard and is compared as it is dated: R4-1)",
+        for needle in ("so no authorization issued under that guard is dated before the mark as it stood at the issue (one issued by an earlier build went through no guard and is compared as it is dated: R4-1; the historical run is a fixture run that has no mark at all: R5-1)",
                        "On the clock's own readings that wait is the distance from the refused reading to the mark: at most 5 minutes from the reading of a clear that ran inside the tolerance, and at most the skew after a forward-skewed observation of up to 5 minutes whose clock was then corrected to the true time",
                        "A clock that runs slow, stands still (a suspended host) or steps back again makes the real wait longer",  # PR #185 R4-3, thread PRRT_kwDOVjxExc63Y_Bx
                        "A larger skew is waited out the same way only when no gate runs while the clock reads more than 5 minutes behind the mark",
@@ -2618,7 +2717,9 @@ class DocumentedTests(unittest.TestCase):
                        "A forward-skewed observation past `expires_at` or past the wall-clock budget is not a wait at all",  # PR #185 R3-3, thread PRRT_kwDOVjxExc63Y0Eq
                        "the round 2 corrections are pinned in the R1-1 and R1-2 classes, in `StampIsTheClockWithoutAStopTests` (R1-3) and in its documentation tests",  # PR #185 R3-4, thread PRRT_kwDOVjxExc63Y0Es
                        "Round 3 changed no behaviour", "Its tests are in the R1-2 class and the documentation tests",
-                       "Round 4 changed no behaviour either", "R4-4: seven classes pin round 1, two each for R1-3 and R1-5, and two more R1-3 tests sit in the F9 and F17 classes"):
+                       "Round 4 changed no behaviour either", "Round 5 changed one note and no other behaviour", "abort reason `unreadable-file`: make that file readable", "a reopen journals `state-dir-mismatch` only while that record is pending or aborted (R5-4)",
+                       "the historical run is a fixture run with no mark (R5-1)", "the R4-5 test fails only when all three checks that refuse an advancing operation ignore the stop (R5-2)",  # PR #185 round 5
+                       "R4-4: seven classes pin round 1, two each for R1-3 and R1-5, and two more R1-3 tests sit in the F9 and F17 classes"):
             with self.subTest(needle=needle):
                 self.assertIn(needle, paragraph)
         for gone in ("dated before the mark and a run", "after a forward-skewed observation it is as long as the skew was", "pinned in the same classes", "is not waited out", "only the owner's clear ends"):
@@ -2629,13 +2730,19 @@ class DocumentedTests(unittest.TestCase):
         for needle in ("round 1 of PR #185", "R1-1 to R1-5", "R2-1 to R2-3", "R3-1 to R3-5", "R4-1 to R4-5",
                        "seven classes for the walkthrough risks R1-1 to R1-5 (R1-3 and R1-5 have two each; two more R1-3 tests sit in the F9 and F17 classes)",  # PR #185 R4-4, thread PRRT_kwDOVjxExc63Y_B6
                        "the `issued_at` of an authorization issued under that guard, which is never before the mark as it stood at the issue",  # PR #185 R4-1, thread PRRT_kwDOVjxExc63Y_Bl
-                       "an authorization that an earlier build dated before the mark, which is compared as it is dated",
+                       "an authorization that an earlier build dated before the mark, which is compared as it is dated; the historical record is a fixture run with no mark, so its `issued_at` has no lower bound at all",  # PR #185 R5-1, thread PRRT_kwDOVjxExc63ZLEX
                        "the R1-1 and R1-2 classes, `StampIsTheClockWithoutAStopTests` (R1-3) and the documentation tests also carry the corrections of review round 2",
-                       "the R1-2 class and the documentation tests those of rounds 3 and 4",
+                       "the R1-2 class and the documentation tests those of rounds 3 to 5", "R5-1 and R5-2 (R5-3 and R5-4, the abort note of a record that cannot be read and of one that is not this run's, are pinned in the F2 class)",
                        "never before the mark as it stood at the issue"):
             with self.subTest(needle=needle):
                 self.assertIn(needle, readme)
         self.assertNotIn("they also carry the corrections", readme)  # PR #185 R3-4: the R1-5 classes hold no round 2 pin
+
+    def test_the_guide_tells_a_record_that_cannot_be_read_from_a_damaged_one_in_the_abort_notes(self):
+        """PR #185 R5-3 (thread PRRT_kwDOVjxExc63ZLEf): the guide lists the two notes apart, as the code words them."""
+        text = " ".join(DOCS.read_text(encoding="utf-8").split())
+        self.assertIn("the record is missing, cannot be read (the system refuses to read its file: the record may be intact, and the note says to make that file readable), is not a valid record (damaged: inspect or restore that file), is no longer `pending` or names another run", text)
+        self.assertNotIn("the record is missing, unreadable, no longer `pending`", text)
 
     def test_the_round_1_classes_are_the_ones_the_readme_counts(self):
         """PR #185 R4-4 (thread PRRT_kwDOVjxExc63Y_B6): the count the README, the guide and this

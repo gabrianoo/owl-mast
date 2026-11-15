@@ -158,12 +158,14 @@ def abort_note(reason: str, run_id: str, state_dir, run_json_exists: bool | None
     notes = {
         "no-record": ("the use ledger holds no record of this creation (it was removed); nothing was marked", "a retry writes a new record",
                       "the reopen finds no record to confirm and adds none"),
-        "unreadable": ("the use ledger record of this document cannot be read or is not a valid record; it was left as it is, and a damaged record is a use", "a retry refuses activation-used (inspect or restore that file, or re-issue the activation)",
+        "unreadable-file": ("the use ledger record of this document cannot be read (the system refuses to read its file); it may be intact and was left as it is, and a record that cannot be read is a use", "a retry refuses activation-used while it cannot be read (make that file readable, or re-issue the activation)",
+                            "the reopen journals it (ledger-unreadable) and cannot confirm it while it cannot be read; every later open tries again: make that file readable"),
+        "unreadable": ("the use ledger record of this document reads but is not a valid record; it was left as it is, and a damaged record is a use", "a retry refuses activation-used (inspect or restore that file, or re-issue the activation)",
                        "the reopen journals the damaged record (ledger-unreadable) and cannot confirm it: inspect or restore that file"),
         "not-pending": ("the use ledger record is no longer pending (another process changed it); it was left as it is", "a retry is judged on its state (check-activation reports it)",
                         "the reopen confirms a record of this run that reads aborted and leaves one that is already committed"),
         "not-this-run": ("the use ledger record names another run or state directory; it was left as it is, and this document creates nothing more", "a retry refuses activation-used",
-                         "the reopen does not confirm a record that is not this run's, and journals it when it names this run id under another state directory (state-dir-mismatch)"),
+                         "the reopen does not confirm a record that is not this run's and, when it names this run id under another state directory, journals it (state-dir-mismatch) while the record is pending or aborted; a committed one is left as it is (it settles earlier mismatch lines of this run)"),
         "ledger-error": ("the use ledger record could not be marked aborted (the ledger could not be written, or the run directory could not be examined); it stays pending", "a retry refuses activation-used as an unconfirmed creation (re-issue the activation)",
                          "the reopen confirms the pending record once the ledger can be written"),
     }
