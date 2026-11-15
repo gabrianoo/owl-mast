@@ -420,7 +420,9 @@ The backend is a single instance (`backend.replicas` at most 1, AD-14) and its D
 strategy: a rollout stops the old pod before it starts the new one, so two backends never run against one
 database, at the cost of the backend being down while it restarts. That covers rollouts (an upgrade that
 changes the backend pod). A backend pod that is deleted or evicted outside a rollout is replaced at once,
-while it may still be shutting down, so for that time two backends share the database: see
+while it may still be shutting down, so for that time two backends share the database. A backend pod on a
+node that is cut off from the API server is replaced too, and it keeps running, so there the two share the
+database for as long as the node is cut off: see
 [Two backends on one database](#two-backends-on-one-database) below. The actuator serves these probes inside
 the cluster and is not routed externally (see routing below).
 
@@ -449,12 +451,25 @@ requires the acknowledgement `identity.keycloak.realmManagedByOperator=true`.
 
 ### Two backends on one database
 
-`Recreate` keeps a rollout to one backend at a time. A backend pod that is deleted or evicted outside a rollout
-is replaced while it may still be shutting down, and then two backends share the database. They are the same
-build as long as the image reference is immutable (a digest, see [Pins](#pins)); with a tag that was pushed
-again the replacement can be another build, which is not covered here. `OverlappingBackendsIT` (backend
-integration suite, part of `./gradlew build` and of the CI `build` job) runs the overlap with two separate
-processes of the real application on one PostgreSQL and proves these four things:
+`Recreate` keeps a rollout to one backend at a time. Outside a rollout two backends can share the database
+in two cases:
+
+- **A pod that is deleted or evicted.** It is replaced while it may still be shutting down. The two overlap
+  until the old pod has stopped.
+- **A node that is cut off from the API server but still reaches the database.** Kubernetes marks the node
+  unreachable. Once the pod has tolerated that for its `tolerationSeconds` (300 s where the cluster keeps the
+  Kubernetes default; the chart sets no toleration and has no value for one), Kubernetes marks the pod for
+  deletion and starts a replacement on another node, if the cluster has one. The kubelet on the cut-off node
+  does not learn of the deletion, so the old backend is not asked to stop and is not killed. It keeps
+  claiming and running durable work next to its replacement until the node reaches the API server again,
+  which can take minutes or longer; then the kubelet stops it. This is how Kubernetes handles an unreachable
+  node (read from its documentation, the pages "Nodes" and "Taints and Tolerations"); it was not run here.
+
+In both cases the two backends are the same build as long as the image reference is immutable (a digest, see
+[Pins](#pins)); with a tag that was pushed again the replacement can be another build, which is not covered
+here. `OverlappingBackendsIT` (backend integration suite, part of `./gradlew build` and of the CI `build`
+job) runs the overlap with two separate processes of the real application on one PostgreSQL and proves these
+four things:
 
 - **Migrations.** Two backends started together on an empty database both run Flyway, and every migration is
   recorded once. The test holds the first migration open: the backend inside it holds Flyway's advisory lock,
@@ -479,14 +494,31 @@ processes of the real application on one PostgreSQL and proves these four things
   that key. The contract also says that what the handler wrote inside its transaction rolls back with the
   rejected write; this test does not assert that.
 
+These four things are about the database, not about how the pod was replaced, so they are what applies in
+both cases. The cases differ in how long the two backends run together. For a pod that is shutting down it
+is that shutdown. For a cut-off node it is the whole time the node is cut off, and both backends are fully
+running: that is the state "One queue" was tested in, for seconds and not for that long. "A late write" and
+its at-least-once delivery can then occur at any moment of that time. A cut-off does not make them more
+likely for one item (the case still needs a backend that stalled past its lease), but a handler has to
+deduplicate its effect outside the database by the idempotency key for as long as the cut-off lasts.
+"Stopping" applies when the node is back and the kubelet stops the old backend. "Migrations" matters only
+when both backends start on a database that still has migrations to apply; a replacement of the same build
+finds none.
+
 A backend that is killed while it holds a lease (the grace period ran out, or the node failed) is covered by
 `ProcessRestartRecoveryIT`: the lease stays until it expires (`owlmast.jobs.lease-duration`, 30 s by default),
-then another backend reclaims the item.
+then another backend reclaims the item. A node that is cut off while its backend keeps running is the second
+case above: that backend is not killed.
 
 What these tests do not prove:
 
 - They run two processes against Testcontainers, not pods. No pod deletion or eviction has been run on a
   cluster, and the Kind runs never had durable work in flight while two backends overlapped.
+- No node was cut off from the API server. That its backend keeps running next to a replacement, when the
+  replacement starts and when the old backend is stopped are Kubernetes behaviour that was read, not run.
+  The Kind cluster used for qualification has one node, so it cannot run the case. The tests ran two
+  backends together for seconds, not for the minutes or longer such a cut-off can last. A rollout that is
+  started while a node is cut off was not looked at.
 - The lease in the late-write test is set to the past by the test. A running backend cancels a handler at
   its handler deadline (`owlmast.jobs.handler-deadline`, by default nine tenths of the lease). The deadline
   is always shorter than the lease, because the backend does not start with one that is not. So on its own

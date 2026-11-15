@@ -805,6 +805,9 @@ class ReviewCycle1Test(unittest.TestCase):
             backend = deployments_of(render(*args))["t-owl-mast-backend"]
             self.assertEqual(backend["spec"]["strategy"], {"type": "Recreate"}, name)
             self.assertEqual(backend["spec"]["replicas"], 1, name)
+            # 189/R10-1: the guide gives the time before a backend on an unreachable node is replaced as the cluster's default
+            # toleration, which holds only while the chart sets none on the backend pod
+            self.assertNotIn("tolerations", backend["spec"]["template"]["spec"], name)
         self.assertIn("schema", refused(*sets("backend.replicas=2")).lower())
         # every Deployment's strategy, with the frontend deployed too: a change to any of them is a decision, not a drift
         strategies = {name: d["spec"].get("strategy") for name, d in deployments_of(render(*sets("frontend.enabled=true", "frontend.image.tag=0.0.1-shell"))).items()}
@@ -970,6 +973,9 @@ class ReviewCycle1Test(unittest.TestCase):
                        "release that was installed client-side", "so the server may accept it; either way it is not supported",
                        "was **not run** for a 0.1.0 installation",
                        "uses the `Recreate` strategy: a rollout stops the old pod before it starts the new one",
+                       # 189/R10-1: the overlap is not only a shutdown window, and the cut-off case is stated as read, not run
+                       "**A node that is cut off from the API server but still reaches the database.**",
+                       "the chart sets no toleration and has no value for one", "No node was cut off from the API server.",
                        "**not run** by the script (`frontend.enabled=false`)"):
             self.assertIn(phrase, doc, phrase)
         # #162: the upgrade from chart 0.1.0 was run (and refused), and the guide no longer describes a backend that rolls without surge
