@@ -511,10 +511,14 @@ class Coordinator:
         if self.store._lock_depth:
             self._observe_stop(operation)
         if advancing:
-            if self.run.activation_stop is not None:
-                stop = self.run.activation_stop
-                raise BudgetExhausted(f"{operation}: {STOP_REASONS[stop['code']]} (observed {stop['observed_at']} during {stop.get('operation')}: {stop['message']}); the run never advances again; only cancel, block, record-task-terminal, record-no-launch, cancel-run, resume (cleanup) and status are allowed", code=stop["code"], stop=stop)
+            self._refuse_stopped(operation)
             self._refuse_unless_current(operation)
+
+    def _refuse_stopped(self, operation: str) -> None:
+        """An advancing operation refuses under a recorded activation stop."""
+        stop = self.run.activation_stop
+        if stop is not None:
+            raise BudgetExhausted(f"{operation}: {STOP_REASONS[stop['code']]} (observed {stop['observed_at']} during {stop.get('operation')}: {stop['message']}); the run never advances again; only cancel, block, record-task-terminal, record-no-launch, cancel-run, resume (cleanup) and status are allowed", code=stop["code"], stop=stop)
 
     def _reload_run(self) -> None:
         """Fresh locked state: the run as persisted now, never a cached object. The repository,
@@ -650,9 +654,11 @@ class Coordinator:
         return self.run.last_observed_at or (self.run.activation or {}).get("validated_at")
 
     def _at_least_high_water(self, at: str) -> str:
-        """``at``, or the run's high-water mark when the clock reads earlier: a record written while the
-        clock is behind (a clearable clock-regression stop) is never stamped before what the run already
-        observed."""
+        """``at`` as it was given, or the run's high-water mark when the clock reads earlier: a record
+        written while the clock is behind under a recorded clock-regression stop is never stamped
+        before what the run already observed (:meth:`_floored` decides when this applies). The
+        result differs from ``at`` only when the mark won, so a caller can tell a floored stamp by
+        comparing the two."""
         mark = self._high_water_text()
         if mark is None:
             return at
@@ -660,13 +666,60 @@ class Coordinator:
         now, high_water = _parse_time(at, "now", problems), _parse_time(mark, "high-water mark", problems)
         if problems or now is None or high_water is None:
             return at
-        return _utc_text(max(now, high_water))
+        return _utc_text(high_water) if now < high_water else at
+
+    def _stamp(self) -> str:
+        """The time a state record is stamped with (an authorization's ``revoked_at`` /
+        ``resolved_at`` / ``bound_at``, a ``task_history`` entry, ``blocked.at``, a claim, a check,
+        a review, a proposal, an intent's ``created_at`` and ``completed_at``). One rule
+        (:meth:`_floored`): a stamp is the clock, except under a recorded ``clock-regression`` stop,
+        where it is never earlier than the run's high-water mark.
+
+        Under that stop the clock may be far behind what the run already observed while cleanup
+        still runs (terminal evidence, cancel, block, a cleanup bind, a revocation or a no-launch
+        resolution): stamped with the raw clock, a record written then would read long before
+        records written earlier. Without a recorded stop (none was ever recorded, or it was
+        cleared) the gate's observation was at most the tolerance behind the mark; a reading taken
+        later in the same operation is not judged, so a stamp can be further behind. The stamp is
+        the clock: the same clock the journal line and ``updated_at`` of the same operation are
+        written from, read separately.
+        Two costs, stated in the guide: after a clear that ran with the clock still inside the
+        tolerance, a stamp can read up to the tolerance before one floored during the stop; and
+        with no stop at all, a clock inside the tolerance writes stamps that read earlier than
+        previous ones (the journal agrees with them). Nothing orders or compares state stamps
+        (list position and the journal ``seq`` are the order), with one exception: the run-order
+        check of ``reconcile_retained_execution`` compares ``issued_at`` with ``startedAt``.
+
+        ``StoryState.updated_at`` and the journal's ``at`` are never floored: the Store writes them
+        from the wall clock, the record of what the clock said. ``_authorize`` stamps ``issued_at``
+        with the clock itself: it runs only in advancing operations, which refuse under a stop,
+        and it issues nothing while the clock reads before the mark."""
+        return self._floored(self.now())
+
+    def _floored(self, at: str) -> str:
+        """``at`` as a state stamp: the run's high-water mark when ``at`` is earlier and a
+        ``clock-regression`` stop is recorded on a live run; ``at`` itself otherwise (no stop, a
+        cleared stop, an ``activation-expired`` stop, a fixture run)."""
+        run = getattr(self, "run", None)
+        if self.environment == "live" and run is not None and (run.activation_stop or {}).get("code") == "clock-regression":
+            return self._at_least_high_water(at)
+        return at
 
     def _clock_stop_report(self) -> dict | None:
         """For ``status``: whether a recorded ``clock-regression`` stop can still be cleared, and why not.
         ``clearable`` is :meth:`_clearable_clock_stop` and the wall clock judged on the high-water mark
         (a clear refuses past it, and the stop then has the cleanup-only consequences); ``reason`` is
-        ``None`` while it is clearable."""
+        ``None`` while it is clearable.
+
+        ``clearable`` says what the stop is: ``False`` means it has its durable, cleanup-only
+        consequences. It does not say that a clear run now would succeed: ``clear-clock-regression``
+        also needs the run's activation presented and current. That is reported beside it, never
+        folded into it (a missing ``--activation`` does not make a stop durable): ``presented_current``
+        is whether the activation this coordinator was given is the run's and current at this
+        observation, and ``clear_requires`` names ``--activation`` and the problem while it is not
+        (``None`` otherwise, and on a stop that is not clearable, which no document clears). While
+        ``wait_until`` is set the clock is behind, so a presented document is judged on a clock that
+        is not trusted: ``clear_requires`` says so and that it is judged again at ``wait_until``."""
         stop = self.run.activation_stop
         if self.environment != "live" or stop is None or stop.get("code") != "clock-regression":
             return None
@@ -689,14 +742,26 @@ class Coordinator:
             clearable = False
             reason = "a recorded time cannot be parsed (" + "; ".join(problems) + "): no clear can be judged"
         elif not clearable:
-            reason = f"the later of the clock and the high-water mark {high_water} is past the recorded expires_at {expires_at}: no clear can succeed"
+            later, which = (_utc_text(now), "the clock") if now > mark else (_utc_text(mark), "the high-water mark")  # the time that is actually past the window, and which of the two it is
+            reason = f"the later of the clock and the high-water mark is {later} ({which}), past the recorded expires_at {expires_at}: no clear can succeed"
         elif self._policy_drift():
             clearable = False
             reason = "the policy changed since the run was created (policy drift): the activation is not current, so no clear can succeed"
         elif self._elapsed(on_high_water=True) > timedelta(minutes=self.policy.max_wall_clock_minutes):
             clearable = False
             reason = f"the wall-clock budget of {self.policy.max_wall_clock_minutes} minutes is spent, judged on the high-water mark: the run is over"
-        return {"clearable": clearable, "clear_spent": spent, "high_water": high_water, "expires_at": expires_at, "wait_until": wait_until if clearable else None, "reason": reason}
+        # the clear's own activation checks (``clear_clock_regression``): presented, the run's document, current at this observation
+        activation_problems = self._activation_problems()
+        presented_current = not activation_problems
+        clear_requires = None
+        if clearable and not presented_current:
+            what = "none is presented" if self.activation is None else "the one presented is not current: " + "; ".join(m for _, m in activation_problems)
+            clear_requires = f"clear-clock-regression needs the run's current activation (--activation): {what} ({Activation.stop_code(activation_problems)})"
+            if wait_until is not None and self.activation is not None:
+                # the clock is behind: a time problem reported now (before issued_at) may be the regressed clock, not the document
+                clear_requires += f"; the activation is judged on the present clock ({self._at()}), which is behind the high-water mark, and will be judged again once the clock reaches {wait_until}"
+        return {"clearable": clearable, "clear_spent": spent, "high_water": high_water, "expires_at": expires_at, "wait_until": wait_until if clearable else None, "reason": reason,
+                "presented_current": presented_current, "clear_requires": clear_requires}
 
     def _stop_message(self, code: str) -> str:
         if code == "run-cancelled":
@@ -750,7 +815,27 @@ class Coordinator:
     def _authorize(self, state: StoryState, purpose: str, sha: str | None = None, round_: int | None = None) -> dict:
         """Issue (or return the already pending) durable task authorization for ``purpose``.
         Refuses BEFORE any launch when the delegated-task budget would be exceeded. The
-        authorization is counted from the moment it is saved, bound or not."""
+        authorization is counted from the moment it is saved, bound or not.
+
+        Nothing is issued while the clock reads before the run's high-water mark (live runs; a
+        fixture run has no mark): ``issued_at`` is the clock, and the reconciliation accepts a run
+        that started at or after it, so an authorization dated before the mark would accept runs
+        that started before it was issued. That is all the guard proves, and it proves it against
+        the mark as it stood at the issue (a later gate raises the mark only when it runs under
+        the lock, which ``status --read-only`` does not, its reading is after the mark and not
+        after ``expires_at`` and no stop is recorded; ``issued_at`` is a fresh reading that can be
+        later than the mark, so the mark passes it only once such a reading, or the clear's, is
+        after ``issued_at``): a clock that steps back and still reads
+        at or after the mark dates the authorization before a run that started earlier (the mark
+        is moved only by a gate and by ``clear_clock_regression``, which sets it to the later of
+        the clock and the mark; no reading taken after a gate raises it, #181). The refusal
+        (``clock-behind-mark``) is not a stop: the guard records and saves nothing (the
+        operation's gate, which ran first, may already have saved its observation in
+        ``run.json``), the next operation's gate judges the clock, and the issue goes through once
+        the clock reads the mark or later (``retry_at`` in the detail; not ``wait_until``, which
+        in ``status`` is the mark minus the tolerance). A reading or a mark that cannot be parsed
+        refuses ``activation-invalid`` and issues nothing. A pending authorization returned
+        idempotently is not guarded: nothing is issued."""
         role = AUTHORIZATION_FLOW[purpose][2]
         self._wall_clock()  # an expired run returns no authorization, pending or new; the pending slot stays spent
         unresolved = state.unresolved_authorization()
@@ -763,8 +848,18 @@ class Coordinator:
         counts = self._counts()
         if counts["delegated_tasks"] + 1 > self.policy.max_delegated_tasks:
             raise BudgetExhausted(f"delegated task budget {self.policy.max_delegated_tasks} exhausted ({counts['delegated_tasks']} authorizations issued); no task may be launched", issued=counts["delegated_tasks"])
+        issued_at = self.now()
+        if self.environment == "live":  # a fixture run has no mark
+            mark = self._high_water_text()
+            problems: list[str] = []
+            reading, high_water = _parse_time(issued_at, "now", problems), _parse_time(mark, "high-water mark", problems)
+            if problems or reading is None or high_water is None:  # never issued on a comparison that cannot be made
+                raise Refused(f"authorize {purpose}: cannot compare the clock with the run's high-water mark: " + "; ".join(problems) + "; nothing was issued", code="activation-invalid", problems=problems)
+            if reading < high_water:
+                raise Refused(f"the clock reads {issued_at}, before the run's high-water mark {mark}: an authorization issued now would be dated before runs that started earlier; nothing was issued and no stop is recorded; retry once the clock reads {mark} or later",
+                              code="clock-behind-mark", observed_at=issued_at, high_water=mark, retry_at=mark)
         auth = {"id": f"{self.store.run_id}:{state.story}:{len(state.authorizations) + 1}", "role": role, "purpose": purpose, "sha": sha, "round": round_,
-                "issued_at": self.now(), "status": "pending", "task_id": None, "reason": None}
+                "issued_at": issued_at, "status": "pending", "task_id": None, "reason": None}
         state.authorizations.append(auth)
         return auth
 
@@ -774,13 +869,13 @@ class Coordinator:
         and nothing is released or re-issued until it is resolved. Stays counted."""
         pending = state.pending_authorization()
         if pending is not None:
-            pending["status"], pending["reason"], pending["revoked_at"] = "revoked", reason, self.now()
+            pending["status"], pending["reason"], pending["revoked_at"] = "revoked", reason, self._stamp()
         return pending
 
     def _resolve_not_launched(self, state: StoryState, auth: dict, reason: str, source: str) -> dict:
         """Positive no-launch reconciliation of an unresolved authorization (in memory; the
         caller saves and journals). The slot stays counted: an issued slot is spent."""
-        auth["status"], auth["reason"], auth["resolved_at"], auth["resolution"] = "not-launched", reason, self.now(), source
+        auth["status"], auth["reason"], auth["resolved_at"], auth["resolution"] = "not-launched", reason, self._stamp(), source
         return auth
 
     def _unreturned_authorization(self, state: StoryState) -> dict | None:
@@ -873,7 +968,7 @@ class Coordinator:
         if operation in ADVANCING_EVIDENCE_OPERATIONS and not successful:
             raise Refused(f"{operation}: {active['role']} task {active['taskId']} of {state.story} terminated as {evidence['status']!r} (run {active['runId']}); an unsuccessful execution completed nothing and cannot advance the story; it stays owned until released (record-task-terminal, cancel or block)",
                           code=unsuccessful_code(evidence["status"]), task_id=active["taskId"], role=active["role"], authorization=active.get("authorization"), status=evidence["status"], run_id=active["runId"])
-        record = {"taskId": active["taskId"], "runId": active["runId"], "role": active["role"], "status": evidence["status"], "successful": successful, "at": self.now(), "operation": operation, "authorization": active.get("authorization"), "evidence_shape": evidence["shape"]}
+        record = {"taskId": active["taskId"], "runId": active["runId"], "role": active["role"], "status": evidence["status"], "successful": successful, "at": self._stamp(), "operation": operation, "authorization": active.get("authorization"), "evidence_shape": evidence["shape"]}
         state.task_history.append(record)
         state.active_task = None
         return record
@@ -1173,7 +1268,7 @@ class Coordinator:
         if existing is not None:
             return existing
         marker = {"kind": kind, "run": self.store.run_id, "story": state.story, "op": op, **({"inst": self.run.instance} if self.run.instance else {}), **extra}
-        intent = Intent(op, kind, marker, body=f"{render_marker(**marker)}\n{body}", preconditions=preconditions or {})
+        intent = Intent(op, kind, marker, body=f"{render_marker(**marker)}\n{body}", preconditions=preconditions or {}, created_at=self._stamp())  # never the Store's wall clock: stamped like the records saved with it
         state.intents.append(intent)
         return intent
 
@@ -1204,11 +1299,11 @@ class Coordinator:
             ids = [c.comment_id for c in found]
             self.store.journal(state.story, "duplicate-marker-detected", {"op": intent.op, "comment_ids": ids})
             if state.active:
-                state.blocked = {"reason": f"duplicate marker for {intent.op}: {ids}", "at": self.now(), "from_phase": state.phase, "conflict": True}
+                state.blocked = {"reason": f"duplicate marker for {intent.op}: {ids}", "at": self._stamp(), "from_phase": state.phase, "conflict": True}
                 state.phase = "conflict"
                 self.store.save_story(state)
             raise Conflict(f"marker {intent.marker} appears {len(found)} times; a concurrent writer posted the same event", comment_ids=ids)
-        intent.status, intent.comment_id, intent.completed_at = "done", found[0].comment_id, self.now()
+        intent.status, intent.comment_id, intent.completed_at = "done", found[0].comment_id, self._stamp()
         if phase_after:
             state.phase = phase_after
         self.store.save_story(state)  # completion and transition in one write
@@ -1250,7 +1345,7 @@ class Coordinator:
             if elsewhere:
                 raise Refused(f"another coordinator still holds an active claim on a story of this policy's allowlist: {elsewhere}; one active story at a time across every state directory and machine, so nothing is admitted until those claims are released, blocked or proposed by their own run (a stray or forged claim is cleared by the owner with dismiss-claim --issue <n> --comment-id <id>, or by deleting the comment)", code="claim-active-elsewhere", claims=elsewhere)
             state = StoryState(story=story, issue=entry.number, item_id=entry.item_id, phase="claim-incomplete", run_id=self.store.run_id,
-                               claim={"baseline_sha": baseline_sha, "reserved_at": self.now(), "scope": decision.outcome, "worktree_path": None, "branch": None, "race_settled": False},
+                               claim={"baseline_sha": baseline_sha, "reserved_at": self._stamp(), "scope": decision.outcome, "worktree_path": None, "branch": None, "race_settled": False},
                                revisions=current)
             auth = self._authorize(state, "implementation")  # refuses before any save or post when the task budget is spent
             intent = self._new_intent(state, "claim", "claim", f"Unattended reservation by run `{self.store.run_id}` from `{baseline_sha}` (scope: {decision.outcome}). An implementer task is delegated only after this reservation; its receipt is bound to the reservation. Project Status is owner-maintained; completion still requires checks, independent review and owner acceptance.", {"revisions": current})
@@ -1280,7 +1375,7 @@ class Coordinator:
             return  # settled by an earlier operation; states written before the flag are read as settled
         mine = next((c for c in self._marked_comments(issue, state.story, "claim race") if c.comment_id == claim.comment_id), None)
         if mine is None:
-            state.blocked = {"reason": f"claim comment {claim.comment_id} is not readable back after posting; the claim race cannot be settled", "at": self.now(), "from_phase": state.phase, "conflict": True, "race_unsettled": True}
+            state.blocked = {"reason": f"claim comment {claim.comment_id} is not readable back after posting; the claim race cannot be settled", "at": self._stamp(), "from_phase": state.phase, "conflict": True, "race_unsettled": True}
             state.phase = "conflict"
             self.store.save_story(state)
             self.store.journal(state.story, "claim-unverifiable", {"comment_id": claim.comment_id})
@@ -1318,7 +1413,7 @@ class Coordinator:
         abandoned = state.abandon_advancing_intents(reason)
         state.phase = "cancelled"
         state.claim["race_settled"] = True
-        state.blocked = {"reason": reason, "at": self.now(), "from_phase": "reserved", "cancelled": True, "conflict": True, "winner": winner, "abandoned_intents": abandoned, "authorizations_resolved": resolved}
+        state.blocked = {"reason": reason, "at": self._stamp(), "from_phase": "reserved", "cancelled": True, "conflict": True, "winner": winner, "abandoned_intents": abandoned, "authorizations_resolved": resolved}
         release = self._new_intent(state, "release", "release", f"Claim released by run `{self.store.run_id}`: {reason}. No completion is implied. Project Status is owner-maintained.")
         self.store.save_story(state)  # cancellation, the owed release and the resolution persist together
         self.store.journal(state.story, code, {"winner": winner, "ours": {"comment_id": mine.comment_id, "created_at": mine.created_at}, "authorizations_resolved": resolved})  # ``claim-race-lost`` (same story) or ``claim-active-elsewhere`` (another story)
@@ -1436,15 +1531,15 @@ class Coordinator:
                 if not ok:
                     raise Refused(f"worktree identity check failed: {why}", code="worktree-mismatch")
             if auth["purpose"] == "implementation":
-                state.claim.update({"worktree_path": worktree_path, "branch": branch, "claimed_at": self.now()})
-            auth["status"], auth["task_id"], auth["run_id"], auth["bound_at"] = "consumed", receipt["taskId"], receipt["runId"], self.now()
+                state.claim.update({"worktree_path": worktree_path, "branch": branch, "claimed_at": self._stamp()})
+            auth["status"], auth["task_id"], auth["run_id"], auth["bound_at"] = "consumed", receipt["taskId"], receipt["runId"], self._stamp()
             record = {**receipt, "authorization": auth["id"]}
             if role == "implementer":
                 state.implementer_receipts.append(record)
             else:
                 verified = not cleanup  # a cleanup-only receipt records any path given, unverified (the checkout is usually gone)
                 state.reviewer_receipts.append({**record, "sha": auth["sha"], "worktree": worktree_path, "branch": branch, "worktree_verified": verified, "head_at_bind": git_head(worktree_path) if worktree_path and verified else None})  # the exact commit this reviewer was authorized for, the independent checkout it reviewed in, and what that checkout read at binding (observed, not asserted: the reviewer checks the SHA out itself)
-            state.active_task = {"taskId": receipt["taskId"], "runId": receipt["runId"], "role": role, "authorization": auth["id"], "bound_at": self.now(), "retained": receipt["retained"]}
+            state.active_task = {"taskId": receipt["taskId"], "runId": receipt["runId"], "role": role, "authorization": auth["id"], "bound_at": self._stamp(), "retained": receipt["retained"]}
             if cleanup:
                 # Authorized before the stop or the revocation, possibly launched: keep the slot spent, the id bound
                 # and the task owned; authorize no work and leave the phase where it is.
@@ -1616,7 +1711,7 @@ class Coordinator:
                 self.store.journal(story, "retained-execution-already-reconciled", {"authorization": auth["id"], "task": owner, "run": run_id})
                 return state
             observed_at = self.now()
-            stamp = self._at_least_high_water(observed_at) if under_clock_stop else observed_at  # never before events already recorded for the run
+            stamp = self._floored(observed_at)  # under a recorded clock stop never before events already recorded for the run; the clock otherwise
             safe_auth = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in auth["id"])
             observed_part = f"-obs{observed_at.replace(':', '')}" if stamp != observed_at else ""  # the mark stays fixed while the clock is behind: the real observation keeps a retry from hitting backup-exists
             backup = self.store.story_path(story).with_name(f"{story}.json.bak-{stamp.replace(':', '')}{observed_part}-{safe_auth}")
@@ -1697,7 +1792,7 @@ class Coordinator:
             executed_all = len(results) == len(commands) and all("returncode" in r for r in results)
             passed = executed_all and all(r.get("returncode") == 0 for r in results) and head_after == sha and clean_after is True
             detail = {"commands": results, "executed": executed_all, "head_before": head_before, "head_after": head_after, "clean_before": clean_before, "clean_after": clean_after, "dirt_after": dirt_after}
-            state.checks.append({"sha": sha, "passed": passed, "at": self.now(), **detail})
+            state.checks.append({"sha": sha, "passed": passed, "at": self._stamp(), **detail})
             state.phase = "checks-passed" if passed else "checks-failed"
             self.store.save_story(state)
             self.store.journal(story, "checks-recorded", {"sha": sha, "passed": passed, "commands": len(results)})
@@ -1774,7 +1869,7 @@ class Coordinator:
             self._require_advancing_evidence(state, "record-review", sha)  # and must have completed, for exactly this commit, over a successful implementer run; a released interrupted/failed/cancelled worker proves nothing
             self._verify_worktree(state, sha, "record-review")
             regression = state.phase == "review-approved" and verdict == "changes-requested"
-            state.reviews.append({"sha": sha, "verdict": verdict, "report": report, "at": self.now(), "regression": regression})
+            state.reviews.append({"sha": sha, "verdict": verdict, "report": report, "at": self._stamp(), "regression": regression})
             abandoned: list[str] = []
             if verdict == "approved":
                 state.phase, state.approved_sha = "review-approved", sha
@@ -1795,7 +1890,7 @@ class Coordinator:
         objections = outstanding_objections(pr)
         if objections:
             state.phase, state.approved_sha = "changes-requested", None
-            state.reviews.append({"sha": sha, "verdict": "changes-requested", "report": f"GitHub review on PR #{pr_number} by {objections}", "at": self.now(), "regression": True})
+            state.reviews.append({"sha": sha, "verdict": "changes-requested", "report": f"GitHub review on PR #{pr_number} by {objections}", "at": self._stamp(), "regression": True})
             abandoned = state.abandon_advancing_intents(f"review regression on PR #{pr_number} by {objections}")
             self.store.save_story(state)
             self.store.journal(state.story, "review-regression-on-github", {"pr": pr_number, "sha": sha, "reviewers": objections, "abandoned_intents": abandoned})
@@ -1835,7 +1930,7 @@ class Coordinator:
                     intent.status, intent.reason, intent.body, intent.preconditions = "pending", None, f"{render_marker(**intent.marker)}\n{body}", {"sha": sha, "pr": pr_number, "revisions": dict(state.revisions)}
                 else:
                     intent = self._new_intent(state, op, "proposal", body, {"sha": sha, "pr": pr_number, "revisions": dict(state.revisions)}, sha=sha, pr=str(pr_number))
-                state.proposal = {"sha": sha, "pr": pr_number, "tasks": tasks, "at": self.now(), "ci": pr.checks}
+                state.proposal = {"sha": sha, "pr": pr_number, "tasks": tasks, "at": self._stamp(), "ci": pr.checks}
                 self.store.save_story(state)
             self._post_intent(state, intent, phase_after="proposed")
             self.store.journal(story, "proposed", {"sha": sha, "pr": pr_number})
@@ -1850,7 +1945,7 @@ class Coordinator:
         resolved = self._settle_authorizations(state, phase, reason, no_launch)
         evidence = self._apply_task_evidence(state, task_evidence, phase) if state.active_task is not None else None
         abandoned = state.abandon_advancing_intents(f"story {phase}: {reason}")
-        state.blocked = {"reason": reason, "at": self.now(), "from_phase": state.phase, "cancelled": phase == "cancelled", "task_evidence": task_evidence, "no_launch": no_launch, "abandoned_intents": abandoned, "authorizations_resolved": resolved}
+        state.blocked = {"reason": reason, "at": self._stamp(), "from_phase": state.phase, "cancelled": phase == "cancelled", "task_evidence": task_evidence, "no_launch": no_launch, "abandoned_intents": abandoned, "authorizations_resolved": resolved}
         state.phase = phase
         intent = self._new_intent(state, op, kind, body)
         self.store.save_story(state)  # terminal phase, cleanup intent, abandonments and authorization resolutions persist together
@@ -1915,7 +2010,7 @@ class Coordinator:
         resolved = self._settle_authorizations(state, "cancelled", reason, None)  # the reservation never returned: structurally no launch
         abandoned = state.abandon_advancing_intents(reason)
         state.phase = "cancelled"
-        state.blocked = {"reason": reason, "at": self.now(), "from_phase": "claim-incomplete", "cancelled": True, "changed": sorted(changed),
+        state.blocked = {"reason": reason, "at": self._stamp(), "from_phase": "claim-incomplete", "cancelled": True, "changed": sorted(changed),
                          "claim_comment_ids": [c.comment_id for c in found], "release_owed": bool(found), "abandoned_intents": abandoned, "authorizations_resolved": resolved}
         release = self._new_intent(state, "release", "release", f"Claim released by run `{self.store.run_id}`: {reason}. No completion is implied. Project Status is owner-maintained.") if found else None
         self.store.save_story(state)  # cancellation and the owed cleanup persist together
@@ -2198,8 +2293,8 @@ class Coordinator:
 
         A clock that is still behind is never trusted: the clear refuses (``clock-regression``)
         while this observation is more than the tolerance (``CLOCK_REGRESSION_TOLERANCE_MINUTES``)
-        behind the high-water mark the stop was judged against, and that mark is kept, never
-        lowered; the wall-clock budget is judged on the later of the two, so a clock still within the
+        behind the high-water mark the stop was judged against, and that mark is never lowered
+        (the clear sets it to the later of the clock and the mark); the wall-clock budget is judged on the later of the two, so a clock still within the
         tolerance behind never buys time. A run is cleared at most once (``clock-clear-exhausted``):
         the clear is journaled ``activation-stop-clear-started`` (naming the stop) before ``run.json``
         is saved and ``activation-stop-cleared`` after; a save that fails before ``run.json`` is replaced

@@ -74,13 +74,13 @@ class DanglingGitfileTests(ClearanceLocationCase):
 
     def test_a_stop_at_a_file_system_boundary_is_not_the_allowing_answer(self):
         boundary = completed(128, stderr="fatal: not a git repository (or any parent up to mount point /tmp)\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\n")
-        with mock.patch.object(cli_module.subprocess, "run", return_value=boundary):
+        with mock.patch.object(cli_module, "_git_answer", return_value=boundary):
             with self.assertRaises(cli_module.WorkTreeUnknown):
                 cli_module._work_tree(self.outside.parent)
 
     def test_a_warning_before_the_plain_answer_still_allows(self):
         warned = completed(128, stderr="warning: unable to access '/home/x/.config/git/config': Permission denied\nfatal: not a git repository (or any of the parent directories): .git\n")
-        with mock.patch.object(cli_module.subprocess, "run", return_value=warned):
+        with mock.patch.object(cli_module, "_git_answer", return_value=warned):
             self.assertIsNone(cli_module._work_tree(self.outside.parent))
 
     def test_an_ancestor_git_entry_that_cannot_be_examined_refuses(self):
@@ -97,7 +97,7 @@ class DanglingGitfileTests(ClearanceLocationCase):
 
     def test_git_walks_across_file_systems(self):
         self.assertEqual(cli_module._git_env()["GIT_DISCOVERY_ACROSS_FILESYSTEM"], "1")
-        with mock.patch.object(cli_module.subprocess, "run", return_value=completed(128, stderr="fatal: not a git repository (or any of the parent directories): .git\n")) as run:
+        with mock.patch.object(cli_module, "_git_answer", return_value=completed(128, stderr="fatal: not a git repository (or any of the parent directories): .git\n")) as run:
             self.assertIsNone(cli_module._work_tree(self.outside.parent))
         self.assertEqual(run.call_args.kwargs["env"]["GIT_DISCOVERY_ACROSS_FILESYSTEM"], "1")
 
@@ -107,13 +107,13 @@ class WorkTreeTriStateTests(ClearanceLocationCase):
     """An empty answer and a non-128 exit are unknown, never "outside" (thread P1)."""
 
     def test_exit_zero_with_an_empty_answer_refuses(self):
-        with mock.patch.object(cli_module.subprocess, "run", return_value=completed(0, stdout="\n")):
+        with mock.patch.object(cli_module, "_git_answer", return_value=completed(0, stdout="\n")):
             with self.assertRaises(cli_module.WorkTreeUnknown):
                 cli_module._work_tree(self.outside.parent)
             self.assert_refused(self.clear(self.outside))
 
     def test_another_exit_code_with_the_not_a_repository_message_refuses(self):
-        with mock.patch.object(cli_module.subprocess, "run", return_value=completed(1, stderr="fatal: not a git repository (or any of the parent directories): .git")):
+        with mock.patch.object(cli_module, "_git_answer", return_value=completed(1, stderr="fatal: not a git repository (or any of the parent directories): .git")):
             with self.assertRaises(cli_module.WorkTreeUnknown):
                 cli_module._work_tree(self.outside.parent)
             self.assert_refused(self.clear(self.outside))
@@ -131,7 +131,7 @@ class GitLocaleTests(unittest.TestCase):
         return completed(128, stderr="fatal: Kein Git-Repository (oder irgendeines der Elternverzeichnisse): .git\n")
 
     def test_a_translated_git_still_answers_not_a_work_tree(self):
-        with mock.patch.dict(os.environ, {"LANG": "de_DE.UTF-8", "LC_ALL": "de_DE.UTF-8", "LANGUAGE": "de"}), mock.patch.object(cli_module.subprocess, "run", side_effect=self.translated_git):
+        with mock.patch.dict(os.environ, {"LANG": "de_DE.UTF-8", "LC_ALL": "de_DE.UTF-8", "LANGUAGE": "de"}), mock.patch.object(cli_module, "_git_answer", side_effect=self.translated_git):
             self.assertIsNone(cli_module._work_tree("/anywhere"))
 
 
@@ -287,7 +287,7 @@ class StateDirMissingIsUnreadableTests(LiveCase):
             self.h.coordinator(activation=None)
         # adapted in round 6 (I7): an unreadable record of this run is journaled once per failing field (never per bad value), never a state-dir mismatch
         lines = [e["detail"] for e in self.store.read_journal() if e["event"] == "activation-use-unconfirmed"]
-        self.assertEqual([(d["type"], d["strerror"]) for d in lines], [("ledger-unreadable", "state_dir")])
+        self.assertEqual([(d["type"], d["field"], d["strerror"]) for d in lines], [("ledger-unreadable", "state_dir", None)])  # adapted in round 7 (F5): the failing field has its own key, strerror is OS text only
 
 
 class StateDirMismatchJournaledTests(LiveCase):

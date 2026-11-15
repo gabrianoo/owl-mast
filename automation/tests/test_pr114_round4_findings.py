@@ -95,17 +95,17 @@ class GitFailureRefusesTests(ClearanceLocationCase):
     """When git cannot say whether a path is inside a work tree, the clear refuses (thread 2p)."""
 
     def test_git_that_cannot_be_run_refuses_the_clear(self):
-        with mock.patch.object(cli_module.subprocess, "run", side_effect=OSError(2, "No such file or directory: 'git'")):
+        with mock.patch.object(cli_module, "_git_answer", side_effect=OSError(2, "No such file or directory: 'git'")):
             error = self.assert_refused(self.clear(self.outside))
         self.assertIn("cannot determine the work tree", error["message"])
 
     def test_a_git_timeout_refuses_the_clear(self):
-        with mock.patch.object(cli_module.subprocess, "run", side_effect=subprocess.TimeoutExpired("git", 30)):
+        with mock.patch.object(cli_module, "_git_answer", side_effect=subprocess.TimeoutExpired("git", 30)):
             self.assert_refused(self.clear(self.outside))
 
     def test_a_git_failure_other_than_not_a_repository_refuses_the_clear(self):
         dubious = subprocess.CompletedProcess(["git"], 128, stdout="", stderr="fatal: detected dubious ownership in repository at '/mnt/c/x'")
-        with mock.patch.object(cli_module.subprocess, "run", return_value=dubious):
+        with mock.patch.object(cli_module, "_git_answer", return_value=dubious):
             self.assert_refused(self.clear(self.outside))
 
     def test_inherited_git_variables_cannot_hide_a_work_tree(self):
@@ -124,7 +124,7 @@ class GitFailureRefusesTests(ClearanceLocationCase):
         self.assertEqual((code, out["run"]["activation_stop"]), (0, None))
 
     def test_a_mistyped_clearance_path_is_reported_as_unreadable(self):
-        with mock.patch.object(cli_module.subprocess, "run", side_effect=AssertionError("git must not be asked")):
+        with mock.patch.object(cli_module, "_git_answer", side_effect=AssertionError("git must not be asked")):
             error = self.assert_refused(self.clear(self.tmp / "no-such-dir" / "clearance.toml"))
         self.assertIn("cannot read clearance", error["message"])
 
