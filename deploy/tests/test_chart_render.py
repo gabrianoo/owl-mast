@@ -963,15 +963,37 @@ class ReviewCycle1Test(unittest.TestCase):
         # E01-R-01: the qualification status is stated as it is, per revision, including what failed and what was not run.
         self.assertNotIn("qualification of chart 0.2.0 is pending", doc)
         for phrase in ("**The 2026-11-12 and 2026-11-13 runs, exactly.**", "What this does not amount to:",
-                       "**refused**, and not supported", "**The 2026-11-14 upgrade runs (#162), exactly.**",
-                       "**An in-place `helm upgrade` from chart 0.1.0 is refused and is not supported.**",
+                       "**The 2026-11-14 upgrade runs (#162), exactly.**",
+                       "**An in-place `helm upgrade` from chart 0.1.0 is not supported, and server-side apply refuses it.**",
+                       "**refused** by server-side apply, and not supported",
+                       "An upgrade that Helm applies client-side was not run: Helm 3, Helm 4 with `--server-side=false`, or Helm 4 on a "
+                       "release that was installed client-side", "so the server may accept it; either way it is not supported",
+                       "was **not run** for a 0.1.0 installation",
                        "uses the `Recreate` strategy: a rollout stops the old pod before it starts the new one",
                        "**not run** by the script (`frontend.enabled=false`)"):
             self.assertIn(phrase, doc, phrase)
         # #162: the upgrade from chart 0.1.0 was run (and refused), and the guide no longer describes a backend that rolls without surge
         for phrase in ("**not run** on a cluster (render support only)", "has still not been run on a cluster",
-                       "its Deployment rolls without surge", "Stopping the backend before an upgrade"):
+                       "its Deployment rolls without surge", "Stopping the backend before an upgrade",
+                       # 189/R4-2, R4-3: no row describes the refused upgrade as one that happens, and the refusal is not unconditional
+                       "is recreated once by this upgrade", "becomes unready after the upgrade", "is refused and is not supported",
+                       "also on a `--reuse-values` upgrade"):
             self.assertNotIn(phrase, doc, phrase)
+
+    def test_installation_doc_links_resolve_to_its_headings(self):
+        """189/R4-1: the pointer to the reinstall rule named a heading the guide does not have. Every in-page link is resolved
+        against the anchors GitHub derives from the headings (lower case, punctuation dropped, spaces to hyphens). Links to
+        other files are not checked here."""
+        text = (REPO / "docs" / "installation.md").read_text()
+        prose = re.sub(r"^```.*?^```", "", text, flags=re.M | re.S)  # a `# comment` in a code block is not a heading
+        self.assertNotIn("```", prose)
+        anchors = [re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-") for heading in re.findall(r"^#+ (.+)$", prose, re.M)]
+        self.assertEqual(len(anchors), len(set(anchors)))  # GitHub numbers a repeated heading (-1, -2); none is repeated
+        anchors = set(anchors)
+        links = re.findall(r"\]\(#([^)\s]+)\)", prose)
+        self.assertIn("enabling-the-identity-bundle-later-on-an-initialised-bundled-postgresql", links)  # the rule for the reinstall
+        self.assertIn("upgrading-a-release-installed-from-chart-010", anchors)  # the derivation matches GitHub's for a dotted heading
+        self.assertEqual(sorted(set(links) - anchors), [])
 
 
 ISSUER_REASONS = ("host", "port", "userinfo", "query")  # the refusal reasons a sample line may name (IdentityPropertiesTest.REASONS)
@@ -1190,8 +1212,9 @@ class ReviewCycle2Test(unittest.TestCase):
         render(*sets("backend.probes.liveness.periodSeconds=1", "backend.probes.startup.periodSeconds=1"))
 
     def chart_with_0_1_0_values(self):
-        """What `helm upgrade --reuse-values` renders from: the new templates and schema over the OLD chart's values (Helm
-        replaces the new chart's defaults with the old release's coalesced values)."""
+        """The new templates and schema over the OLD chart's values.yaml, none of the 0.2.0 keys present: what installing this
+        chart with the values of a 0.1.0 installation renders from (the way off 0.1.0 that the guide gives, #162), and what a
+        `--reuse-values` upgrade renders from, where Helm replaces the new chart's defaults with the old release's values."""
         import tempfile
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -1200,9 +1223,10 @@ class ReviewCycle2Test(unittest.TestCase):
         shutil.copy(REPO / "deploy" / "tests" / "data" / "values-0.1.0.yaml", chart / "values.yaml")
         return chart
 
-    def test_reuse_values_from_chart_0_1_0_renders_with_the_new_defaults(self):
-        """4544181120: --reuse-values keeps the 0.1.0 values without the new keys; the schema then refused the missing
-        bootstrapAdmin, and the templates dereferenced nil."""
+    def test_chart_0_1_0_values_render_with_the_new_defaults(self):
+        """4544181120: 0.1.0 values lack the new keys; the schema then refused the missing bootstrapAdmin, and the templates
+        dereferenced nil. 189/R4-4: the guide replaces a 0.1.0 installation by a reinstall on the retained claim, so the values
+        are rendered as that install as well as with --is-upgrade (the chart has install-only refusals)."""
         chart = self.chart_with_0_1_0_values()
         old = yaml.safe_load((chart / "values.yaml").read_text())
         self.assertNotIn("bootstrapAdmin", old["identity"]["keycloak"]); self.assertNotIn("networkPolicy", old)  # really the 0.1.0 values
@@ -1234,11 +1258,39 @@ class ReviewCycle2Test(unittest.TestCase):
         self.assertIn("database.external.sslMode=prefer can send database credentials in plaintext", result.stderr)
         template(*sets("database.bundled=false", "database.external.host=pg.example", "database.external.sslMode=require",
                        "identity.keycloak.database.external.host=kc.example", "identity.keycloak.database.external.sslMode=require"))
+        # the documented way off 0.1.0: `helm install` with these values on the claim the uninstall retained. No install-only
+        # refusal is tripped, no claim is rendered, and PostgreSQL mounts the retained one; the rest renders as above.
+        def install(*args):
+            result = helm("template", "t", str(chart), *args)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return [d for d in yaml.safe_load_all(result.stdout) if d]
+        retained = sets("postgresql.persistence.existingClaim=t-owl-mast-postgresql-data")
+        reinstalled = install(*retained)
+        self.assertEqual(by_kind(reinstalled, "PersistentVolumeClaim"), [])
+        r = deployments_of(reinstalled)
+        self.assertEqual(set(r), set(d))
+        claims = [v["persistentVolumeClaim"]["claimName"] for v in r["t-owl-mast-postgresql"]["spec"]["template"]["spec"]["volumes"] if "persistentVolumeClaim" in v]
+        self.assertEqual(claims, ["t-owl-mast-postgresql-data"])
+        self.assertIn("KC_BOOTSTRAP_ADMIN_PASSWORD", env_of(r["t-owl-mast-keycloak"]))
+        self.assertEqual({p["metadata"]["name"] for p in by_kind(reinstalled, "NetworkPolicy")}, {"t-owl-mast-postgresql", "t-owl-mast-keycloak"})
+        self.assertEqual(r["t-owl-mast-backend"]["spec"]["strategy"], {"type": "Recreate"})
+        for name in r:  # an install renders the same pods as the upgrade render of the same values, apart from the claim
+            self.assertEqual(r[name]["spec"]["template"], d[name]["spec"]["template"], name)
+        install(*retained, *sets("identity.bundled=false", "identity.external.issuerUri=https://idp.example/realms/owl-mast"))  # the other bundled-database mode
+        install(*retained, *sets("frontend.enabled=true", "frontend.image.tag=x", *INGRESS_ON))
+        install(*sets("database.bundled=false", "database.external.host=pg.example", "database.external.sslMode=require",
+                      "identity.keycloak.database.external.host=kc.example", "identity.keycloak.database.external.sslMode=require"))
+        # the one install-only refusal, which the guide's reinstall rule rests on: the provisioning hook cannot serve this install
+        result = helm("template", "t", str(chart), *retained, *sets("postgresql.provisionKeycloakDatabase=true"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("postgresql.provisionKeycloakDatabase=true is refused on install", result.stderr)
+        self.assertIn('This install reuses the claim "t-owl-mast-postgresql-data"', result.stderr)
         # helm lint over the same values: the schema requires no key that chart 0.1.0 did not have
         self.assertEqual(helm("lint", str(chart)).returncode, 0)
         doc = " ".join((REPO / "docs" / "installation.md").read_text().split())
-        # #162: the in-place upgrade from 0.1.0 is refused at the backend Deployment, so the guide states the render fact, not values flags
-        self.assertIn("so the chart renders from 0.1.0 values; a render test applies the 0.1.0 `values.yaml` with no new defaults", doc)
+        # #162: the in-place upgrade from 0.1.0 is not supported, so the guide states the render fact, not values flags
+        phrase = "a render test applies the 0.1.0 `values.yaml` with no new defaults, as the install on the retained claim and as an upgrade"
+        self.assertIn(phrase, doc)
 
     def test_schema_says_which_ssl_modes_the_chart_refuses(self):
         """4544181137: the schema listed verify-ca and verify-full without saying that the template always refuses them.
@@ -1406,8 +1458,8 @@ class ReviewCycle3Test(unittest.TestCase):
         self.assertIn("Exists", " ".join((REPO / "docs" / "installation.md").read_text().split()))
 
     def test_ssl_mode_refusal_explains_itself_on_a_normal_render(self):
-        """4544473172: with verify-ca/verify-full out of the schema enum, a normal render (or a --reuse-values upgrade of a 0.1.0
-        release that used verify-full) printed only Helm's enum error; the explanation needed --skip-schema-validation."""
+        """4544473172: with verify-ca/verify-full out of the schema enum, a normal render (or 0.1.0 values that used verify-full)
+        printed only Helm's enum error; the explanation needed --skip-schema-validation."""
         for path, extra in (("database.external", []), ("identity.keycloak.database.external", [])):
             for mode in ("verify-ca", "verify-full"):
                 for skip in ([], ["--skip-schema-validation"]):
@@ -1415,11 +1467,12 @@ class ReviewCycle3Test(unittest.TestCase):
                     self.assertIn(f"{path}.sslMode={mode} is refused: it needs a CA trust the chart does not mount yet", err, (path, mode, skip))
                     self.assertIn("Use require", err)
                     self.assertNotIn("values don't meet the specifications of the schema", err)
-        # the upgrade the comment names: 0.1.0 values that carry verify-full, rendered as --reuse-values does
+        # the case the comment names: 0.1.0 values that carry verify-full, installed with this chart (189/R4-2) or rendered as an upgrade
         chart = self.chart_with_0_1_0_values()
-        result = helm("template", "t", str(chart), *UPGRADE, *sets("database.bundled=false", "database.external.host=pg.example", "database.external.sslMode=verify-full"))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("database.external.sslMode=verify-full is refused: it needs a CA trust", result.stderr)
+        for rendered_as in ([], UPGRADE):
+            result = helm("template", "t", str(chart), *rendered_as, *sets("database.bundled=false", "database.external.host=pg.example", "database.external.sslMode=verify-full"))
+            self.assertNotEqual(result.returncode, 0, rendered_as)
+            self.assertIn("database.external.sslMode=verify-full is refused: it needs a CA trust", result.stderr, rendered_as)
         doc = " ".join((REPO / "docs" / "installation.md").read_text().split())
         self.assertIn("names the mode and the reason", doc)
 
