@@ -34,8 +34,8 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * the database over JDBC from the test JVM, which runs no application context of its own:
  *
  * <ul>
- *   <li>both start on an empty database at once, so both run Flyway on it, and then both
- *       work on one queue;
+ *   <li>both start on an empty database at once, so both run Flyway on it, and then both work on
+ *       one queue;
  *   <li>one is asked to stop (SIGTERM) while it holds an item and the other is running. Its handler
  *       is waiting, with no statement in flight and nothing written in its transaction;
  *   <li>one finishes its attempt only after its lease expired and the other completed the item. The
