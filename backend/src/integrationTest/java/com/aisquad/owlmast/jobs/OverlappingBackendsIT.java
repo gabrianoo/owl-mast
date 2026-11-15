@@ -410,16 +410,18 @@ class OverlappingBackendsIT {
   }
 
   private void interruptedAfterEffect(boolean pause) throws Exception {
+    String oldName = pause ? "receiver-paused-old" : "receiver-stopped-old";
+    String newName = pause ? "receiver-paused-new" : "receiver-stopped-new";
     Process old =
         launch(
-            "receiver-old",
+            oldName,
             Duration.ofSeconds(30),
             "old",
             RestartFixtureProcess.MODE_EFFECT_THEN_WAIT,
             RestartFixtureProcess.EFFECT_LOG,
             RestartFixtureProcess.DEDUPLICATE,
             RestartFixtureProcess.SEED);
-    Lease held = awaitTheOnlyLiveLease(old, "receiver-old");
+    Lease held = awaitTheOnlyLiveLease(old, oldName);
     await()
         .atMost(Duration.ofSeconds(10))
         .untilAsserted(() ->
@@ -434,7 +436,7 @@ class OverlappingBackendsIT {
     if (pause) signal(old, "STOP");
     Process replacement =
         launch(
-            "receiver-new",
+            newName,
             Duration.ofSeconds(30),
             "new",
             RestartFixtureProcess.MODE_NORMAL,
@@ -448,7 +450,7 @@ class OverlappingBackendsIT {
       await()
           .atMost(Duration.ofMinutes(2))
           .untilAsserted(() -> {
-            assertThat(replacement.isAlive()).as(processes.tail("receiver-new")).isTrue();
+            assertThat(replacement.isAlive()).as(processes.tail(newName)).isTrue();
             assertThat(count("select count(*) from jobs.work_item where status <> 'SUCCEEDED'"))
                 .isZero();
           });
@@ -479,7 +481,9 @@ class OverlappingBackendsIT {
   }
 
   @Test
-  void shutdownDuringDatabaseStatementRollsBackOldTransaction() throws Exception {
+  void shutdownDuringDatabaseStatementRollsBackOldTransaction(@TempDir Path signals)
+      throws Exception {
+    Path seedSignal = signals.resolve("statement-seed");
     Process old =
         launch(
             "statement-old",
@@ -487,16 +491,8 @@ class OverlappingBackendsIT {
             "old",
             RestartFixtureProcess.MODE_STATEMENT_WAIT,
             RestartFixtureProcess.EFFECT_LOG,
-            RestartFixtureProcess.SEED);
-    Lease held = awaitTheOnlyLiveLease(old, "statement-old");
-    await()
-        .atMost(Duration.ofSeconds(10))
-        .untilAsserted(() ->
-            assertThat(
-                    count(
-                        "select count(*) from pg_stat_activity where state = 'active'"
-                            + " and wait_event = 'PgSleep' and query like '%fixture-in-statement%'"))
-                .isEqualTo(1));
+            RestartFixtureProcess.SEED,
+            RestartFixtureProcess.SEED_AFTER + seedSignal);
     Process replacement =
         launch(
             "statement-new",
@@ -504,7 +500,39 @@ class OverlappingBackendsIT {
             "new",
             RestartFixtureProcess.MODE_NORMAL,
             RestartFixtureProcess.EFFECT_LOG);
-    awaitEverythingElseSucceeded(old, replacement, "statement-old", "statement-new");
+    await()
+        .atMost(STARTUP)
+        .untilAsserted(() -> {
+          assertBothAlive(old, replacement, "statement-old", "statement-new");
+          assertThat(processes.log("statement-old")).contains(RestartFixtureProcess.STARTED);
+          assertThat(processes.log("statement-new")).contains(RestartFixtureProcess.STARTED);
+        });
+    // Both JVMs are up before work exists. Pause only the replacement while the old process claims,
+    // so the old handler's short deadline never includes another JVM's startup time.
+    signal(replacement, "STOP");
+    Lease held;
+    try {
+      Files.createFile(seedSignal);
+      held = awaitTheOnlyLiveLease(old, "statement-old");
+    } finally {
+      signal(replacement, "CONT");
+    }
+    await()
+        .atMost(Duration.ofSeconds(10))
+        .untilAsserted(() -> {
+          assertThat(lease(held.id())).isEqualTo(held);
+          assertThat(
+                  count(
+                      "select count(*) from pg_stat_activity where state = 'active'"
+                          + " and wait_event = 'PgSleep' and query like '%fixture-in-statement%'"))
+              .isEqualTo(1);
+          assertThat(
+                  count(
+                      "select count(*) from jobs.work_item where id = '"
+                          + held.id()
+                          + "' and lease_expires_at > clock_timestamp()"))
+              .isEqualTo(1);
+        });
     old.destroy();
     assertThat(old.waitFor(1, TimeUnit.MINUTES)).as(processes.tail("statement-old")).isTrue();
     await()

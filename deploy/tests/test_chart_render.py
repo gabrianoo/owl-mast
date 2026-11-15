@@ -88,7 +88,8 @@ class ChartRenderTest(unittest.TestCase):
     def test_replacement_digest_guard_and_bounded_migration_retry(self):
         for bypass in ([], ["--skip-schema-validation"]):
             self.assertIn("requireImageDigest", refused(*bypass, *sets("backend.requireImageDigest=true")))
-            for invalid in ("-1", "121", "1.5", "true"):
+            for invalid in ("-1", "121", "1.5", "true", "18446744073709551616"):
+                self.assertIn("migrationLockRetryCount", refused(*bypass, "--set-string", f"backend.migrationLockRetryCount={invalid}"))
                 self.assertIn("migrationLockRetryCount", refused(*bypass, *sets(f"backend.migrationLockRetryCount={invalid}")))
         for bypass in ([], ["--skip-schema-validation"]):
             self.assertIn("digest", refused(*bypass, *sets("backend.requireImageDigest=true", "backend.image.digest=sha256:bad")))

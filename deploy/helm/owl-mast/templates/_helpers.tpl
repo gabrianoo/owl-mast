@@ -158,7 +158,7 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- fail "backend.requireImageDigest requires backend.image.digest (sha256 with 64 lowercase hex digits)" -}}
 {{- end -}}
 {{- $retry := dig "migrationLockRetryCount" 50 .Values.backend -}}
-{{- if or (not (regexMatch "^[0-9]+$" (toString $retry))) (gt (int $retry) 120) -}}
+{{- if not (regexMatch "^(0|[1-9][0-9]?|1[01][0-9]|120)$" (toString $retry)) -}}
 {{- fail "backend.migrationLockRetryCount must be an integer from 0 to 120" -}}
 {{- end -}}
 {{- $v := .Values -}}
