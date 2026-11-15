@@ -1,5 +1,9 @@
 # Bundled PostgreSQL/VectorChord, existing external OpenID Connect issuer. Keycloak is not deployed;
 # authentication stays mandatory through the external issuer, which the backend verifies at readiness.
+# The issuer must hold the client `owl-mast-web` with the secret in owl-mast-oidc-client (key client-secret)
+# and the redirect URI https://owl-mast.example.internal/api/session/callback (docs/installation.md).
+routing:
+  publicOrigin: https://owl-mast.example.internal
 database:
   bundled: true
 identity:

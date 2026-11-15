@@ -45,7 +45,8 @@ class BootstrapMigrationIT {
             "002 jobs infrastructure true",
             "003 audit infrastructure true",
             "004 jobs tenant id not blank true",
-            "005 audit tenant id not blank true");
+            "005 audit tenant id not blank true",
+            "006 access principal true");
   }
 
   /**
@@ -159,6 +160,7 @@ class BootstrapMigrationIT {
 
     assertThat(tables)
         .containsExactly(
+            "access.principal",
             "audit.event",
             "audit.publication_intent",
             "bootstrap.schema_baseline",

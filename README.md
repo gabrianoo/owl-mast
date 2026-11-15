@@ -8,7 +8,7 @@ Prerequisites: a JDK 17+ to start the Gradle wrapper (it provisions the pinned T
 
 ```sh
 ./gradlew build                                   # compile, gates, unit + integration suites
-./gradlew :backend:bootTestRun --args='--server.port=8080'   # run with a disposable VectorChord database
+./gradlew :backend:bootTestRun --args='--server.port=8080'   # run with a disposable VectorChord database and a synthetic Keycloak realm
 curl http://localhost:8080/actuator/health        # {"status":"UP"}
 ```
 

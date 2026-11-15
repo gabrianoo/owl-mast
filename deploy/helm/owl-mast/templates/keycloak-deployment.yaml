@@ -121,9 +121,28 @@ spec:
                   name: {{ .Values.identity.keycloak.bootstrapExistingSecret }}
                   key: password
             {{- end }}
-            # Cluster-local issuer; public origins and TLS termination are an OM-02.01 gate.
+            # The public origin browsers reach Keycloak on: the issuer of every token and the base of every
+            # front-channel URL. TLS is terminated by the operator's Gateway or Ingress in front of it.
             - name: KC_HOSTNAME
-              value: {{ include "owl-mast.keycloak.baseUrl" . | quote }}
+              value: {{ include "owl-mast.keycloak.publicOrigin" . | quote }}
+            # The backend calls Keycloak on the cluster-local Service: back-channel endpoints (token, keys,
+            # logout) are published on the address the request arrived on, the issuer stays the public one.
+            - name: KC_HOSTNAME_BACKCHANNEL_DYNAMIC
+              value: "true"
+            {{- with (include "owl-mast.keycloak.adminOrigin" .) }}
+            # The admin console is not routed publicly; this is the address administrators open it on.
+            - name: KC_HOSTNAME_ADMIN
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.identity.keycloak.importRealm }}
+            # Resolved by Keycloak inside the imported realm file (${OWLMAST_OIDC_CLIENT_SECRET}); the value is
+            # never rendered into a manifest.
+            - name: OWLMAST_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "owl-mast.identity.clientSecret" . }}
+                  key: client-secret
+            {{- end }}
             - name: KC_HTTP_ENABLED
               value: "true"
             # One instance, no cluster (see the strategy above). A build option: `start` re-augments for it, like
@@ -135,7 +154,7 @@ spec:
             - name: KC_HTTP_MANAGEMENT_PORT
               value: "9000"
             {{- with .Values.identity.keycloak.proxyHeaders }}
-            # Trusted only when set explicitly: a cluster-local Keycloak has no proxy in front of it.
+            # Trusted only when set explicitly, and only with a NetworkPolicy that admits the named proxy.
             - name: KC_PROXY_HEADERS
               value: {{ . | quote }}
             {{- end }}

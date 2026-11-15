@@ -107,6 +107,43 @@
         "allowInsecureTransport": {"type": "boolean"}
       }
     },
+    "origin": {
+      "type": "string",
+      "maxLength": 300,
+      "description": "scheme://host[:port] and nothing else: https, or http for a loopback host only; lowercase host; no default port. The templates check the form and state the reason for a refusal (a schema refusal prints no explanation)."
+    },
+    "parentRefs": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 253},
+          "namespace": {"type": "string", "minLength": 1, "maxLength": 63, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+          "sectionName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 253,
+            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+          },
+          "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+        }
+      }
+    },
+    "ingressTls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["hosts", "secretName"],
+        "properties": {
+          "hosts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/ingressHost"}},
+          "secretName": {"$ref": "#/$defs/secretName"}
+        }
+      }
+    },
     "networkPolicyPeers": {
       "type": "array",
       "items": {
@@ -127,7 +164,7 @@
       "required": ["image", "replicas", "containerPort", "service", "resources", "probes"],
       "properties": {
         "image": {"$ref": "#/$defs/image"},
-        "replicas": {"type": "integer", "minimum": 0, "maximum": 1, "description": "Single instance accepted for the POC (AD-14)."},
+        "replicas": {"type": "integer", "minimum": 0, "description": "0 or 1: browser sessions are held in the backend's memory (OM-02.01, AD-14). A larger value is refused by the templates, which state the reason (a schema refusal prints no explanation)."},
         "containerPort": {"$ref": "#/$defs/servicePort"},
         "service": {"$ref": "#/$defs/service"},
         "resources": {"$ref": "#/$defs/resources"},
@@ -209,6 +246,7 @@
         "actuatorPathPrefix": {"type": "string", "pattern": "^/", "maxLength": 1024},
         "frontendPathPrefix": {"type": "string", "pattern": "^/", "maxLength": 1024},
         "exposeActuator": {"type": "boolean"},
+        "publicOrigin": {"$ref": "#/$defs/origin"},
         "ingress": {
           "type": "object",
           "additionalProperties": false,
@@ -335,6 +373,18 @@
       "properties": {
         "bundled": {"type": "boolean"},
         "realm": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$"},
+        "client": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+            "existingSecret": {
+              "type": "string",
+              "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+              "description": "Existing Secret with the key client-secret. Required: the templates refuse an empty value and name it."
+            }
+          }
+        },
         "external": {
           "type": "object",
           "additionalProperties": false,
@@ -347,6 +397,35 @@
           "required": ["image", "bootstrapExistingSecret", "importRealm", "database", "service", "resources", "probes"],
           "properties": {
             "image": {"$ref": "#/$defs/pinnedImage"},
+            "publicOrigin": {"$ref": "#/$defs/origin"},
+            "adminOrigin": {"$ref": "#/$defs/origin"},
+            "route": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "gateway": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["enabled"],
+                  "properties": {
+                    "enabled": {"type": "boolean"},
+                    "parentRefs": {"$ref": "#/$defs/parentRefs"},
+                    "annotations": {"$ref": "#/$defs/annotations"}
+                  }
+                },
+                "ingress": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["enabled"],
+                  "properties": {
+                    "enabled": {"type": "boolean"},
+                    "className": {"type": "string"},
+                    "annotations": {"$ref": "#/$defs/annotations"},
+                    "tls": {"$ref": "#/$defs/ingressTls"}
+                  }
+                }
+              }
+            },
             "bootstrapExistingSecret": {
               "type": "string",
               "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",

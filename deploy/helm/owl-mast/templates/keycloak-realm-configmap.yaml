@@ -1,4 +1,46 @@
 {{- if and .Values.identity.bundled .Values.identity.keycloak.importRealm }}
+{{- $appOrigin := include "owl-mast.routing.publicOrigin" . -}}
+{{- /*
+The Owl Mast backend as a confidential client: authorization code with PKCE (S256) only, one exact redirect
+URI on the application origin, no CORS origin, back-channel logout to the backend Service. The secret is a
+placeholder that Keycloak resolves from its environment when it imports the file; the value is never rendered.
+*/ -}}
+{{- $client := dict
+    "clientId" (include "owl-mast.identity.clientId" .)
+    "name" "Owl Mast"
+    "enabled" true
+    "protocol" "openid-connect"
+    "publicClient" false
+    "clientAuthenticatorType" "client-secret"
+    "secret" "${OWLMAST_OIDC_CLIENT_SECRET}"
+    "standardFlowEnabled" true
+    "implicitFlowEnabled" false
+    "directAccessGrantsEnabled" false
+    "serviceAccountsEnabled" false
+    "fullScopeAllowed" false
+    "redirectUris" (list (printf "%s/api/session/callback" $appOrigin))
+    "webOrigins" (list)
+    "attributes" (dict
+      "pkce.code.challenge.method" "S256"
+      "backchannel.logout.url" (printf "http://%s:%v/api/session/backchannel-logout" (include "owl-mast.backend.fullname" .) .Values.backend.service.port)
+      "backchannel.logout.session.required" "true")
+-}}
+{{- /*
+Invitation only: nobody registers themselves, an administrator creates each account in Keycloak. "Forgot
+password" stays off because the chart configures no mail server; an operator turns it on in Keycloak after
+configuring the realm's mail. No users are imported.
+*/ -}}
+{{- $realm := dict
+    "realm" .Values.identity.realm
+    "enabled" true
+    "displayName" "Owl Mast"
+    "sslRequired" "external"
+    "registrationAllowed" false
+    "resetPasswordAllowed" false
+    "editUsernameAllowed" false
+    "bruteForceProtected" true
+    "clients" (list $client)
+-}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -7,12 +49,9 @@ metadata:
     {{- include "owl-mast.labels" . | nindent 4 }}
     app.kubernetes.io/component: keycloak
 data:
-  # Minimal synthetic realm so discovery and connectivity can be verified. It carries no clients,
-  # users or browser session policy: those are OM-02.01's contract.
+  # Imported by Keycloak at start, and only while the realm does not exist yet: Keycloak skips the import
+  # for a realm it already has, so a later change of this file does not change an existing realm
+  # (docs/installation.md, "Realm and client").
   owl-mast-realm.json: |
-    {
-      "realm": {{ .Values.identity.realm | quote }},
-      "enabled": true,
-      "displayName": "Owl Mast"
-    }
+    {{- $realm | toPrettyJson | nindent 4 }}
 {{- end }}

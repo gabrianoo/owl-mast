@@ -14,8 +14,9 @@ import org.springframework.test.web.reactive.server.WebTestClient;
 
 /**
  * AC4: the backend publishes its API contract for the independently deployed frontend and the
- * pre-rollout check; unknown API paths answer with the common problem-details envelope and no
- * internals.
+ * pre-rollout check, without a credential. Since OM-02.01 every other API path needs an
+ * authenticated principal, so an unknown path answers 401 to a caller without one, in the common
+ * problem-details envelope and with the challenge (404 for a signed-in caller: SignInIT).
  */
 @SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT)
 @Import({ContainersConfiguration.class, StubIdentityConfiguration.class})
@@ -44,24 +45,32 @@ class CompatibilityEndpointIT {
         .jsonPath("$.apiContract.major")
         .isEqualTo(1)
         .jsonPath("$.apiContract.minor")
-        .isEqualTo(0);
+        .isEqualTo(1);
   }
 
   @Test
-  void unknownApiPathsUseTheProblemDetailsEnvelopeWithoutInternals() {
+  void anUnknownApiPathNeedsACredentialAndAnswersInTheProblemDetailsEnvelope() {
     client()
         .get()
         .uri("/api/does-not-exist")
         .exchange()
         .expectStatus()
-        .isNotFound()
+        .isUnauthorized()
+        .expectHeader()
+        .valueEquals("WWW-Authenticate", "Bearer")
+        .expectHeader()
+        .doesNotExist("Location")
         .expectHeader()
         .contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON)
         .expectBody()
         .jsonPath("$.status")
-        .isEqualTo(404)
+        .isEqualTo(401)
         .jsonPath("$.title")
-        .isEqualTo("Not Found")
+        .isEqualTo("Unauthorized")
+        .jsonPath("$.instance")
+        .isEqualTo("/api/does-not-exist")
+        .jsonPath("$.detail")
+        .doesNotExist()
         .jsonPath("$.trace")
         .doesNotExist()
         .jsonPath("$.exception")

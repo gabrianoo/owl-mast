@@ -25,11 +25,13 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 CHART = REPO / "deploy" / "helm" / "owl-mast"
 HELM = os.environ.get("OWLMAST_HELM") or shutil.which("helm")
+# The values chart 0.3.0 has no default for (OM-02.01): the application origin and the bundled Keycloak's own.
+REQUIRED = ["--set", "routing.publicOrigin=https://owl-mast.example", "--set", "identity.keycloak.publicOrigin=https://id.owl-mast.example"]
 IMAGE = "tensorchord/vchord-postgres:pg18-v1.1.1@sha256:700ff05ebdc7e4afd4dd8442e0684293046c3833677fec326550000a04cf8a91"
 
 
 def render_scripts(*sets) -> dict:
-    args = [HELM, "template", "t", str(CHART), "-s", "templates/postgresql-init-configmap.yaml"]
+    args = [HELM, "template", "t", str(CHART), *REQUIRED, "-s", "templates/postgresql-init-configmap.yaml"]
     for s in sets:
         args += ["--set", s]
     out = subprocess.run(args, capture_output=True, text=True, check=True).stdout
@@ -54,7 +56,7 @@ def configmap_mounts(deployment: dict, configmap_name: str) -> dict:
 
 
 def chart_postgres_deployment(*sets) -> dict:
-    args = [HELM, "template", "t", str(CHART), "-s", "templates/postgresql-deployment.yaml"]
+    args = [HELM, "template", "t", str(CHART), *REQUIRED, "-s", "templates/postgresql-deployment.yaml"]
     for s in sets:
         args += ["--set", s]
     return yaml.safe_load(subprocess.run(args, capture_output=True, text=True, check=True).stdout)
@@ -67,7 +69,7 @@ def fixture_postgres_deployment() -> dict:
 
 def fixture_init_configmap() -> dict:
     """The init ConfigMap exactly as scripts/qualify-local-install.sh renders it for the fixture namespace."""
-    out = subprocess.run([HELM, "template", "external", str(CHART), "--set", "fullnameOverride=external", "-s", "templates/postgresql-init-configmap.yaml"],
+    out = subprocess.run([HELM, "template", "external", str(CHART), *REQUIRED, "--set", "fullnameOverride=external", "-s", "templates/postgresql-init-configmap.yaml"],
                          capture_output=True, text=True, check=True).stdout
     return yaml.safe_load(out)
 
@@ -353,7 +355,7 @@ class PostgresInitTests(unittest.TestCase):
         scripts = render_scripts("identity.bundled=false", "identity.external.issuerUri=https://idp.example/realms/owl-mast")
         r = subprocess.run(["bash", "-c", scripts["provision-keycloak.sh"]], capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
         self.assertEqual(r.returncode, 0, r.stderr); self.assertIn("nothing to provision", r.stdout)
-        deployment = yaml.safe_load(subprocess.run([HELM, "template", "t", str(CHART), "-s", "templates/postgresql-deployment.yaml"], capture_output=True, text=True, check=True).stdout)
+        deployment = yaml.safe_load(subprocess.run([HELM, "template", "t", str(CHART), *REQUIRED, "-s", "templates/postgresql-deployment.yaml"], capture_output=True, text=True, check=True).stdout)
         volumes = {v["name"]: v for v in deployment["spec"]["template"]["spec"]["volumes"]}
         self.assertEqual([i["path"] for i in volumes["init"]["configMap"]["items"]], ["10-owl-mast-databases.sh"])
         self.assertEqual([i["path"] for i in volumes["provisioning"]["configMap"]["items"]], ["provision-keycloak.sh"])

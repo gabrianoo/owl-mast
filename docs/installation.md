@@ -1,6 +1,6 @@
 # Installation package (OM-01.02)
 
-Owl Mast installs from the repository-owned Helm chart `deploy/helm/owl-mast` (version 0.2.0; see [Upgrading a release installed from chart 0.1.0](#upgrading-a-release-installed-from-chart-010)). The
+Owl Mast installs from the repository-owned Helm chart `deploy/helm/owl-mast` (version 0.3.0; see [Upgrading a release installed from chart 0.2.0](#upgrading-a-release-installed-from-chart-020) and [from chart 0.1.0](#upgrading-a-release-installed-from-chart-010)). The
 chart packages the backend image and two **independently optional** bundles: PostgreSQL 18 with
 VectorChord, and Keycloak. Disabling a bundle means supplying a compatible existing service; it never
 removes the dependency. There is no value that disables authentication. Chart 0.1.0 was qualified on
@@ -9,25 +9,31 @@ target on 2026-11-12 and 2026-11-13 with the OM-01.03 migrations and durable wor
 `all` run was at `639d2b6` (2026-11-13), and `first-enable` passed uninterrupted from a fresh volume through the
 bootstrap-admin retirement at `d314fa3` (2026-11-13; see [Qualification status](#qualification-status) for what ran, at which
 revision, and what did not). The frontend shell
-artifact and its smoke check are delivered by OM-01.04, browser realm/client/session policy by OM-02.01.
+artifact and its smoke check are delivered by OM-01.04. Chart 0.3.0 (OM-02.01) adds what browser sign-in needs from
+the installation: the two public origins, the backend's OpenID Connect client and its Secret, the realm import
+with that client and the invitation-only settings, and an optional route to the bundled Keycloak
+([Public origins, realm and client](#public-origins-realm-and-client)). Chart 0.3.0 has **not** been installed on
+a cluster: its checks are the render tests and the Docker runs listed below. The decisions behind it (session
+model, accounts, lifetimes) are recorded in [identity.md](identity.md).
 
 ## Qualification status
 
-| What | Chart 0.1.0 | Chart 0.2.0 |
-| --- | --- | --- |
-| Render, lint, negative validation (`scripts/verify-install-package.sh`) | passed | passed (CI `package-checks`) |
-| PostgreSQL initialisation, provisioning and probe commands against the pinned image (Docker) | passed | passed (CI `package-checks`) |
-| Keycloak on a read-only root against the pinned image (Docker) | not applicable | passed (CI `package-checks`) |
-| Backend image: UID, JDK, application start on a read-only root with the environment the chart renders, up to the first database connection (image-level proof; the beans created after database initialisation, migrations, the listener and runtime writes are part of the Kind run) | not checked | passed (CI `build`) |
-| NetworkPolicy enforcement on a disposable kindnet cluster | not applicable | one run on 2026-11-09, before the changes of 2026-11-11 |
-| Kind qualification (`scripts/qualify-local-install.sh all`): four combinations, persistence, failure paths | passed 2026-11-07 | passed 2026-11-12, four times: at `f188d51` (PR #116, before OM-01.03; 131 ok), at `4fc415b` (141 ok, 0 FAIL), at `00b4853` (145 ok, 0 FAIL) and at `e76e30e` (Keycloak with `KC_CACHE=local`, 145 ok, 0 FAIL); passed 2026-11-13 at `c0e21ec` (now ending bundled-bundled with the bootstrap-admin retirement, 156 ok, 0 FAIL) at `9be72ee` (exit 0, 156 ok, 0 FAIL) and at `a2c3051` (exit 0, 156 ok, 0 FAIL; the script recorded `deploy`, `scripts` and `backend` as clean) and at `639d2b6` (exit 0, 156 ok, 0 FAIL; three source records, whole tree clean, one chart digest) |
-| Kind qualification, `first-enable`: fresh volume, identity bundle enabled through the pre-upgrade hook, retry | passed 2026-11-07 | passed 2026-11-12 at `00b4853` up to and including the retry (fresh volume `owl-mast-fe-e01r01`); the run then stopped at the retirement, see the next rows and the note below. Passed 2026-11-13 at `d314fa3`, uninterrupted from a fresh volume (`owl-mast-fe-e01x10`) through the retirement: 63 ok, 0 FAIL (run 11 below) |
-| Kind qualification: every migration applied by `owlmast_app`, durable work published by the installed backend (in all four combinations and first-enable). The probe writes a synthetic intent and its `audit.publish` item in SQL as `owlmast_app`, so it proves discovery, the claim, the handler transaction and the publisher, not the application's enqueue path; its rows are kept | not applicable (no durable work before OM-01.03) | passed 2026-11-12 at `00b4853`: migrations 001–005 applied by `owlmast_app` on the bundled and the external database (V002–V005 as an upgrade of the databases the earlier runs left at V001); durable work published in bundled-bundled, bundled-external, external-bundled, external-external and first-enable. Rechecked 2026-11-13 at `c0e21ec`, `9be72ee`, `a2c3051` and `639d2b6` (`all` only, on the retained databases: no migration was pending, so these runs re-read the history and table owners that the `00b4853` run left, and migrations were last applied at `00b4853`; durable work was published in the four combinations; `first-enable` was last run at `00b4853`). Passed 2026-11-13 at `d314fa3` in `first-enable` on a fresh database: migrations 001–005 applied by `owlmast_app`, durable work published |
-| Kind qualification: Keycloak bootstrap admin retired (`identity.keycloak.bootstrapAdmin.enabled=false`), chart side only | not applicable | **failed** in the scripted run at `00b4853` (`helm upgrade --wait` timed out: chart defect). `31ee127` (no surge) only narrowed the overlap of the two Keycloak pods; the fix is `d954b21` (`KC_CACHE=local`). The manual rerun at 22:39Z passed on an uncommitted no-surge chart without `KC_CACHE=local`: its log names `bf6126b` (whose chart has `type: Recreate`), the deployed strategy was `RollingUpdate 0 1`, and the change was committed two minutes after the rerun ended, as `31ee127`, so no commit reproduces that pass. **Passed** on the shipped chart in the scripted `all` run at `c0e21ec`, on the bundled release: the retirement replaced the Keycloak pod (names before and after recorded) and `helm upgrade --wait` completed in 50 s. That run did not record whether the old pod was still terminating beside the new one, so it shows the replacement completing on the shipped chart, not that `KC_CACHE=local` was needed; the script now records every read of its terminating-pod wait. Rerun at `9be72ee`: the pod was replaced again, and the wait's first read (01:25:58Z, a few seconds after `helm upgrade --wait` returned) found no terminating Keycloak pod, so the old pod was gone by that read; an overlap is still not shown. Rerun at `a2c3051`, which records when the upgrade returned: the pod was replaced, and the upgrade's return and the wait's one read (`none`) fall in the same second (02:13:31Z). Rerun at `639d2b6`: the same, at 03:11:43Z. **Passed** as part of one complete `first-enable` on a fresh volume at `d314fa3` (run 11 below): `helm upgrade --wait` returned in about 26 s with the new Keycloak pod ready; an overlap of the two pods is still not shown |
-| Frontend image deployed on the Kind target | not run | **not run** by the script (`frontend.enabled=false`); deferred |
-| `helm upgrade` of a release installed from chart 0.1.0 | not applicable | **not run** on a cluster (render support only) |
-| Gateway API: HTTPRoute accepted by an API server with the CRDs (server-side CEL) | not run | **not run** (manifest validation only) |
-| Gateway API: controller and data plane | not run | not run |
+| What | Chart 0.1.0 | Chart 0.2.0 | Chart 0.3.0 |
+| --- | --- | --- | --- |
+| Render, lint, negative validation (`scripts/verify-install-package.sh`) | passed | passed (CI `package-checks`) | the render, lint and negative tests of the chart, the new rules included (both public origins, the client Secret, one backend replica, the Keycloak route and its NetworkPolicy peer), passed 2026-11-15 on a workstation with the qualified Helm; CI `package-checks` has not run on this chart yet |
+| PostgreSQL initialisation, provisioning and probe commands against the pinned image (Docker) | passed | passed (CI `package-checks`) | passed 2026-11-15 on a workstation (the scripts are unchanged) |
+| Keycloak on a read-only root against the pinned image (Docker) | not applicable | passed (CI `package-checks`) | passed 2026-11-15 on a workstation, now with the public origin as `KC_HOSTNAME` and `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true`: the discovery document read on another address publishes the public issuer and authorization endpoint and the token and key endpoints on the address of the request; the realm import is read back through the admin API (self-registration off, no user, the client with its redirect URI and PKCE S256, the client secret equal to the environment value, no protocol mapper) |
+| Backend image: UID, JDK, application start on a read-only root with the environment the chart renders, up to the first database connection (image-level proof; the beans created after database initialisation, migrations, the listener and runtime writes are part of the Kind run) | not checked | passed (CI `build`) | passed 2026-11-15 on a workstation with the OM-02.01 backend: `scripts/verify-backend-image.sh` passes the variables chart 0.3.0 renders (a deploy test compares the two) and adds a start with the public issuer and the cluster-local back channel; CI `build` has not run on this chart yet |
+| NetworkPolicy enforcement on a disposable kindnet cluster | not applicable | one run on 2026-11-09, before the changes of 2026-11-11 | **not run** |
+| Kind qualification (`scripts/qualify-local-install.sh all`): four combinations, persistence, failure paths | passed 2026-11-07 | passed 2026-11-12, four times: at `f188d51` (PR #116, before OM-01.03; 131 ok), at `4fc415b` (141 ok, 0 FAIL), at `00b4853` (145 ok, 0 FAIL) and at `e76e30e` (Keycloak with `KC_CACHE=local`, 145 ok, 0 FAIL); passed 2026-11-13 at `c0e21ec` (now ending bundled-bundled with the bootstrap-admin retirement, 156 ok, 0 FAIL) at `9be72ee` (exit 0, 156 ok, 0 FAIL) and at `a2c3051` (exit 0, 156 ok, 0 FAIL; the script recorded `deploy`, `scripts` and `backend` as clean) and at `639d2b6` (exit 0, 156 ok, 0 FAIL; three source records, whole tree clean, one chart digest) | **not run**. The script passes loopback origins and creates the synthetic client Secret; its stubbed tests pass, no cluster run was made |
+| Kind qualification, `first-enable`: fresh volume, identity bundle enabled through the pre-upgrade hook, retry | passed 2026-11-07 | passed 2026-11-12 at `00b4853` up to and including the retry (fresh volume `owl-mast-fe-e01r01`); the run then stopped at the retirement, see the next rows and the note below. Passed 2026-11-13 at `d314fa3`, uninterrupted from a fresh volume (`owl-mast-fe-e01x10`) through the retirement: 63 ok, 0 FAIL (run 11 below) | **not run** |
+| Kind qualification: every migration applied by `owlmast_app`, durable work published by the installed backend (in all four combinations and first-enable). The probe writes a synthetic intent and its `audit.publish` item in SQL as `owlmast_app`, so it proves discovery, the claim, the handler transaction and the publisher, not the application's enqueue path; its rows are kept | not applicable (no durable work before OM-01.03) | passed 2026-11-12 at `00b4853`: migrations 001–005 applied by `owlmast_app` on the bundled and the external database (V002–V005 as an upgrade of the databases the earlier runs left at V001); durable work published in bundled-bundled, bundled-external, external-bundled, external-external and first-enable. Rechecked 2026-11-13 at `c0e21ec`, `9be72ee`, `a2c3051` and `639d2b6` (`all` only, on the retained databases: no migration was pending, so these runs re-read the history and table owners that the `00b4853` run left, and migrations were last applied at `00b4853`; durable work was published in the four combinations; `first-enable` was last run at `00b4853`). Passed 2026-11-13 at `d314fa3` in `first-enable` on a fresh database: migrations 001–005 applied by `owlmast_app`, durable work published | **not run** |
+| Kind qualification: Keycloak bootstrap admin retired (`identity.keycloak.bootstrapAdmin.enabled=false`), chart side only | not applicable | **failed** in the scripted run at `00b4853` (`helm upgrade --wait` timed out: chart defect). `31ee127` (no surge) only narrowed the overlap of the two Keycloak pods; the fix is `d954b21` (`KC_CACHE=local`). The manual rerun at 22:39Z passed on an uncommitted no-surge chart without `KC_CACHE=local`: its log names `bf6126b` (whose chart has `type: Recreate`), the deployed strategy was `RollingUpdate 0 1`, and the change was committed two minutes after the rerun ended, as `31ee127`, so no commit reproduces that pass. **Passed** on the shipped chart in the scripted `all` run at `c0e21ec`, on the bundled release: the retirement replaced the Keycloak pod (names before and after recorded) and `helm upgrade --wait` completed in 50 s. That run did not record whether the old pod was still terminating beside the new one, so it shows the replacement completing on the shipped chart, not that `KC_CACHE=local` was needed; the script now records every read of its terminating-pod wait. Rerun at `9be72ee`: the pod was replaced again, and the wait's first read (01:25:58Z, a few seconds after `helm upgrade --wait` returned) found no terminating Keycloak pod, so the old pod was gone by that read; an overlap is still not shown. Rerun at `a2c3051`, which records when the upgrade returned: the pod was replaced, and the upgrade's return and the wait's one read (`none`) fall in the same second (02:13:31Z). Rerun at `639d2b6`: the same, at 03:11:43Z. **Passed** as part of one complete `first-enable` on a fresh volume at `d314fa3` (run 11 below): `helm upgrade --wait` returned in about 26 s with the new Keycloak pod ready; an overlap of the two pods is still not shown | **not run** |
+| Frontend image deployed on the Kind target | not run | **not run** by the script (`frontend.enabled=false`); deferred | **not run** |
+| `helm upgrade` of a release installed from chart 0.1.0 | not applicable | **not run** on a cluster (render support only) | **not run** on a cluster; `helm upgrade` from chart 0.2.0 is **not run** either (render support only) |
+| Gateway API: HTTPRoute accepted by an API server with the CRDs (server-side CEL) | not run | **not run** (manifest validation only) | **not run** (manifest validation only, now for the Keycloak route as well) |
+| Gateway API: controller and data plane | not run | not run | not run |
+| Browser sign-in through the chart: Keycloak reached on its public origin through a rendered route, the redirect back to the application origin, back-channel logout from Keycloak to the backend Service | not applicable | not applicable | **not run** on a cluster. The backend and frontend suites run sign-in against a Keycloak container with a synthetic realm, not against an installed chart ([identity.md](identity.md)). The Kind target was looked at on 2026-11-15 and not used: a realm import with the client needs a fresh Keycloak database, the storage quota of `owl-mast-test` is used up (30Gi of 30Gi, three retained claims), and the cluster serves no Gateway API |
 
 **The 2026-11-12 and 2026-11-13 runs, exactly.** All on the retained cluster `owl-mast-om0102` with a run-local kubeconfig; evidence in `~/.local/state/owlmast-eng01/product-runs/e01-r01-qual-20261112-0{1,2}-evidence/`, `e01-r01-qual-20261113-0{1,2,3,4,5}-evidence/` and `e01-x10-first-enable-20261113-01-evidence/` (private, not in the repository). "Backend image built from that commit" below is the operator's record, not the script's: in every run the image was built before the run and outside the script, tagged with the commit, and `run.txt`, which names it, is written by hand. The script checks only that the node runs the local image with that tag (`*-image.txt`). Its source records (runs 9 and 10) describe the checkout when each record was taken, which is after the build, so they do not show the tree the image was built from; in run 10 the image was created at 03:09:40Z and the first record is at 03:09:55Z.
 
@@ -51,7 +57,7 @@ The `00b4853` failure (run 3) did not recur: `first-enable` has now run uninterr
 
 | Component | Pin | Where | Source / qualification |
 | --- | --- | --- | --- |
-| Chart | `owl-mast` 0.2.0, `appVersion` 0.1.0 | `deploy/helm/owl-mast/Chart.yaml` | This repository; package hash is produced by `helm package` from the release commit |
+| Chart | `owl-mast` 0.3.0, `appVersion` 0.1.0 | `deploy/helm/owl-mast/Chart.yaml` | This repository; package hash is produced by `helm package` from the release commit |
 | Backend image | `owl-mast/backend:0.1.0`, built by `backend/Dockerfile` from the `bootJar` and referenced by tag; set `backend.image.digest` to the registry manifest digest once the image is published (a local image id from `docker build` is not a manifest digest and is not accepted by Kubernetes as one); until then the release NOTES warn that a mutable tag decides what runs. An empty tag and digest together fail rendering. `scripts/verify-backend-image.sh` (CI `build` job) checks the jar name against the Gradle version, builds the image and proves UID/GID 10001 (the chart's `runAsUser`), the qualified JVM on a read-only root, the boot jar, and that the application itself starts from the image entrypoint on that read-only root (as UID/GID 10001, no capabilities, `/tmp` the only writable path) up to configuration binding, where it stops on the deliberately missing issuer. It does not prove a complete start against a database and an issuer; that is the Kind qualification | `backend/Dockerfile`, `backend.image.*` | Base `ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c`; Temurin 27.0.1+1 Linux x64 tarball sha256 `30cb129f…` (same JDK as [toolchain-qualification.md](toolchain-qualification.md)), verified during the build |
 | PostgreSQL / VectorChord | `tensorchord/vchord-postgres:pg18-v1.1.1@sha256:700ff05ebdc7e4afd4dd8442e0684293046c3833677fec326550000a04cf8a91` (PostgreSQL 18.3, VectorChord 1.1.1, pgvector 0.8.2) | `postgresql.image` | Accepted OM-01.01 pin, reused unchanged |
 | Keycloak | `quay.io/keycloak/keycloak:26.8.2@sha256:3879c623248408de29a5303178b5816c77e8dfef3890c361f8c0bbeaa979ba3b` | `identity.keycloak.image` | Release 26.8.2 (2026-11-05); PostgreSQL 18 is a supported database. Kubernetes 1.36 is **not** an upstream-certified Keycloak platform: startup, database schema creation, readiness and discovery were proven on the local target below, nothing more |
@@ -60,7 +66,8 @@ The `00b4853` failure (run 3) did not recur: `first-enable` has now run uninterr
 
 ## Secret contract
 
-Every credential is an **existing** Secret reference with the keys `username` and `password`. The
+Every credential is an **existing** Secret reference. The database and bootstrap principals use the keys
+`username` and `password`; the backend's OpenID Connect client uses the key `client-secret`. The
 chart never creates or templates credential values; a missing Secret or key leaves the pod in
 `CreateContainerConfigError` and nothing starts with empty credentials.
 
@@ -70,9 +77,12 @@ chart never creates or templates credential values; a missing Secret or key leav
 | `postgresql.adminExistingSecret` | `owl-mast-postgres-admin` | Bundled PostgreSQL provisioning superuser only (initialisation, extensions); no runtime component uses it |
 | `identity.keycloak.database.existingSecret` | `owl-mast-keycloak-db` | Keycloak's own database principal (`keycloak_app`); referenced only when `identity.bundled=true` (by Keycloak, by the bundled PostgreSQL initialisation and by the provisioning Job) |
 | `identity.keycloak.bootstrapExistingSecret` | `owl-mast-keycloak-bootstrap` | Keycloak temporary bootstrap admin; referenced only when `identity.bundled=true` and `identity.keycloak.bootstrapAdmin.enabled=true` |
+| `identity.client.existingSecret` | `owl-mast-oidc-client` (key `client-secret`) | The backend, as the confidential client `identity.client.id`, in every combination; also the bundled Keycloak pod while `identity.keycloak.importRealm=true`, which resolves it inside the imported realm file. An empty reference fails rendering |
 
-With `identity.bundled=false` an install needs only `database.existingSecret` (and `postgresql.adminExistingSecret`
-when the database is bundled); no Keycloak credential or database is provisioned.
+With `identity.bundled=false` an install needs only `database.existingSecret`, `identity.client.existingSecret` (and
+`postgresql.adminExistingSecret` when the database is bundled); no Keycloak credential or database is provisioned.
+Generate the client secret, do not choose it (for example `openssl rand -base64 48`), and with an external issuer
+store the same value in the issuer's client.
 
 Every principal has its own Secret: rendering fails, naming both keys, when two of the Secret references in
 use name the same Secret. The usernames inside the Secrets are only visible at runtime, so the bundled
@@ -96,13 +106,13 @@ On a fresh database Keycloak then starts without any administrator, and the rele
 
 | `database.bundled` | `identity.bundled` | Rendered | Required values | Example |
 | --- | --- | --- | --- | --- |
-| true | true | backend, PostgreSQL (PVC), Keycloak | defaults | `examples/bundled-bundled.yaml` |
-| true | false | backend, PostgreSQL | `identity.external.issuerUri` | `examples/bundled-external.yaml` |
-| false | true | backend, Keycloak | `database.external.host`, `identity.keycloak.database.external.host` | `examples/external-bundled.yaml` |
-| false | false | backend | `database.external.host`, `identity.external.issuerUri` | `examples/external-external.yaml` |
+| true | true | backend, PostgreSQL (PVC), Keycloak | `routing.publicOrigin`, `identity.keycloak.publicOrigin` | `examples/bundled-bundled.yaml` |
+| true | false | backend, PostgreSQL | `routing.publicOrigin`, `identity.external.issuerUri` | `examples/bundled-external.yaml` |
+| false | true | backend, Keycloak | `routing.publicOrigin`, `identity.keycloak.publicOrigin`, `database.external.host`, `identity.keycloak.database.external.host` | `examples/external-bundled.yaml` |
+| false | false | backend | `routing.publicOrigin`, `database.external.host`, `identity.external.issuerUri` | `examples/external-external.yaml` |
 
-`helm template` fails with the offending value named when a required external value is missing,
-when a secret reference is empty, or when an unknown key (for example `auth.enabled`) is passed
+`helm template` fails with the offending value named when a required value is missing (the two public origins
+have no default), when a secret reference is empty, when `backend.replicas` is greater than 1, or when an unknown key (for example `auth.enabled`) is passed
 (`values.schema.json` rejects unknown top-level keys).
 
 A "compatible" external PostgreSQL is version 17 or newer with VectorChord 1.1.1 preloaded and installed in the
@@ -133,12 +143,16 @@ are compared on every build. The issuer's port must be 1–65535 and its path ma
 characters and complete `%XX` escapes, which is what the backend's URI parser accepts; the backend checks the
 port range as well. The
 backend also refuses a plaintext `http://` issuer by itself unless `owlmast.identity.allow-insecure-issuer` is
-true, which the chart sets (`OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER`) only for the cluster-local bundled Keycloak
-or for `identity.external.allowInsecureIssuer=true`, so the rule holds on every deployment path. The issuer is
-used verbatim: a trailing slash is part of it. For the bundled Keycloak the chart builds `KC_HOSTNAME` and the
-backend's issuer from one helper (`http://<fullname>-keycloak:<identity.keycloak.service.port>`), and leaves the
-port out when it is 80, because Keycloak publishes its issuer without the scheme's default port. This is render
-support, covered by render tests; only the default port 8080 was run on the local target. `backend.javaToolOptions` accepts a named allow-list of JVM memory
+true, which the chart sets (`OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER`) only for a bundled Keycloak whose
+`identity.keycloak.publicOrigin` is a loopback `http` origin or for `identity.external.allowInsecureIssuer=true`,
+so the rule holds on every deployment path. The issuer is used verbatim: a trailing slash is part of it. For the
+bundled Keycloak the issuer is `<identity.keycloak.publicOrigin>/realms/<identity.realm>`, built with `KC_HOSTNAME`
+from one helper, and the backend reaches Keycloak on the cluster-local Service
+(`http://<fullname>-keycloak:<identity.keycloak.service.port>/realms/<realm>`, rendered as
+`OWLMAST_IDENTITY_BACKCHANNEL_URI` with `OWLMAST_IDENTITY_ALLOW_INSECURE_BACKCHANNEL=true`); the port is left out
+of that address when it is 80, because Keycloak publishes its URLs without the scheme's default port. This is
+render support, covered by render tests; on the local target only the default port 8080 was run, and only with
+chart 0.2.0, whose issuer was that cluster-local address. `backend.javaToolOptions` accepts a named allow-list of JVM memory
 and tuning options only: `-Xms`/`-Xmx`/`-Xmn`/`-Xss` with a size, and the `-XX` options listed next to the value
 in `values.yaml` (for example `-XX:MaxRAMPercentage=75`, `-XX:+UseZGC`). System properties (`-D…`), agents,
 argument files and every other `-XX` option are refused, the file-loading, hook and attach options included
@@ -234,6 +248,27 @@ on retained volumes; it does not upgrade a 0.1.0 release).
 | `identity.keycloak.importRealm=false` requires an acknowledgement | `identity.keycloak.realmManagedByOperator=true` |
 | Distinct Secrets per principal, distinct Keycloak database name on a shared server, reserved `commonLabels` keys and invalid label values, overriding `backend.extraEnv` names are refused | Give each principal its own Secret; rename the colliding values |
 
+## Upgrading a release installed from chart 0.2.0
+
+Chart 0.3.0 (appVersion unchanged) adds the sign-in wiring of OM-02.01. Two values have no default, so an
+upgrade that does not set them is refused at render, with the value named; this includes `--reuse-values`, which
+carries the 0.2.0 values without them (the other new keys are read with their defaults). A render test applies
+the chart 0.1.0 values file, which lacks the same keys, and checks both the refusal and the render once the two
+origins are set. The upgrade itself has not
+been run on a cluster.
+
+| Change in 0.3.0 | What to do |
+| --- | --- |
+| `routing.publicOrigin` is required | Set it to the origin people open Owl Mast on (`https://…`; `http` only for a loopback host) |
+| `identity.keycloak.publicOrigin` is required with `identity.bundled=true` | Set it to the origin browsers reach Keycloak on, and route that origin to the Keycloak Service (`identity.keycloak.route.*`, or your own routing) |
+| The backend needs `identity.client.existingSecret` (default `owl-mast-oidc-client`, key `client-secret`) in every combination | Create the Secret before the upgrade. Without it the backend pod stays in `CreateContainerConfigError`, and with `importRealm=true` the Keycloak pod does too |
+| The bundled issuer changes from the cluster-local address to `<identity.keycloak.publicOrigin>/realms/<realm>`; `KC_HOSTNAME` changes with it and the Keycloak pod is replaced | Nothing more for the backend: it receives the new issuer and the cluster-local back-channel base in the same upgrade. Tokens issued before the upgrade carry the old issuer (chart 0.2.0 had no client, so the installation issued none to Owl Mast) |
+| The realm import now carries the client and the invitation-only settings, but Keycloak skips it for a realm that exists | Create the client in the existing realm by hand, or delete the realm and restart Keycloak ([Realm and client](#realm-and-client)). Check the realm's self-registration switch yourself: the import that would set it does not run |
+| `backend.replicas` greater than 1 is refused by the templates with the reason (was a schema maximum) | Keep 0 or 1 |
+| Every backend restart, rollout and upgrade signs everyone out (sessions are in the backend's memory) | Plan upgrades accordingly |
+| `identity.keycloak.proxyHeaders` keeps its rule; a rendered Keycloak route has the same peer rule under the NetworkPolicy | Name the proxy in `networkPolicy.keycloak.extraFrom` |
+| The backend image must be one that implements sign-in (it reads `OWLMAST_IDENTITY_CLIENT_*`, `OWLMAST_IDENTITY_APPLICATION_ORIGIN` and the back-channel variables) | Roll the backend image and the chart together |
+
 ## Shared PostgreSQL (AC3)
 
 The bundled instance initialises once from `postgresql-init-configmap.yaml`: databases `owlmast`
@@ -301,8 +336,9 @@ a second run creates nothing.
 `networkPolicy.enabled` (default `true`) renders ingress-only NetworkPolicies: the bundled PostgreSQL accepts
 :5432 only from this release's backend, Keycloak and provisioning Job (the last two are admitted even with
 the identity bundle disabled, because the upgrade that enables it runs the provisioning hook under the policy
-rendered before that upgrade), and the bundled Keycloak accepts :8080 only from the backend; `networkPolicy.{postgresql,keycloak}.extraFrom` adds NetworkPolicyPeer entries (for
-example a Gateway data plane in front of Keycloak, OM-02.01). Node-originated traffic (kubelet probes, the
+rendered before that upgrade), and the bundled Keycloak accepts :8080 only from the backend; `networkPolicy.{postgresql,keycloak}.extraFrom` adds NetworkPolicyPeer entries. The
+Gateway or Ingress data plane in front of Keycloak must be named there: a Keycloak route does not render under the
+policy without such an entry ([Public origins, realm and client](#public-origins-realm-and-client)). Node-originated traffic (kubelet probes, the
 API-server proxy on a single-node target) is not governed by peer rules and stays allowed; egress is not
 restricted. Enforcement depends on the cluster's network plugin. On 2026-11-09 a disposable Kind v0.33.0 cluster
 (kindest/node v1.36.4, kindnet, which enforces NetworkPolicy) ran the bundled-bundled install with the frontend:
@@ -383,7 +419,9 @@ Docker suite holds a container in that phase and runs the rendered probe command
 
 The backend is a single instance (`backend.replicas` at most 1, AD-14) and its Deployment uses the `Recreate`
 strategy: a rollout stops the old pod before it starts the new one, so two backends never run against one
-database, at the cost of the backend being down while it restarts. The actuator serves these probes inside the
+database, at the cost of the backend being down while it restarts. Browser sessions are held in the backend's
+memory (OM-02.01), so every backend restart, rollout or upgrade signs everyone out, and rendering refuses
+`backend.replicas` greater than 1 with that reason (a durable session store is deferred work). The actuator serves these probes inside the
 cluster and is not routed externally (see routing below).
 
 The backend may restart once on a cold install because it starts before the database accepts
@@ -398,8 +436,9 @@ proven in Docker with the rendered user, read-only root, dropped capabilities an
 volumes at the rendered paths: `deploy/tests/test_keycloak_readonly.py` runs the rendered init container and
 Keycloak against a disposable PostgreSQL with the seed volume shaped like a kubelet emptyDir (root-owned, group fsGroup, mode 2777; management `/health/ready` 200, discovery issuer as rendered), and
 `scripts/verify-frontend-artifact.sh` reads the frontend's UID/GID from the chart. PostgreSQL keeps a writable root. `KC_PROXY_HEADERS` is not
-set: the cluster-local Keycloak has no proxy in front of it, and `identity.keycloak.proxyHeaders`
-(`xforwarded`|`forwarded`) is for a trusted proxy that is the only path to it: rendering it requires
+set by default: Keycloak builds its URLs from the explicit `identity.keycloak.publicOrigin`, not from forwarding
+headers, and `identity.keycloak.proxyHeaders`
+(`xforwarded`|`forwarded`) is for a trusted proxy that is the only path to it besides the backend (it gives Keycloak the browser's address): rendering it requires
 `networkPolicy.enabled=true` and a `networkPolicy.keycloak.extraFrom` entry naming the proxy, because without the
 policy any pod could send forged forwarding headers and without the entry the policy admits no proxy at all. An
 entry names the proxy when its selector has a `matchLabels` entry or a `matchExpressions` term with operator `In`
@@ -521,7 +560,115 @@ default. Two mutually exclusive mechanisms exist; enabling both is refused as am
   Ingress API is frozen (GA, no removal planned) while the project recommends Gateway API; the retirement
   of the ingress-nginx controller is a separate fact and does not remove the API.
 
-Public origins, TLS and session behaviour are OM-02.01.
+## Public origins, realm and client
+
+Chart 0.3.0 (OM-02.01) wires browser sign-in. The backend is a confidential OpenID Connect client (authorization
+code with PKCE); it holds the tokens and the session, and the browser holds one `HttpOnly`, `Secure`,
+`SameSite=Lax` session cookie. [identity.md](identity.md) records the decisions; this section is what an
+installation has to supply.
+
+**Two origins, both explicit.**
+
+| Value | What it is | Used for |
+| --- | --- | --- |
+| `routing.publicOrigin` (required) | The one origin people open Owl Mast on. It serves the frontend at `/` and the backend at `/api`, so there is no CORS | The redirect URI `<origin>/api/session/callback`, the return after sign-in and sign-out, the session cookie; rendered to the backend as `OWLMAST_IDENTITY_APPLICATION_ORIGIN` |
+| `identity.keycloak.publicOrigin` (required with `identity.bundled=true`) | The origin browsers reach the bundled Keycloak on: its own, never the application's | `KC_HOSTNAME`, and with the realm the issuer of every token (`OWLMAST_IDENTITY_ISSUER_URI`) |
+| `identity.external.issuerUri` (required with `identity.bundled=false`) | An external issuer, used as it is | The issuer; the backend reaches it on the same address |
+
+An origin is `scheme://host[:port]` and nothing else: `https`, a lowercase host (a DNS name whose last label
+starts with a letter, a single label, or an IPv4 address), no path, no trailing slash. Plain `http` is accepted
+only for a loopback host (`http://localhost[:port]`, `http://127.0.0.1[:port]`), because the session cookie is
+always `Secure` and browsers accept such a cookie over `http` on loopback alone. The scheme's default port
+(`:443`, `:80`) is refused: Keycloak and browsers leave it out, and origins and issuers are compared as exact
+strings. The two origins must differ. Rendering fails naming the value when one is missing or malformed. The
+chart does not derive `routing.publicOrigin` from `routing.ingress.host` or `routing.gateway.hostnames`, but it
+compares them: when the chart renders the application route, the origin's host must be the Ingress host (or one
+label below a wildcard host) or one of the Gateway hostnames (or below a wildcard hostname), otherwise rendering
+fails naming both values, because the redirect URI and the session cookie would be bound to an origin that never
+reaches Owl Mast. Nothing is compared when the chart renders no route (operator-owned routing, a port-forward)
+or when the HTTPRoute takes every listener hostname (`routing.gateway.allowAllListenerHostnames=true`): there the
+origin must be the one the browser really uses.
+
+**How the backend reaches the bundled Keycloak.** Keycloak runs with `KC_HOSTNAME=<publicOrigin>` and
+`KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true`. The backend fetches the discovery document from the cluster-local Service
+(`OWLMAST_IDENTITY_BACKCHANNEL_URI`); Keycloak answers there with the public issuer and authorization endpoint
+and with token, key and logout endpoints on the Service address. The Docker run of the rendered Keycloak checks
+exactly this (`deploy/tests/test_keycloak_readonly.py`). Traffic between the backend and the bundled Keycloak is
+plaintext inside the cluster, admitted by the NetworkPolicy for the backend only. The realm's `sslRequired:
+external` lets Keycloak answer plaintext only to private addresses (loopback, 10.0.0.0/8, 172.16.0.0/12,
+192.168.0.0/16): on a cluster whose pod network is outside those ranges Keycloak refuses the backend's
+plaintext calls ("HTTPS required") and the backend never becomes ready; such a cluster needs an external
+issuer reached over `https`.
+
+**Route to the bundled Keycloak.** The chart renders none by default, and NOTES say so. For the host of
+`identity.keycloak.publicOrigin`:
+
+- `identity.keycloak.route.gateway.enabled=true` with `identity.keycloak.route.gateway.parentRefs` (same rules as
+  `routing.gateway.parentRefs`) renders the HTTPRoute `<fullname>-keycloak` (Gateway API first);
+- `identity.keycloak.route.ingress.enabled=true` (`className`, `annotations`, `tls`) renders the Ingress
+  `<fullname>-keycloak` (compatibility). Enabling both is refused.
+
+Either one routes only `/realms/<identity.realm>/` and `/resources/` (the endpoints of that realm and the login
+theme). The master realm (`/realms/master/`, where administrators sign in and obtain tokens) and the admin
+console (`/admin`) are never routed. With `networkPolicy.enabled=true` a route renders only when
+`networkPolicy.keycloak.extraFrom` names the proxy (a `matchLabels` entry, a `matchExpressions` term with
+operator `In`, or a narrow `ipBlock`; the rule of `identity.keycloak.proxyHeaders`), because without an entry the
+policy admits only the backend and the route would reach nothing. TLS for `https` origins is terminated by the
+operator's Gateway or Ingress; the chart mounts no certificate into Keycloak. A host that is an IP address cannot
+be routed by either mechanism. This is manifest support: no Gateway controller, Ingress controller or browser has
+run against a rendered Keycloak route.
+
+**Administering the bundled Keycloak.** Because the admin console is not routed, administrators use `kcadm.sh`
+inside the pod, or set `identity.keycloak.adminOrigin` (rendered as `KC_HOSTNAME_ADMIN`) to the address they open
+the console on, for example `http://localhost:8080` with `kubectl port-forward svc/<fullname>-keycloak 8080`.
+`adminOrigin` was rendered and not exercised.
+
+### Realm and client
+
+With `identity.keycloak.importRealm=true` (the default) the bundled Keycloak imports the realm `identity.realm`
+at start:
+
+| Setting | Value |
+| --- | --- |
+| Self-registration (`registrationAllowed`) | off: accounts are by invitation, an administrator creates each one in Keycloak and the person sets their password there |
+| "Forgot password" (`resetPasswordAllowed`) | off. The chart configures no mail server. After configuring the realm's mail in Keycloak, an operator turns it on there; until then an administrator resets a password |
+| `editUsernameAllowed` | off |
+| `bruteForceProtected` | on |
+| `sslRequired` | `external` |
+| Users | none imported |
+| Client `identity.client.id` (default `owl-mast-web`) | confidential (`publicClient` false), secret from `identity.client.existingSecret`; standard flow only (implicit flow, direct access grants and service accounts off); `fullScopeAllowed` off |
+| Redirect URIs | exactly `<routing.publicOrigin>/api/session/callback`, no wildcard |
+| Web origins | none (no CORS) |
+| PKCE | `pkce.code.challenge.method=S256` |
+| Back-channel logout | `http://<backend Service>:<backend.service.port>/api/session/backchannel-logout`, session required |
+| Protocol mappers | none. In particular no audience mapper: the client's access tokens do not name the backend as audience |
+
+The client secret is not in the rendered ConfigMap. The realm file carries the placeholder
+`${OWLMAST_OIDC_CLIENT_SECRET}`, and the Keycloak pod receives that variable from the Secret; Keycloak resolves
+placeholders in files it imports at start. Session lifetimes are Keycloak's defaults for a new realm; the chart
+sets none ([identity.md](identity.md)).
+
+**Keycloak skips the import when the realm already exists.** The file is applied once, to a Keycloak database
+that has no realm of that name. Consequences:
+
+- A release upgraded from chart 0.2.0, or installed on a retained Keycloak database, keeps its existing realm,
+  which has no client: sign-in fails at Keycloak ("client not found") until the client exists. Create it in the
+  existing realm with the settings above, or delete the realm (it holds no accounts on a chart 0.2.0
+  installation unless an operator added some) and restart Keycloak so that the import runs.
+- A later change of `routing.publicOrigin`, `identity.client.id`, `backend.service.port`, the release name or the
+  client secret restarts Keycloak (the pod template hashes the file) but does not change the existing client:
+  apply the same change in Keycloak.
+
+The chart has no Job that reconciles an existing realm; that is the operator's step, and NOTES repeat it.
+
+**External issuer, or a realm managed by an operator** (`identity.bundled=false`, or `importRealm=false` with
+`realmManagedByOperator=true`). The chart creates nothing in it. The realm needs a client with the id
+`identity.client.id` and the secret stored in `identity.client.existingSecret`, with: the authorization code flow
+with PKCE `S256`; the exact redirect URI `<routing.publicOrigin>/api/session/callback`; a back-channel logout URL that the issuer can reach and that ends at the backend's
+`/api/session/backchannel-logout` (for an issuer outside the cluster this is
+`<routing.publicOrigin>/api/session/backchannel-logout`, through the application route); no web origin; and
+self-registration off in the realm. The backend reaches an external issuer on the issuer address itself, so that
+address must be reachable from the backend pod as well as from browsers.
 
 ## Commands
 
@@ -569,7 +716,10 @@ Nothing is mutated when preflight refuses. This is the server's registration vie
 available); it is not an atomic proof about CRD storage or future registrations. `deploy/tests/test_discovery_client.py`
 drives the real kubectl against a loopback discovery server to prove these outcomes end to end. Pod replacement deletes only the pods whose chain was proven
 immediately before, by name. It then prepares the run-owned StorageClass, namespaces and quotas (6 CPU / 12Gi /
-40Gi combined), generates synthetic secrets into the cluster only, deploys synthetic external
+40Gi combined), generates synthetic secrets into the cluster only (since chart 0.3.0 also the backend's client
+secret, `owl-mast-oidc-client` with the key `client-secret`), passes loopback origins to every install
+(`routing.publicOrigin=http://localhost:8080`, `identity.keycloak.publicOrigin=http://localhost:8081`; the bundled
+Keycloak must then publish `http://localhost:8081/realms/owl-mast` on the Service address the script reads), deploys synthetic external
 PostgreSQL/Keycloak fixtures (plaintext by design: every such install passes `identity.external.allowInsecureIssuer=true`
 and the matching `allowInsecureTransport=true` explicitly; each Secret is created together with its ownership label in
 one `create` call, and a replicated Secret is written with `create`, never `apply`, so an interrupted run leaves no

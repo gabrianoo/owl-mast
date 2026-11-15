@@ -182,6 +182,6 @@ jobs:
       - name: Loopback name resolution (the preview servers bind 127.0.0.1 explicitly)
         run: getent ahosts localhost
         working-directory: frontend
-      - name: Browser → real backend smoke (bootTestRun with VectorChord container)
+      - name: Browser → real backend smoke and browser sign-in (bootTestRun with VectorChord and Keycloak containers)
         run: npm run test:e2e:smoke
         working-directory: frontend

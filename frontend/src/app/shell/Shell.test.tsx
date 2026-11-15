@@ -4,10 +4,11 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ApiClient, ApiResult } from '../../api/client.ts';
 import { App } from '../App.tsx';
 import { DESTINATIONS } from '../destinations.ts';
+import { withSession } from '../../testing/session.ts';
 
-const client: ApiClient = {
+const client: ApiClient = withSession({
   get: <T,>() => Promise.resolve({ kind: 'not-found' } as ApiResult<T>),
-};
+});
 
 function renderAt(path: string, wide: boolean) {
   window.matchMedia = (query: string) =>

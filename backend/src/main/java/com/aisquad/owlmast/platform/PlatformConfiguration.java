@@ -3,10 +3,13 @@ package com.aisquad.owlmast.platform;
 import com.aisquad.owlmast.platform.blocking.BoundedBlocking;
 import com.aisquad.owlmast.platform.blocking.BoundedBlockingProperties;
 import com.aisquad.owlmast.platform.persistence.ScopedTransactions;
+import com.aisquad.owlmast.platform.web.ProblemResponses;
 import java.time.Clock;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.codec.ServerCodecConfigurer;
 import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.transaction.reactive.TransactionalOperator;
 
@@ -30,5 +33,12 @@ class PlatformConfiguration {
   ScopedTransactions scopedTransactions(
       TransactionalOperator transactionalOperator, DatabaseClient databaseClient) {
     return new ScopedTransactions(transactionalOperator, databaseClient);
+  }
+
+  /** The common error envelope for answers written outside a controller (filters, security). */
+  @Bean
+  @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.REACTIVE)
+  ProblemResponses problemResponses(ServerCodecConfigurer codecs) {
+    return new ProblemResponses(codecs);
   }
 }

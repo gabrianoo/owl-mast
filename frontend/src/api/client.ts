@@ -1,3 +1,4 @@
+import type { SessionLink } from './session.ts';
 import { PROBLEM_MEDIA_TYPE, parseProblem, type ProblemDetail } from './problem.ts';
 
 /**
@@ -7,6 +8,12 @@ import { PROBLEM_MEDIA_TYPE, parseProblem, type ProblemDetail } from './problem.
  * `navigator.onLine` is advisory and a public answer discloses nothing. Every request uses
  * `cache: 'no-store'`. 401/403 become `denied`, 404 `not-found`, everything else `error`. Bodies are
  * parsed as JSON only.
+ *
+ * Session (OM-02.01): the only credential is the HttpOnly session cookie, sent to the same origin
+ * (`credentials: 'same-origin'`); no token is ever held by this client. Unsafe methods (`post`) send
+ * the CSRF header the session answer supplied. A 401 on a protected call means the session is gone:
+ * the session link is told, so the shell re-reads the session and removes protected content. A 403
+ * is a denial for a signed-in person and says nothing about the session.
  */
 export type ApiResult<T> =
   | { kind: 'ok'; value: T }
@@ -26,6 +33,8 @@ export interface ApiClientOptions {
   apiPathPrefix: string;
   fetchImpl?: typeof fetch;
   isOnline?: () => boolean;
+  /** Supplies the CSRF token for unsafe calls and hears about a 401 on a protected call. */
+  session?: SessionLink;
 }
 
 export interface RequestOptions {
@@ -40,6 +49,11 @@ export interface RequestOptions {
 
 export interface ApiClient {
   get<T>(path: string, options: RequestOptions, parse: (body: unknown) => T): Promise<ApiResult<T>>;
+  /**
+   * An unsafe call. `body` is sent as JSON when given. The CSRF header of the current session is
+   * added; without a session no header is sent and the backend refuses the call (401 or 403).
+   */
+  post<T>(path: string, options: RequestOptions, parse: (body: unknown) => T, body?: unknown): Promise<ApiResult<T>>;
 }
 
 export function joinPath(prefix: string, path: string): string {
@@ -50,43 +64,63 @@ export function joinPath(prefix: string, path: string): string {
 export function createApiClient(options: ApiClientOptions): ApiClient {
   const fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
   const isOnline = options.isOnline ?? (() => typeof navigator === 'undefined' || navigator.onLine);
+
+  async function send<T>(
+    method: 'GET' | 'POST',
+    path: string,
+    request: RequestOptions,
+    parse: (body: unknown) => T,
+    body?: unknown,
+  ): Promise<ApiResult<T>> {
+    if (request.protected && !isOnline()) {
+      return { kind: 'offline' };
+    }
+    const headers: Record<string, string> = { Accept: `application/json, ${PROBLEM_MEDIA_TYPE}` };
+    if (method !== 'GET') {
+      const csrf = options.session?.csrf();
+      if (csrf) headers[csrf.headerName] = csrf.token;
+      if (body !== undefined) headers['Content-Type'] = 'application/json';
+    }
+    let response: Response;
+    try {
+      response = await fetchImpl(joinPath(options.apiPathPrefix, path), {
+        method,
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers,
+        ...(method !== 'GET' && body !== undefined ? { body: JSON.stringify(body) } : {}),
+        ...(request.signal ? { signal: request.signal } : {}),
+      });
+    } catch {
+      return isOnline() ? { kind: 'error' } : { kind: 'offline' };
+    }
+    if (response.status === 401 || response.status === 403) {
+      if (response.status === 401 && request.protected) {
+        options.session?.unauthorized();
+      }
+      return { kind: 'denied', status: response.status };
+    }
+    if (response.status === 404) {
+      return { kind: 'not-found' };
+    }
+    if (!response.ok) {
+      let problem: ProblemDetail | undefined;
+      try {
+        problem = parseProblem(await response.json(), response.status);
+      } catch {
+        problem = undefined;
+      }
+      return problem === undefined ? { kind: 'error', status: response.status } : { kind: 'error', status: response.status, problem };
+    }
+    try {
+      return { kind: 'ok', value: parse(await response.json()) };
+    } catch {
+      return { kind: 'error', status: response.status };
+    }
+  }
+
   return {
-    async get(path, request, parse) {
-      if (request.protected && !isOnline()) {
-        return { kind: 'offline' };
-      }
-      let response: Response;
-      try {
-        response = await fetchImpl(joinPath(options.apiPathPrefix, path), {
-          method: 'GET',
-          cache: 'no-store',
-          credentials: 'same-origin',
-          headers: { Accept: `application/json, ${PROBLEM_MEDIA_TYPE}` },
-          ...(request.signal ? { signal: request.signal } : {}),
-        });
-      } catch {
-        return isOnline() ? { kind: 'error' } : { kind: 'offline' };
-      }
-      if (response.status === 401 || response.status === 403) {
-        return { kind: 'denied', status: response.status };
-      }
-      if (response.status === 404) {
-        return { kind: 'not-found' };
-      }
-      if (!response.ok) {
-        let problem: ProblemDetail | undefined;
-        try {
-          problem = parseProblem(await response.json(), response.status);
-        } catch {
-          problem = undefined;
-        }
-        return problem === undefined ? { kind: 'error', status: response.status } : { kind: 'error', status: response.status, problem };
-      }
-      try {
-        return { kind: 'ok', value: parse(await response.json()) };
-      } catch {
-        return { kind: 'error', status: response.status };
-      }
-    },
+    get: (path, request, parse) => send('GET', path, request, parse),
+    post: (path, request, parse, body) => send('POST', path, request, parse, body),
   };
 }

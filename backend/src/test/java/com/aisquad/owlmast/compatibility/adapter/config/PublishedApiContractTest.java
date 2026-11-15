@@ -10,7 +10,7 @@ class PublishedApiContractTest {
 
   @Test
   void loadsThePublishedContractFromTheClasspath() {
-    assertThat(PublishedApiContract.load().label()).isEqualTo("1.0");
+    assertThat(PublishedApiContract.load().label()).isEqualTo("1.1");
   }
 
   @Test

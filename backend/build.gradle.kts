@@ -36,6 +36,10 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-r2dbc")
     implementation("org.springframework.boot:spring-boot-starter-flyway")
+    // OM-02.01: browser sign-in as a confidential OpenID Connect client (authorization code with
+    // PKCE, server-held session) and validation of bearer credentials (issuer, audience, expiry).
+    implementation("org.springframework.boot:spring-boot-starter-security-oauth2-client")
+    implementation("org.springframework.boot:spring-boot-starter-security-oauth2-resource-server")
     implementation("org.flywaydb:flyway-database-postgresql")
     runtimeOnly("org.postgresql:r2dbc-postgresql")
     runtimeOnly("org.postgresql:postgresql")
@@ -78,6 +82,8 @@ testing {
                 implementation("org.springframework.boot:spring-boot-starter-web-server-test")
                 implementation("org.springframework.boot:spring-boot-starter-r2dbc-test")
                 implementation("org.springframework.boot:spring-boot-starter-flyway-test")
+                // The test-only security chain and controllers that raise security exceptions.
+                implementation("org.springframework.boot:spring-boot-starter-security-oauth2-client")
                 implementation("org.springframework.boot:spring-boot-testcontainers")
                 implementation("org.testcontainers:testcontainers-postgresql")
                 runtimeOnly("org.testcontainers:testcontainers-r2dbc")

@@ -169,6 +169,23 @@ summary {
   color: var(--owl-primary);
 }
 
+/* session-control: who is signed in (text only) and the sign-in or sign-out action; wraps on phone. */
+.session-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--owl-space-2) var(--owl-space-3);
+  min-width: 0;
+  color: var(--owl-text);
+  font-size: var(--owl-type-row-size);
+}
+
+.session-control__person {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .app__body {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -399,13 +416,15 @@ summary {
 
 .state-message[data-kind="offline"],
 .state-message[data-kind="stale"],
-.state-message[data-kind="unsupported"] {
+.state-message[data-kind="unsupported"],
+.state-message[data-kind="signed-out"] {
   border-left-color: var(--owl-attention);
 }
 
 .state-message[data-kind="offline"] .state-message__kind,
 .state-message[data-kind="stale"] .state-message__kind,
-.state-message[data-kind="unsupported"] .state-message__kind {
+.state-message[data-kind="unsupported"] .state-message__kind,
+.state-message[data-kind="signed-out"] .state-message__kind {
   color: var(--owl-attention);
 }
 

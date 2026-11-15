@@ -2,6 +2,7 @@ Owl Mast {{ .Chart.Version }} ({{ .Release.Name }} in {{ .Release.Namespace }})
 
 Database:  {{ ternary "bundled PostgreSQL/VectorChord" (printf "external %s:%v" .Values.database.external.host .Values.database.external.port) .Values.database.bundled }} (database {{ .Values.database.name }}, Secret {{ .Values.database.existingSecret }})
 Identity:  {{ ternary "bundled Keycloak" "external issuer" .Values.identity.bundled }} -> {{ include "owl-mast.identity.issuerUri" . }}
+Sign-in:   {{ include "owl-mast.routing.publicOrigin" . }} (client {{ include "owl-mast.identity.clientId" . }}, Secret {{ include "owl-mast.identity.clientSecret" . }}, key client-secret)
 Frontend:  {{ ternary "enabled" "not deployed (OM-01.04 delivers the shell artifact)" .Values.frontend.enabled }}
 {{- if not .Values.backend.image.digest }}
 
@@ -49,6 +50,26 @@ retained volume or an external Keycloak database); otherwise upgrade with it ena
 NOTE: the temporary Keycloak bootstrap admin (Secret {{ .Values.identity.keycloak.bootstrapExistingSecret }}) is injected into the Keycloak
 pod. Create a permanent admin, delete the temporary one, then upgrade with
 identity.keycloak.bootstrapAdmin.enabled=false (docs/installation.md).
+{{- end }}
+
+NOTE: sign-in needs the client {{ include "owl-mast.identity.clientId" . }} in the realm, with the redirect URI
+{{ include "owl-mast.routing.publicOrigin" . }}/api/session/callback and the secret held in {{ include "owl-mast.identity.clientSecret" . }}.
+{{- if and .Values.identity.bundled .Values.identity.keycloak.importRealm }}
+The bundled Keycloak imports the realm {{ .Values.identity.realm }} with that client only while the realm does not exist.
+A realm that already exists (a release upgraded from chart 0.2.0, a retained Keycloak database) is left as it
+is: create the client there yourself, and re-create it after changing routing.publicOrigin, the client id
+or the secret (docs/installation.md, "Realm and client").
+{{- else }}
+The chart does not create it here: an operator configures the realm and the client (docs/installation.md,
+"Realm and client").
+{{- end }}
+Accounts are by invitation: an administrator creates each account in Keycloak. Browser sessions are held in
+the backend's memory, so a backend restart or upgrade signs everyone out.
+{{- if and .Values.identity.bundled (ne (include "owl-mast.keycloak.route.gateway.enabled" .) "true") (ne (include "owl-mast.keycloak.route.ingress.enabled" .) "true") }}
+
+NOTE: no route to the bundled Keycloak is rendered. Browsers must reach it on {{ include "owl-mast.keycloak.publicOrigin" . }}
+(paths /realms/<identity.realm>/ and /resources/): enable identity.keycloak.route.gateway or identity.keycloak.route.ingress, or
+route it yourself.
 {{- end }}
 {{- if .Values.database.bundled }}
 

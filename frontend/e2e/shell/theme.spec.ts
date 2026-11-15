@@ -1,4 +1,5 @@
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { test } from './test.ts';
 import { compatibleDescriptor, mockDescriptor, rgb } from './helpers.ts';
 
 test.describe('system theme with explicit override (AC1, UX-DR01)', () => {

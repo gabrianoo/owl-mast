@@ -43,10 +43,10 @@ behaviour, so `src/app/router.tsx` wraps the History API in about 100 lines.
 | `npx playwright install chromium` | Download the Chromium build that the locked Playwright expects. `npm ci` does not do this, so on a fresh machine `npm run test:e2e` and `npm run test:e2e:smoke` fail with "Executable doesn't exist" until it has run once (again after a Playwright bump). On a machine without the browser's system libraries use `npx playwright install --with-deps chromium`, as CI does. |
 | `npm run dev` | Vite dev server on 5173, proxying `/api` and `/actuator` to `OWLMAST_BACKEND_URL` (default `http://127.0.0.1:8080`, e.g. `./gradlew :backend:bootTestRun --args='--server.port=8080'`). |
 | `npm run lint` / `npm run typecheck` | ESLint (strict type-checked, jsx-a11y strict, react-hooks) and `tsc` for app, config and e2e projects. |
-| `npm test` / `npm run test:coverage` | Vitest + Testing Library in jsdom: tokens against DESIGN.md, owl mark against the accepted SVG, contrast arithmetic, theme, router, primitives, connection states, preferences. |
+| `npm test` / `npm run test:coverage` | Vitest + Testing Library in jsdom: tokens against DESIGN.md, owl mark against the accepted SVG, contrast arithmetic, theme, router, primitives, connection states, session states and the CSRF contract, preferences. |
 | `npm run build` | Production bundle in `dist/`, including `api-compatibility.json` (the contract this build supports, read by the pre-rollout check with `--frontend-url`). |
-| `npm run test:e2e` | Playwright `shell` project against `vite preview`: axe WCAG 2.2 AA in light and dark at 1280 px and 320 px, keyboard flow, dialog return, 320 px reflow, 200 % text size alone and combined with 320 px and 640 px, 44 px targets, reduced motion, every connection state including its axe scan (API mocked per test), the runtime API prefix chain and the pre-paint theme script. |
-| `npm run test:e2e:smoke` | Playwright `smoke` project: starts the real backend (`bootTestRun`, disposable VectorChord container) and checks the browser → backend path through the routing contract. Needs Docker and free ports 18080 and 4174: neither server is reused, so a leftover listener fails the run instead of testing a stale backend. Both servers stop on SIGTERM when the run ends. |
+| `npm run test:e2e` | Playwright `shell` project against `vite preview`: axe WCAG 2.2 AA in light and dark at 1280 px and 320 px, keyboard flow, dialog return, 320 px reflow, 200 % text size alone and combined with 320 px and 640 px, 44 px targets, reduced motion, every connection and session state including its axe scan (API mocked per test; `e2e/shell/test.ts` gives every page a signed-in synthetic session unless the test mocks its own), the runtime API prefix chain and the pre-paint theme script. |
+| `npm run test:e2e:smoke` | Playwright `smoke` project: starts the real backend (`bootTestRun`, disposable VectorChord container and the pinned Keycloak with a synthetic realm) and checks the browser → backend path through the routing contract, including one sign-in at Keycloak's own login page, the return to the shell, a reload and sign-out. The synthetic user's password is generated for the run and passed through `OWLMAST_FIXTURE_USER_PASSWORD`; it is never stored. Needs Docker and free ports 18080 and 4174: neither server is reused, so a leftover listener fails the run instead of testing a stale backend. Both servers stop on SIGTERM when the run ends. |
 | `scripts/verify-frontend-artifact.sh` (repo root) | Builds the image and proves its runtime contract (non-root, 8080, SPA fallback, `/owlmast-config.json`, published `/api-compatibility.json`, 404 below the API prefix, start-up refusal of an `OWLMAST_API_PATH_PREFIX` that is unsafe or names a path or page of the shell, headers once on every answer including a 416, immutable caching for served hashed assets only (a missing one is `no-store`), template substitution limited to `OWLMAST_*`, no JDK). See [Image configuration](#image-configuration). With `OWLMAST_IMAGE_BROWSER_SMOKE=1` (set in CI; needs `npm ci` and `npx playwright install chromium`) it also runs Chromium against the container (`e2e/image`, `playwright.image.config.ts`): the production CSP, the nginx template and the config endpoint in a real browser. |
 | `scripts/check-api-compatibility.py` (repo root) | Frontend/backend contract check: static from the checkout, or against the artifacts with `--frontend-url` and `--backend-url`; see [api-compatibility.md](api-compatibility.md). |
 
@@ -75,14 +75,52 @@ violations (jsx-a11y, type error, token drift) and that the pair check rejects a
   modal dialog), `main` with the destination h1. Route change sets the title to `<Destination> · Owl
   Mast` and focuses the h1; Back returns to the prior in-app location or Daily Work.
 - **Primitives** (`src/primitives`): `StateMessage` (loading/empty/error/offline/denied/stale/
-  unsupported/ready as text), `ActionButton` (no duplicate activation while pending, real outcome
+  unsupported/ready/signed-out as text), `ActionButton` (no duplicate activation while pending, real outcome
   only), `ExternalLink`, `SettingsField`, `ModalDialog` (native `<dialog>`, focus restore),
   `useRevalidatingResource` + `NewUpdates` (changed values wait behind one polite announcement).
+- **Session** (`src/state/session.tsx`, `src/api/session.ts`, `SessionControl`, `SessionGate`):
+  see [Session](#session-om-0201).
 - **Connection panel** (Daily Work): loads `GET {apiPathPrefix}/compatibility`, renders the pair
   verdict and every state; offline requests nothing and labels shown values stale; denied removes
   content and focuses the neutral heading; re-checks every 30 s behind "New updates".
 - **Destinations**: Daily Work, Focus, Knowledge, Connections, Usage show honest first-use states
-  (no invented counts); Preferences holds theme settings and states that push is not offered.
+  (no invented counts) to a signed-in person and the session state to everybody else; Preferences
+  holds theme settings and states that push is not offered. The connection panel and Preferences
+  need no session.
+
+## Session (OM-02.01)
+
+The backend holds the session and the tokens ([identity.md](identity.md)); the browser holds one
+`HttpOnly` cookie that scripts cannot read. The shell stores nothing about the session: no token, no
+copy in `localStorage` or `sessionStorage`. Requests keep `credentials: 'same-origin'`; there is no
+CORS, and the image's Content-Security-Policy is unchanged (`connect-src 'self'`, `form-action
+'self'`), because sign-in is a top-level navigation and sign-out is a same-origin `fetch`.
+
+| Call (below the API prefix) | Use |
+| --- | --- |
+| `GET /session` | Public, always 200: `{"state":"signed-out"}`, or `signed-in` with `person` (`principalId`, `displayName`) and `csrf` (`headerName`, `token`). Read on start, on window focus, when the page becomes visible, when the browser reports a connection again, every 60 s while the page is visible (a hidden tab does not poll: each read renews the session, and an unattended tab must not keep it alive), and after a protected call answered 401. A read is given up after 10 s. Any other answer (another shape, an error status, no answer) is a problem, never "signed in". The header name and token are checked before they are used as a header. |
+| `GET /session/sign-in` | A full-page navigation, never a `fetch`. The backend sends the browser to the identity provider and back to `/`. When sign-in does not complete it returns the browser to `/?sign-in=failed` or `/?sign-in=unavailable`; the shell reads the parameter once and removes it from the address (`history.replaceState`), so a reload or a copied link does not repeat it. |
+| `POST /session/sign-out` | Sent with the CSRF header of the current session. 200 ends the session (`identityProvider`: `ended` or `unconfirmed`); 401 means there was none; on 403 the shell reads the session once and retries once. |
+
+`ApiClient.post` adds the CSRF header to every unsafe call; a `GET` never carries it. A 401 on a call
+marked `protected: true` tells the session state, which reads the session again; a 403 is a denial
+for a signed-in person and does not touch the session.
+
+| State | When | What the person sees |
+| --- | --- | --- |
+| Loading | First read in flight | "Checking your session" (loading); no destination content, and not the signed-out state |
+| Signed out | The backend says nobody is signed in | "You are signed out" with **Sign in**. After a sign-out whose end at the identity provider was not confirmed, a second sentence says so |
+| Signed in | The backend names the person | Header: "Signed in as *display name*" (text only) and **Sign out**; destinations show their content |
+| Expired | Somebody was signed in and a later read or a 401 says otherwise, also when reads failed in between (the problem state remembers that somebody was signed in) | "Your session ended": the content that needed authorization is removed, focus moves to the message, **Sign in again** |
+| Sign-in failed | Returned with `sign-in=failed`; shown for the first session answer after the return only | "Sign-in was not completed" (denied kind), **Sign in again**; says that an administrator creates accounts |
+| Provider error | Returned with `sign-in=unavailable` | "The identity provider is unavailable" (error kind), **Retry sign-in** |
+| Problem | The session endpoint gave no usable answer | "The session could not be checked" (error kind), **Retry** reads again; nothing that needs authorization is shown |
+
+The display name is shown as text and is never treated as identity; the principal id is not shown.
+Account creation, passwords and recovery belong to the identity provider: the shell has no form for
+them. Evidence: `src/api/session.test.ts`, `src/state/session.test.tsx`, `e2e/shell/session.spec.ts`
+(every state, the CSRF header on sign-out, axe in both themes at 1280 px and 320 px, 44 px targets)
+and `e2e/smoke/session.spec.ts` (real backend and Keycloak).
 
 ## Image configuration
 
@@ -169,13 +207,22 @@ named location or at server level.
 
 ## Residual risks and deferrals
 
-- **Browser authentication, session and origin policy** are not implemented (explicit protocol/security
-  gate, OM-02.01). The shell has no authorized project, says so, and performs no protected fetch; the
-  compatibility descriptor is public by design.
+- **Project authorization** is not implemented (OM-02.02). Sign-in is (OM-02.01, see
+  [Session](#session-om-0201)): a signed-in person still has no authorized project, the scope bar and
+  the first-use states say so, and the shell makes no protected fetch besides sign-out.
+- **The session is polled, not pushed.** A session that ends at the identity provider is noticed at
+  the next session read (focus, visibility, reconnect, every 60 s while the page is visible) or at the next protected call that
+  answers 401, whichever comes first; until then the page keeps what it showed. The backend denies
+  every protected call in that interval, so nothing new is disclosed.
+- **A failed session read removes protected content** (fail closed), also when the cause is a short
+  network fault: the person sees "The session could not be checked" with a Retry, and the next
+  successful read restores the signed-in view.
+- **Sign-in returns to `/`**, not to the destination the person started from.
 - **Push** is not offered or requested (UI/push gate, first E15 story). Preferences shows an
   unsupported state instead of a control.
-- **Real authenticated journeys** arrive with E02/E18; the smoke here proves the browser → backend
-  path only through the public descriptor and readiness probe.
+- **Real authenticated journeys** beyond sign-in and sign-out arrive with the rest of E02 and E18;
+  the smoke proves the public descriptor, the readiness probe and one login/return/sign-out run
+  against a real Keycloak with a synthetic realm and user.
 - **ESLint 9.39.5** is pinned because `eslint-plugin-jsx-a11y` has no ESLint 10 release; the registry
   marks 9.x as unsupported. Re-pin to ESLint 10 when jsx-a11y supports it, or replace the static
   rules with the rendered axe checks already in place.

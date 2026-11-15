@@ -1,0 +1,50 @@
+import { ActionButton } from '../../primitives/ActionButton.tsx';
+import { useSession } from '../../state/session.tsx';
+
+/**
+ * Session control in the shell header (OM-02.01): the signed-in person's display name as text and
+ * the sign-out action, or the sign-in action when nobody is signed in. The name is display only;
+ * the identity provider owns the account, its password and its recovery.
+ */
+export function SessionControl() {
+  const { state, signIn, signOut } = useSession();
+
+  if (state.kind === 'loading') {
+    return (
+      <div className="session-control" role="group" aria-label="Session">
+        <p className="session-control__person" role="status">
+          Checking your session…
+        </p>
+      </div>
+    );
+  }
+  if (state.kind === 'problem') {
+    return (
+      <div className="session-control" role="group" aria-label="Session">
+        <p className="session-control__person" role="status">
+          Session not confirmed
+        </p>
+      </div>
+    );
+  }
+  if (state.kind === 'signed-in') {
+    return (
+      <div className="session-control" role="group" aria-label="Session">
+        <p className="session-control__person">
+          Signed in as <strong>{state.person.displayName}</strong>
+        </p>
+        <ActionButton variant="secondary" onAction={signOut} pendingLabel="Signing out…">
+          Sign out
+        </ActionButton>
+      </div>
+    );
+  }
+  return (
+    <div className="session-control" role="group" aria-label="Session">
+      <p className="session-control__person">Signed out</p>
+      <button type="button" className="action action--secondary" onClick={signIn}>
+        Sign in
+      </button>
+    </div>
+  );
+}

@@ -5,6 +5,7 @@ fail-closed validations. Requires Helm 4.x; set OWLMAST_HELM to the binary (scri
 fetches a checksum-verified Helm 4.3.1 when none is available).
 """
 
+import json
 import os
 import re
 import shutil
@@ -38,8 +39,41 @@ COMBINATIONS = {
 }
 
 
-def helm(*args):
+# Chart 0.3.0 has two values without a default (OM-02.01): the application's public origin and, with the bundled
+# Keycloak, Keycloak's own. Every render, lint and dry-run install in this suite passes them right after the chart
+# path, so a test overrides or empties them with a later --set; RAW runs Helm without them.
+APP_ORIGIN = "https://owl-mast.example"
+KEYCLOAK_ORIGIN = "https://id.owl-mast.example"
+REQUIRED = ["--set", f"routing.publicOrigin={APP_ORIGIN}", "--set", f"identity.keycloak.publicOrigin={KEYCLOAK_ORIGIN}"]
+CHART_COMMANDS = {"template": 3, "install": 3, "lint": 2}
+
+
+def raw_helm(*args):
     return subprocess.run([HELM, *args], capture_output=True, text=True, check=False)
+
+
+ROUTED_HOST = re.compile(r"routing\.(?:ingress\.host|gateway\.hostnames\[0\])=((\*\.)?[a-z0-9]([-a-z0-9.]{0,200}[a-z0-9])?)$")
+
+
+def required_for(args):
+    """The two origins without a default. routing.publicOrigin must be a host the chart routes, so a test that routes a
+    host and names no origin gets that host as its origin (a wildcard: a host under it); anything else keeps APP_ORIGIN."""
+    if any(isinstance(a, str) and a.startswith("routing.publicOrigin=") for a in args):
+        return REQUIRED
+    hosts = [m.group(1) for m in (ROUTED_HOST.match(a) for a in args if isinstance(a, str)) if m]
+    hosts = [h for h in hosts if not re.fullmatch(r"[0-9.]+", h) and all(len(label) <= 63 for label in h.split("."))]
+    if not hosts:
+        return REQUIRED
+    host = hosts[-1]
+    origin = "https://" + ("a" + host[1:] if host.startswith("*.") else host)
+    return ["--set", f"routing.publicOrigin={origin}", *REQUIRED[2:]]
+
+
+def helm(*args):
+    at = CHART_COMMANDS.get(args[0]) if args else None
+    if at is not None:
+        args = [*args[:at], *required_for(args[at:]), *args[at:]]
+    return raw_helm(*args)
 
 
 def render(*args):
@@ -59,6 +93,19 @@ def refused(*args):
     if result.returncode == 0:
         raise AssertionError(f"rendering succeeded but must be refused: {args}")
     return result.stderr
+
+
+def routed_as_dns_name(case, *args):
+    """A host with numeric labels is a DNS name, not an address, so the address rule and the schema let it through. Since
+    OM-02.01 the application origin must be the routed host, and a host whose last label is numeric cannot be an origin
+    (the backend's URI parser refuses it): such a render then stops at the origin rule. Returns the documents, or None."""
+    result = helm("template", "t", str(CHART), *args)
+    if result.returncode == 0:
+        return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+    case.assertNotIn("is an IP address", result.stderr, args)
+    case.assertNotIn("schema", result.stderr.lower(), args)
+    case.assertIn("routing.publicOrigin", result.stderr, args)
+    return None
 
 
 def sets(*values):
@@ -109,13 +156,16 @@ class ChartRenderTest(unittest.TestCase):
             "t-owl-mast-postgresql-data",
         )
         backend_env = env_of(deployments["t-owl-mast-backend"])
-        self.assertEqual(backend_env["OWLMAST_IDENTITY_ISSUER_URI"]["value"], "http://t-owl-mast-keycloak:8080/realms/owl-mast")
+        # OM-02.01: the issuer is Keycloak's public origin; the backend reaches Keycloak on the cluster-local Service
+        self.assertEqual(backend_env["OWLMAST_IDENTITY_ISSUER_URI"]["value"], f"{KEYCLOAK_ORIGIN}/realms/owl-mast")
+        self.assertEqual(backend_env["OWLMAST_IDENTITY_BACKCHANNEL_URI"]["value"], "http://t-owl-mast-keycloak:8080/realms/owl-mast")
         self.assertEqual(backend_env["OWLMAST_DATABASE_R2DBC_URL"]["value"], "r2dbc:postgresql://t-owl-mast-postgresql:5432/owlmast?sslMode=disable")
         self.assertEqual(backend_env["OWLMAST_DATABASE_PASSWORD"]["valueFrom"]["secretKeyRef"], {"name": "owl-mast-db", "key": "password"})
         kc_env = env_of(deployments["t-owl-mast-keycloak"])
         self.assertEqual(kc_env["KC_DB_URL"]["value"], "jdbc:postgresql://t-owl-mast-postgresql:5432/keycloak?sslmode=disable")
         self.assertEqual(kc_env["KC_DB_USERNAME"]["valueFrom"]["secretKeyRef"]["name"], "owl-mast-keycloak-db")
-        self.assertEqual(kc_env["KC_HOSTNAME"]["value"], "http://t-owl-mast-keycloak:8080")
+        self.assertEqual(kc_env["KC_HOSTNAME"]["value"], KEYCLOAK_ORIGIN)
+        self.assertEqual(kc_env["KC_HOSTNAME_BACKCHANNEL_DYNAMIC"]["value"], "true")
 
     def test_images_are_digest_pinned(self):
         docs = render()
@@ -167,7 +217,7 @@ class ChartRenderTest(unittest.TestCase):
                     if ref:
                         referenced.add(ref["name"])
                     self.assertFalse(e["name"].startswith("OWLMAST_KEYCLOAK"), e["name"])
-        self.assertEqual(referenced, {"owl-mast-db", "owl-mast-postgres-admin"})
+        self.assertEqual(referenced, {"owl-mast-db", "owl-mast-postgres-admin", "owl-mast-oidc-client"})  # the backend's own client secret
         init = {d["metadata"]["name"]: d for d in by_kind(docs, "ConfigMap")}["t-owl-mast-postgresql-init"]
         self.assertIn('if [ -n "${OWLMAST_KEYCLOAK_USERNAME:-}" ]', init["data"]["10-owl-mast-databases.sh"])
         bundled = render()
@@ -465,8 +515,8 @@ class ReviewFindingsTest(unittest.TestCase):
             self.assertIn(vols["data"]["persistentVolumeClaim"]["claimName"], names)
             for d in docs:
                 if d["kind"] == "Deployment" and d["metadata"]["name"].endswith("-backend"):
-                    issuer = env_of(d)["OWLMAST_IDENTITY_ISSUER_URI"]["value"]
-                    self.assertIn(issuer.split("//")[1].split(":")[0], names)
+                    backchannel = env_of(d)["OWLMAST_IDENTITY_BACKCHANNEL_URI"]["value"]
+                    self.assertIn(backchannel.split("//")[1].split(":")[0], names)
 
     def test_common_labels_cannot_use_chart_managed_keys(self):
         for key in ("app\\.kubernetes\\.io/name", "app\\.kubernetes\\.io/instance", "app\\.kubernetes\\.io/component", "helm\\.sh/chart"):
@@ -505,13 +555,17 @@ class ReviewFindingsTest(unittest.TestCase):
         """Both directions, for all four combinations: every ${OWLMAST_*} placeholder is set, nothing else OWLMAST_* is."""
         application = (REPO / "backend" / "src" / "main" / "resources" / "application.yaml").read_text()
         read = set(re.findall(r"\$\{(OWLMAST_[A-Z0-9_]+)", application))
+        # OM-02.01: the back-channel pair is rendered for the bundled Keycloak only; an external issuer is used on its own address
+        backchannel = {"OWLMAST_IDENTITY_BACKCHANNEL_URI", "OWLMAST_IDENTITY_ALLOW_INSECURE_BACKCHANNEL"}
         self.assertEqual(read, {"OWLMAST_DATABASE_R2DBC_URL", "OWLMAST_DATABASE_JDBC_URL", "OWLMAST_DATABASE_USERNAME", "OWLMAST_DATABASE_PASSWORD", "OWLMAST_IDENTITY_ISSUER_URI",
-                                "OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER"})
+                                "OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER", "OWLMAST_IDENTITY_CLIENT_ID", "OWLMAST_IDENTITY_CLIENT_SECRET",
+                                "OWLMAST_IDENTITY_APPLICATION_ORIGIN"} | backchannel)
         for combo, args in COMBINATIONS.items():
             backend = {d["metadata"]["name"]: d for d in by_kind(render(*args), "Deployment")}["t-owl-mast-backend"]
             rendered = {name for name in env_of(backend) if name.startswith("OWLMAST_")}
-            self.assertEqual(rendered, read, combo)
-            for name in read:
+            expected = read if combo.endswith("-bundled") else read - backchannel
+            self.assertEqual(rendered, expected, combo)
+            for name in expected:
                 e = env_of(backend)[name]
                 self.assertTrue(e.get("value") or e.get("valueFrom"), (combo, name))
 
@@ -801,7 +855,12 @@ class ReviewCycle1Test(unittest.TestCase):
         backend = deployments_of(render())["t-owl-mast-backend"]
         self.assertEqual(backend["spec"]["strategy"], {"type": "Recreate"})
         self.assertEqual(backend["spec"]["replicas"], 1)
-        self.assertIn("schema", refused(*sets("backend.replicas=2")).lower())
+        # OM-02.01: the refusal names the value and says why (sessions live in the backend's memory); the schema keeps
+        # no maximum, because a schema refusal prints no explanation
+        for args in (sets("backend.replicas=2"), ["--skip-schema-validation", *sets("backend.replicas=3")]):
+            err = refused(*args)
+            self.assertIn("backend.replicas=", err); self.assertIn("held in the backend's memory", err); self.assertNotIn("schema", err.lower())
+        self.assertEqual(deployments_of(render(*sets("backend.replicas=0")))["t-owl-mast-backend"]["spec"]["replicas"], 0)
 
     def test_postgresql_volume_ownership_is_not_walked_on_every_start(self):
         """109/4543776402"""
@@ -895,7 +954,11 @@ class ReviewCycle1Test(unittest.TestCase):
         """116/4543777526: the https rule lived only in the chart; the backend now refuses http unless this flag is true."""
         def flag(*args):
             return env_of(deployments_of(render(*args))["t-owl-mast-backend"])["OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER"]["value"]
-        self.assertEqual(flag(), "true")  # the cluster-local bundled Keycloak speaks http by design
+        self.assertEqual(flag(), "false")  # OM-02.01: the bundled issuer is Keycloak's public https origin
+        self.assertEqual(flag(*sets("identity.keycloak.publicOrigin=http://localhost:8081")), "true")  # a loopback fixture origin
+        bundled = env_of(deployments_of(render())["t-owl-mast-backend"])
+        self.assertEqual(bundled["OWLMAST_IDENTITY_ALLOW_INSECURE_BACKCHANNEL"]["value"], "true")  # the cluster-local Service speaks http by design
+        self.assertNotIn("OWLMAST_IDENTITY_ALLOW_INSECURE_BACKCHANNEL", env_of(deployments_of(render(*sets(*self.EXTERNAL_ID)))["t-owl-mast-backend"]))
         self.assertEqual(flag(*sets(*self.EXTERNAL_ID)), "false")
         self.assertEqual(flag(*sets("identity.bundled=false", "identity.external.issuerUri=http://idp/realms/x", "identity.external.allowInsecureIssuer=true")), "true")
         # a stale opt-in does not weaken an https issuer's backend beyond what was asked, and is still a boolean
@@ -1186,10 +1249,16 @@ class ReviewCycle2Test(unittest.TestCase):
 
     def test_reuse_values_from_chart_0_1_0_renders_with_the_new_defaults(self):
         """4544181120: --reuse-values keeps the 0.1.0 values without the new keys; the schema then refused the missing
-        bootstrapAdmin, and the templates dereferenced nil."""
+        bootstrapAdmin, and the templates dereferenced nil. OM-02.01: chart 0.3.0 has two values without a default, so
+        the old values alone are refused with the value named (never a nil error); with them, the rest renders."""
         chart = self.chart_with_0_1_0_values()
         old = yaml.safe_load((chart / "values.yaml").read_text())
         self.assertNotIn("bootstrapAdmin", old["identity"]["keycloak"]); self.assertNotIn("networkPolicy", old)  # really the 0.1.0 values
+        self.assertNotIn("publicOrigin", old["routing"]); self.assertNotIn("client", old["identity"]); self.assertNotIn("publicOrigin", old["identity"]["keycloak"])
+        alone = raw_helm("template", "t", str(chart), *UPGRADE)
+        self.assertNotEqual(alone.returncode, 0); self.assertIn("routing.publicOrigin is required", alone.stderr); self.assertNotIn("nil pointer", alone.stderr)
+        half = raw_helm("template", "t", str(chart), *UPGRADE, *sets(f"routing.publicOrigin={APP_ORIGIN}"))
+        self.assertNotEqual(half.returncode, 0); self.assertIn("identity.keycloak.publicOrigin is required when identity.bundled=true", half.stderr)
         def template(*args):
             result = helm("template", "t", str(chart), *UPGRADE, *args)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -1200,7 +1269,11 @@ class ReviewCycle2Test(unittest.TestCase):
         self.assertEqual({p["metadata"]["name"] for p in by_kind(docs, "NetworkPolicy")}, {"t-owl-mast-postgresql", "t-owl-mast-keycloak"})  # default on
         backend = d["t-owl-mast-backend"]["spec"]["template"]["spec"]["containers"][0]
         self.assertEqual(backend["readinessProbe"]["timeoutSeconds"], 5)  # still longer than the discovery timeout
-        self.assertEqual(env_of(d["t-owl-mast-backend"])["OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER"]["value"], "true")
+        self.assertEqual(env_of(d["t-owl-mast-backend"])["OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER"]["value"], "false")
+        # the client keys are absent from the old values: their 0.3.0 defaults apply
+        self.assertEqual(env_of(d["t-owl-mast-backend"])["OWLMAST_IDENTITY_CLIENT_ID"]["value"], "owl-mast-web")
+        self.assertEqual(env_of(d["t-owl-mast-backend"])["OWLMAST_IDENTITY_CLIENT_SECRET"]["valueFrom"]["secretKeyRef"], {"name": "owl-mast-oidc-client", "key": "client-secret"})
+        self.assertEqual(by_kind(docs, "HTTPRoute") + by_kind(docs, "Ingress"), [])  # no Keycloak route by default
         pg = d["t-owl-mast-postgresql"]["spec"]["template"]["spec"]["containers"][0]
         self.assertEqual(pg["readinessProbe"]["timeoutSeconds"], 5)
         self.assertEqual(by_kind(docs, "PersistentVolumeClaim")[0]["metadata"]["name"], "t-owl-mast-postgresql-data")
@@ -1218,7 +1291,7 @@ class ReviewCycle2Test(unittest.TestCase):
         self.assertIn("database.external.sslMode=prefer can send database credentials in plaintext", result.stderr)
         template(*sets("database.bundled=false", "database.external.host=pg.example", "database.external.sslMode=require",
                        "identity.keycloak.database.external.host=kc.example", "identity.keycloak.database.external.sslMode=require"))
-        # helm lint over the same values: the schema requires no key that chart 0.1.0 did not have
+        # helm lint over the same values plus the two origins: the schema requires no key that chart 0.1.0 did not have
         self.assertEqual(helm("lint", str(chart)).returncode, 0)
         doc = " ".join((REPO / "docs" / "installation.md").read_text().split())
         self.assertIn("`--reuse-values`", doc); self.assertIn("`--reset-then-reuse-values`", doc)
@@ -1247,8 +1320,11 @@ class ReviewCycle2Test(unittest.TestCase):
             self.assertIn(f'routing.ingress.tls[0].hosts entry "{host}" is an IP address', refused("--skip-schema-validation", *tls))
         # DNS names with numeric labels are not IP addresses
         for host in ("10.0.0.1.nip.io", "1.2.3", "a.1.2.3.4", "1-2-3-4.example"):
-            docs = render(*sets("routing.ingress.enabled=true", f"routing.ingress.host={host}"))
-            self.assertEqual(by_kind(docs, "Ingress")[0]["spec"]["rules"][0]["host"], host)
+            docs = routed_as_dns_name(self, *sets("routing.ingress.enabled=true", f"routing.ingress.host={host}"))
+            if docs is not None:
+                self.assertEqual(by_kind(docs, "Ingress")[0]["spec"]["rules"][0]["host"], host)
+        for host in ("10.0.0.1.nip.io", "1-2-3-4.example"):  # these can be an origin, so they do render
+            self.assertIsNotNone(routed_as_dns_name(self, *sets("routing.ingress.enabled=true", f"routing.ingress.host={host}")), host)
 
     def test_install_without_a_bootstrap_admin_is_an_explicit_warned_choice(self):
         """4544181156: bootstrapAdmin.enabled=false on a fresh install starts Keycloak with no administrator. It is not refused
@@ -1412,7 +1488,7 @@ class ReviewCycle3Test(unittest.TestCase):
         check for a fixed count, and its header claimed every bean."""
         script = (REPO / "scripts" / "verify-backend-image.sh").read_text()
         function = script.split("smoke() {", 1)[1].split("\n}\n", 1)[0]
-        set_by_script = dict(re.findall(r'-e "?([A-Z0-9_]+)=([^" ]*)"?', function))
+        set_by_script = dict(re.findall(r'-e "?([A-Z0-9_]+)=([^" }]*)"?', function))
         backend = deployments_of(render())["t-owl-mast-backend"]
         rendered = env_of(backend)
         self.assertEqual(set(set_by_script), set(rendered))  # exactly the variables of the default Deployment, no more, no fewer
@@ -1423,12 +1499,20 @@ class ReviewCycle3Test(unittest.TestCase):
             self.assertEqual(shape(set_by_script[name]), shape(rendered[name]["value"]), name)
         self.assertTrue(set_by_script["OWLMAST_DATABASE_R2DBC_URL"].endswith("?sslMode=disable"))
         self.assertTrue(set_by_script["OWLMAST_DATABASE_JDBC_URL"].endswith("?sslmode=disable"))
-        # the default bundled install: an http issuer to the cluster-local Keycloak, with the opt-in
+        # the default bundled install (OM-02.01): the issuer on Keycloak's public https origin, the cluster-local Service
+        # as the back-channel base over http with its own opt-in
         issuer, allow = rendered["OWLMAST_IDENTITY_ISSUER_URI"]["value"], rendered["OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER"]["value"]
-        self.assertTrue(issuer.startswith("http://")); self.assertEqual(allow, "true")
-        starts = re.findall(r"^smoke (\S+) (true|false)$", script, re.M)
-        self.assertEqual([(i.split(":")[0], a) for i, a in starts], [("https", "false"), ("http", "true"), ("http", "false")])
+        self.assertTrue(issuer.startswith("https://")); self.assertEqual(allow, "false")
+        backchannel = rendered["OWLMAST_IDENTITY_BACKCHANNEL_URI"]["value"]
+        self.assertTrue(backchannel.startswith("http://")); self.assertEqual(rendered["OWLMAST_IDENTITY_ALLOW_INSECURE_BACKCHANNEL"]["value"], "true")
+        self.assertEqual(set_by_script["OWLMAST_IDENTITY_ALLOW_INSECURE_BACKCHANNEL"], "true")
+        self.assertEqual(set_by_script["OWLMAST_IDENTITY_CLIENT_ID"], rendered["OWLMAST_IDENTITY_CLIENT_ID"]["value"])
+        self.assertTrue(set_by_script["OWLMAST_IDENTITY_APPLICATION_ORIGIN"].startswith("https://"))
+        starts = re.findall(r"^smoke (\S+) (true|false)(?: (\S+))?$", script, re.M)
+        self.assertEqual([(i.split(":")[0], a, bool(b)) for i, a, b in starts],
+                         [("https", "false", False), ("https", "false", True), ("http", "true", False), ("http", "false", False)])
         self.assertEqual(starts[1][0].rsplit("/realms/", 1)[1], issuer.rsplit("/realms/", 1)[1])
+        self.assertEqual(starts[1][2].rsplit("/realms/", 1)[1], backchannel.rsplit("/realms/", 1)[1])
         # a positive marker, logged by the identity configuration, and a control that the marker's absence is detectable
         marker = re.search(r'grep -qF "(Identity issuer \$2 \(plaintext issuer accepted: \$3\))"', script)
         self.assertIsNotNone(marker)
@@ -1538,10 +1622,14 @@ class ReviewCycle3Test(unittest.TestCase):
         self.assertNotIn('"^[0-9]+', (CHART / "templates" / "_helpers.tpl").read_text())
         for host in ("999.1.1.1", "256.0.0.1", "1.2.3.256", "300.300.300.300", "1.2.3.4.5", "1.2.3"):
             for skip in ([], ["--skip-schema-validation"]):
-                docs = render(*skip, *sets("routing.ingress.enabled=true", f"routing.ingress.host={host}"))
-                self.assertEqual(by_kind(docs, "Ingress")[0]["spec"]["rules"][0]["host"], host)
-                docs = render(*skip, *GATEWAY_API, "--set-string", f"routing.gateway.hostnames[0]={host}", *sets("routing.gateway.enabled=true", "routing.gateway.parentRefs[0].name=gw"))
-                self.assertEqual(by_kind(docs, "HTTPRoute")[0]["spec"]["hostnames"], [host])
+                # numeric last labels: DNS names for the address rule, but never an application origin (routed_as_dns_name)
+                self.assertIsNone(routed_as_dns_name(self, *skip, *sets("routing.ingress.enabled=true", f"routing.ingress.host={host}")), host)
+                self.assertIsNone(routed_as_dns_name(self, *skip, *GATEWAY_API, "--set-string", f"routing.gateway.hostnames[0]={host}",
+                                                     *sets("routing.gateway.enabled=true", "routing.gateway.parentRefs[0].name=gw")), host)
+                # as one of several hostnames beside the origin's, the name is routed as it is
+                docs = render(*skip, *GATEWAY_API, "--set-string", f"routing.gateway.hostnames[1]={host}",
+                              *sets("routing.gateway.enabled=true", "routing.gateway.parentRefs[0].name=gw", "routing.gateway.hostnames[0]=owl-mast.example"))
+                self.assertEqual(by_kind(docs, "HTTPRoute")[0]["spec"]["hostnames"], ["owl-mast.example", host])
         # addresses, in every spelling the API server's parser reads as one (leading zeros included)
         for host in ("10.0.0.1", "255.255.255.255", "0.0.0.0", "010.0.0.1", "1.2.3.04", "001.002.003.004"):
             args = sets("routing.ingress.enabled=true", f"routing.ingress.host={host}")
@@ -1766,7 +1854,8 @@ class ReviewCycle4Test(unittest.TestCase):
         for path, pattern in addresses:
             self.assertEqual(pattern, helper, path)
         # and the template reads the helper for both, with no literal copy of its own
-        self.assertEqual(text.count('include "owl-mast.ipv4Pattern"'), 2)
+        # (the application Ingress, the application Gateway hostnames, and the host of the Keycloak route, OM-02.01)
+        self.assertEqual(text.count('include "owl-mast.ipv4Pattern"'), 3)
         self.assertEqual(text.count("25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}0*"), 1)
         # the two rules agree, with and without the schema, on spellings on either side of the pattern
         for host, address in (("0.0.0.0", True), ("255.255.255.255", True), ("0255.1.1.1", True), ("1.1.1.0255", True), ("00.00.00.00", True),
@@ -1778,7 +1867,7 @@ class ReviewCycle4Test(unittest.TestCase):
                     self.assertIn("schema", refused(*args).lower(), host)
                     self.assertIn("is an IP address", refused("--skip-schema-validation", *args), host)
                 else:
-                    render(*args); render("--skip-schema-validation", *args)
+                    self.assertIsNone(routed_as_dns_name(self, *args), host); self.assertIsNone(routed_as_dns_name(self, "--skip-schema-validation", *args), host)
 
 
 @unittest.skipIf(HELM is None, "helm binary required (OWLMAST_HELM)")
@@ -1791,38 +1880,46 @@ class ReviewCycle6Test(unittest.TestCase):
         d = deployments_of(docs)
         service = next(s for s in by_kind(docs, "Service") if s["metadata"]["name"] == "t-owl-mast-keycloak")
         printed = re.search(r"^Identity:\s+bundled Keycloak -> (\S+)$", notes(*args), re.M).group(1)
-        return (env_of(d["t-owl-mast-keycloak"])["KC_HOSTNAME"]["value"], env_of(d["t-owl-mast-backend"])["OWLMAST_IDENTITY_ISSUER_URI"]["value"],
-                printed, service["spec"]["ports"][0])
+        backend = env_of(d["t-owl-mast-backend"])
+        # OM-02.01: the issuer and KC_HOSTNAME are Keycloak's public origin, whatever the Service port; the Service
+        # port is part of the cluster-local back-channel base only
+        self.assertEqual(env_of(d["t-owl-mast-keycloak"])["KC_HOSTNAME"]["value"], KEYCLOAK_ORIGIN)
+        self.assertEqual(backend["OWLMAST_IDENTITY_ISSUER_URI"]["value"], f"{KEYCLOAK_ORIGIN}/realms/owl-mast")
+        self.assertEqual(printed, backend["OWLMAST_IDENTITY_ISSUER_URI"]["value"])
+        client = json.loads(next(c for c in by_kind(docs, "ConfigMap") if c["metadata"]["name"] == "t-owl-mast-keycloak-realm")["data"]["owl-mast-realm.json"])["clients"][0]
+        self.assertTrue(client["attributes"]["backchannel.logout.url"].startswith("http://t-owl-mast-backend:8080/"))
+        return backend["OWLMAST_IDENTITY_BACKCHANNEL_URI"]["value"], service["spec"]["ports"][0]
 
-    def test_bundled_keycloak_on_port_80_publishes_the_issuer_the_backend_expects(self):
-        """4545058435: Keycloak drops the scheme's default port from the issuer it publishes, so a rendered ':80' never matched."""
-        hostname, issuer, printed, port = self.bundled_issuer(*sets("identity.keycloak.service.port=80"))
-        self.assertEqual(hostname, "http://t-owl-mast-keycloak")
-        self.assertEqual(issuer, "http://t-owl-mast-keycloak/realms/owl-mast")
-        self.assertEqual(issuer, f"{hostname}/realms/owl-mast")
-        self.assertEqual(printed, issuer)
+    def test_bundled_keycloak_on_port_80_leaves_the_port_out_of_the_back_channel_base(self):
+        """4545058435: Keycloak drops the scheme's default port from the URLs it publishes, so a rendered ':80' never matched.
+        OM-02.01: the cluster-local address is now the back-channel base, and the public origin refuses a default port."""
+        backchannel, port = self.bundled_issuer(*sets("identity.keycloak.service.port=80"))
+        self.assertEqual(backchannel, "http://t-owl-mast-keycloak/realms/owl-mast")
         # the Service still listens on 80 and still targets the container's http port
         self.assertEqual((port["port"], port["targetPort"]), (80, "http"))
         # a values file carries the port as a float, --set-string as a string: the same result
         for args in (["--set-json", "identity.keycloak.service.port=80.0"], ["--skip-schema-validation", "--set-string", "identity.keycloak.service.port=80"]):
-            self.assertEqual(self.bundled_issuer(*args)[:2], (hostname, issuer), args)
+            self.assertEqual(self.bundled_issuer(*args)[0], backchannel, args)
 
-    def test_bundled_keycloak_on_another_port_keeps_it_in_both_values(self):
+    def test_bundled_keycloak_on_another_port_keeps_it_in_the_back_channel_base(self):
         """4545058435: every port but 80 stays, 443 included (the bundle is http, so 443 is not its default port)."""
         for value in (8080, 8081, 443, 8, 800, 65535):
-            hostname, issuer, printed, port = self.bundled_issuer(*sets(f"identity.keycloak.service.port={value}"))
-            self.assertEqual(hostname, f"http://t-owl-mast-keycloak:{value}", value)
-            self.assertEqual(issuer, f"{hostname}/realms/owl-mast", value)
-            self.assertEqual(printed, issuer, value)
+            backchannel, port = self.bundled_issuer(*sets(f"identity.keycloak.service.port={value}"))
+            self.assertEqual(backchannel, f"http://t-owl-mast-keycloak:{value}/realms/owl-mast", value)
             self.assertEqual(port["port"], value)
 
-    def test_the_bundled_base_url_has_one_source(self):
-        """4545058435: the two values came from two printf calls that could drift apart."""
+    def test_the_bundled_addresses_have_one_source_each(self):
+        """4545058435: the two values came from two printf calls that could drift apart. OM-02.01: the public origin is
+        read through one helper by KC_HOSTNAME and the issuer, the cluster-local base by the back-channel base alone."""
         helpers = (CHART / "templates" / "_helpers.tpl").read_text()
         deployment = (CHART / "templates" / "keycloak-deployment.yaml").read_text()
-        self.assertIn('value: {{ include "owl-mast.keycloak.baseUrl" . | quote }}', deployment)
+        backend = (CHART / "templates" / "backend-deployment.yaml").read_text()
+        self.assertIn('- name: KC_HOSTNAME\n              value: {{ include "owl-mast.keycloak.publicOrigin" . | quote }}', deployment)
+        self.assertIn('printf "%s/realms/%s" (include "owl-mast.keycloak.publicOrigin" .)', helpers)
         self.assertIn('printf "%s/realms/%s" (include "owl-mast.keycloak.baseUrl" .)', helpers)
-        for text in (deployment, (CHART / "templates" / "NOTES.txt").read_text()):
+        self.assertIn('value: {{ include "owl-mast.identity.backchannelUri" . | quote }}', backend)
+        self.assertNotIn("keycloak.baseUrl", deployment)
+        for text in (deployment, backend, (CHART / "templates" / "NOTES.txt").read_text()):
             self.assertNotIn("keycloak.service.port", text)
         self.assertEqual(helpers.count("keycloak.service.port"), 1)
 
@@ -1900,6 +1997,282 @@ class ReviewCycle6Test(unittest.TestCase):
         render(*external_id, *sets("identity.keycloak.database.name=postgres"))
         render("--skip-schema-validation", *external_id, *sets("identity.keycloak.database.name=template1"))
         self.assertIn('database.name="postgres" is refused', refused(*external_id, *sets("database.name=postgres")))
+
+
+KEYCLOAK_PROXY = ["networkPolicy.keycloak.extraFrom[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name=gateway-system"]
+KEYCLOAK_GATEWAY = ["identity.keycloak.route.gateway.enabled=true", "identity.keycloak.route.gateway.parentRefs[0].name=shared-gw"]
+KEYCLOAK_INGRESS = ["identity.keycloak.route.ingress.enabled=true"]
+
+
+@unittest.skipIf(HELM is None, "helm binary required (OWLMAST_HELM)")
+class SignInWiringTest(unittest.TestCase):
+    """OM-02.01: public origins, the backend's OpenID Connect client, the realm import, the Keycloak route and the
+    single backend replica. Render support only: no Keycloak, Gateway or browser runs here."""
+
+    def backend_env(self, *args):
+        return env_of(deployments_of(render(*args))["t-owl-mast-backend"])
+
+    def realm(self, *args):
+        config = next(c for c in by_kind(render(*args), "ConfigMap") if c["metadata"]["name"] == "t-owl-mast-keycloak-realm")
+        return json.loads(config["data"]["owl-mast-realm.json"])
+
+    def test_rendering_without_the_public_identity_origin_names_the_value(self):
+        """AC4, first condition. With an external issuer the value is not needed: the issuer is used as it is."""
+        for args in (sets("identity.keycloak.publicOrigin="), ["--skip-schema-validation", *sets("identity.keycloak.publicOrigin=")]):
+            err = refused(*args)
+            self.assertIn("identity.keycloak.publicOrigin is required when identity.bundled=true", err)
+        without = raw_helm("template", "t", str(CHART), *sets(f"routing.publicOrigin={APP_ORIGIN}"))
+        self.assertNotEqual(without.returncode, 0); self.assertIn("identity.keycloak.publicOrigin is required", without.stderr)
+        external = raw_helm("template", "t", str(CHART), *sets(f"routing.publicOrigin={APP_ORIGIN}"), *COMBINATIONS["bundled-external"])
+        self.assertEqual(external.returncode, 0, external.stderr)
+
+    def test_rendering_without_the_client_secret_names_the_value(self):
+        """AC4, second condition, in all four combinations: the backend is a confidential client everywhere."""
+        for combo, args in COMBINATIONS.items():
+            for extra in ([], ["--skip-schema-validation"]):
+                err = refused(*extra, *args, *sets("identity.client.existingSecret="))
+                self.assertIn("identity.client.existingSecret is required", err, combo); self.assertIn("client-secret", err, combo)
+        self.assertIn("schema", refused(*sets("identity.client.existingSecret=Not_A_Name")).lower())
+        self.assertIn("identity.client.existingSecret", refused("--skip-schema-validation", *sets("identity.client.existingSecret=Not_A_Name")))
+
+    def test_rendering_without_the_application_origin_names_the_value(self):
+        for combo, args in COMBINATIONS.items():
+            self.assertIn("routing.publicOrigin is required", refused(*args, *sets("routing.publicOrigin=")), combo)
+            bare = raw_helm("template", "t", str(CHART), *args)
+            self.assertNotEqual(bare.returncode, 0, combo); self.assertIn("routing.publicOrigin is required", bare.stderr, combo)
+
+    def test_origins_are_https_or_loopback_http_and_nothing_but_an_origin(self):
+        for key, what in (("routing.publicOrigin", "the application origin"), ("identity.keycloak.publicOrigin", "the bundled Keycloak's public origin"),
+                          ("identity.keycloak.adminOrigin", "the address administrators open")):
+            for bad in ("http://owl-mast.example", "http://10.0.0.5:8080", "http://localhost.example"):
+                err = refused("--set-string", f"{key}={bad}")
+                self.assertIn(f"{key} {chr(34)}{bad}{chr(34)} uses plaintext http", err, bad); self.assertIn(what, err, bad)
+            for bad in ("https://owl-mast.example/", "https://owl-mast.example/app", "https://owl-mast.example?x=1", "https://user@owl-mast.example",
+                        "https://Owl-Mast.example", "owl-mast.example", "https://", "https://owl-mast.example:0", "https://owl-mast.example:65536",
+                        "https://idp.123", "https://1.2.3.999", "ftp://owl-mast.example", "https://[::1]"):
+                self.assertIn(f"{key} {chr(34)}{bad}{chr(34)} is not an origin", refused("--set-string", f"{key}={bad}"), bad)
+            for bad in ("https://owl-mast.example:443", "http://localhost:80"):
+                self.assertIn("names the scheme's default port", refused("--set-string", f"{key}={bad}"), bad)
+            for good in ("https://a.example", "https://a.example:8443", "https://10.0.0.5", "https://single", "http://localhost", "http://localhost:8080", "http://127.0.0.1:18080"):
+                render("--set-string", f"{key}={good}")
+        # the two origins are different origins
+        err = refused(*sets("routing.publicOrigin=https://one.example", "identity.keycloak.publicOrigin=https://one.example"))
+        self.assertIn("identity.keycloak.publicOrigin and routing.publicOrigin are both", err)
+        render(*sets("routing.publicOrigin=http://localhost:8080", "identity.keycloak.publicOrigin=http://localhost:8081"))
+
+    def test_more_than_one_backend_replica_is_refused_with_the_reason(self):
+        """AC4, third condition."""
+        err = refused(*sets("backend.replicas=2"))
+        self.assertIn("backend.replicas=2 is refused: it must be 0 or 1", err); self.assertIn("a durable session store is deferred work", err)
+
+    def test_backend_gets_the_issuer_the_back_channel_and_its_client(self):
+        env = self.backend_env()
+        self.assertEqual(env["OWLMAST_IDENTITY_ISSUER_URI"]["value"], f"{KEYCLOAK_ORIGIN}/realms/owl-mast")
+        self.assertEqual(env["OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER"]["value"], "false")
+        self.assertEqual(env["OWLMAST_IDENTITY_BACKCHANNEL_URI"]["value"], "http://t-owl-mast-keycloak:8080/realms/owl-mast")
+        self.assertEqual(env["OWLMAST_IDENTITY_ALLOW_INSECURE_BACKCHANNEL"]["value"], "true")
+        self.assertEqual(env["OWLMAST_IDENTITY_CLIENT_ID"]["value"], "owl-mast-web")
+        self.assertEqual(env["OWLMAST_IDENTITY_CLIENT_SECRET"]["valueFrom"]["secretKeyRef"], {"name": "owl-mast-oidc-client", "key": "client-secret"})
+        self.assertNotIn("value", env["OWLMAST_IDENTITY_CLIENT_SECRET"])
+        self.assertEqual(env["OWLMAST_IDENTITY_APPLICATION_ORIGIN"]["value"], APP_ORIGIN)
+        custom = self.backend_env(*sets("identity.client.id=owl.web_2", "identity.client.existingSecret=my-client", "identity.realm=acme"))
+        self.assertEqual(custom["OWLMAST_IDENTITY_CLIENT_ID"]["value"], "owl.web_2")
+        self.assertEqual(custom["OWLMAST_IDENTITY_CLIENT_SECRET"]["valueFrom"]["secretKeyRef"]["name"], "my-client")
+        self.assertEqual(custom["OWLMAST_IDENTITY_ISSUER_URI"]["value"], f"{KEYCLOAK_ORIGIN}/realms/acme")
+        self.assertEqual(custom["OWLMAST_IDENTITY_BACKCHANNEL_URI"]["value"], "http://t-owl-mast-keycloak:8080/realms/acme")
+        # an external issuer is used as it is: no back-channel base, the same client and application origin
+        external = self.backend_env(*COMBINATIONS["bundled-external"])
+        self.assertEqual(external["OWLMAST_IDENTITY_ISSUER_URI"]["value"], "https://idp.example/realms/owl-mast")
+        self.assertNotIn("OWLMAST_IDENTITY_BACKCHANNEL_URI", external); self.assertNotIn("OWLMAST_IDENTITY_ALLOW_INSECURE_BACKCHANNEL", external)
+        self.assertEqual(external["OWLMAST_IDENTITY_CLIENT_SECRET"]["valueFrom"]["secretKeyRef"]["name"], "owl-mast-oidc-client")
+        self.assertEqual(external["OWLMAST_IDENTITY_APPLICATION_ORIGIN"]["value"], APP_ORIGIN)
+        for bad in ("-x", "a b", "a/b", "x" * 129):
+            self.assertIn("identity.client.id", refused("--skip-schema-validation", "--set-string", f"identity.client.id={bad}"), bad)
+
+    def test_keycloak_publishes_the_public_origin_and_answers_the_backend_on_the_service(self):
+        kc = env_of(deployments_of(render())["t-owl-mast-keycloak"])
+        self.assertEqual(kc["KC_HOSTNAME"]["value"], KEYCLOAK_ORIGIN)
+        self.assertEqual(kc["KC_HOSTNAME_BACKCHANNEL_DYNAMIC"]["value"], "true")
+        self.assertNotIn("KC_HOSTNAME_ADMIN", kc); self.assertNotIn("KC_PROXY_HEADERS", kc)
+        self.assertEqual(kc["OWLMAST_OIDC_CLIENT_SECRET"]["valueFrom"]["secretKeyRef"], {"name": "owl-mast-oidc-client", "key": "client-secret"})
+        admin = env_of(deployments_of(render(*sets("identity.keycloak.adminOrigin=http://localhost:8080")))["t-owl-mast-keycloak"])
+        self.assertEqual(admin["KC_HOSTNAME_ADMIN"]["value"], "http://localhost:8080")
+        # without the import nothing in the Keycloak pod reads the client secret
+        managed = env_of(deployments_of(render(*sets("identity.keycloak.importRealm=false", "identity.keycloak.realmManagedByOperator=true")))["t-owl-mast-keycloak"])
+        self.assertNotIn("OWLMAST_OIDC_CLIENT_SECRET", managed)
+
+    def test_realm_import_is_invitation_only_with_one_confidential_client(self):
+        realm = self.realm()
+        self.assertEqual({k: realm[k] for k in ("realm", "enabled", "sslRequired", "registrationAllowed", "resetPasswordAllowed", "editUsernameAllowed", "bruteForceProtected")},
+                         {"realm": "owl-mast", "enabled": True, "sslRequired": "external", "registrationAllowed": False, "resetPasswordAllowed": False,
+                          "editUsernameAllowed": False, "bruteForceProtected": True})
+        for absent in ("users", "smtpServer", "identityProviders", "roles", "clientScopes"):
+            self.assertNotIn(absent, realm)
+        client, = realm["clients"]
+        self.assertEqual({k: client[k] for k in ("clientId", "enabled", "protocol", "publicClient", "standardFlowEnabled", "implicitFlowEnabled", "directAccessGrantsEnabled",
+                                                 "serviceAccountsEnabled", "fullScopeAllowed", "redirectUris", "webOrigins")},
+                         {"clientId": "owl-mast-web", "enabled": True, "protocol": "openid-connect", "publicClient": False, "standardFlowEnabled": True,
+                          "implicitFlowEnabled": False, "directAccessGrantsEnabled": False, "serviceAccountsEnabled": False, "fullScopeAllowed": False,
+                          "redirectUris": [f"{APP_ORIGIN}/api/session/callback"], "webOrigins": []})
+        # no post-logout redirect: sign-out ends the Keycloak session from the backend, never through the browser
+        self.assertEqual(client["attributes"], {"pkce.code.challenge.method": "S256",
+                                                "backchannel.logout.url": "http://t-owl-mast-backend:8080/api/session/backchannel-logout",
+                                                "backchannel.logout.session.required": "true"})
+        self.assertNotIn("protocolMappers", client)  # no audience mapper
+        self.assertTrue(all("*" not in uri for uri in client["redirectUris"]))
+        # the secret is a placeholder Keycloak resolves from its environment; no value is rendered anywhere
+        self.assertEqual(client["secret"], "${OWLMAST_OIDC_CLIENT_SECRET}")
+        custom = self.realm(*sets("routing.publicOrigin=http://localhost:4174", "identity.client.id=other", "backend.service.port=9090", "identity.realm=acme"))
+        self.assertEqual(custom["realm"], "acme"); self.assertEqual(custom["clients"][0]["clientId"], "other")
+        self.assertEqual(custom["clients"][0]["redirectUris"], ["http://localhost:4174/api/session/callback"])
+        self.assertEqual(custom["clients"][0]["attributes"]["backchannel.logout.url"], "http://t-owl-mast-backend:9090/api/session/backchannel-logout")
+
+    def test_the_client_secret_joins_the_distinct_secret_check(self):
+        for key in ("database.existingSecret", "postgresql.adminExistingSecret", "identity.keycloak.database.existingSecret", "identity.keycloak.bootstrapExistingSecret"):
+            err = refused(*sets(f"{key}=shared", "identity.client.existingSecret=shared"))
+            self.assertIn("identity.client.existingSecret", err, key); self.assertIn(key, err, key); self.assertIn('both reference Secret "shared"', err, key)
+
+    def test_keycloak_route_publishes_the_realm_and_never_the_master_realm(self):
+        """Review: the prefix /realms/ also published /realms/master/, the administrators' login and token endpoint."""
+        def routed(prefix, path):
+            # as both mechanisms match a prefix: whole path segments
+            return path == prefix.rstrip("/") or path.startswith(prefix if prefix.endswith("/") else prefix + "/")
+        for realm in ("owl-mast", "acme"):
+            route, = by_kind(render(*GATEWAY_API, *sets(*KEYCLOAK_GATEWAY, *KEYCLOAK_PROXY, f"identity.realm={realm}")), "HTTPRoute")
+            ingress, = by_kind(render(*sets(*KEYCLOAK_INGRESS, *KEYCLOAK_PROXY, f"identity.realm={realm}")), "Ingress")
+            gateway_paths = [m["path"]["value"] for rule in route["spec"]["rules"] for m in rule["matches"]]
+            ingress_paths = [p["path"] for rule in ingress["spec"]["rules"] for p in rule["http"]["paths"]]
+            for paths in (gateway_paths, ingress_paths):
+                self.assertEqual(paths, [f"/realms/{realm}/", "/resources/"], realm)
+                for published in (f"/realms/{realm}/protocol/openid-connect/auth", f"/realms/{realm}/.well-known/openid-configuration", "/resources/abc/login/keycloak.v2/css/styles.css"):
+                    self.assertTrue(any(routed(prefix, published) for prefix in paths), published)
+                for hidden in ("/realms/master/protocol/openid-connect/token", "/realms/master/", "/realms/master", "/realms/", "/realms", "/admin/master/console/",
+                               f"/realms/{realm}-other/", "/"):
+                    self.assertFalse(any(routed(prefix, hidden) for prefix in paths), (realm, hidden))
+
+    def test_the_application_origin_must_be_a_host_the_chart_routes(self):
+        """Review: routing.publicOrigin could name a host that neither the Ingress nor the HTTPRoute routes; the redirect URI and the
+        session cookie were then bound to an origin that never reaches Owl Mast."""
+        ingress = sets("routing.ingress.enabled=true", "routing.ingress.host=owl.example")
+        err = refused(*ingress, *sets("routing.publicOrigin=https://other.example"))
+        for part in ("routing.publicOrigin", "https://other.example", "routing.ingress.host", "owl.example", "does not route"):
+            self.assertIn(part, err)
+        for origin in ("https://owl.example.evil.test", "https://sub.owl.example", "https://xowl.example"):
+            self.assertIn("routing.ingress.host", refused(*ingress, *sets(f"routing.publicOrigin={origin}")), origin)
+        for origin in ("https://owl.example", "https://owl.example:8443"):
+            render(*ingress, *sets(f"routing.publicOrigin={origin}"))
+        # an Ingress wildcard covers exactly one more label
+        wildcard = sets("routing.ingress.enabled=true", "routing.ingress.host=*.owl.example")
+        render(*wildcard, *sets("routing.publicOrigin=https://app.owl.example"))
+        for origin in ("https://owl.example", "https://a.b.owl.example", "https://app.owl.example.test"):
+            self.assertIn("routing.ingress.host", refused(*wildcard, *sets(f"routing.publicOrigin={origin}")), origin)
+
+        gateway = [*GATEWAY_API, *sets("routing.gateway.enabled=true", "routing.gateway.parentRefs[0].name=gw", "routing.gateway.hostnames[0]=owl.example",
+                                       "routing.gateway.hostnames[1]=*.apps.example")]
+        err = refused(*gateway, *sets("routing.publicOrigin=https://other.example"))
+        for part in ("routing.publicOrigin", "https://other.example", "routing.gateway.hostnames", "owl.example, *.apps.example"):
+            self.assertIn(part, err)
+        for origin in ("https://apps.example", "https://owl.example.test", "https://xapps.example"):
+            self.assertIn("routing.gateway.hostnames", refused(*gateway, *sets(f"routing.publicOrigin={origin}")), origin)
+        # a Gateway wildcard covers every host below it
+        for origin in ("https://owl.example", "https://owl.apps.example", "https://a.b.apps.example"):
+            render(*gateway, *sets(f"routing.publicOrigin={origin}"))
+        # a route for every listener hostname names no host to compare with, and without a rendered route nothing is compared
+        render(*GATEWAY_API, *sets("routing.gateway.enabled=true", "routing.gateway.parentRefs[0].name=gw", "routing.gateway.allowAllListenerHostnames=true",
+                                   "routing.publicOrigin=https://anything.example"))
+        render(*sets("routing.publicOrigin=https://anything.example"))
+
+    def test_keycloak_route_is_optional_explicit_and_exclusive(self):
+        docs = render(*GATEWAY_API)
+        self.assertEqual(by_kind(docs, "HTTPRoute") + by_kind(docs, "Ingress"), [])
+        route, = by_kind(render(*GATEWAY_API, *sets(*KEYCLOAK_GATEWAY, *KEYCLOAK_PROXY)), "HTTPRoute")
+        self.assertEqual(route["metadata"]["name"], "t-owl-mast-keycloak")
+        self.assertEqual(route["spec"]["hostnames"], ["id.owl-mast.example"])
+        self.assertEqual(route["spec"]["parentRefs"], [{"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": "shared-gw"}])
+        rule, = route["spec"]["rules"]
+        self.assertEqual([m["path"] for m in rule["matches"]], [{"type": "PathPrefix", "value": "/realms/owl-mast/"}, {"type": "PathPrefix", "value": "/resources/"}])
+        self.assertEqual(rule["backendRefs"], [{"name": "t-owl-mast-keycloak", "port": 8080}])
+        ingress, = by_kind(render(*sets(*KEYCLOAK_INGRESS, *KEYCLOAK_PROXY, "identity.keycloak.route.ingress.className=nginx",
+                                        "identity.keycloak.route.ingress.tls[0].hosts[0]=id.owl-mast.example", "identity.keycloak.route.ingress.tls[0].secretName=id-tls")), "Ingress")
+        self.assertEqual(ingress["metadata"]["name"], "t-owl-mast-keycloak"); self.assertEqual(ingress["spec"]["ingressClassName"], "nginx")
+        host_rule, = ingress["spec"]["rules"]
+        self.assertEqual(host_rule["host"], "id.owl-mast.example")
+        self.assertEqual([(p["path"], p["pathType"], p["backend"]["service"]) for p in host_rule["http"]["paths"]],
+                         [("/realms/owl-mast/", "Prefix", {"name": "t-owl-mast-keycloak", "port": {"name": "http"}}), ("/resources/", "Prefix", {"name": "t-owl-mast-keycloak", "port": {"name": "http"}})])
+        self.assertEqual(ingress["spec"]["tls"], [{"hosts": ["id.owl-mast.example"], "secretName": "id-tls"}])
+        # the admin console is never routed, by either mechanism
+        for text in ((CHART / "templates" / "keycloak-httproute.yaml").read_text(), (CHART / "templates" / "keycloak-ingress.yaml").read_text()):
+            paths = re.findall(r'(?:value: |")(/[^"\s)]*)', text)
+            self.assertEqual(paths, ["/realms/%s/", "/resources/"], text)
+        # the port of the origin is not part of the route host; the route coexists with the application route
+        both = render(*GATEWAY_API, *sets(*KEYCLOAK_GATEWAY, *KEYCLOAK_PROXY, "identity.keycloak.publicOrigin=https://id.owl-mast.example:8443",
+                                           "routing.gateway.enabled=true", "routing.gateway.parentRefs[0].name=shared-gw", "routing.gateway.hostnames[0]=owl-mast.example"))
+        self.assertEqual({r["metadata"]["name"]: r["spec"]["hostnames"] for r in by_kind(both, "HTTPRoute")},
+                         {"t-owl-mast": ["owl-mast.example"], "t-owl-mast-keycloak": ["id.owl-mast.example"]})
+        # refusals
+        self.assertIn("identity.keycloak.route.gateway.enabled and identity.keycloak.route.ingress.enabled are both true",
+                      refused(*GATEWAY_API, *sets(*KEYCLOAK_GATEWAY, *KEYCLOAK_INGRESS, *KEYCLOAK_PROXY)))
+        self.assertIn("identity.keycloak.route.gateway.enabled=true requires the Gateway API CRDs", refused(*sets(*KEYCLOAK_GATEWAY, *KEYCLOAK_PROXY)))
+        self.assertIn("identity.keycloak.route.gateway.enabled=true requires at least one identity.keycloak.route.gateway.parentRefs entry",
+                      refused(*GATEWAY_API, *sets("identity.keycloak.route.gateway.enabled=true", *KEYCLOAK_PROXY)))
+        for mechanism in (KEYCLOAK_GATEWAY, KEYCLOAK_INGRESS):
+            err = refused(*GATEWAY_API, *sets(*mechanism, *KEYCLOAK_PROXY, "identity.keycloak.publicOrigin=https://10.0.0.5"))
+            self.assertIn("is an IP address", err, mechanism)
+        err = refused(*sets(*KEYCLOAK_INGRESS, *KEYCLOAK_PROXY, "identity.keycloak.route.ingress.tls[0].hosts[0]=other.example", "identity.keycloak.route.ingress.tls[0].secretName=x"))
+        self.assertIn("identity.keycloak.route.ingress.tls does not cover the host of identity.keycloak.publicOrigin", err)
+        # an external issuer has no Keycloak to route to: the values are ignored, nothing is rendered
+        ignored = render(*GATEWAY_API, *COMBINATIONS["bundled-external"], *sets(*KEYCLOAK_GATEWAY))
+        self.assertEqual(by_kind(ignored, "HTTPRoute"), [])
+
+    def test_keycloak_route_needs_the_network_policy_to_name_the_proxy(self):
+        for mechanism, name in ((KEYCLOAK_GATEWAY, "identity.keycloak.route.gateway.enabled=true"), (KEYCLOAK_INGRESS, "identity.keycloak.route.ingress.enabled=true")):
+            err = refused(*GATEWAY_API, *sets(*mechanism))
+            self.assertIn(f"{name} needs networkPolicy.keycloak.extraFrom to name the proxy", err)
+            # a peer that names nothing is refused like for proxyHeaders, with the risk a route has
+            for peer in ('[{"podSelector":{}}]', '[{"namespaceSelector":{"matchExpressions":[{"key":"x","operator":"Exists"}]}}]', '[{"ipBlock":{"cidr":"0.0.0.0/0"}}]'):
+                err = refused(*GATEWAY_API, *sets(*mechanism), "--set-json", f"networkPolicy.keycloak.extraFrom={peer}")
+                self.assertIn("networkPolicy.keycloak.extraFrom[0]", err, peer); self.assertIn(name, err, peer)
+            err = refused(*GATEWAY_API, *sets(*mechanism), "--set-json", 'networkPolicy.keycloak.extraFrom=[{"podSelector":{}}]')
+            self.assertIn("reach Keycloak directly, past the proxy", err); self.assertNotIn("forged", err)
+            # with the policy disabled nothing has to be named
+            render(*GATEWAY_API, *sets(*mechanism, "networkPolicy.enabled=false"))
+            docs = render(*GATEWAY_API, *sets(*mechanism, *KEYCLOAK_PROXY))
+            policy = next(p for p in by_kind(docs, "NetworkPolicy") if p["metadata"]["name"] == "t-owl-mast-keycloak")
+            self.assertIn({"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "gateway-system"}}}, policy["spec"]["ingress"][0]["from"])
+        # proxyHeaders keeps its own rule and wording
+        err = refused(*sets("identity.keycloak.proxyHeaders=xforwarded"), "--set-json", 'networkPolicy.keycloak.extraFrom=[{"podSelector":{}}]')
+        self.assertIn("identity.keycloak.proxyHeaders=xforwarded", err); self.assertIn("send forged X-Forwarded-*/Forwarded headers", err)
+
+    def test_notes_state_the_sign_in_contract_and_what_an_import_does_not_do(self):
+        text = " ".join(notes().split())
+        self.assertIn(f"Sign-in: {APP_ORIGIN} (client owl-mast-web, Secret owl-mast-oidc-client, key client-secret)", text)
+        self.assertIn(f"{APP_ORIGIN}/api/session/callback", text)
+        self.assertIn("imports the realm owl-mast with that client only while the realm does not exist", text)
+        self.assertIn("Accounts are by invitation", text); self.assertIn("a backend restart or upgrade signs everyone out", text)
+        self.assertIn(f"no route to the bundled Keycloak is rendered. Browsers must reach it on {KEYCLOAK_ORIGIN}", text)
+        routed = " ".join(notes(*sets(*KEYCLOAK_INGRESS, *KEYCLOAK_PROXY)).split())
+        self.assertNotIn("no route to the bundled Keycloak", routed)
+        external = " ".join(notes(*COMBINATIONS["bundled-external"]).split())
+        self.assertIn("The chart does not create it here", external); self.assertNotIn("no route to the bundled Keycloak", external)
+
+    def test_no_rendered_object_carries_a_client_secret_value(self):
+        for combo, args in COMBINATIONS.items():
+            for doc in render(*args):
+                for container in (doc.get("spec", {}).get("template", {}).get("spec", {}).get("containers", []) if doc["kind"] in ("Deployment", "Job") else []):
+                    for e in container.get("env", []):
+                        if "SECRET" in e["name"] or "PASSWORD" in e["name"]:
+                            self.assertEqual(list(e), ["name", "valueFrom"], (combo, e["name"]))
+                self.assertNotEqual(doc["kind"], "Secret", combo)
+
+    def test_installation_doc_states_the_sign_in_contract(self):
+        doc = " ".join((REPO / "docs" / "installation.md").read_text().split())
+        for statement in ("`routing.publicOrigin`", "`identity.keycloak.publicOrigin`", "`identity.client.existingSecret`", "`client-secret`",
+                          "/api/session/callback", "/api/session/backchannel-logout", "Upgrading a release installed from chart 0.2.0",
+                          "skips the import", "KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true", "signs everyone out"):
+            self.assertIn(statement, doc, statement)
+        self.assertNotIn("OM-02.01 gate", doc)
+        for path in (CHART / "values.yaml", CHART / "templates" / "keycloak-deployment.yaml", CHART / "templates" / "keycloak-realm-configmap.yaml"):
+            self.assertNotIn("OM-02.01 gate", path.read_text(), path.name); self.assertNotIn("OM-02.01's contract", path.read_text(), path.name)
 
 
 def notes_for(release, *args):

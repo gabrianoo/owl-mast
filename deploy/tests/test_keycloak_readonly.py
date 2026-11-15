@@ -6,8 +6,17 @@ on a private, internal docker network with Keycloak's own database and principal
 rendered image, args, user/group, read-only root, dropped capabilities, no-new-privileges, the rendered mount
 paths (emptyDirs as tmpfs, the seeded volume, the realm import from the rendered ConfigMap) and the rendered env
 (Secret references replaced by synthetic values, the DB URL pointed at the disposable PostgreSQL). Management
-`/health/ready` must answer 200 and the realm's discovery document must carry the rendered issuer. Requires
-Docker and Helm 4 (OWLMAST_HELM); both are failures, never skips, when absent.
+`/health/ready` must answer 200 and the realm's discovery document must carry the rendered issuer.
+
+OM-02.01: the rendered issuer is Keycloak's public origin (`identity.keycloak.publicOrigin`), while this test, like
+the backend, reaches Keycloak on another address. The discovery document read there must publish the public issuer
+and authorization endpoint together with back-channel endpoints (token, keys) on the address the request arrived
+on. The imported realm is read back through the admin API with the synthetic bootstrap admin: self-registration
+off, the one confidential client with its exact redirect URI and PKCE S256, and the client secret equal to the
+synthetic value passed in the environment (so the `${OWLMAST_OIDC_CLIENT_SECRET}` placeholder was resolved by
+Keycloak, not imported literally). No browser login and no proxy run here.
+
+Requires Docker and Helm 4 (OWLMAST_HELM); both are failures, never skips, when absent.
 """
 
 import json
@@ -19,6 +28,7 @@ import tempfile
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -27,11 +37,13 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 CHART = REPO / "deploy" / "helm" / "owl-mast"
 HELM = os.environ.get("OWLMAST_HELM") or shutil.which("helm")
+# The values chart 0.3.0 has no default for (OM-02.01): the application origin and the bundled Keycloak's own.
+REQUIRED = ["--set", "routing.publicOrigin=https://owl-mast.example", "--set", "identity.keycloak.publicOrigin=https://id.owl-mast.example"]
 POSTGRES_IMAGE = "tensorchord/vchord-postgres:pg18-v1.1.1@sha256:700ff05ebdc7e4afd4dd8442e0684293046c3833677fec326550000a04cf8a91"
 
 
 def render(template: str) -> dict:
-    out = subprocess.run([HELM, "template", "t", str(CHART), "-s", template], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run([HELM, "template", "t", str(CHART), *REQUIRED, "-s", template], capture_output=True, text=True, check=True).stdout
     return yaml.safe_load(out)
 
 
@@ -39,9 +51,11 @@ def docker(*args, check=True, timeout=600):
     return subprocess.run(["docker", *args], capture_output=True, text=True, check=check, timeout=timeout)
 
 
-def get(url: str):
+def get(url: str, token: str | None = None, form: dict | None = None):
+    request = urllib.request.Request(url, data=urllib.parse.urlencode(form).encode() if form else None,
+                                     headers={"Authorization": f"Bearer {token}"} if token else {})
     try:
-        with urllib.request.urlopen(url, timeout=5) as response:
+        with urllib.request.urlopen(request, timeout=10) as response:
             return response.status, response.read().decode()
     except urllib.error.HTTPError as error:
         return error.code, error.read().decode()
@@ -134,7 +148,8 @@ class KeycloakReadOnlyRootTest(unittest.TestCase):
         result = docker("run", "--rm", "--network", "none", *hardening(seed), *mounts(seed), "--entrypoint", seed["command"][0], seed["image"], *seed["command"][1:], check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-        synthetic = {"KC_DB_USERNAME": "keycloak_app", "KC_DB_PASSWORD": db_password, "KC_BOOTSTRAP_ADMIN_USERNAME": "temp-admin", "KC_BOOTSTRAP_ADMIN_PASSWORD": secrets.token_urlsafe(18)}
+        synthetic = {"KC_DB_USERNAME": "keycloak_app", "KC_DB_PASSWORD": db_password, "KC_BOOTSTRAP_ADMIN_USERNAME": "temp-admin", "KC_BOOTSTRAP_ADMIN_PASSWORD": secrets.token_urlsafe(18),
+                     "OWLMAST_OIDC_CLIENT_SECRET": secrets.token_urlsafe(24)}
         env = {}
         for e in kc["env"]:
             env[e["name"]] = synthetic[e["name"]] if "valueFrom" in e else e["value"]
@@ -170,7 +185,50 @@ class KeycloakReadOnlyRootTest(unittest.TestCase):
         realm_name = json.loads(next(iter(realm["data"].values())))["realm"]
         status, body = get(f"http://127.0.0.1:{http}/realms/{realm_name}/.well-known/openid-configuration")
         self.assertEqual(status, 200, body)
-        self.assertEqual(json.loads(body)["issuer"], f"{env['KC_HOSTNAME']}/realms/{realm_name}")
+        discovery = json.loads(body)
+        issuer = f"{env['KC_HOSTNAME']}/realms/{realm_name}"
+        self.assertEqual(discovery["issuer"], issuer)
+        # OM-02.01: front-channel URLs on the public origin, back-channel URLs on the address the request arrived on
+        self.assertTrue(env["KC_HOSTNAME"].startswith("https://"), env["KC_HOSTNAME"])
+        self.assertEqual(env["KC_HOSTNAME_BACKCHANNEL_DYNAMIC"], "true")
+        local = f"http://127.0.0.1:{http}/realms/{realm_name}"
+        self.assertEqual(discovery["authorization_endpoint"], f"{issuer}/protocol/openid-connect/auth")
+        self.assertEqual(discovery["end_session_endpoint"], f"{issuer}/protocol/openid-connect/logout")
+        self.assertEqual(discovery["token_endpoint"], f"{local}/protocol/openid-connect/token")
+        self.assertEqual(discovery["jwks_uri"], f"{local}/protocol/openid-connect/certs")
+        self.assertIn("S256", discovery["code_challenge_methods_supported"])
+        self.assertTrue(discovery["backchannel_logout_supported"]); self.assertTrue(discovery["backchannel_logout_session_supported"])
+
+        # the imported realm, read back with the synthetic bootstrap admin
+        imported = json.loads(next(iter(realm["data"].values())))
+        status, body = get(f"http://127.0.0.1:{http}/realms/master/protocol/openid-connect/token",
+                           form={"grant_type": "password", "client_id": "admin-cli", "username": env["KC_BOOTSTRAP_ADMIN_USERNAME"], "password": env["KC_BOOTSTRAP_ADMIN_PASSWORD"]})
+        self.assertEqual(status, 200, "admin token request failed")  # the body may carry a token: never printed
+        admin = json.loads(body)["access_token"]
+        base = f"http://127.0.0.1:{http}/admin/realms/{realm_name}"
+        status, body = get(base, token=admin)
+        self.assertEqual(status, 200, body[:300])
+        live = json.loads(body)
+        for key in ("registrationAllowed", "resetPasswordAllowed", "editUsernameAllowed", "bruteForceProtected", "sslRequired"):
+            self.assertEqual(live[key], imported[key], key)
+        self.assertFalse(live["registrationAllowed"])
+        status, body = get(f"{base}/users/count", token=admin)
+        self.assertEqual((status, body.strip()), (200, "0"))  # no account is imported: invitation only
+        wanted, = imported["clients"]
+        status, body = get(f"{base}/clients?clientId={urllib.parse.quote(wanted['clientId'])}", token=admin)
+        self.assertEqual(status, 200, body[:300])
+        client, = json.loads(body)
+        for key in ("publicClient", "standardFlowEnabled", "implicitFlowEnabled", "directAccessGrantsEnabled", "serviceAccountsEnabled", "fullScopeAllowed", "redirectUris", "webOrigins"):
+            self.assertEqual(client[key], wanted[key], key)
+        for key, value in wanted["attributes"].items():
+            self.assertEqual(client["attributes"].get(key), value, key)
+        self.assertNotIn("${", json.dumps(client))  # no unresolved placeholder was imported
+        status, body = get(f"{base}/clients/{client['id']}/client-secret", token=admin)
+        self.assertEqual(status, 200, "client secret read failed")
+        self.assertTrue(json.loads(body)["value"] == env["OWLMAST_OIDC_CLIENT_SECRET"], "the imported client secret is not the value of the environment variable")
+        # an audience mapper would make the client's access tokens acceptable as bearer credentials: none is imported
+        status, body = get(f"{base}/clients/{client['id']}/protocol-mappers/models", token=admin)
+        self.assertEqual((status, json.loads(body)), (200, []))
 
 
 if __name__ == "__main__":

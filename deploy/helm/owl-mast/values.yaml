@@ -20,6 +20,8 @@ backend:
     # immutable install; the tag is then informative. Empty means the mutable tag above decides what runs.
     digest: ""
     pullPolicy: IfNotPresent
+  # 0 or 1. Browser sessions are held in the backend's memory: a restart or upgrade signs everyone out, and
+  # more than one replica is refused at render (a durable session store is deferred work).
   replicas: 1
   containerPort: 8080
   service:
@@ -103,11 +105,19 @@ frontend:
       periodSeconds: 10
       failureThreshold: 3
 
-# Routing contract between the independent artifacts. Public origins stay an OM-02.01 gate; the
-# Ingress is disabled by default and never created without an explicit host. The prefixes are pinned to
-# what the artifacts serve (no rewrite is rendered): apiPathPrefix is exactly /api (the frontend shell
-# calls the backend below it), actuatorPathPrefix is /actuator or below /actuator/, frontendPathPrefix is /.
+# Routing contract between the independent artifacts. The Ingress is disabled by default and never created
+# without an explicit host. The prefixes are pinned to what the artifacts serve (no rewrite is rendered):
+# apiPathPrefix is exactly /api (the frontend shell calls the backend below it), actuatorPathPrefix is
+# /actuator or below /actuator/, frontendPathPrefix is /.
 routing:
+  # Required. The one public origin people open Owl Mast on: it serves the frontend at / and the backend at
+  # /api, so there is no CORS. The sign-in redirect URI (<publicOrigin>/api/session/callback), the return
+  # after sign-in and the session cookie are bound to it. scheme://host[:port] and nothing else; https, or
+  # plain http for a loopback host only (http://localhost[:port], http://127.0.0.1[:port]), because the
+  # session cookie is always Secure. Write it without the scheme's default port. The chart does not derive it
+  # from the Ingress host or the Gateway hostnames, but its host must be one of them when the chart renders the
+  # application route (refused otherwise): it must be the origin the browser really uses.
+  publicOrigin: ""
   apiPathPrefix: /api
   actuatorPathPrefix: /actuator
   frontendPathPrefix: /
@@ -223,8 +233,15 @@ postgresql:
 # an external OpenID Connect issuer whose discovery document the backend verifies at readiness.
 identity:
   bundled: true
-  # Realm used by the bundled issuer URL and the synthetic import. Browser realm/client policy is OM-02.01.
+  # Realm of the bundled issuer (<identity.keycloak.publicOrigin>/realms/<realm>) and of the realm import.
   realm: owl-mast
+  # The backend signs people in as a confidential OpenID Connect client (authorization code with PKCE);
+  # tokens stay in the backend. The bundled Keycloak imports this client; an external issuer must hold a
+  # client with the same id and secret (docs/installation.md, "Realm and client").
+  client:
+    id: owl-mast-web
+    # Existing Secret with the key `client-secret`. Required: an empty reference fails rendering.
+    existingSecret: owl-mast-oidc-client
   external:
     # https:// URL with a host, no query or fragment. The host is a DNS name whose last label starts with a
     # letter, a single label, or an IPv4 address (what the backend's URI parser accepts; no IPv6 literal).
@@ -233,6 +250,31 @@ identity:
     # then travel unauthenticated.
     allowInsecureIssuer: false
   keycloak:
+    # Required with identity.bundled=true. The public origin browsers reach the bundled Keycloak on, its own
+    # origin and never the application's: Keycloak's hostname and the issuer of every token. Same form as
+    # routing.publicOrigin (https, or http for a loopback host only; no path; no default port). The backend
+    # keeps calling Keycloak on the cluster-local Service.
+    publicOrigin: ""
+    # Optional. The address administrators open the admin console on (KC_HOSTNAME_ADMIN), for example
+    # http://localhost:8080 through `kubectl port-forward`. The admin console is never routed publicly; with
+    # this empty, administer Keycloak with kcadm.sh inside the pod.
+    adminOrigin: ""
+    # Public route to Keycloak for the host of publicOrigin: only /realms/ and /resources/, never /admin.
+    # Gateway API first, Ingress as the compatibility option; both off by default, enabling both is refused.
+    # With networkPolicy.enabled=true a route needs networkPolicy.keycloak.extraFrom to name the proxy.
+    # Leave both off when the operator routes Keycloak by other means.
+    route:
+      gateway:
+        enabled: false
+        # At least one parent Gateway reference when enabled (name, optional namespace, sectionName, port).
+        parentRefs: []
+        annotations: {}
+      ingress:
+        enabled: false
+        className: ""
+        annotations: {}
+        # [{hosts: [<host of publicOrigin>], secretName: <tls secret>}]; when set, one entry must cover the host.
+        tls: []
     image:
       repository: quay.io/keycloak/keycloak
       tag: "26.8.2"
@@ -248,13 +290,16 @@ identity:
     # or an external Keycloak database that already holds a permanent admin (NOTES warns on install).
     bootstrapAdmin:
       enabled: true
-    # Import a minimal synthetic realm named `identity.realm` on start (fixture only).
+    # Import the realm `identity.realm` on start: invitation only (self-registration off, no users) with the
+    # one confidential client identity.client.id. Keycloak imports it only while the realm does not exist;
+    # an existing realm is left as it is (docs/installation.md, "Realm and client").
     importRealm: true
     # Required with importRealm=false: acknowledges that an operator creates the realm `identity.realm`
     # (without it the issuer never exists and the backend never becomes ready).
     realmManagedByOperator: false
     # Trust X-Forwarded-* / Forwarded headers ("xforwarded" | "forwarded"). Leave empty unless a trusted
-    # proxy that overwrites these headers is the only path to Keycloak (the OM-02.01 public-origin gate).
+    # proxy that overwrites these headers is the only path to Keycloak besides the backend. Keycloak does not
+    # need them to build its URLs (publicOrigin is explicit); they give it the browser's address.
     # Rendering then requires networkPolicy.enabled=true and networkPolicy.keycloak.extraFrom naming the proxy:
     # every entry must select it (a matchLabels entry or a matchExpressions term with operator In; Exists,
     # NotIn and DoesNotExist terms alone are refused; an ipBlock of at least /8 for IPv4 or /32 for IPv6, and never
@@ -271,8 +316,8 @@ identity:
         sslMode: require
         allowInsecureTransport: false
     service:
-      # Part of the cluster-local issuer (http://<fullname>-keycloak:<port>/realms/<realm>). Port 80 is left
-      # out of KC_HOSTNAME and of the backend's issuer, because Keycloak publishes its issuer without it.
+      # Part of the cluster-local address the backend reaches Keycloak on
+      # (http://<fullname>-keycloak:<port>/realms/<realm>, port 80 left out).
       port: 8080
       managementPort: 9000
     resources:
@@ -296,7 +341,8 @@ identity:
 # Ingress-only NetworkPolicies for the bundled dependencies (default on): PostgreSQL :5432 accepts the
 # backend, Keycloak and the provisioning Job of this release; Keycloak :8080 accepts the backend. Node
 # traffic (kubelet probes, API-server proxy on a single-node target) stays allowed by Kubernetes
-# semantics. extraFrom adds NetworkPolicyPeer entries (for example a Gateway data plane for Keycloak).
+# semantics. extraFrom adds NetworkPolicyPeer entries: the Gateway or Ingress data plane in front of
+# Keycloak must be named there before a Keycloak route renders.
 networkPolicy:
   enabled: true
   postgresql:
