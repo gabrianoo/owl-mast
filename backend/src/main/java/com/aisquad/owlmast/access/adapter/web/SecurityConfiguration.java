@@ -2,6 +2,7 @@ package com.aisquad.owlmast.access.adapter.web;
 
 import com.aisquad.owlmast.access.adapter.identity.IdentityDiscovery;
 import com.aisquad.owlmast.access.adapter.identity.IdentityProperties;
+import com.aisquad.owlmast.access.adapter.identity.IssuerSigningKeys;
 import com.aisquad.owlmast.access.adapter.identity.SignInProperties;
 import com.aisquad.owlmast.access.adapter.persistence.R2dbcPrincipalStore;
 import com.aisquad.owlmast.access.application.SessionLedger;
@@ -13,6 +14,7 @@ import com.aisquad.owlmast.platform.persistence.ScopedTransactions;
 import com.aisquad.owlmast.platform.scope.TenantId;
 import com.aisquad.owlmast.platform.web.ProblemResponses;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.Optional;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -35,6 +37,7 @@ import org.springframework.security.oauth2.client.ReactiveOAuth2AuthorizedClient
 import org.springframework.security.oauth2.client.ReactiveOAuth2AuthorizedClientProviderBuilder;
 import org.springframework.security.oauth2.client.endpoint.WebClientReactiveAuthorizationCodeTokenResponseClient;
 import org.springframework.security.oauth2.client.oidc.authentication.OidcAuthorizationCodeReactiveAuthenticationManager;
+import org.springframework.security.oauth2.client.oidc.authentication.ReactiveOidcIdTokenDecoderFactory;
 import org.springframework.security.oauth2.client.registration.ReactiveClientRegistrationRepository;
 import org.springframework.security.oauth2.client.web.DefaultReactiveOAuth2AuthorizedClientManager;
 import org.springframework.security.oauth2.client.web.server.DefaultServerOAuth2AuthorizationRequestResolver;
@@ -69,6 +72,8 @@ import org.springframework.web.server.session.InMemoryWebSessionStore;
 import org.springframework.web.server.session.WebSessionIdResolver;
 import org.springframework.web.server.session.WebSessionManager;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Scheduler;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * Authentication of every request (OM-02.01, docs/identity.md). There is one filter chain and no
@@ -108,6 +113,15 @@ class SecurityConfiguration {
   @Bean
   IdentityDiscovery providerDiscovery(IdentityProperties properties) {
     return new IdentityDiscovery(WebClient.create(), properties);
+  }
+
+  /**
+   * The issuer's signing keys, one instance for the bearer and the logout-token decoder: both take
+   * tokens from anybody, and the bound on key fetches holds across them only when it is shared.
+   */
+  @Bean
+  IssuerSigningKeys issuerSigningKeys(IdentityDiscovery discovery) {
+    return new IssuerSigningKeys(WebClient.create(), discovery);
   }
 
   @Bean
@@ -211,15 +225,15 @@ class SecurityConfiguration {
   /** Verifies the identity provider's logout notices (issuer, this client as audience, expiry). */
   @Bean
   ReactiveJwtDecoder logoutTokenDecoder(
-      IdentityDiscovery discovery, IdentityProperties identity, SignInProperties properties) {
+      IssuerSigningKeys keys, IdentityProperties identity, SignInProperties properties) {
     return CredentialValidation.decoder(
-        discovery, CredentialValidation.logoutToken(identity.issuerUri(), properties.clientId()));
+        keys, CredentialValidation.logoutToken(identity.issuerUri(), properties.clientId()));
   }
 
   @Bean
   SecurityWebFilterChain securityWebFilterChain(
       ServerHttpSecurity http,
-      IdentityDiscovery discovery,
+      IssuerSigningKeys keys,
       IdentityProperties identity,
       SignInProperties properties,
       ReactiveClientRegistrationRepository registrations,
@@ -272,7 +286,7 @@ class SecurityConfiguration {
                 .jwt(jwt ->
                     jwt.jwtDecoder(
                             CredentialValidation.decoder(
-                                discovery,
+                                keys,
                                 CredentialValidation.bearer(
                                     identity.issuerUri(), properties.audience())))
                         .jwtAuthenticationConverter(bearerPrincipal(ledger)))
@@ -378,15 +392,36 @@ class SecurityConfiguration {
    * outcome handler tells an outage from a refusal.
    */
   private static ReactiveAuthenticationManager signInManager(SessionLedger ledger) {
+    return signInManager(ledger, CredentialValidation.PROVIDER_TIMEOUT, Schedulers.parallel());
+  }
+
+  /**
+   * The two steps the identity provider does are bounded, each by {@code providerTimeout} on {@code
+   * timer}: the code exchange, and the decoding of the ID token, which fetches the issuer's keys. A
+   * provider that never answers ends the sign-in as an outage instead of holding the request.
+   * Binding the person and recording the sign-in ({@link PersonUserService}) is this backend's own
+   * work and is not bounded here: a record that commits late is still the record of a sign-in that
+   * completed, and cutting it off would leave a recorded sign-in without a session.
+   */
+  static ReactiveAuthenticationManager signInManager(
+      SessionLedger ledger, Duration providerTimeout, Scheduler timer) {
+    WebClientReactiveAuthorizationCodeTokenResponseClient codeExchange =
+        new WebClientReactiveAuthorizationCodeTokenResponseClient();
+    ReactiveOidcIdTokenDecoderFactory idTokenDecoders = new ReactiveOidcIdTokenDecoderFactory();
     OidcAuthorizationCodeReactiveAuthenticationManager oidc =
         new OidcAuthorizationCodeReactiveAuthenticationManager(
-            new WebClientReactiveAuthorizationCodeTokenResponseClient(),
+            grant ->
+                CredentialValidation.withinProviderTimeout(
+                    Mono.defer(() -> codeExchange.getTokenResponse(grant)), providerTimeout, timer),
             new PersonUserService(ledger));
+    oidc.setJwtDecoderFactory(registration -> {
+      ReactiveJwtDecoder decoder = idTokenDecoders.createDecoder(registration);
+      return idToken ->
+          CredentialValidation.withinProviderTimeout(
+              Mono.defer(() -> decoder.decode(idToken)), providerTimeout, timer);
+    });
     return authentication ->
         oidc.authenticate(authentication)
-            // The code exchange and the key fetch are bounded: a provider that never answers
-            // ends the sign-in as an outage instead of holding the request.
-            .timeout(CredentialValidation.PROVIDER_TIMEOUT)
             .switchIfEmpty(
                 Mono.error(
                     () -> new OAuth2AuthenticationException(new OAuth2Error("invalid_id_token"))))

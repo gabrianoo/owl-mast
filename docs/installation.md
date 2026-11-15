@@ -192,8 +192,18 @@ would attach a new, empty volume on upgrade. An external PostgreSQL must be vers
 verifies the extension is present. An external issuer must publish an OpenID Connect discovery
 document whose `issuer` equals the configured value exactly (OpenID Connect Discovery 4.3; a difference of
 one trailing slash is a mismatch, because tokens carry the published value); the backend's readiness group
-includes that check (`identityDiscovery`) together with the schema baseline, so a misconfigured or unreachable
-identity provider keeps the backend unready while liveness stays up. On a mismatch the backend logs a warning
+includes that check (`identityDiscovery`) together with the schema baseline, so a backend does not become ready
+with a misconfigured or unreachable identity provider, while liveness stays up. Once the provider has published
+the configured issuer to the running backend, a provider that gives no answer (the connection fails, nothing
+arrives within 3 s, or a 5xx status comes back) no longer makes it unready: the check stays UP with the detail
+`reason` saying that the provider did not answer, so the one backend stays in the Service through an identity
+provider outage and gives its own answers ([identity.md](identity.md#session-lifetime): sessions kept, 503 in
+the error envelope, sign-out and the public endpoints served). The backend's log has a warning for every failed
+discovery request. A backend that starts or restarts during the outage has verified nothing and stays unready
+until the provider answers. A provider that answers with something that is not the configured issuer (another
+issuer, no issuer, an empty body, an unreadable document, or a status that is neither success nor 5xx, such as
+the 404 of a deleted realm) makes the backend unready whenever it does, and no answer after that keeps it
+unready until the configured issuer is published again. On a mismatch the backend logs a warning
 naming the configured value and the value the provider published, once per published value (not on every
 readiness evaluation; again when the value changes or after the issuer matched in between), and the health
 detail carries both on every evaluation (`issuer` and `publishedIssuer`, shortened to 200 printable characters;

@@ -3,6 +3,8 @@ package com.aisquad.owlmast.access.adapter.identity;
 import com.aisquad.owlmast.platform.diagnostics.SafeFailure;
 import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 import lombok.NonNull;
@@ -11,6 +13,8 @@ import org.springframework.boot.health.contributor.Health;
 import org.springframework.boot.health.contributor.ReactiveHealthIndicator;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientRequestException;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
@@ -18,7 +22,22 @@ import reactor.core.scheduler.Schedulers;
 /**
  * Readiness contribution proving the configured issuer is reachable and is the issuer it claims to
  * be: its discovery document must publish exactly the configured {@code issuer}. The installation
- * therefore cannot be "ready" with a missing or mismatched identity provider, bundled or external.
+ * therefore cannot become "ready" with a missing or mismatched identity provider, bundled or
+ * external.
+ *
+ * <p>Once the provider has published the matching issuer to this process, a provider that then
+ * gives no answer (the request could not be connected or sent, no answer within {@link #TIMEOUT}, a
+ * 5xx status) no longer takes readiness away: the result is UP with the detail {@code reason}
+ * saying so. Readiness decides whether the backend receives requests at all, and during an identity
+ * provider outage it has answers to give that need no provider (kept sessions answer 503 in the
+ * envelope, sign-out and the public endpoints are served); removing the only backend would replace
+ * them with the routing layer's own failure. The indicator keeps this memory itself: {@link
+ * IdentityDiscovery} accepts a document only when somebody signs in, and a backend nobody signed in
+ * to must stay in service too. A process that has not seen the matching issuer yet stays DOWN, so a
+ * backend started during an outage is not ready. An answer that is not the matching issuer (another
+ * issuer, no issuer, no body, a document that cannot be read, any status that is neither success
+ * nor 5xx, such as the 404 of a realm that was deleted) is DOWN whenever it arrives and ends the
+ * memory: the next UP needs the matching issuer again.
  *
  * <p>The issuer is compared as an exact string (OpenID Connect Discovery 1.0 section 4.3): tokens
  * carry the published value in {@code iss}, so an issuer that differs only by a trailing slash
@@ -51,11 +70,17 @@ final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator 
   static final Duration CACHE_TTL = Duration.ofSeconds(5);
   static final int MAX_REPORTED_ISSUER_LENGTH = 200;
 
+  static final String UNANSWERED_AFTER_VERIFIED =
+      "the identity provider did not answer; its issuer was verified earlier in this process";
+
   private final WebClient client;
   private final IdentityProperties properties;
   private final LongSupplier nanoTime;
   private final Mono<Health> cached;
   private final AtomicReference<String> lastWarnedIssuer = new AtomicReference<>();
+
+  /** Whether the provider's last answer to this process published the matching issuer. */
+  private final AtomicBoolean verified = new AtomicBoolean();
 
   /** A result with the instant (on the injected nano clock) its discovery request was started. */
   private record Timed(Health health, long startedNanos) {}
@@ -125,8 +150,25 @@ final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator 
         .onErrorResume(failure -> {
           // Diagnostic safety (NFR-6): class names only; responses may echo configuration.
           log.warn("Identity discovery failed: {}", SafeFailure.describe(failure));
-          return Mono.just(down("discovery document unavailable"));
+          return Mono.just(
+              verified.get() && unanswered(failure)
+                  ? Health.up()
+                      .withDetail("reason", UNANSWERED_AFTER_VERIFIED)
+                      .withDetail("issuer", properties.issuerUri())
+                      .build()
+                  : down("discovery document unavailable"));
         });
+  }
+
+  /**
+   * Whether the provider gave no answer at all: the request could not be connected or sent, the
+   * time ran out, or a 5xx came back. Everything else is an answer, and not the matching issuer.
+   */
+  private static boolean unanswered(Throwable failure) {
+    return failure instanceof WebClientRequestException
+        || failure instanceof TimeoutException
+        || (failure instanceof WebClientResponseException answer
+            && answer.getStatusCode().is5xxServerError());
   }
 
   private Health evaluate(Map<String, Object> document) {
@@ -143,6 +185,7 @@ final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator 
             reported,
             properties.issuerUri());
       }
+      verified.set(false);
       return Health.down()
           .withDetail("reason", "published issuer differs from the configured issuer")
           .withDetail("issuer", properties.issuerUri())
@@ -150,6 +193,7 @@ final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator 
           .build();
     }
     lastWarnedIssuer.set(null);
+    verified.set(true);
     return Health.up().withDetail("issuer", properties.issuerUri()).build();
   }
 
@@ -162,7 +206,9 @@ final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator 
     return bounded.replaceAll("[^\\x21-\\x7E]", "?");
   }
 
+  /** An answer that is not the matching issuer, or no answer before one was seen. */
   private Health down(String reason) {
+    verified.set(false);
     return Health.down()
         .withDetail("reason", reason)
         .withDetail("issuer", properties.issuerUri())

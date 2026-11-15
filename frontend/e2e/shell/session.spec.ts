@@ -164,6 +164,60 @@ test.describe('session states: signed out, signed in, expired, sign-in failed, p
     await expect(page.getByText(/could not confirm that the identity provider ended its own/)).toBeVisible();
   });
 
+  test('session not confirmed after signed in (identity provider outage): Sign out stays, carries the CSRF header and ends the session', async ({ page }) => {
+    const session = await mockSession(page, { json: signedInSession });
+    const calls: { method: string; csrf: string | undefined }[] = [];
+    await page.route(SIGN_OUT_URL, (route) => {
+      const request = route.request();
+      calls.push({ method: request.method(), csrf: request.headers()[syntheticCsrf.headerName.toLowerCase()] });
+      session.set({ json: signedOutSession });
+      // The backend ends its session during the outage and cannot confirm the identity provider's.
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'signed-out', identityProvider: 'unconfirmed' }) });
+    });
+    await page.clock.install();
+    await page.goto('/focus');
+    await expect(page.getByText('No assigned work to show')).toBeVisible();
+    // The backend can no longer ask the identity provider whether the session stands: 503.
+    session.set({ status: 503 });
+    await page.clock.runFor(61_000);
+    await expect(page.getByRole('heading', { level: 2, name: 'The session could not be checked' })).toBeVisible();
+    await expect(page.getByText('No assigned work to show')).toHaveCount(0);
+    const control = page.getByRole('group', { name: 'Session' });
+    await expect(control.getByText('Session not confirmed')).toBeVisible();
+    await expect(control.getByText('Ada Synthetic')).toHaveCount(0);
+    await control.getByRole('button', { name: 'Sign out' }).click();
+    await expect(page.getByRole('heading', { level: 2, name: 'You are signed out' })).toBeVisible();
+    await expect(page.getByText(/could not confirm that the identity provider ended its own/)).toBeVisible();
+    await expect(control.getByRole('button', { name: 'Sign out' })).toHaveCount(0);
+    expect(calls).toEqual([{ method: 'POST', csrf: syntheticCsrf.token }]);
+  });
+
+  test('session not confirmed after signed in: a sign-out that fails is reported and stays offered', async ({ page }) => {
+    const session = await mockSession(page, { json: signedInSession });
+    await page.route(SIGN_OUT_URL, (route) =>
+      route.fulfill({ status: 503, contentType: 'application/problem+json', body: JSON.stringify({ status: 503, title: 'mocked' }) }),
+    );
+    await page.clock.install();
+    await page.goto('/focus');
+    await expect(page.getByText('No assigned work to show')).toBeVisible();
+    session.set({ status: 503 });
+    await page.clock.runFor(61_000);
+    const control = page.getByRole('group', { name: 'Session' });
+    await control.getByRole('button', { name: 'Sign out' }).click();
+    await expect(control.getByText('Sign-out could not be confirmed')).toBeVisible();
+    await expect(control.getByText('Session not confirmed')).toBeVisible();
+    await expect(control.getByRole('button', { name: 'Sign out' })).toBeVisible();
+    await expect(page.getByText('mocked')).toHaveCount(0);
+  });
+
+  test('a session endpoint that fails before anybody was signed in offers no sign-out', async ({ page }) => {
+    await mockSession(page, { status: 503 });
+    await page.goto('/focus');
+    const control = page.getByRole('group', { name: 'Session' });
+    await expect(control.getByText('Session not confirmed')).toBeVisible();
+    await expect(control.getByRole('button', { name: 'Sign out' })).toHaveCount(0);
+  });
+
   test('a refused sign-out (403 twice) is reported and the person stays signed in', async ({ page }) => {
     await mockSession(page, { json: signedInSession });
     let attempts = 0;
@@ -214,6 +268,22 @@ test.describe('session states: signed out, signed in, expired, sign-in failed, p
         await expect(page.getByText('Your session ended')).toBeVisible();
         expect(await scan(page)).toEqual([]);
         await expectNoHorizontalOverflow(page);
+      });
+
+      test(`session state not confirmed after signed in · ${theme} · ${width}px: no axe violations, no overflow, 44px targets`, async ({ page }) => {
+        await page.emulateMedia({ colorScheme: theme });
+        await page.setViewportSize({ width, height: 900 });
+        const session = await mockSession(page, { json: signedInSession });
+        await page.clock.install();
+        await page.goto('/focus');
+        await expect(page.getByText('No assigned work to show')).toBeVisible();
+        session.set({ status: 503 });
+        await page.clock.runFor(61_000);
+        await expect(page.getByText('The session could not be checked')).toBeVisible();
+        await expect(page.getByRole('group', { name: 'Session' }).getByRole('button', { name: 'Sign out' })).toBeVisible();
+        expect(await scan(page)).toEqual([]);
+        await expectNoHorizontalOverflow(page);
+        await expectControlTargets(page);
       });
     }
   }

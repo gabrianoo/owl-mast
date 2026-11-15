@@ -5,7 +5,8 @@ import type { ApiClient, ApiResult } from '../api/client.ts';
 import { ApiProvider, useApi } from '../api/ApiProvider.tsx';
 import { createSessionLink, type SessionAnswer } from '../api/session.ts';
 import { App } from '../app/App.tsx';
-import { SYNTHETIC_PERSON, signedIn, signedOut, withSession, type SessionScript } from '../testing/session.ts';
+import { SYNTHETIC_CSRF, SYNTHETIC_PERSON, signedIn, signedOut, withSession, type SessionScript } from '../testing/session.ts';
+import { SessionControl } from '../app/shell/SessionControl.tsx';
 import { SessionProvider, nextSessionState, useSession, type SessionState } from './session.tsx';
 
 const descriptorGet: Pick<ApiClient, 'get'> = {
@@ -91,6 +92,120 @@ describe('a session that ended while it could not be read', () => {
     expect(screen.getByRole('heading', { level: 2, name: 'Your session ended' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { level: 2, name: 'You are signed out' })).toBeNull();
     expect(screen.queryByText('No assigned work to show')).toBeNull();
+  });
+});
+
+describe('sign-out while the session cannot be confirmed (identity provider outage)', () => {
+  async function signedInThenUnconfirmed(script: SessionScript) {
+    vi.useFakeTimers();
+    const rendered = renderApp(script, '/focus', { sessionPollIntervalMs: 1000 });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText('No assigned work to show')).toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    vi.useRealTimers();
+    return rendered;
+  }
+
+  it('offers Sign out next to "Session not confirmed", and it ends the session', async () => {
+    const { client } = await signedInThenUnconfirmed({
+      session: [ok(signedIn), { kind: 'error', status: 503 }],
+      signOut: [{ kind: 'ok', value: { state: 'signed-out', identityProvider: 'unconfirmed' } }],
+    });
+    const header = screen.getByRole('group', { name: 'Session' });
+    expect(header).toHaveTextContent('Session not confirmed');
+    expect(header).not.toHaveTextContent('Ada Synthetic');
+    expect(screen.queryByText('No assigned work to show')).toBeNull();
+    await userEvent.setup().click(within(header).getByRole('button', { name: 'Sign out' }));
+    await settle();
+    expect(client.signOutCalls()).toBe(1);
+    expect(screen.getByRole('heading', { level: 2, name: 'You are signed out' })).toBeInTheDocument();
+    expect(screen.getByRole('main')).toHaveTextContent('could not confirm that the identity provider ended its own');
+    expect(screen.queryByRole('button', { name: 'Sign out' })).toBeNull();
+  });
+
+  it('reports a sign-out that failed and keeps offering it', async () => {
+    const { client } = await signedInThenUnconfirmed({
+      session: [ok(signedIn), { kind: 'error', status: 503 }],
+      signOut: [{ kind: 'error', status: 503 }],
+    });
+    const header = screen.getByRole('group', { name: 'Session' });
+    await userEvent.setup().click(within(header).getByRole('button', { name: 'Sign out' }));
+    await settle();
+    expect(client.signOutCalls()).toBe(1);
+    expect(header).toHaveTextContent('Sign-out could not be confirmed. You may still be signed in; try again.');
+    expect(header).toHaveTextContent('Session not confirmed');
+    expect(within(header).getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { level: 2, name: 'You are signed out' })).toBeNull();
+  });
+
+  it('does not offer Sign out when nobody was signed in before the reads failed', async () => {
+    renderApp({ session: [{ kind: 'error', status: 503 }] });
+    await settle();
+    const header = screen.getByRole('group', { name: 'Session' });
+    expect(header).toHaveTextContent('Session not confirmed');
+    expect(within(header).queryByRole('button', { name: 'Sign out' })).toBeNull();
+  });
+
+  it('keeps the CSRF token over a failed read, so the sign-out carries it', async () => {
+    let sessionReads = 0;
+    const signOuts: (string | null)[] = [];
+    const fetchStub = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url === '/api/session') {
+        sessionReads += 1;
+        return Promise.resolve(
+          sessionReads === 1
+            ? new Response(JSON.stringify(signedIn), { status: 200, headers: { 'content-type': 'application/json' } })
+            : new Response(JSON.stringify({ status: 503, title: 'Service Unavailable' }), {
+                status: 503,
+                headers: { 'content-type': 'application/problem+json' },
+              }),
+        );
+      }
+      signOuts.push(new Headers(init?.headers).get(SYNTHETIC_CSRF.headerName));
+      return Promise.resolve(
+        new Response(JSON.stringify({ state: 'signed-out', identityProvider: 'unconfirmed' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    });
+    vi.stubGlobal('fetch', fetchStub);
+    try {
+      const link = createSessionLink();
+      render(
+        <ApiProvider config={{ apiPathPrefix: '/api' }} session={link}>
+          <SessionProvider apiPathPrefix="/api" link={link}>
+            <SessionControl />
+          </SessionProvider>
+        </ApiProvider>,
+      );
+      await settle();
+      await settle();
+      expect(screen.getByRole('group', { name: 'Session' })).toHaveTextContent('Signed in as Ada Synthetic');
+      await act(async () => {
+        window.dispatchEvent(new Event('focus'));
+        await Promise.resolve();
+      });
+      await settle();
+      await settle();
+      expect(sessionReads).toBe(2);
+      expect(screen.getByRole('group', { name: 'Session' })).toHaveTextContent('Session not confirmed');
+      // The failed read said nothing about the session: its token is still the one to send.
+      expect(link.csrf()).toEqual(SYNTHETIC_CSRF);
+      await userEvent.setup().click(screen.getByRole('button', { name: 'Sign out' }));
+      await settle();
+      await settle();
+      expect(signOuts).toEqual([SYNTHETIC_CSRF.token]);
+      expect(screen.getByRole('group', { name: 'Session' })).toHaveTextContent('Signed out');
+      expect(link.csrf()).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

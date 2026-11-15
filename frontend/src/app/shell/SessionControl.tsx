@@ -5,6 +5,10 @@ import { useSession } from '../../state/session.tsx';
  * Session control in the shell header (OM-02.01): the signed-in person's display name as text and
  * the sign-out action, or the sign-in action when nobody is signed in. The name is display only;
  * the identity provider owns the account, its password and its recovery.
+ *
+ * When the session can no longer be confirmed for somebody who was signed in, the name is removed
+ * and sign-out stays: the backend ends the session on request even while the identity provider is
+ * unavailable, and that is when a person on a shared device needs it.
  */
 export function SessionControl() {
   const { state, signIn, signOut } = useSession();
@@ -24,6 +28,11 @@ export function SessionControl() {
         <p className="session-control__person" role="status">
           Session not confirmed
         </p>
+        {state.afterSignedIn ? (
+          <ActionButton variant="secondary" onAction={signOut} pendingLabel="Signing out…">
+            Sign out
+          </ActionButton>
+        ) : null}
       </div>
     );
   }

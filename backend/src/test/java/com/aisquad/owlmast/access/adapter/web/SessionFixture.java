@@ -104,31 +104,9 @@ final class SessionFixture implements AutoCloseable {
                         }))
             .bindNow();
     issuer = "http://localhost:" + provider.port() + ISSUER_PATH;
-    AuditedMutations recording =
-        new AuditedMutations() {
-          @Override
-          public <T> Mono<AuditedResult<T>> execute(AuditedMutation<T> mutation) {
-            String actor = mutation.actor().id().orElse(null);
-            return Scopes.current()
-                .flatMap(scope -> mutation.business().apply(scope))
-                .map(done -> {
-                  outcomes.add(new Outcome(mutation.action(), "SUCCEEDED", actor, null));
-                  return new AuditedResult<>(done.value(), UUID.randomUUID());
-                })
-                .doOnError(failure ->
-                    outcomes.add(
-                        failure instanceof OperationDeniedException denied
-                            ? new Outcome(mutation.action(), "DENIED", actor, denied.reasonCode())
-                            : new Outcome(
-                                mutation.action(),
-                                "FAILED",
-                                actor,
-                                failure.getClass().getSimpleName())));
-          }
-        };
     ledger =
         new SessionLedger(
-            recording,
+            recording(outcomes),
             new ScopedTransactions(mock(TransactionalOperator.class), mock(DatabaseClient.class)),
             mock(PrincipalStore.class),
             new TenantId("default"));
@@ -146,6 +124,31 @@ final class SessionFixture implements AutoCloseable {
             clock);
     responses =
         new SignInResponses(properties, new ProblemResponses(ServerCodecConfigurer.create()));
+  }
+
+  /** An audit owner that notes in {@code outcomes} what it would have written. */
+  static AuditedMutations recording(List<Outcome> outcomes) {
+    return new AuditedMutations() {
+      @Override
+      public <T> Mono<AuditedResult<T>> execute(AuditedMutation<T> mutation) {
+        String actor = mutation.actor().id().orElse(null);
+        return Scopes.current()
+            .flatMap(scope -> mutation.business().apply(scope))
+            .map(done -> {
+              outcomes.add(new Outcome(mutation.action(), "SUCCEEDED", actor, null));
+              return new AuditedResult<>(done.value(), UUID.randomUUID());
+            })
+            .doOnError(failure ->
+                outcomes.add(
+                    failure instanceof OperationDeniedException denied
+                        ? new Outcome(mutation.action(), "DENIED", actor, denied.reasonCode())
+                        : new Outcome(
+                            mutation.action(),
+                            "FAILED",
+                            actor,
+                            failure.getClass().getSimpleName())));
+      }
+    };
   }
 
   /** The provider answers a renewal with this OAuth error code. */

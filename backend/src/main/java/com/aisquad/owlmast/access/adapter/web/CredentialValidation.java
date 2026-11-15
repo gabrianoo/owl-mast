@@ -1,7 +1,6 @@
 package com.aisquad.owlmast.access.adapter.web;
 
-import com.aisquad.owlmast.access.adapter.identity.IdentityDiscovery;
-import com.aisquad.owlmast.access.adapter.identity.ProviderMetadata;
+import com.aisquad.owlmast.access.adapter.identity.IssuerSigningKeys;
 import com.aisquad.owlmast.access.application.IdentityProviderUnavailableException;
 import java.time.Duration;
 import java.util.LinkedHashMap;
@@ -9,7 +8,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 import org.springframework.security.oauth2.core.OAuth2Error;
 import org.springframework.security.oauth2.core.OAuth2ErrorCodes;
@@ -25,6 +23,8 @@ import org.springframework.security.oauth2.jwt.JwtTimestampValidator;
 import org.springframework.security.oauth2.jwt.JwtValidationException;
 import org.springframework.security.oauth2.jwt.NimbusReactiveJwtDecoder;
 import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Scheduler;
 
 /**
  * Validation of a signed credential that is presented to the backend directly: a bearer credential
@@ -33,8 +33,8 @@ import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder;
  * that say what kind of token it is. The first check that fails names the refusal with a fixed code
  * ({@link #reasonOf}); the code goes to the audit record and never to the response.
  *
- * <p>The keys come from the discovery document when a credential is first presented (see {@link
- * IdentityDiscovery}); a provider that cannot be reached is an outage (5xx), not a refusal.
+ * <p>The keys are the issuer's ({@link IssuerSigningKeys}), fetched when a credential needs one
+ * that is not held; a provider that cannot be reached for them is an outage (5xx), not a refusal.
  */
 final class CredentialValidation {
 
@@ -51,7 +51,7 @@ final class CredentialValidation {
   static final String BEARER_TYPE = "Bearer";
   private static final int MAX_CAUSE_DEPTH = 8;
 
-  /** How long the identity provider may take to answer one step (keys, code, renewal). */
+  /** How long the identity provider may take to answer one step (code, ID-token keys, renewal). */
   static final Duration PROVIDER_TIMEOUT = Duration.ofSeconds(10);
 
   static final String LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout";
@@ -129,9 +129,11 @@ final class CredentialValidation {
       List.of(REASON_EXPIRED, REASON_ISSUER, REASON_AUDIENCE, REASON_KIND, REASON_SUBJECT);
 
   /**
-   * Whether a failure to verify a token says nothing about the token: the keys could not be fetched
-   * (a {@code JwtException} that is not a {@code BadJwtException}) or the provider was unavailable.
-   * Such a failure is an outage, never a refusal.
+   * Whether a failure to verify a token says nothing about the token: the provider was unavailable
+   * (the keys could not be fetched: {@link IssuerSigningKeys} says so with its own exception,
+   * whatever the framework wraps it in), or the framework could not decode for a reason that is not
+   * the token's (a {@code JwtException} that is not a {@code BadJwtException}). Such a failure is
+   * an outage, never a refusal.
    */
   static boolean couldNotVerify(Throwable failure) {
     Throwable current = failure;
@@ -145,30 +147,42 @@ final class CredentialValidation {
     return false;
   }
 
-  /** A decoder that finds the issuer's keys when the first credential arrives. */
-  static ReactiveJwtDecoder decoder(
-      IdentityDiscovery discovery, OAuth2TokenValidator<Jwt> validator) {
-    AtomicReference<Map.Entry<String, ReactiveJwtDecoder>> current = new AtomicReference<>();
+  /**
+   * A decoder that verifies against the issuer's keys. A failure of the key fetch arrives from the
+   * framework wrapped in its own exception; it leaves this decoder as the {@link
+   * IdentityProviderUnavailableException} it is, so no caller has to know the wrapper.
+   */
+  static ReactiveJwtDecoder decoder(IssuerSigningKeys keys, OAuth2TokenValidator<Jwt> validator) {
+    NimbusReactiveJwtDecoder verifying = NimbusReactiveJwtDecoder.withJwkSource(keys::of).build();
+    verifying.setJwtValidator(validator);
+    // The issuer's endpoints first, as before the keys had their own source: while no discovery
+    // document was accepted every credential is an outage, also one that is not a token at all.
     return token ->
-        discovery
-            .metadata()
-            .map(ProviderMetadata::jwksUri)
-            .map(jwksUri -> {
-              Map.Entry<String, ReactiveJwtDecoder> known = current.get();
-              if (known != null && known.getKey().equals(jwksUri)) {
-                return known.getValue();
-              }
-              NimbusReactiveJwtDecoder created =
-                  NimbusReactiveJwtDecoder.withJwkSetUri(jwksUri).build();
-              created.setJwtValidator(validator);
-              current.set(Map.entry(jwksUri, created));
-              return (ReactiveJwtDecoder) created;
-            })
-            .flatMap(decoder -> decoder.decode(token))
-            // A provider that accepts the connection and never answers with its keys is an
-            // outage like one that refuses the connection.
-            .timeout(PROVIDER_TIMEOUT)
-            .onErrorMap(TimeoutException.class, IdentityProviderUnavailableException::new);
+        keys.located()
+            .then(Mono.defer(() -> verifying.decode(token)))
+            .onErrorMap(failure -> providerUnavailable(failure).orElse(failure));
+  }
+
+  /**
+   * One step the identity provider does for a sign-in (the code exchange, the keys for the ID
+   * token), bounded: a provider that accepts the connection and never answers is an outage like one
+   * that refuses the connection. Nothing this backend does itself goes inside. The bound is
+   * measured by {@code timer}: a test passes a clock it moves.
+   */
+  static <T> Mono<T> withinProviderTimeout(Mono<T> step, Duration timeout, Scheduler timer) {
+    return step.timeout(timeout, timer)
+        .onErrorMap(TimeoutException.class, IdentityProviderUnavailableException::new);
+  }
+
+  private static Optional<Throwable> providerUnavailable(Throwable failure) {
+    Throwable current = failure;
+    for (int depth = 0; current != null && depth < MAX_CAUSE_DEPTH; depth++) {
+      if (current instanceof IdentityProviderUnavailableException) {
+        return Optional.of(current);
+      }
+      current = current.getCause();
+    }
+    return Optional.empty();
   }
 
   /**

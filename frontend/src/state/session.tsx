@@ -30,7 +30,13 @@ import {
  * - `problem`: the session endpoint itself did not give a usable answer. Fail closed: a read that
  *   fails while somebody is signed in also lands here, because the shell can no longer show that the
  *   session is current. `afterSignedIn` remembers that somebody was signed in, so that a later read
- *   saying nobody is reads as `expired` and not as a plain `signed-out`.
+ *   saying nobody is reads as `expired` and not as a plain `signed-out`, and so that sign-out stays
+ *   offered: the backend serves it while it cannot confirm the session (an identity provider
+ *   outage), and a person on a shared device must be able to end the session then.
+ *
+ * The CSRF token of the last signed-in answer is kept until the backend says nobody is signed in or
+ * a sign-out ended the session. A read that fails says nothing about the session, so it does not
+ * take the token away: the sign-out offered in the `problem` state needs it.
  *
  * The session is read while the document is visible only: every read makes the backend renew the
  * session with the identity provider, so a tab nobody looks at must not keep a session alive.
@@ -136,6 +142,7 @@ export function SessionProvider({
       // Public: the endpoint answers for anybody and discloses nothing to a signed-out caller.
       const result = await api.get(SESSION_PATH, { protected: false, signal: controller.signal }, parseSession);
       if (result.kind !== 'ok') {
+        // No answer about the session: the CSRF token of the last signed-in answer stays.
         return { kind: 'failed' };
       }
       if (result.value.state === 'signed-in') {
@@ -156,13 +163,12 @@ export function SessionProvider({
     void read().then((answer) => {
       // Only the newest read decides, and a sign-out in flight decides for itself.
       if (!mountedRef.current || sequence !== sequenceRef.current || signingOutRef.current) return;
-      if (answer.kind !== 'signed-in') link.setCsrf(undefined);
       apply(nextSessionState(stateRef.current, answer, noticeRef.current));
       // The result of a sign-in belongs to the first answer after it. Once an answer was applied
       // it is spent: a later, unrelated signed-out read must not bring it back.
       if (answer.kind !== 'failed') noticeRef.current = undefined;
     });
-  }, [apply, link, read]);
+  }, [apply, read]);
 
   useEffect(() => {
     mountedRef.current = true;

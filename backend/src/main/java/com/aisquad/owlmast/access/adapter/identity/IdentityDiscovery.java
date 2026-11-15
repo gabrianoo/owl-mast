@@ -15,10 +15,10 @@ import reactor.core.publisher.Mono;
 /**
  * The issuer's endpoints, read from its discovery document when they are first needed and not at
  * start-up: the backend may start before the identity provider. Readiness (the separate {@link
- * IdentityDiscoveryHealthIndicator}) keeps traffic away while the provider does not answer or
- * publishes another issuer; it does not look at the endpoints, so a document this class refuses for
- * them (missing, not http, plaintext where plaintext was not allowed) leaves the backend ready and
- * every sign-in step answering "unavailable".
+ * IdentityDiscoveryHealthIndicator}) keeps traffic away until the provider has published the
+ * configured issuer and while it publishes another one; it does not look at the endpoints, so a
+ * document this class refuses for them (missing, not http, plaintext where plaintext was not
+ * allowed) leaves the backend ready and every sign-in step answering "unavailable".
  *
  * <p>A document is accepted only when it publishes exactly the configured issuer and http(s)
  * endpoints. An accepted document is used for {@link #KEPT} and then read again. When that read
