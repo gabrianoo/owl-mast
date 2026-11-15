@@ -457,10 +457,16 @@ integration suite, part of `./gradlew build` and of the CI `build` job) runs the
 processes of the real application on one PostgreSQL and proves these four things:
 
 - **Migrations.** Two backends started together on an empty database both run Flyway, and every migration is
-  recorded once. While one of them is inside a migration it holds Flyway's advisory lock; the other one asks
-  for the lock and is refused until the first has finished, then finds the schema up to date.
-- **One queue.** Two running backends drain one queue of durable work with every item claimed once
-  (`attempt_count` 1), its effect applied once and every publication intent published once.
+  recorded once. The test holds the first migration open: the backend inside it holds Flyway's advisory lock,
+  and the other one keeps asking for the lock and is refused. That is all the test observes of the lock.
+  Flyway 12.4.0 takes and releases it once per migration (read from its code, not tested), so after the first
+  migration the two can take turns, and the test does not check which backend applied which migration.
+- **One queue.** Two running backends drain one queue of durable work with every item claimed once and its
+  effect applied once. Claimed once is counted by a trigger the test puts on the work table, one row per
+  claim, because `attempt_count` alone (1 on every item) would not show a claim that was released or given
+  back and then repeated. Each publication intent has one publish item among those items, so every intent
+  was published once; the count of one audit event per intent would not show a repeat by itself, because
+  that insert is idempotent.
 - **Stopping.** A backend that is asked to stop (SIGTERM) while it holds an item gives the item back, and the
   backend that is already running completes it, with the effect applied once. Until then the running backend
   leaves the item alone, because its lease is live. The handler in this test is waiting when the stop arrives:
@@ -486,10 +492,13 @@ What these tests do not prove:
   its lease, and no test pauses a process.
 - A handler that is stopped in the middle of a database statement, or after its effect and before its
   completion write, is not run with two processes.
-- Two backends of different builds: that is a rollout, which `Recreate` keeps to one backend at a time.
-- How long a backend waits for another one's migration. Flyway 12.4.0 asks for its lock once a second and
-  gives up after 50 tries by default; nothing in this repository sets or tests that. A backend that gives up
-  fails to start (seen once while the test was written, after 51 s) and the kubelet restarts the container.
+- Two backends of different builds (an eviction replacement started from a tag that was pushed again): not
+  run. With an image digest it does not arise, and a rollout is kept to one backend at a time by `Recreate`.
+- How long a backend waits for another one's migrations. Flyway 12.4.0 asks for its lock once a second and
+  by default gives up after 50 tries. The tries are counted anew for every migration, so one migration of
+  the other backend that takes longer than that is enough; nothing in this repository sets or tests the
+  limit. A backend that gives up fails to start (seen once while the test was written, after 51 s, when the
+  test held the first migration open too long) and the kubelet restarts the container.
 
 ## Persistent volumes and retention (T3)
 

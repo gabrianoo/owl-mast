@@ -3,6 +3,7 @@ package com.aisquad.owlmast.jobs;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
+import com.aisquad.owlmast.audit.api.AuditEnvelopeContract;
 import com.aisquad.owlmast.fixtures.restart.FixtureProcesses;
 import com.aisquad.owlmast.fixtures.restart.RestartFixtureProcess;
 import com.aisquad.owlmast.testing.OwlMastPostgres;
@@ -33,7 +34,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * the database over JDBC from the test JVM, which runs no application context of its own:
  *
  * <ul>
- *   <li>both start on an empty database at once, so both run the Flyway migrations, and then both
+ *   <li>both start on an empty database at once, so both run Flyway on it, and then both
  *       work on one queue;
  *   <li>one is asked to stop (SIGTERM) while it holds an item and the other is running. Its handler
  *       is waiting, with no statement in flight and nothing written in its transaction;
@@ -54,6 +55,10 @@ class OverlappingBackendsIT {
   private static final Duration LONG_LEASE = Duration.ofMinutes(5);
   private static final Duration STARTUP = Duration.ofMinutes(3);
   private static final String OWNER_PREFIX = "owl-mast-backend/";
+
+  /** Filled by a trigger the queue test installs: one row per claim of a work item. */
+  private static final String CLAIM_LOG_TABLE = "overlap_probe.claim_log";
+
   private static final int SEEDED_WORK_ITEMS =
       RestartFixtureProcess.SEEDED_FOLLOW_UPS + RestartFixtureProcess.SEEDED_MUTATIONS;
   private PostgreSQLContainer database;
@@ -101,7 +106,8 @@ class OverlappingBackendsIT {
 
     // An open transaction that created the schema of the first migration: whichever process runs
     // that migration waits for this transaction inside it, holding Flyway's lock, so both
-    // processes are provably in their migration phase at the same time.
+    // processes are provably in their migration phase at the same time. Flyway takes the lock once
+    // per migration, so after this one either process may apply any of the later ones.
     try (Connection blocker = database.createConnection("");
         Statement statement = blocker.createStatement()) {
       blocker.setAutoCommit(false);
@@ -175,13 +181,32 @@ class OverlappingBackendsIT {
           assertThat(processes.log("together-second")).contains(RestartFixtureProcess.STARTED);
         });
     assertThat(count("select count(*) from flyway_schema_history where success"))
-        .as("every migration is recorded once, although two processes ran them")
+        .as("every migration is recorded once, although two processes ran Flyway")
         .isEqualTo(migrations);
     assertThat(count("select count(*) from flyway_schema_history")).isEqualTo(migrations);
     assertThat(count("select count(distinct version) from flyway_schema_history"))
         .isEqualTo(migrations);
 
-    // Both are up and polling: now the first one fills the queue.
+    // Both are up and polling an empty queue. A claim adds one to attempt_count, but a release and
+    // a give-back take it away again, so the finished row cannot show a second claim. This trigger
+    // records every claim (a row that becomes RUNNING under a new lease token) from here on.
+    assertThat(count("select count(*) from jobs.work_item")).as("nothing is queued yet").isZero();
+    execute("create schema overlap_probe");
+    execute(
+        "create table "
+            + CLAIM_LOG_TABLE
+            + " (item_id uuid not null, work_type text not null, lease_owner text not null)");
+    execute(
+        "create function overlap_probe.log_claim() returns trigger language plpgsql as $$ begin"
+            + " insert into "
+            + CLAIM_LOG_TABLE
+            + " values (new.id, new.work_type, new.lease_owner); return new; end $$");
+    execute(
+        "create trigger overlap_probe_log_claim after update on jobs.work_item for each row"
+            + " when (new.status = 'RUNNING' and new.lease_token is distinct from old.lease_token)"
+            + " execute function overlap_probe.log_claim()");
+
+    // Now the first one fills the queue.
     Files.createFile(seedSignal);
     int workItems = followUps + RestartFixtureProcess.SEEDED_MUTATIONS;
     await()
@@ -199,8 +224,13 @@ class OverlappingBackendsIT {
 
     assertThat(count("select count(*) from jobs.work_item")).isEqualTo(workItems);
     assertThat(count("select count(*) from jobs.work_item where attempt_count <> 1"))
-        .as("no item was claimed a second time")
+        .as("no item has a second counted attempt")
         .isZero();
+    assertThat(count("select count(*) from " + CLAIM_LOG_TABLE))
+        .as("every item was claimed once, counted or not, across both processes")
+        .isEqualTo(workItems);
+    assertThat(count("select count(distinct item_id) from " + CLAIM_LOG_TABLE))
+        .isEqualTo(workItems);
     assertThat(count("select count(*) from " + RestartFixtureProcess.EFFECT_LOG_TABLE))
         .as("each follow-up's effect was applied once across both processes")
         .isEqualTo(followUps);
@@ -220,8 +250,29 @@ class OverlappingBackendsIT {
           .as("the %s process took part in the queue", instance)
           .isPositive();
     }
+    String publishType = AuditEnvelopeContract.PUBLISH_WORK_TYPE.value();
+    assertThat(count("select count(*) from audit.publication_intent"))
+        .isEqualTo(RestartFixtureProcess.SEEDED_MUTATIONS);
+    assertThat(
+            count(
+                "select count(distinct payload ->> '"
+                    + AuditEnvelopeContract.PAYLOAD_EVENT_ID
+                    + "') from jobs.work_item where work_type = '"
+                    + publishType
+                    + "'"))
+        .as("one publish item per publication intent")
+        .isEqualTo(RestartFixtureProcess.SEEDED_MUTATIONS);
+    assertThat(
+            count(
+                "select count(*) from "
+                    + CLAIM_LOG_TABLE
+                    + " where work_type = '"
+                    + publishType
+                    + "'"))
+        .as("each publish item was claimed once, so each intent was published once")
+        .isEqualTo(RestartFixtureProcess.SEEDED_MUTATIONS);
     assertThat(count("select count(*) from audit.event"))
-        .as("each publication intent was published once")
+        .as("one audit event per intent (the insert is idempotent: this would not show a repeat)")
         .isEqualTo(RestartFixtureProcess.SEEDED_MUTATIONS);
   }
 
