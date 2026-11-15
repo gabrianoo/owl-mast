@@ -133,9 +133,9 @@ class OverlappingBackendsIT {
               RestartFixtureProcess.EFFECT_LOG);
 
       // Flyway holds its lock on one connection and runs the migration on another, and it asks
-      // for the lock with pg_try_advisory_xact_lock once a second, at most 50 times (the defaults
-      // of Flyway 12.4.0). So a process
-      // that is refused shows up as a session whose last statement is that call, not as a waiter.
+      // for the lock with pg_try_advisory_xact_lock once a second, at most 51 times (one try and
+      // 50 retries, the defaults of Flyway 12.4.0). So a process that is refused shows up as a
+      // session whose last statement is that call, not as a waiter.
       String lockHolders =
           "select held.pid from pg_locks held where held.locktype = 'advisory' and held.granted";
       await()

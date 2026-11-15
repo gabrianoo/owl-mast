@@ -488,17 +488,21 @@ What these tests do not prove:
 - They run two processes against Testcontainers, not pods. No pod deletion or eviction has been run on a
   cluster, and the Kind runs never had durable work in flight while two backends overlapped.
 - The lease in the late-write test is set to the past by the test. A running backend cancels a handler at
-  nine tenths of the lease, so on its own the case arises only for a backend that was paused or stalled past
-  its lease, and no test pauses a process.
+  its handler deadline (`owlmast.jobs.handler-deadline`, by default nine tenths of the lease). The deadline
+  is always shorter than the lease, because the backend does not start with one that is not. So on its own
+  the case arises only for a backend that was paused or stalled past its lease, and no test pauses a
+  process.
 - A handler that is stopped in the middle of a database statement, or after its effect and before its
   completion write, is not run with two processes.
 - Two backends of different builds (an eviction replacement started from a tag that was pushed again): not
   run. With an image digest it does not arise, and a rollout is kept to one backend at a time by `Recreate`.
-- How long a backend waits for another one's migrations. Flyway 12.4.0 asks for its lock once a second and
-  by default gives up after 50 tries. The tries are counted anew for every migration, so one migration of
-  the other backend that takes longer than that is enough; nothing in this repository sets or tests the
-  limit. A backend that gives up fails to start (seen once while the test was written, after 51 s, when the
-  test held the first migration open too long) and the kubelet restarts the container.
+- How long a backend waits for another one's migrations. Flyway 12.4.0 asks for its lock once and then
+  once a second, and gives up after 50 retries (its `lockRetryCount`, default 50; read from its code, not
+  tested): 51 tries, and it fails about 51 s after the first. The tries are counted anew each time a backend
+  asks for the lock, which it does once per migration, so one migration of the other backend that takes
+  longer than 51 s is enough. Nothing in this repository sets or tests the limit, and the chart has no
+  value for it. A backend that gives up fails to start (seen once while the test was written, after 51 s,
+  when the test held the first migration open too long) and the kubelet restarts the container.
 
 ## Persistent volumes and retention (T3)
 
