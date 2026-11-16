@@ -277,6 +277,10 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- if not $v.identity.realm -}}
 {{- fail "identity.realm is required" -}}
 {{- end -}}
+{{- /* Keycloak realm names are case-sensitive, so only "master" is that realm; any case is refused, which costs nothing */ -}}
+{{- if eq (lower $v.identity.realm) "master" -}}
+{{- fail (printf "identity.realm=%q is refused: master is the bundled Keycloak's administration realm, where administrators sign in and obtain tokens. People sign in to Owl Mast in a realm of their own, and the Keycloak route publishes /realms/<identity.realm>/, which would publish the administrators' realm" $v.identity.realm) -}}
+{{- end -}}
 {{- /* AC3: Keycloak keeps its own database on a shared server (the bundled instance, or the same external host and port) */ -}}
 {{- /* textual comparison (case and a trailing dot ignored); aliases such as an IP address and a DNS name are not detected */ -}}
 {{- $shared := or $v.database.bundled (and (eq (lower $v.database.external.host | trimSuffix ".") (lower $v.identity.keycloak.database.external.host | trimSuffix ".")) (eq (int $v.database.external.port) (int $v.identity.keycloak.database.external.port))) -}}
@@ -353,6 +357,14 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- include "owl-mast.validateOrigin" (list "identity.keycloak.publicOrigin" $idOrigin "the bundled Keycloak's public origin") -}}
 {{- if eq $idOrigin $appOrigin -}}
 {{- fail (printf "identity.keycloak.publicOrigin and routing.publicOrigin are both %q: Keycloak is reached on its own origin, separate from the application's (the chart routes only / and /api on the application origin)" $appOrigin) -}}
+{{- end -}}
+{{- /* another port is not another host: Gateway and Ingress match the host without the port, and cookies are scoped */ -}}
+{{- /* by host. The one exception is a loopback host that the chart renders no Keycloak route for (port-forwards). */ -}}
+{{- $sameHost := eq (include "owl-mast.originHost" $idOrigin) (include "owl-mast.originHost" $appOrigin) -}}
+{{- $idLoopback := regexMatch "^(localhost|127\\.0\\.0\\.1)$" (include "owl-mast.originHost" $idOrigin) -}}
+{{- $idRouted := or (eq (include "owl-mast.keycloak.route.gateway.enabled" .) "true") (eq (include "owl-mast.keycloak.route.ingress.enabled" .) "true") -}}
+{{- if and $sameHost (or $idRouted (not $idLoopback)) -}}
+{{- fail (printf "identity.keycloak.publicOrigin %q and routing.publicOrigin %q name the same host %q: Keycloak needs a host of its own, not another port on the application's. Gateway and Ingress routes match the host without the port, so one hostname cannot keep Keycloak's paths apart from the application's, and cookies are scoped by host, so the session cookie and Keycloak's cookies would be sent to both. Only a loopback host (localhost, 127.0.0.1) may carry both on different ports, and only while the chart renders no Keycloak route" $idOrigin $appOrigin (include "owl-mast.originHost" $idOrigin)) -}}
 {{- end -}}
 {{- with (include "owl-mast.keycloak.adminOrigin" .) -}}
 {{- include "owl-mast.validateOrigin" (list "identity.keycloak.adminOrigin" . "the address administrators open the Keycloak admin console on") -}}

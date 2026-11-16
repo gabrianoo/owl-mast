@@ -270,10 +270,11 @@ been run on a cluster.
 | Change in 0.3.0 | What to do |
 | --- | --- |
 | `routing.publicOrigin` is required | Set it to the origin people open Owl Mast on (`https://…`; `http` only for a loopback host) |
-| `identity.keycloak.publicOrigin` is required with `identity.bundled=true` | Set it to the origin browsers reach Keycloak on, and route that origin to the Keycloak Service (`identity.keycloak.route.*`, or your own routing) |
+| `identity.keycloak.publicOrigin` is required with `identity.bundled=true` | Set it to the origin browsers reach Keycloak on, on a host that is not the application's (another port on the same host is refused, except on a loopback host without a Keycloak route), and route that origin to the Keycloak Service (`identity.keycloak.route.*`, or your own routing) |
 | The backend needs `identity.client.existingSecret` (default `owl-mast-oidc-client`, key `client-secret`) in every combination | Create the Secret before the upgrade. Without it the backend pod stays in `CreateContainerConfigError`, and with `importRealm=true` the Keycloak pod does too |
 | The bundled issuer changes from the cluster-local address to `<identity.keycloak.publicOrigin>/realms/<realm>`; `KC_HOSTNAME` changes with it and the Keycloak pod is replaced | Nothing more for the backend: it receives the new issuer and the cluster-local back-channel base in the same upgrade. Tokens issued before the upgrade carry the old issuer (chart 0.2.0 had no client, so the installation issued none to Owl Mast) |
 | The realm import now carries the client and the invitation-only settings, but Keycloak skips it for a realm that exists | Create the client in the existing realm by hand, or delete the realm and restart Keycloak ([Realm and client](#realm-and-client)). Check the realm's self-registration switch yourself: the import that would set it does not run |
+| `identity.realm=master` is refused with `identity.bundled=true` | Use a realm of its own for the people who sign in to Owl Mast; `master` is Keycloak's administration realm |
 | `backend.replicas` greater than 1 is refused by the templates with the reason (was a schema maximum) | Keep 0 or 1 |
 | Every backend restart, rollout and upgrade signs everyone out (sessions are in the backend's memory) | Plan upgrades accordingly |
 | `identity.keycloak.proxyHeaders` keeps its rule; a rendered Keycloak route has the same peer rule under the NetworkPolicy | Name the proxy in `networkPolicy.keycloak.extraFrom` |
@@ -590,7 +591,11 @@ starts with a letter, a single label, or an IPv4 address), no path, no trailing 
 only for a loopback host (`http://localhost[:port]`, `http://127.0.0.1[:port]`), because the session cookie is
 always `Secure` and browsers accept such a cookie over `http` on loopback alone. The scheme's default port
 (`:443`, `:80`) is refused: Keycloak and browsers leave it out, and origins and issuers are compared as exact
-strings. The two origins must differ. Rendering fails naming the value when one is missing or malformed. The
+strings. The two origins must differ, and so must their hosts: another port on the application's host is not
+an origin of Keycloak's own, because Gateway and Ingress routes match the host without the port and cookies are
+scoped by host. The one exception is a loopback host (`localhost`, `127.0.0.1`) while the chart renders no
+Keycloak route, as in the local qualification, where both are port-forwards; the browser then sends the
+session cookie and Keycloak's cookies to both ports. Rendering fails naming the value when one is missing or malformed. The
 chart does not derive `routing.publicOrigin` from `routing.ingress.host` or `routing.gateway.hostnames`, but it
 compares them: when the chart renders the application route, the origin's host must be the Ingress host (or one
 label below a wildcard host) or one of the Gateway hostnames (or below a wildcard hostname), otherwise rendering
@@ -620,7 +625,8 @@ issuer reached over `https`.
 
 Either one routes only `/realms/<identity.realm>/` and `/resources/` (the endpoints of that realm and the login
 theme). The master realm (`/realms/master/`, where administrators sign in and obtain tokens) and the admin
-console (`/admin`) are never routed. With `networkPolicy.enabled=true` a route renders only when
+console (`/admin`) are never routed, and `identity.realm=master` is refused at render with the reason, so the
+realm people sign in to is never the administrators'. With `networkPolicy.enabled=true` a route renders only when
 `networkPolicy.keycloak.extraFrom` names the proxy (a `matchLabels` entry, a `matchExpressions` term with
 operator `In`, or a narrow `ipBlock`; the rule of `identity.keycloak.proxyHeaders`), because without an entry the
 policy admits only the backend and the route would reach nothing. TLS for `https` origins is terminated by the

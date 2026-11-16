@@ -234,6 +234,7 @@ postgresql:
 identity:
   bundled: true
   # Realm of the bundled issuer (<identity.keycloak.publicOrigin>/realms/<realm>) and of the realm import.
+  # Never "master": that is Keycloak's administration realm and is refused.
   realm: owl-mast
   # The backend signs people in as a confidential OpenID Connect client (authorization code with PKCE);
   # tokens stay in the backend. The bundled Keycloak imports this client; an external issuer must hold a
@@ -252,14 +253,16 @@ identity:
   keycloak:
     # Required with identity.bundled=true. The public origin browsers reach the bundled Keycloak on, its own
     # origin and never the application's: Keycloak's hostname and the issuer of every token. Same form as
-    # routing.publicOrigin (https, or http for a loopback host only; no path; no default port). The backend
-    # keeps calling Keycloak on the cluster-local Service.
+    # routing.publicOrigin (https, or http for a loopback host only; no path; no default port). Its host must
+    # differ from the application's: another port on the same host is refused, except on a loopback host with
+    # no Keycloak route rendered. The backend keeps calling Keycloak on the cluster-local Service.
     publicOrigin: ""
     # Optional. The address administrators open the admin console on (KC_HOSTNAME_ADMIN), for example
     # http://localhost:8080 through `kubectl port-forward`. The admin console is never routed publicly; with
     # this empty, administer Keycloak with kcadm.sh inside the pod.
     adminOrigin: ""
-    # Public route to Keycloak for the host of publicOrigin: only /realms/ and /resources/, never /admin.
+    # Public route to Keycloak for the host of publicOrigin: only /realms/<identity.realm>/ and /resources/,
+    # never the master realm or /admin.
     # Gateway API first, Ingress as the compatibility option; both off by default, enabling both is refused.
     # With networkPolicy.enabled=true a route needs networkPolicy.keycloak.extraFrom to name the proxy.
     # Leave both off when the operator routes Keycloak by other means.

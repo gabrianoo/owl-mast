@@ -36,6 +36,10 @@ import reactor.core.scheduler.Schedulers;
  * presenting a credential, so however many arrive, the provider receives one discovery request per
  * {@link #RETRY} while its document is not accepted, and concurrent callers share the request in
  * flight.
+ *
+ * <p>Every read that does not give an accepted document is logged as a warning. While the earlier
+ * endpoints stay in use that warning is the only signal an operator gets, so a refused document is
+ * logged with a fixed reason code and the field it was refused for ({@link #reason}).
  */
 @Slf4j
 public final class IdentityDiscovery {
@@ -82,12 +86,11 @@ public final class IdentityDiscovery {
                     .bodyToMono(DOCUMENT)
                     .timeout(TIMEOUT, timer)
                     .map(this::accept)
-                    .switchIfEmpty(
-                        Mono.error(() -> new IllegalStateException("empty discovery answer"))))
+                    .switchIfEmpty(Mono.error(() -> new RefusedDocument(Refusal.EMPTY, null))))
             .doOnNext(lastAccepted::set)
             .map(accepted -> new Read(accepted, true))
             .onErrorResume(failure -> {
-              log.warn("Identity discovery failed: {}", SafeFailure.describe(failure));
+              log.warn("Identity discovery failed: {}", reason(failure));
               ProviderMetadata earlier = lastAccepted.get();
               return earlier != null
                   ? Mono.just(new Read(earlier, false))
@@ -105,7 +108,7 @@ public final class IdentityDiscovery {
 
   private ProviderMetadata accept(Map<String, Object> document) {
     if (!properties.issuerUri().equals(document.get("issuer"))) {
-      throw new IllegalStateException("the published issuer differs from the configured issuer");
+      throw new RefusedDocument(Refusal.ISSUER_MISMATCH, "issuer");
     }
     // The browser's endpoint may be plaintext only where the issuer may be; the backend's own
     // endpoints only where the address the backend uses may be.
@@ -122,16 +125,60 @@ public final class IdentityDiscovery {
 
   private static String endpoint(Map<String, Object> document, String name, boolean plaintext) {
     if (!(document.get(name) instanceof String value)) {
-      throw new IllegalStateException("the discovery document has no " + name);
+      throw new RefusedDocument(Refusal.ENDPOINT_MISSING, name);
     }
-    URI parsed = URI.create(value);
+    URI parsed;
+    try {
+      parsed = URI.create(value);
+    } catch (IllegalArgumentException unparsable) {
+      throw new RefusedDocument(Refusal.ENDPOINT_NOT_HTTP, name);
+    }
     String scheme = parsed.getScheme() == null ? "" : parsed.getScheme().toLowerCase(Locale.ROOT);
     if (parsed.getHost() == null || !(scheme.equals("http") || scheme.equals("https"))) {
-      throw new IllegalStateException("the discovery document's " + name + " is not an http URL");
+      throw new RefusedDocument(Refusal.ENDPOINT_NOT_HTTP, name);
     }
     if (scheme.equals("http") && !plaintext) {
-      throw new IllegalStateException("the discovery document's " + name + " is plaintext");
+      throw new RefusedDocument(Refusal.ENDPOINT_PLAINTEXT, name);
     }
     return value;
+  }
+
+  /**
+   * What the warning says about a read that did not give an accepted document. A refused document
+   * is named by its reason code and the field it was refused for, both fixed text of this class;
+   * nothing the provider published is logged. Any other failure (no connection, no answer in time,
+   * a status, a body that is not JSON) is named by its exception classes only (NFR-6).
+   */
+  static String reason(Throwable failure) {
+    return failure instanceof RefusedDocument refused
+        ? refused.getMessage()
+        : SafeFailure.describe(failure);
+  }
+
+  /** Why a document that was read is not accepted. */
+  enum Refusal {
+    /** The answer had no body. */
+    EMPTY,
+    /** The published issuer is not the configured one. */
+    ISSUER_MISMATCH,
+    /** A required endpoint is absent or not a string. */
+    ENDPOINT_MISSING,
+    /** An endpoint is not an absolute http(s) URL with a host. */
+    ENDPOINT_NOT_HTTP,
+    /** An endpoint is plaintext where the address it belongs to may not be. */
+    ENDPOINT_PLAINTEXT
+  }
+
+  /** A discovery document this class refuses; the message is the reason code and the field. */
+  static final class RefusedDocument extends IllegalStateException {
+
+    private static final long serialVersionUID = 1L;
+
+    RefusedDocument(Refusal refusal, String field) {
+      super(
+          field == null
+              ? "document refused, " + refusal
+              : "document refused, " + refusal + " (" + field + ")");
+    }
   }
 }

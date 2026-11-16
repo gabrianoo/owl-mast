@@ -2060,6 +2060,43 @@ class SignInWiringTest(unittest.TestCase):
         self.assertIn("identity.keycloak.publicOrigin and routing.publicOrigin are both", err)
         render(*sets("routing.publicOrigin=http://localhost:8080", "identity.keycloak.publicOrigin=http://localhost:8081"))
 
+    def test_keycloak_needs_a_host_of_its_own_not_another_port_on_the_applications(self):
+        """PR #194 review, R4-4: whole origins were compared, so the application's host with another port passed. Routes match the host
+        without the port and cookies are scoped by host, so both routes claimed one hostname."""
+        same_host = "name the same host"
+        for app, keycloak in (("https://owl-mast.example", "https://owl-mast.example:8443"), ("https://owl-mast.example:8443", "https://owl-mast.example"),
+                              ("https://owl-mast.example:8443", "https://owl-mast.example:9443"), ("https://10.0.0.5", "https://10.0.0.5:8443")):
+            pair = sets(f"routing.publicOrigin={app}", f"identity.keycloak.publicOrigin={keycloak}")
+            self.assertIn(same_host, refused(*pair), (app, keycloak))
+            self.assertIn(same_host, refused("--skip-schema-validation", *pair), (app, keycloak))
+        # with either Keycloak route, and with the application route
+        pair = sets("routing.publicOrigin=https://owl-mast.example", "identity.keycloak.publicOrigin=https://owl-mast.example:8443")
+        self.assertIn(same_host, refused(*GATEWAY_API, *sets(*KEYCLOAK_GATEWAY, *KEYCLOAK_PROXY), *pair))
+        self.assertIn(same_host, refused(*sets(*KEYCLOAK_INGRESS, *KEYCLOAK_PROXY), *pair))
+        # a loopback host may carry both on different ports (the local qualification's port-forwards), but not behind a Keycloak route
+        loopback = sets("routing.publicOrigin=http://localhost:8080", "identity.keycloak.publicOrigin=http://localhost:8081")
+        render(*loopback)
+        render(*sets("routing.publicOrigin=http://127.0.0.1:8080", "identity.keycloak.publicOrigin=http://127.0.0.1:8081"))
+        self.assertIn(same_host, refused(*sets(*KEYCLOAK_INGRESS, *KEYCLOAK_PROXY), *loopback))
+        # different hosts on one port, and a host that only starts with the other, are separate hosts
+        render(*sets("routing.publicOrigin=https://owl-mast.example:8443", "identity.keycloak.publicOrigin=https://id.owl-mast.example:8443"))
+        render(*sets("routing.publicOrigin=https://owl-mast.example", "identity.keycloak.publicOrigin=https://owl-mast.example.org"))
+
+    def test_the_master_realm_is_refused_as_the_realm_people_sign_in_to(self):
+        """PR #194 review, R4-3: identity.realm=master rendered, and the Keycloak route then published /realms/master/, the administrators'
+        login and token endpoint that both route templates say is never routed."""
+        operator_realm = sets("identity.keycloak.importRealm=false", "identity.keycloak.realmManagedByOperator=true")
+        for realm in ("master", "Master", "MASTER"):
+            for args in ([], operator_realm, [*GATEWAY_API, *sets(*KEYCLOAK_GATEWAY, *KEYCLOAK_PROXY)], sets(*KEYCLOAK_INGRESS, *KEYCLOAK_PROXY),
+                         ["--skip-schema-validation"]):
+                err = refused(*args, *sets(f"identity.realm={realm}"))
+                self.assertIn(f'identity.realm="{realm}" is refused: master is the bundled Keycloak\'s administration realm', err, (realm, args))
+        # a realm that only contains the word is a realm of its own
+        for realm in ("master-2", "owl-master", "masters"):
+            render(*sets(f"identity.realm={realm}"))
+        # an external issuer has no bundled realm: the value is not used and not checked
+        render(*COMBINATIONS["bundled-external"], *sets("identity.realm=master"))
+
     def test_more_than_one_backend_replica_is_refused_with_the_reason(self):
         """AC4, third condition."""
         err = refused(*sets("backend.replicas=2"))

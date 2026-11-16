@@ -2,7 +2,9 @@ package com.aisquad.owlmast.access.adapter.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -109,6 +111,46 @@ class SessionStandingFilterTest {
     MockServerWebExchange other = exchange(MockServerHttpRequest.post("/api/anything"));
     assertThat(run(other)).isNull();
     assertThat(other.getResponse().getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+  }
+
+  /**
+   * PR #194 review, R4-5: a sign-out does not ask for the session's standing, so inside the renewal
+   * window it does not wait for a provider that never answers the renewal. The renewal here would
+   * hold the request for the provider timeout (10 s); the sign-out reaches its handler at once and
+   * the provider is not asked.
+   */
+  @Test
+  void aSignOutDoesNotWaitForARenewalTheProviderNeverAnswers() {
+    AtomicInteger renewals = new AtomicInteger();
+    fixture.renewal.set(() -> {
+      renewals.incrementAndGet();
+      return Mono.never();
+    });
+    AtomicReference<Reached> reached = new AtomicReference<>();
+
+    filter
+        .filter(exchange(MockServerHttpRequest.post(SessionPaths.SIGN_OUT)), chain(reached))
+        .contextWrite(ReactiveSecurityContextHolder.withAuthentication(authentication))
+        .block(Duration.ofSeconds(2));
+
+    assertThat(reached).hasValue(Reached.WITH_SESSION);
+    assertThat(renewals).hasValue(0);
+    assertThat(session.isExpired()).isFalse();
+    assertThat(fixture.actions()).isEmpty();
+  }
+
+  /**
+   * R4-5, the other verdict: the sign-out of a session the provider would refuse to renew also
+   * reaches its handler with the session, which ends it as a sign-out, not as "expired".
+   */
+  @Test
+  void aSignOutReachesItsHandlerWithTheSessionWhateverTheProviderWouldSay() {
+    fixture.renewalFailsWith("invalid_grant");
+
+    assertThat(run(exchange(MockServerHttpRequest.post(SessionPaths.SIGN_OUT))))
+        .isEqualTo(Reached.WITH_SESSION);
+    assertThat(session.isExpired()).isFalse();
+    assertThat(fixture.actions()).isEmpty();
   }
 
   /**

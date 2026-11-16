@@ -30,12 +30,16 @@ final class SessionWebFilters {
    * SessionKeeper} whether the session still stands. A session that ended is removed from the
    * request, which then continues as an anonymous one: a protected operation answers 401, a public
    * one is still served. When the identity provider cannot be asked, the session is kept and the
-   * request is answered 503, with two exceptions: where {@code servedWithoutSession} matches
-   * (public content that does not depend on who asks) it continues without the session, and where
-   * {@code endsSession} matches (sign-out) it continues with it, so a person can always end their
-   * session here; the provider's part is then reported as unconfirmed. Where {@code readsSession}
+   * request is answered 503, except where {@code servedWithoutSession} matches (public content that
+   * does not depend on who asks): it continues without the session. Where {@code readsSession}
    * matches (the shell's session read) the 503 carries the session's CSRF token: a shell that
    * starts during the outage learns from it that a session is kept and how to send the sign-out.
+   *
+   * <p>Where {@code endsSession} matches (sign-out) the keeper is not asked at all and the request
+   * continues with its session: the session ends here whatever the provider would say, so a person
+   * can always end it, and a sign-out never waits for a renewal (PR #194 review, R4-5). The
+   * provider's part of the sign-out is the handler's and is reported as unconfirmed when the
+   * provider cannot be asked.
    */
   static WebFilter standing(
       SessionKeeper sessions,
@@ -46,32 +50,42 @@ final class SessionWebFilters {
     return (ServerWebExchange exchange, WebFilterChain chain) ->
         sessions
             .sweep()
-            .then(Mono.defer(ReactiveSecurityContextHolder::getContext))
-            .map(SecurityContext::getAuthentication)
-            .ofType(OAuth2AuthenticationToken.class)
-            .flatMap(authentication ->
-                exchange
-                    .getSession()
-                    .flatMap(session -> sessions.standing(exchange, session, authentication)))
-            .defaultIfEmpty(Standing.CURRENT)
-            .flatMap(standing ->
-                switch (standing) {
-                  case CURRENT -> chain.filter(exchange);
-                  case ENDED -> withoutSession(exchange, chain);
-                  case UNVERIFIABLE ->
-                      endsSession
-                          .matches(exchange)
-                          .flatMap(ending ->
-                              ending.isMatch()
-                                  // Sign-out needs no verdict: the session ends here anyway.
-                                  ? chain.filter(exchange)
-                                  : servedWithoutSession
-                                      .matches(exchange)
-                                      .flatMap(match ->
-                                          match.isMatch()
-                                              ? withoutSession(exchange, chain)
-                                              : unverifiable(exchange, responses, readsSession)));
-                });
+            .then(Mono.defer(() -> endsSession.matches(exchange)))
+            .flatMap(ending ->
+                ending.isMatch()
+                    // Sign-out needs no verdict: the session ends here anyway.
+                    ? chain.filter(exchange)
+                    : verified(
+                        sessions, responses, servedWithoutSession, readsSession, exchange, chain));
+  }
+
+  private static Mono<Void> verified(
+      SessionKeeper sessions,
+      SignInResponses responses,
+      ServerWebExchangeMatcher servedWithoutSession,
+      ServerWebExchangeMatcher readsSession,
+      ServerWebExchange exchange,
+      WebFilterChain chain) {
+    return ReactiveSecurityContextHolder.getContext()
+        .map(SecurityContext::getAuthentication)
+        .ofType(OAuth2AuthenticationToken.class)
+        .flatMap(authentication ->
+            exchange
+                .getSession()
+                .flatMap(session -> sessions.standing(exchange, session, authentication)))
+        .defaultIfEmpty(Standing.CURRENT)
+        .flatMap(standing ->
+            switch (standing) {
+              case CURRENT -> chain.filter(exchange);
+              case ENDED -> withoutSession(exchange, chain);
+              case UNVERIFIABLE ->
+                  servedWithoutSession
+                      .matches(exchange)
+                      .flatMap(match ->
+                          match.isMatch()
+                              ? withoutSession(exchange, chain)
+                              : unverifiable(exchange, responses, readsSession));
+            });
   }
 
   private static Mono<Void> unverifiable(

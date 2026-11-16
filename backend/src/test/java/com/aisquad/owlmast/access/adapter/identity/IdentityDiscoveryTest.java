@@ -13,6 +13,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
@@ -25,7 +28,10 @@ import reactor.test.scheduler.VirtualTimeScheduler;
  * What the backend accepts as the issuer's endpoints, against a local server that publishes
  * whatever document a test gives it.
  */
+@ExtendWith(OutputCaptureExtension.class)
 class IdentityDiscoveryTest {
+
+  private static final String WARNING = "Identity discovery failed: ";
 
   private final AtomicReference<String> document = new AtomicReference<>("{}");
   private final AtomicInteger requests = new AtomicInteger();
@@ -234,7 +240,7 @@ class IdentityDiscoveryTest {
 
   /** A provider that is briefly away or wrong must not turn valid sessions into outages. */
   @Test
-  void theLastAcceptedDocumentIsUsedWhileAReadFails() {
+  void theLastAcceptedDocumentIsUsedWhileAReadFails(CapturedOutput output) {
     publish(address, address + "/auth", address + "/token", address + "/certs");
     // Nothing is kept between calls here, so every call reads again.
     IdentityDiscovery discovery =
@@ -249,6 +255,7 @@ class IdentityDiscoveryTest {
     StepVerifier.create(discovery.metadata())
         .assertNext(metadata -> assertThat(metadata.tokenEndpoint()).isEqualTo(address + "/token"))
         .verifyComplete();
+    assertThat(warnings(output)).containsExactly("document refused, ISSUER_MISMATCH (issuer)");
     // PR #194 review, R3-3: a document this class refuses is treated like a read that failed,
     // whatever it is refused for: another issuer, or an endpoint that is not http(s).
     publish("https://other.example/realms/x", address + "/auth", address + "/token2", address);
@@ -259,11 +266,72 @@ class IdentityDiscoveryTest {
     StepVerifier.create(discovery.metadata())
         .assertNext(metadata -> assertThat(metadata.tokenEndpoint()).isEqualTo(address + "/token"))
         .verifyComplete();
+    // PR #194 review, R4-2: while the earlier endpoints stay in use and readiness may stay UP,
+    // this warning is the operator's only signal, so it says why each document was refused.
+    assertThat(warnings(output))
+        .containsExactly(
+            "document refused, ISSUER_MISMATCH (issuer)",
+            "document refused, ISSUER_MISMATCH (issuer)",
+            "document refused, ENDPOINT_NOT_HTTP (token_endpoint)");
     server.disposeNow();
     StepVerifier.create(discovery.metadata())
         .assertNext(metadata -> assertThat(metadata.tokenEndpoint()).isEqualTo(address + "/token"))
         .verifyComplete();
     assertThat(requests).hasValue(4);
+    // A read that failed for another reason is named by its exception classes, as before.
+    assertThat(warnings(output)).hasSize(4);
+    assertThat(warnings(output).get(3)).doesNotContain("document refused").contains("Exception");
+  }
+
+  /**
+   * PR #194 review, R4-2: every refusal has its own reason code and names the field, and nothing
+   * the provider published is logged.
+   */
+  @Test
+  void eachRefusalIsLoggedWithItsReasonCodeAndFieldAndNothingThePublisherWrote(
+      CapturedOutput output) {
+    String publicIssuer = "https://id.example/realms/owl-mast";
+    String published = "published-by-the-provider";
+    List<String> documents =
+        List.of(
+            "",
+            document(
+                "https://other.example/" + published,
+                "https://a/auth",
+                "https://a/t",
+                "https://a/k"),
+            "{\"issuer\":\"" + publicIssuer + "\",\"authorization_endpoint\":\"https://a/auth\"}",
+            "{\"issuer\":\""
+                + publicIssuer
+                + "\",\"authorization_endpoint\":\"https://a/auth\",\"token_endpoint\":7,"
+                + "\"jwks_uri\":\"https://a/k\"}",
+            document(publicIssuer, "https://a/auth", "https://a/t", "ftp://a/" + published),
+            document(publicIssuer, "https://a/auth", "https://a/t", "/" + published),
+            document(publicIssuer, "https://a/auth", "https://a/t", "https://a b/" + published),
+            document(publicIssuer, "http://a/" + published, "https://a/t", "https://a/k"));
+
+    for (String refused : documents) {
+      document.set(refused);
+      // An https issuer, read on the backend's own (plaintext, local) address.
+      IdentityDiscovery discovery =
+          new IdentityDiscovery(
+              WebClient.create(), new IdentityProperties(publicIssuer, false, address, true));
+      StepVerifier.create(discovery.metadata())
+          .expectError(IdentityProviderUnavailableException.class)
+          .verify(Duration.ofSeconds(30));
+    }
+
+    assertThat(warnings(output))
+        .containsExactly(
+            "document refused, EMPTY",
+            "document refused, ISSUER_MISMATCH (issuer)",
+            "document refused, ENDPOINT_MISSING (token_endpoint)",
+            "document refused, ENDPOINT_MISSING (token_endpoint)",
+            "document refused, ENDPOINT_NOT_HTTP (jwks_uri)",
+            "document refused, ENDPOINT_NOT_HTTP (jwks_uri)",
+            "document refused, ENDPOINT_NOT_HTTP (jwks_uri)",
+            "document refused, ENDPOINT_PLAINTEXT (authorization_endpoint)");
+    assertThat(output.getAll()).doesNotContain(published).doesNotContain("other.example");
   }
 
   /** A read that failed is tried again after the retry interval, not after the kept interval. */
@@ -339,15 +407,28 @@ class IdentityDiscoveryTest {
   }
 
   private void publish(String issuer, String authorization, String token, String keys) {
-    document.set(
-        "{\"issuer\":\""
-            + issuer
-            + "\",\"authorization_endpoint\":\""
-            + authorization
-            + "\",\"token_endpoint\":\""
-            + token
-            + "\",\"jwks_uri\":\""
-            + keys
-            + "\"}");
+    document.set(document(issuer, authorization, token, keys));
+  }
+
+  private static String document(String issuer, String authorization, String token, String keys) {
+    return "{\"issuer\":\""
+        + issuer
+        + "\",\"authorization_endpoint\":\""
+        + authorization
+        + "\",\"token_endpoint\":\""
+        + token
+        + "\",\"jwks_uri\":\""
+        + keys
+        + "\"}";
+  }
+
+  /** What followed "Identity discovery failed: " in each warning this test's discovery logged. */
+  private static List<String> warnings(CapturedOutput output) {
+    return output
+        .getAll()
+        .lines()
+        .filter(line -> line.contains(WARNING))
+        .map(line -> line.substring(line.indexOf(WARNING) + WARNING.length()))
+        .toList();
   }
 }

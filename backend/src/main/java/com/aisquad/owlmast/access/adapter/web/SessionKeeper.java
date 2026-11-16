@@ -36,15 +36,17 @@ import reactor.core.publisher.Mono;
  * memory; its lifetime is the identity provider's:
  *
  * <ul>
- *   <li>on every request the tokens the backend holds are checked, and renewed with the refresh
- *       token once the access token is about to expire. A renewal the provider refuses means the
- *       provider's session is over (its lifetime passed, the person signed out elsewhere, an
- *       administrator ended it): the session ends here and the request is anonymous. Nothing is
+ *   <li>on every request but a sign-out the tokens the backend holds are checked, and renewed with
+ *       the refresh token once the access token is about to expire. A renewal the provider refuses
+ *       means the provider's session is over (its lifetime passed, the person signed out elsewhere,
+ *       an administrator ended it): the session ends here and the request is anonymous. Nothing is
  *       answered from an earlier state;
  *   <li>a provider that cannot be reached is not a refusal: the session is kept and the request is
  *       not served ({@link Standing#UNVERIFIABLE});
  *   <li>the provider's back-channel logout notice ends the named sessions at once;
- *   <li>sign-out ends the session here and asks the provider to end its own;
+ *   <li>sign-out ends the session here and asks the provider to end its own. It is the one request
+ *       whose tokens are not checked first: {@code SessionWebFilters.standing} does not ask for the
+ *       standing of a session that is about to end;
  *   <li>a session the store dropped (idle for {@link #MEMORY_BOUND}) is noticed by {@link #sweep}.
  * </ul>
  *

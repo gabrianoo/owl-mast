@@ -63,6 +63,8 @@ class SignInIT {
 
   private static final String WHO_AM_I = "/api/test-only/who-am-i";
   private static final String SHELL_SESSION = "frontend/src/state/session.tsx";
+  private static final String BACKEND_CREDENTIAL_VALIDATION =
+      "backend/src/main/java/com/aisquad/owlmast/access/adapter/web/CredentialValidation.java";
   private static final JsonMapper JSON = JsonMapper.builder().build();
 
   @LocalServerPort private int port;
@@ -267,7 +269,8 @@ class SignInIT {
    * PR #194 review, R2-3, through the whole security chain: Keycloak is running and stops
    * answering. A shell that starts now has no CSRF token; the session read gives it one in its 503,
    * and the sign-out sent with it ends the session here. R3-1: that 503 arrives before the shell
-   * gives up its session read.
+   * gives up its session read. R4-1: and not before the backend gave up the renewal, so the time
+   * measured is the slow path. R4-5: the sign-out does not wait for a renewal of its own.
    */
   @Test
   void whileKeycloakDoesNotAnswerTheSessionReadCarriesTheCsrfTokenAndSignOutEndsTheSession() {
@@ -289,8 +292,15 @@ class SignInIT {
       // PR #194 review, R3-1: the shell gives up a session read after its own limit. The 503 must
       // arrive before that, whatever the backend does around the renewal, or a shell that starts
       // now never learns that a session is kept and offers no sign-out.
+      // R4-1: and it must have gone through the renewal the backend gives up after its provider
+      // timeout. Without the lower bound a 503 that arrives at once (the provider refusing
+      // connections, a renewal that is skipped) would pass and measure nothing. The time is
+      // measured around the whole request, so it holds the backend's wait completely.
       assertThat(answeredAfter)
-          .as("the time the backend took to answer 503, against the shell's session read limit")
+          .as(
+              "the time the backend took to answer 503, between the time it gives the provider"
+                  + " and the shell's session read limit")
+          .isGreaterThanOrEqualTo(backendProviderTimeout())
           .isLessThan(shellSessionReadLimit());
       assertThat(read.headers().firstValue("Content-Type")).contains("application/problem+json");
       assertThat(read.headers().firstValue("Cache-Control")).contains("no-store");
@@ -308,10 +318,21 @@ class SignInIT {
 
       // Without the token the sign-out is refused; with the one from the 503 it ends the session.
       assertThat(browser.post("/api/session/sign-out", "").statusCode()).isEqualTo(403);
+      long signOutSent = System.nanoTime();
       HttpResponse<String> signedOut = browser.post("/api/session/sign-out", "", header, token);
+      Duration signedOutAfter = Duration.ofNanos(System.nanoTime() - signOutSent);
       assertThat(signedOut.statusCode()).isEqualTo(200);
       assertThat(json(signedOut).get("state").asString()).isEqualTo("signed-out");
       assertThat(json(signedOut).get("identityProvider").asString()).isEqualTo("unconfirmed");
+      // PR #194 review, R4-5: the sign-out waits for its own request to the provider's logout
+      // endpoint only (SessionKeeper.PROVIDER_LOGOUT_TIMEOUT, 5 s; the discovery document is
+      // still kept here), not for a renewal first. With the renewal it took the provider timeout
+      // and the logout wait together.
+      assertThat(signedOutAfter)
+          .as(
+              "the time the sign-out took: its logout wait alone, which is below the time the"
+                  + " backend gives a renewal")
+          .isLessThan(backendProviderTimeout());
       assertThat(browser.backendCookies()).isEmpty();
       // Nobody is signed in on this browser any more, which needs no identity provider to say.
       HttpResponse<String> after = browser.get("/api/session");
@@ -332,20 +353,38 @@ class SignInIT {
    * shell's source so that lowering it there fails here.
    */
   private static Duration shellSessionReadLimit() {
+    return Duration.ofMillis(
+        declared(SHELL_SESSION, "SESSION_READ_TIMEOUT_MS", "SESSION_READ_TIMEOUT_MS = ([0-9_]+);"));
+  }
+
+  /**
+   * How long the backend gives the identity provider for a renewal: {@code PROVIDER_TIMEOUT}, read
+   * from the backend's source because the constant is not visible outside its package.
+   */
+  private static Duration backendProviderTimeout() {
+    return Duration.ofSeconds(
+        declared(
+            BACKEND_CREDENTIAL_VALIDATION,
+            "PROVIDER_TIMEOUT",
+            "PROVIDER_TIMEOUT = Duration\\.ofSeconds\\(([0-9_]+)\\);"));
+  }
+
+  /** The number {@code pattern} captures in a source file of this repository. */
+  private static long declared(String file, String name, String pattern) {
     Path directory = Path.of("").toAbsolutePath();
-    while (directory != null && !Files.exists(directory.resolve(SHELL_SESSION))) {
+    while (directory != null && !Files.exists(directory.resolve(file))) {
       directory = directory.getParent();
     }
-    assertThat(directory).as("a parent directory that holds %s", SHELL_SESSION).isNotNull();
+    assertThat(directory).as("a parent directory that holds %s", file).isNotNull();
     String source;
     try {
-      source = Files.readString(directory.resolve(SHELL_SESSION));
+      source = Files.readString(directory.resolve(file));
     } catch (IOException unreadable) {
       throw new UncheckedIOException(unreadable);
     }
-    Matcher declared = Pattern.compile("SESSION_READ_TIMEOUT_MS = ([0-9_]+);").matcher(source);
-    assertThat(declared.find()).as("SESSION_READ_TIMEOUT_MS in %s", SHELL_SESSION).isTrue();
-    return Duration.ofMillis(Long.parseLong(declared.group(1).replace("_", "")));
+    Matcher found = Pattern.compile(pattern).matcher(source);
+    assertThat(found.find()).as("%s in %s", name, file).isTrue();
+    return Long.parseLong(found.group(1).replace("_", ""));
   }
 
   @Test
