@@ -275,7 +275,8 @@ been run on a cluster.
 | The bundled issuer changes from the cluster-local address to `<identity.keycloak.publicOrigin>/realms/<realm>`; `KC_HOSTNAME` changes with it and the Keycloak pod is replaced | Nothing more for the backend: it receives the new issuer and the cluster-local back-channel base in the same upgrade. Tokens issued before the upgrade carry the old issuer (chart 0.2.0 had no client, so the installation issued none to Owl Mast) |
 | The realm import now carries the client and the invitation-only settings, but Keycloak skips it for a realm that exists | Create the client in the existing realm by hand, or delete the realm and restart Keycloak ([Realm and client](#realm-and-client)). Check the realm's self-registration switch yourself: the import that would set it does not run |
 | `identity.realm=master` is refused with `identity.bundled=true` | Use a realm of its own for the people who sign in to Owl Mast; `master` is Keycloak's administration realm |
-| The application's route may not cover the host of `identity.keycloak.publicOrigin` or `identity.keycloak.adminOrigin` (`routing.ingress.host`, `routing.gateway.hostnames`, or `routing.gateway.allowAllListenerHostnames=true` beside the Keycloak Gateway route) | Route the application on hosts that leave Keycloak's out, and list the application's hostnames |
+| The application's route may not cover the host of `identity.keycloak.publicOrigin` or `identity.keycloak.adminOrigin` (`routing.ingress.host`, `routing.gateway.hostnames`, or `routing.gateway.allowAllListenerHostnames=true` beside the Keycloak Gateway route); a wildcard counts for every depth below it | Route the application on hosts that leave Keycloak's out, and list the application's hostnames |
+| `identity.keycloak.adminOrigin` may not be the application's origin or another port on its host (a loopback host excepted) | Give the admin console an address of its own, for example a port-forward |
 | A loopback `identity.keycloak.publicOrigin` is refused with `identity.keycloak.route.*.enabled=true` | Set the public origin the route serves, or disable the Keycloak route and port-forward |
 | `backend.replicas` greater than 1 is refused by the templates with the reason (was a schema maximum) | Keep 0 or 1 |
 | Every backend restart, rollout and upgrade signs everyone out (sessions are in the backend's memory) | Plan upgrades accordingly |
@@ -612,10 +613,22 @@ origin must be the one the browser really uses.
 The application's route never answers on a host of the bundled Keycloak: the host of
 `identity.keycloak.publicOrigin`, or of `identity.keycloak.adminOrigin` when it is set. Rendering fails naming
 both values when `routing.ingress.host` or an entry of `routing.gateway.hostnames` is that host or a wildcard
-over it (an Ingress wildcard covers one label, an HTTPRoute wildcard one or more), whether or not the chart
-renders a Keycloak route, because the application would then be served on Keycloak's origin for every path
-outside Keycloak's own, same-origin with Keycloak's session cookies. A loopback Keycloak host is exempt, since
-it is port-forwarded and no route receives it. An HTTPRoute that takes every listener hostname
+over it, whether or not the chart renders a Keycloak route, because the application would then be served on
+Keycloak's origin for every path outside Keycloak's own, same-origin with Keycloak's session cookies. A
+loopback Keycloak host is exempt, since it is port-forwarded and no route receives it.
+
+For this refusal a wildcard covers every depth below it, in an Ingress host as in an HTTPRoute hostname, so
+`routing.ingress.host=*.example` is refused beside a Keycloak host `id.owl-mast.example`. The Ingress API gives
+a wildcard exactly one label, but the chart cannot tell that the controller holds to it (an nginx `server_name`
+wildcard, for one, matches deeper names), and the refusal fails closed. Accepting `routing.publicOrigin` keeps
+the API's rule: below an Ingress wildcard host the application's host is exactly one label.
+
+`identity.keycloak.adminOrigin` is also kept off the application itself, whatever the routing (operator-owned
+routing included): the application's origin is refused, and so is another port on the application's host,
+because the administrators' Keycloak cookies and the session cookie would be sent to both. Only a loopback host
+may carry both on different ports.
+
+An HTTPRoute that takes every listener hostname
 (`routing.gateway.allowAllListenerHostnames=true`) is refused while
 `identity.keycloak.route.gateway.enabled=true`, whatever the two routes' `parentRefs`: list the application's
 hostnames instead. Without the Keycloak HTTPRoute that value still renders, because the chart cannot tell what
@@ -646,7 +659,9 @@ theme). The master realm (`/realms/master/`, where administrators sign in and ob
 console (`/admin`) are never routed, and `identity.realm=master` is refused at render with the reason, so the
 realm people sign in to is never the administrators'. A realm name is letters, digits, `_` and `-`, starting
 with a letter or digit; anything else (`master/`, a `.`, a `%`, a space) is refused at render, also with
-`--skip-schema-validation`, because the name is written as it is into the issuer and the routed path. With `networkPolicy.enabled=true` a route renders only when
+`--skip-schema-validation`, because the name is written as it is into the issuer and the routed path. For the
+same reason the value must be text: a number or a boolean (`realm: 7`) is refused, so quote it (`realm: "7"`,
+or `--set-string identity.realm=7`). With `networkPolicy.enabled=true` a route renders only when
 `networkPolicy.keycloak.extraFrom` names the proxy (a `matchLabels` entry, a `matchExpressions` term with
 operator `In`, or a narrow `ipBlock`; the rule of `identity.keycloak.proxyHeaders`), because without an entry the
 policy admits only the backend and the route would reach nothing. TLS for `https` origins is terminated by the
@@ -657,7 +672,9 @@ run against a rendered Keycloak route.
 **Administering the bundled Keycloak.** Because the admin console is not routed, administrators use `kcadm.sh`
 inside the pod, or set `identity.keycloak.adminOrigin` (rendered as `KC_HOSTNAME_ADMIN`) to the address they open
 the console on, for example `http://localhost:8080` with `kubectl port-forward svc/<fullname>-keycloak 8080`.
-`adminOrigin` was rendered and not exercised.
+It is never the application's origin or another port on the application's host (a loopback host excepted), and
+the application's route may not cover its host, as described under the public origins above. `adminOrigin` was
+rendered and not exercised.
 
 ### Realm and client
 

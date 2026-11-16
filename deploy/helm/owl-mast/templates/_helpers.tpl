@@ -274,13 +274,18 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- end -}}
 {{- include "owl-mast.validateSslMode" (list "identity.keycloak.database.external" $v.identity.keycloak.database.external) -}}
 {{- end -}}
-{{- if not $v.identity.realm -}}
+{{- if or (kindIs "invalid" $v.identity.realm) (and (kindIs "string" $v.identity.realm) (not $v.identity.realm)) -}}
 {{- fail "identity.realm is required" -}}
 {{- end -}}
 {{- /* the schema's pattern, repeated so that --skip-schema-validation cannot open it: the realm is written into the */ -}}
 {{- /* issuer, the back-channel address and the routed path /realms/<realm>/, where "master/" or "a/../master" would */ -}}
 {{- /* name the master realm past the refusal below */ -}}
-{{- $realm := $v.identity.realm | toString -}}
+{{- /* only text is a realm name: every consumer formats the value as it is, so a number would be written as */ -}}
+{{- /* %!s(int64=7) into the issuer and the routed path while its string form passed the checks below */ -}}
+{{- if not (kindIs "string" $v.identity.realm) -}}
+{{- fail (printf "identity.realm %v is not text (its kind is %s): a realm name is a string. Quote the value in the values file, or pass it with --set-string. The realm is written as it is into the issuer and into the routed path /realms/<identity.realm>/" $v.identity.realm (kindOf $v.identity.realm)) -}}
+{{- end -}}
+{{- $realm := $v.identity.realm -}}
 {{- if not (regexMatch "^[a-zA-Z0-9][a-zA-Z0-9_-]*$" $realm) -}}
 {{- fail (printf "identity.realm %q is not a realm name: letters, digits, '_' and '-', starting with a letter or digit. The realm is written as it is into the issuer and into the routed path /realms/<identity.realm>/" $realm) -}}
 {{- end -}}
@@ -379,6 +384,17 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- end -}}
 {{- with (include "owl-mast.keycloak.adminOrigin" .) -}}
 {{- include "owl-mast.validateOrigin" (list "identity.keycloak.adminOrigin" . "the address administrators open the Keycloak admin console on") -}}
+{{- /* the admin console signs administrators in with the master realm's cookies, and cookies are scoped by host: it */ -}}
+{{- /* is kept off the application's origin and host as the public origin is. These run without a rendered route, so */ -}}
+{{- /* operator-owned routing is covered. A loopback host may carry both on different ports (port-forwards), with or */ -}}
+{{- /* without a Keycloak route: that route serves the public origin's host and never /admin. */ -}}
+{{- if eq . $appOrigin -}}
+{{- fail (printf "identity.keycloak.adminOrigin and routing.publicOrigin are both %q: the admin console is reached on an address of its own, never on the application's origin" .) -}}
+{{- end -}}
+{{- $adminHost := include "owl-mast.originHost" . -}}
+{{- if and (eq $adminHost (include "owl-mast.originHost" $appOrigin)) (not (regexMatch "^(localhost|127\\.0\\.0\\.1)$" $adminHost)) -}}
+{{- fail (printf "identity.keycloak.adminOrigin %q and routing.publicOrigin %q name the same host %q: the admin console needs a host that is not the application's, not another port on it. Cookies are scoped by host, so the administrators' Keycloak cookies and the application's session cookie would be sent to both. Only a loopback host (localhost, 127.0.0.1) may carry both on different ports" . $appOrigin $adminHost) -}}
+{{- end -}}
 {{- end -}}
 {{- $kcGateway := eq (include "owl-mast.keycloak.route.gateway.enabled" .) "true" -}}
 {{- $kcIngress := eq (include "owl-mast.keycloak.route.ingress.enabled" .) "true" -}}
@@ -489,7 +505,9 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- /* OM-02.01: the application's route must not answer on a host of the bundled Keycloak: the public origin's, or the */ -}}
 {{- /* admin console's. It would serve the application on that origin for every path Keycloak's route does not take, */ -}}
 {{- /* same-origin with Keycloak's session cookies. A loopback host is reached by port-forward and never routed */ -}}
-{{- /* (refused above for the public origin), so no route receives it. */ -}}
+{{- /* (refused above for the public origin), so no route receives it. A wildcard is read as covering every depth */ -}}
+{{- /* below it for both mechanisms: the Ingress API says one label, but the chart cannot tell that the controller */ -}}
+{{- /* holds to it (an nginx server_name wildcard, for one, matches deeper names), and this refusal fails closed. */ -}}
 {{- if $v.identity.bundled -}}
 {{- $consequence := "would answer on Keycloak's host as well: the application would be served on Keycloak's origin for every path outside Keycloak's own, where its pages run same-origin with Keycloak's session cookies. Route the application on hosts that leave Keycloak's out, or give Keycloak a host outside them" -}}
 {{- range (list (list "identity.keycloak.publicOrigin" (include "owl-mast.keycloak.publicOrigin" .)) (list "identity.keycloak.adminOrigin" (include "owl-mast.keycloak.adminOrigin" .))) -}}
@@ -497,7 +515,7 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- $idOrigin := index . 1 -}}
 {{- $idHost := include "owl-mast.originHost" $idOrigin -}}
 {{- if and $idOrigin (not (regexMatch "^(localhost|127\\.0\\.0\\.1)$" $idHost)) -}}
-{{- if and $v.routing.ingress.enabled (eq (include "owl-mast.routeCoversHost" (list $v.routing.ingress.host $idHost false)) "true") -}}
+{{- if and $v.routing.ingress.enabled (eq (include "owl-mast.routeCoversHost" (list $v.routing.ingress.host $idHost true)) "true") -}}
 {{- fail (printf "routing.ingress.host %q covers the host %q of %s %q: the application's Ingress %s" ($v.routing.ingress.host | toString) $idHost $idPath $idOrigin $consequence) -}}
 {{- end -}}
 {{- if $v.routing.gateway.enabled -}}
@@ -520,7 +538,8 @@ Rendering stops with the offending value named; nothing is installed partially.
 
 {{/*
 Whether a routed host (an Ingress host or an HTTPRoute hostname) answers for a host: the same name, or a
-wildcard over it. An Ingress wildcard covers exactly one label; an HTTPRoute wildcard covers one or more.
+wildcard over it. By the APIs an Ingress wildcard covers exactly one label and an HTTPRoute wildcard one or
+more; a caller that refuses on coverage passes true for both, because it cannot rely on the controller's reading.
 routeCoversHost (list "<routed host>" "<host>" <true when the wildcard covers more than one label>) renders
 "true" or nothing.
 */}}
