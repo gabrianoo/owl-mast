@@ -462,8 +462,8 @@ in two cases:
   deletion and starts a replacement on another node, if the cluster has one. The kubelet on the cut-off node
   does not learn of the deletion, so the old backend is not asked to stop and is not killed. It keeps
   claiming and running durable work next to its replacement until the node reaches the API server again,
-  which can take minutes or longer; then the kubelet stops it. This is how Kubernetes handles an unreachable
-  node (read from its documentation, the pages "Nodes" and "Taints and Tolerations"); it was not run here.
+  which can take minutes or longer; then the kubelet stops it. The multi-node fixture below exercised this
+  replacement behavior and separately observed a Recreate rollout waiting until connectivity returned.
 
 In both cases the two backends are the same build as long as the image reference is immutable (a digest, see
 [Pins](#pins)); with a tag that was pushed again the replacement can be another build, which is not covered

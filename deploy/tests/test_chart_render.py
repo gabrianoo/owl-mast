@@ -992,11 +992,16 @@ class ReviewCycle1Test(unittest.TestCase):
                        "release that was installed client-side", "so the server may accept it; either way it is not supported",
                        "was **not run** for a 0.1.0 installation",
                        "uses the `Recreate` strategy: a rollout stops the old pod before it starts the new one",
-                       # 189/R10-1: the overlap is not only a shutdown window, and the cut-off case is stated as read, not run
+                       # 189/R20-1: distinguish the executed fixture partition from full chart qualification
                        "**A node that is cut off from the API server but still reaches the database.**",
-                       "the chart sets no toleration and has no value for one", "No node was cut off from the API server.",
+                       "the chart sets no toleration and has no value for one",
+                       "**Multi-node worker/API partition, 2026-11-16 (#189).**",
+                       "No successor was created during the partition", "the rollout completed and its successor drained the queue",
+                       "Neither is the production Helm chart", "not natural lease expiry caused by the API partition",
                        "**not run** by the script (`frontend.enabled=false`)"):
             self.assertIn(phrase, doc, phrase)
+        self.assertNotIn("No node was cut off from the API server.", doc)
+        self.assertNotIn('"Taints and Tolerations"); it was not run here.', doc)
         # #162: the upgrade from chart 0.1.0 was run (and refused), and the guide no longer describes a backend that rolls without surge
         for phrase in ("**not run** on a cluster (render support only)", "has still not been run on a cluster",
                        "its Deployment rolls without surge", "Stopping the backend before an upgrade",
