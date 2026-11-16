@@ -13,6 +13,11 @@ fullnameOverride: ""
 commonLabels: {}
 
 backend:
+  # Opt in for replacements that must run the same image content. Old values remain valid.
+  requireImageDigest: false
+  # Flyway advisory-lock retries (one second apart, per migration); never unlimited.
+  # This is not a bound on migration SQL or total startup. Size startup probes separately.
+  migrationLockRetryCount: 50
   image:
     repository: owl-mast/backend
     tag: "0.1.0"

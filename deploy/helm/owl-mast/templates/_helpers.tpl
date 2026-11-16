@@ -150,6 +150,17 @@ Fail-closed validation of optional-dependency values and existing-secret referen
 Rendering stops with the offending value named; nothing is installed partially.
 */}}
 {{- define "owl-mast.validate" -}}
+{{- $requiredDigest := dig "requireImageDigest" false .Values.backend -}}
+{{- if not (kindIs "bool" $requiredDigest) -}}
+{{- fail "backend.requireImageDigest must be a boolean" -}}
+{{- end -}}
+{{- if and $requiredDigest (not (regexMatch "^sha256:[a-f0-9]{64}$" (default "" .Values.backend.image.digest))) -}}
+{{- fail "backend.requireImageDigest requires backend.image.digest (sha256 with 64 lowercase hex digits)" -}}
+{{- end -}}
+{{- $retry := dig "migrationLockRetryCount" 50 .Values.backend -}}
+{{- if not (regexMatch "^(0|[1-9][0-9]?|1[01][0-9]|120)$" (toString $retry)) -}}
+{{- fail "backend.migrationLockRetryCount must be an integer from 0 to 120" -}}
+{{- end -}}
 {{- $v := .Values -}}
 {{- if and (not $v.backend.image.tag) (not $v.backend.image.digest) -}}
 {{- fail "backend.image.tag or backend.image.digest is required: without either the image reference renders as \"<repository>:\" and the pod fails at pull time" -}}
