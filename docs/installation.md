@@ -276,7 +276,8 @@ been run on a cluster.
 | The realm import now carries the client and the invitation-only settings, but Keycloak skips it for a realm that exists | Create the client in the existing realm by hand, or delete the realm and restart Keycloak ([Realm and client](#realm-and-client)). Check the realm's self-registration switch yourself: the import that would set it does not run |
 | `identity.realm=master` is refused with `identity.bundled=true` | Use a realm of its own for the people who sign in to Owl Mast; `master` is Keycloak's administration realm |
 | The application's route may not cover the host of `identity.keycloak.publicOrigin` or `identity.keycloak.adminOrigin` (`routing.ingress.host`, `routing.gateway.hostnames`, or `routing.gateway.allowAllListenerHostnames=true` beside the Keycloak Gateway route); a wildcard counts for every depth below it | Route the application on hosts that leave Keycloak's out, and list the application's hostnames |
-| `identity.keycloak.adminOrigin` may not be the application's origin or another port on its host (a loopback host excepted) | Give the admin console an address of its own, for example a port-forward |
+| `identity.keycloak.adminOrigin` may not be the application's origin or another port on its host (a loopback host excepted; see the next row) | Give the admin console an address of its own, for example a port-forward |
+| `identity.keycloak.publicOrigin` or `identity.keycloak.adminOrigin` names the same port of the loopback host as `routing.publicOrigin` | Give it a port of its own: another scheme, or `127.0.0.1` for `localhost`, is the same local port, which forwards to one Service |
 | A loopback `identity.keycloak.publicOrigin` is refused with `identity.keycloak.route.*.enabled=true` | Set the public origin the route serves, or disable the Keycloak route and port-forward |
 | `backend.replicas` greater than 1 is refused by the templates with the reason (was a schema maximum) | Keep 0 or 1 |
 | Every backend restart, rollout and upgrade signs everyone out (sessions are in the backend's memory) | Plan upgrades accordingly |
@@ -599,7 +600,10 @@ strings. The two origins must differ, and so must their hosts: another port on t
 an origin of Keycloak's own, because Gateway and Ingress routes match the host without the port and cookies are
 scoped by host. The one exception is a loopback host (`localhost`, `127.0.0.1`) while the chart renders no
 Keycloak route, as in the local qualification, where both are port-forwards; the browser then sends the
-session cookie and Keycloak's cookies to both ports. A loopback Keycloak origin is never routed: with
+session cookie and Keycloak's cookies to both ports. The ports must really differ: a loopback origin on the
+application's port is refused whatever its scheme (`https://localhost:8080` beside `http://localhost:8080`,
+`https://localhost:80` beside `http://localhost`) and whichever of `localhost` and `127.0.0.1` each one names,
+because one local port forwards to one Service. A loopback Keycloak origin is never routed: with
 `identity.keycloak.route.*.enabled=true` it is refused whatever the application's host, because a route for
 `localhost` reaches Keycloak only from the machine that forwards the port. Rendering fails naming the value when one is missing or malformed. The
 chart does not derive `routing.publicOrigin` from `routing.ingress.host` or `routing.gateway.hostnames`, but it
@@ -626,7 +630,8 @@ the API's rule: below an Ingress wildcard host the application's host is exactly
 `identity.keycloak.adminOrigin` is also kept off the application itself, whatever the routing (operator-owned
 routing included): the application's origin is refused, and so is another port on the application's host,
 because the administrators' Keycloak cookies and the session cookie would be sent to both. Only a loopback host
-may carry both on different ports.
+may carry both on different ports, and there the port must differ whatever the scheme, as for the public
+origin: `https://localhost:8080` is refused beside `http://localhost:8080`.
 
 An HTTPRoute that takes every listener hostname
 (`routing.gateway.allowAllListenerHostnames=true`) is refused while

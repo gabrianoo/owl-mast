@@ -137,6 +137,21 @@ these keys) reaches the validation below, which names the missing value, instead
 {{- end -}}
 
 {{/*
+Where an origin that owl-mast.validateOrigin accepted listens: its host and the port it names, or its scheme's
+default port (443 for https, 80 for http). The scheme is left out, because one port carries one listener
+whatever the scheme. localhost and 127.0.0.1 are one machine, so both are written "(loopback)", which no host
+can be. Two origins with the same result cannot be two services. Nothing else is folded: a name under
+.localhost can be told apart by a local proxy that routes by host, and another 127.x.x.x address can be bound
+apart, so they stay hosts of their own.
+*/}}
+{{- define "owl-mast.originSocket" -}}
+{{- $host := include "owl-mast.originHost" . -}}
+{{- if regexMatch "^(localhost|127\\.0\\.0\\.1)$" $host -}}{{- $host = "(loopback)" -}}{{- end -}}
+{{- $port := regexFind "[0-9]+$" (regexFind ":[0-9]+$" .) | default (ternary "443" "80" (hasPrefix "https://" .)) -}}
+{{- printf "%s:%s" $host $port -}}
+{{- end -}}
+
+{{/*
 Issuer the backend trusts, which is the issuer tokens carry: for the bundled Keycloak its PUBLIC origin
 (identity.keycloak.publicOrigin, also KC_HOSTNAME) followed by the realm, for an external issuer the supplied
 value as it is. The browser reaches Keycloak on that origin; the backend reaches the bundled Keycloak through
@@ -382,6 +397,11 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- if and $idRouted $idLoopback -}}
 {{- fail (printf "identity.keycloak.route.*.enabled=true cannot route the loopback identity.keycloak.publicOrigin %q: a loopback host is reached by port-forward, never through a proxy, so people could sign in only from the machine that forwards the port. Set identity.keycloak.publicOrigin to the public origin the route serves, or disable the Keycloak route" $idOrigin) -}}
 {{- end -}}
+{{- /* what is left on the application's host and port is an unrouted loopback pair that differs in the scheme alone, */ -}}
+{{- /* or in the spelling of the loopback host: one local port forwards to one Service, whatever the scheme */ -}}
+{{- if eq (include "owl-mast.originSocket" $idOrigin) (include "owl-mast.originSocket" $appOrigin) -}}
+{{- fail (printf "identity.keycloak.publicOrigin %q and routing.publicOrigin %q name the same port %s of the loopback host: another scheme is not another address, and localhost and 127.0.0.1 are the same machine, so one port-forward would have to carry both Keycloak and the application. Give Keycloak a port of its own" $idOrigin $appOrigin (regexFind "[0-9]+$" (include "owl-mast.originSocket" $idOrigin))) -}}
+{{- end -}}
 {{- with (include "owl-mast.keycloak.adminOrigin" .) -}}
 {{- include "owl-mast.validateOrigin" (list "identity.keycloak.adminOrigin" . "the address administrators open the Keycloak admin console on") -}}
 {{- /* the admin console signs administrators in with the master realm's cookies, and cookies are scoped by host: it */ -}}
@@ -394,6 +414,10 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- $adminHost := include "owl-mast.originHost" . -}}
 {{- if and (eq $adminHost (include "owl-mast.originHost" $appOrigin)) (not (regexMatch "^(localhost|127\\.0\\.0\\.1)$" $adminHost)) -}}
 {{- fail (printf "identity.keycloak.adminOrigin %q and routing.publicOrigin %q name the same host %q: the admin console needs a host that is not the application's, not another port on it. Cookies are scoped by host, so the administrators' Keycloak cookies and the application's session cookie would be sent to both. Only a loopback host (localhost, 127.0.0.1) may carry both on different ports" . $appOrigin $adminHost) -}}
+{{- end -}}
+{{- /* as for the public origin: a loopback pair on one port is one listener, whatever the scheme or the spelling */ -}}
+{{- if eq (include "owl-mast.originSocket" .) (include "owl-mast.originSocket" $appOrigin) -}}
+{{- fail (printf "identity.keycloak.adminOrigin %q and routing.publicOrigin %q name the same port %s of the loopback host: another scheme is not another address, and localhost and 127.0.0.1 are the same machine, so one port-forward would have to carry both the admin console and the application. Give the admin console a port of its own" . $appOrigin (regexFind "[0-9]+$" (include "owl-mast.originSocket" .))) -}}
 {{- end -}}
 {{- end -}}
 {{- $kcGateway := eq (include "owl-mast.keycloak.route.gateway.enabled" .) "true" -}}
