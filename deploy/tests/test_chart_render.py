@@ -2062,22 +2062,24 @@ class SignInWiringTest(unittest.TestCase):
 
     def test_keycloak_needs_a_host_of_its_own_not_another_port_on_the_applications(self):
         """PR #194 review, R4-4: whole origins were compared, so the application's host with another port passed. Routes match the host
-        without the port and cookies are scoped by host, so both routes claimed one hostname."""
+        without the port and cookies are scoped by host, so both routes claimed one hostname. R5-1: the loopback pair was tried behind
+        the Ingress route only, so the Gateway half of the route condition could be dropped without a failing test."""
         same_host = "name the same host"
         for app, keycloak in (("https://owl-mast.example", "https://owl-mast.example:8443"), ("https://owl-mast.example:8443", "https://owl-mast.example"),
                               ("https://owl-mast.example:8443", "https://owl-mast.example:9443"), ("https://10.0.0.5", "https://10.0.0.5:8443")):
             pair = sets(f"routing.publicOrigin={app}", f"identity.keycloak.publicOrigin={keycloak}")
             self.assertIn(same_host, refused(*pair), (app, keycloak))
             self.assertIn(same_host, refused("--skip-schema-validation", *pair), (app, keycloak))
-        # with either Keycloak route, and with the application route
+        # with either Keycloak route
         pair = sets("routing.publicOrigin=https://owl-mast.example", "identity.keycloak.publicOrigin=https://owl-mast.example:8443")
         self.assertIn(same_host, refused(*GATEWAY_API, *sets(*KEYCLOAK_GATEWAY, *KEYCLOAK_PROXY), *pair))
         self.assertIn(same_host, refused(*sets(*KEYCLOAK_INGRESS, *KEYCLOAK_PROXY), *pair))
         # a loopback host may carry both on different ports (the local qualification's port-forwards), but not behind a Keycloak route
-        loopback = sets("routing.publicOrigin=http://localhost:8080", "identity.keycloak.publicOrigin=http://localhost:8081")
-        render(*loopback)
-        render(*sets("routing.publicOrigin=http://127.0.0.1:8080", "identity.keycloak.publicOrigin=http://127.0.0.1:8081"))
-        self.assertIn(same_host, refused(*sets(*KEYCLOAK_INGRESS, *KEYCLOAK_PROXY), *loopback))
+        for host in ("localhost", "127.0.0.1"):
+            loopback = sets(f"routing.publicOrigin=http://{host}:8080", f"identity.keycloak.publicOrigin=http://{host}:8081")
+            render(*loopback)
+            self.assertIn(same_host, refused(*GATEWAY_API, *sets(*KEYCLOAK_GATEWAY, *KEYCLOAK_PROXY), *loopback), host)
+            self.assertIn(same_host, refused(*sets(*KEYCLOAK_INGRESS, *KEYCLOAK_PROXY), *loopback), host)
         # different hosts on one port, and a host that only starts with the other, are separate hosts
         render(*sets("routing.publicOrigin=https://owl-mast.example:8443", "identity.keycloak.publicOrigin=https://id.owl-mast.example:8443"))
         render(*sets("routing.publicOrigin=https://owl-mast.example", "identity.keycloak.publicOrigin=https://owl-mast.example.org"))
