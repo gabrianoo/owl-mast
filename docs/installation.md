@@ -496,8 +496,10 @@ four things:
 
 These four things are about the database, not about how the pod was replaced, so they are what applies in
 both cases. The cases differ in how long the two backends run together. For a pod that is shutting down it
-is that shutdown. For a cut-off node it is the whole time the node is cut off, and both backends are fully
-running: that is the state "One queue" was tested in, for seconds and not for that long. "A late write" and
+is that shutdown. For a cut-off node, a ReplicaSet can replace an evicted pod while its old process continues running.
+The overlap can last until connectivity returns; a Recreate rollout can instead wait on the old terminating
+pod. The multi-node fixture below records both behaviors. The original "One queue" test exercised
+concurrent processing for seconds. "A late write" and
 its at-least-once delivery can then occur at any moment of that time. A cut-off does not make them more
 likely for one item (the case still needs a backend that stalled past its lease), but a handler has to
 deduplicate its effect outside the database by the idempotency key for as long as the cut-off lasts.
@@ -568,13 +570,59 @@ routing/identity, or chart rollout behavior. Probe script and raw evidence are r
 coordinator's ignored `.bmad-work/pr189-cluster-*` files. An initial probe mistakenly selected the already
 terminating pod for eviction; it is excluded from this eviction claim and was rerun on the fresh namespace.
 
+**Multi-node worker/API partition, 2026-11-16 (#189).** The repeatable
+[`qualify-worker-partition.py`](../scripts/qualify-worker-partition.py) harness passed on a separate
+three-node Kind cluster, `owl-pr189-partition-20261116d`, Kubernetes 1.36.4. See the
+[build and run instructions](../scripts/partition-fixture/README.md). The existing single-node cluster and
+its retained fixtures were untouched. Two fresh namespaces ran the real application with synthetic
+handlers and stub identity against their own PostgreSQL on the control-plane node. The test image was
+`owl-mast/partition-fixture:20261116c`, local image ID
+`sha256:a245dfd308129be7e0127d282ba2476436bc78d66663f7c6f84baa6de9480247`.
+
+Four tagged OUTPUT/FORWARD rules inside only the disposable worker container blocked TCP 6443 to
+both IPv4 and IPv6 control-plane endpoints for 361.67 seconds. Both TCP probes timed out; Kubernetes
+added `node.kubernetes.io/unreachable` with both NoSchedule and NoExecute effects at 11:40:02 UTC.
+Both pods carried the actual API-injected 300-second NoExecute tolerations for `not-ready` and
+`unreachable`. The old node lease stopped renewing. Containerd inspection plus recent committed,
+instance-specific DB heartbeats/effects established that both old backends remained alive and
+DB-connected; an open-session snapshot alone is insufficient because these connections are short-lived.
+
+- **Partition and replacement:** a standalone ReplicaSet (the controller used by Deployments) created
+  its replacement on the healthy second worker 349.49 seconds into the fault, while the old container
+  was still running on the unreachable worker. The successor completed the other items and left the
+  old worker's still-live lease alone. All 67 items ultimately succeeded, with 64 receiver effects,
+  65 deliveries and three audit events.
+- **Fencing diagnostic during that overlap:** the fixture used a 20-minute lease so the deliberately
+  waiting handler survived the default eviction interval. The probe explicitly set that one lease into
+  the past, then observed the replacement complete on attempt 2 and the old handler deliver late.
+  Its stale completion write was rejected; the replacement's terminal row remained unchanged for
+  three seconds, with no lease token. Two deliveries of the held item produced one durable receiver
+  receipt. This is controlled lease loss, **not natural lease expiry caused by the API partition**;
+  the SIGSTOP JVM test above covers actual elapsed lease expiry.
+- **Recreate rollout during partition:** at 11:40:03 UTC, with work in flight, the probe changed a
+  one-replica Recreate Deployment's pod-template annotation. The old pod became terminating but its
+  container continued committing effects. No successor was created during the partition; 384 items
+  remained at the final partition observation. After the exact rules were removed and both API
+  endpoints were reachable again, the rollout completed and its successor drained the queue. All
+  1,807 items succeeded, with 1,804 receiver effects/deliveries and three audit events. This observed
+  rollout blockage and recovery; it does not establish zero downtime or client request availability.
+
+The replacement fixture changes only its ReplicaSet template to select the successor's normal handler;
+it has no parent Deployment to initiate a rollout. The rollout fixture independently exercises Recreate.
+Neither is the production Helm chart, and the annotation change runs the same image, not a schema or
+version upgrade. Rules were verified absent, workers scaled to zero, and all cluster/database resources
+retained. The harness starts no background proxy or watcher. Raw evidence is private under the PR
+worktree's `.bmad-work/partition-20261116d/`; source hashes and the fixture build are under
+`partition-20261116c/image/`. Three preliminary runs are excluded: IPv4-only blocking allowed an IPv6
+reconnection; then two DB observation checks incorrectly required long-lived sessions. Each restored
+its owned rules and stopped its workers. Those clusters are also retained pending cleanup approval.
+
 Remaining qualification limits:
 
-- Process tests use two JVMs on Testcontainers. Cluster fixture evidence is recorded separately below;
-  it does not turn these tests into a production chart rollout qualification.
-- No node was cut off from the API server. The available Kind cluster has one node. No prolonged partition with
-  a replacement on another node, or rollout during that partition is qualified. Isolating this cluster's
-  only control-plane node would also affect unrelated retained fixtures. These remain unaccepted gaps.
+- Process tests use two JVMs on Testcontainers. The cluster fixtures above qualify the described
+  worker-to-API partition and controller behaviors, not the full production chart, routing or identity.
+- A six-minute partition is not a long-duration soak. Other network failure shapes, simultaneous
+  database loss, control-plane failover and node-pressure eviction are not qualified by this run.
 - Two different backend builds sharing one schema are not tested. Use the digest guard for same-content
   replacement; it does not establish compatibility across an intentional image change.
 

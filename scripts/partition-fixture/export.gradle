@@ -1,0 +1,11 @@
+// Export to a new run directory; never reuse or clean an earlier qualification artifact.
+gradle.projectsEvaluated {
+    def backend = gradle.rootProject.findProject(':backend')
+    if (backend == null) return
+    backend.tasks.register('exportPartitionFixture', Copy) {
+        dependsOn backend.tasks.named('integrationTestClasses')
+        from backend.sourceSets.integrationTest.runtimeClasspath
+        into new File(gradle.startParameter.projectProperties['fixtureOutput'], 'classes')
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    }
+}

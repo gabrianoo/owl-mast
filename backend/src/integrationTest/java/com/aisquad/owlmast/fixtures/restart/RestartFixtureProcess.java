@@ -229,7 +229,12 @@ public final class RestartFixtureProcess {
                 ? Mono.fromFuture(seeded)
                     .then(
                         Mono.defer(() ->
-                            completedByAnotherProcess(context.getBean(DatabaseClient.class), item)))
+                            completedByAnotherProcess(
+                                context.getBean(DatabaseClient.class),
+                                item,
+                                context
+                                    .getEnvironment()
+                                    .getProperty("owlmast.jobs.instance-id", "unnamed"))))
                     .then(Mono.defer(() -> effect.apply(item)))
                 : effect.apply(item);
       }
@@ -291,9 +296,15 @@ public final class RestartFixtureProcess {
   }
 
   /** Completes once the item is {@code SUCCEEDED}, which only another process can have written. */
-  private static Mono<Void> completedByAnotherProcess(DatabaseClient database, WorkItem item) {
+  private static Mono<Void> completedByAnotherProcess(
+      DatabaseClient database, WorkItem item, String instance) {
     return database
-        .sql("select 1 from jobs.work_item where id = :id and status = 'SUCCEEDED'")
+        .sql(
+            "with heartbeat as (insert into fixture_worker_heartbeat(instance, observed_at)"
+                + " values (:instance, clock_timestamp()) on conflict(instance) do update"
+                + " set observed_at=excluded.observed_at returning 1)"
+                + " select 1 from jobs.work_item where id = :id and status = 'SUCCEEDED'")
+        .bind("instance", instance)
         .bind("id", item.id())
         .fetch()
         .first()
@@ -305,6 +316,14 @@ public final class RestartFixtureProcess {
 
   private static void seed(NotesFixture notes, DatabaseClient database, int extraFollowUps) {
     notes.ensureTable().block();
+    // Polling opens short-lived connections; this fixture-only heartbeat proves DB activity
+    // during a node/API partition without relying on a lucky pg_stat_activity snapshot.
+    database
+        .sql(
+            "create table if not exists fixture_worker_heartbeat"
+                + " (instance text primary key, observed_at timestamptz not null)")
+        .then()
+        .block();
     database
         .sql(
             "create table if not exists "
