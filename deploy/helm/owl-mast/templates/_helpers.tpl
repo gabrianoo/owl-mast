@@ -393,7 +393,14 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- if and $sameHost (or $idRouted (not $idLoopback)) -}}
 {{- fail (printf "identity.keycloak.publicOrigin %q and routing.publicOrigin %q name the same host %q: Keycloak needs a host of its own, not another port on the application's. Gateway and Ingress routes match the host without the port, so one hostname cannot keep Keycloak's paths apart from the application's, and cookies are scoped by host, so the session cookie and Keycloak's cookies would be sent to both. Only a loopback host (localhost, 127.0.0.1) may carry both on different ports, and only while the chart renders no Keycloak route" $idOrigin $appOrigin (include "owl-mast.originHost" $idOrigin)) -}}
 {{- end -}}
-{{- /* a loopback host is the machine the browser runs on: a route for it reaches Keycloak from nowhere else */ -}}
+{{- /* a loopback host is the machine the browser runs on. Beside an application that other machines open, every */ -}}
+{{- /* browser would be sent to sign in on itself, and a loopback http origin would switch on the plaintext issuer */ -}}
+{{- /* (OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER) for a public installation. No route is needed for that, so this runs */ -}}
+{{- /* with or without one, and before the route refusal, whose advice to disable the route would lead here. */ -}}
+{{- if and $idLoopback (not (regexMatch "^(localhost|127\\.0\\.0\\.1)$" (include "owl-mast.originHost" $appOrigin))) -}}
+{{- fail (printf "identity.keycloak.publicOrigin %q is a loopback origin, but routing.publicOrigin %q is not: every browser that opens the application would be sent to sign in on its own machine, so people could sign in only from the machine that forwards the Keycloak port. A loopback Keycloak is only for an application that is port-forwarded too (routing.publicOrigin on localhost or 127.0.0.1). Set identity.keycloak.publicOrigin to the public origin browsers reach Keycloak on" $idOrigin $appOrigin) -}}
+{{- end -}}
+{{- /* with a loopback application as well, a route for the loopback host still reaches Keycloak from nowhere else */ -}}
 {{- if and $idRouted $idLoopback -}}
 {{- fail (printf "identity.keycloak.route.*.enabled=true cannot route the loopback identity.keycloak.publicOrigin %q: a loopback host is reached by port-forward, never through a proxy, so people could sign in only from the machine that forwards the port. Set identity.keycloak.publicOrigin to the public origin the route serves, or disable the Keycloak route" $idOrigin) -}}
 {{- end -}}
@@ -418,6 +425,12 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- /* as for the public origin: a loopback pair on one port is one listener, whatever the scheme or the spelling */ -}}
 {{- if eq (include "owl-mast.originSocket" .) (include "owl-mast.originSocket" $appOrigin) -}}
 {{- fail (printf "identity.keycloak.adminOrigin %q and routing.publicOrigin %q name the same port %s of the loopback host: another scheme is not another address, and localhost and 127.0.0.1 are the same machine, so one port-forward would have to carry both the admin console and the application. Give the admin console a port of its own" . $appOrigin (regexFind "[0-9]+$" (include "owl-mast.originSocket" .))) -}}
+{{- end -}}
+{{- /* on Keycloak's own port the console is Keycloak, so sharing the port is fine (the equal value, or the other */ -}}
+{{- /* spelling of loopback, is the same port-forward). Another scheme there is not: one port takes one scheme, so */ -}}
+{{- /* one of the two addresses would name a listener that cannot answer it. */ -}}
+{{- if and (eq (include "owl-mast.originSocket" .) (include "owl-mast.originSocket" $idOrigin)) (ne (hasPrefix "https://" .) (hasPrefix "https://" $idOrigin)) -}}
+{{- fail (printf "identity.keycloak.adminOrigin %q and identity.keycloak.publicOrigin %q name the same port %s of the loopback host under different schemes: one port takes one scheme, and localhost and 127.0.0.1 are the same machine, so one of the two addresses would name a listener that cannot answer it. Give identity.keycloak.adminOrigin the scheme of identity.keycloak.publicOrigin, or a port of its own" . $idOrigin (regexFind "[0-9]+$" (include "owl-mast.originSocket" .))) -}}
 {{- end -}}
 {{- end -}}
 {{- $kcGateway := eq (include "owl-mast.keycloak.route.gateway.enabled" .) "true" -}}

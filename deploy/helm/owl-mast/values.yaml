@@ -258,7 +258,10 @@ identity:
     # routing.publicOrigin (https, or http for a loopback host only; no path; no default port). Its host must
     # differ from the application's: another port on the same host is refused, except on a loopback host with
     # no Keycloak route rendered. The application's port is refused there whatever the scheme, on localhost
-    # or 127.0.0.1. A loopback origin is never routed (identity.keycloak.route.* refuses it), and
+    # or 127.0.0.1. A loopback origin is refused unless routing.publicOrigin is a loopback origin too (both
+    # port-forwarded, as in the local qualification), with or without a route: beside a public application
+    # people could sign in only from the machine that forwards the port. A loopback origin is never routed
+    # either (identity.keycloak.route.* refuses it). Loopback means localhost or 127.0.0.1, nothing else. And
     # the application's route (routing.ingress.host, routing.gateway.hostnames) must not cover this host: the
     # host itself, or a wildcard above it at any depth.
     # The backend keeps calling Keycloak on the cluster-local Service.
@@ -268,7 +271,8 @@ identity:
     # this empty, administer Keycloak with kcadm.sh inside the pod. Same form as publicOrigin. It is never the
     # application's origin, and its host must differ from the application's (another port on the same host is
     # refused, except on a loopback host). The application's port is refused whatever the scheme, on
-    # localhost or 127.0.0.1. The application's route must not cover this host either.
+    # localhost or 127.0.0.1. On the loopback port of publicOrigin it takes publicOrigin's scheme: one port
+    # takes one scheme. The application's route must not cover this host either.
     adminOrigin: ""
     # Public route to Keycloak for the host of publicOrigin: only /realms/<identity.realm>/ and /resources/,
     # never the master realm or /admin.

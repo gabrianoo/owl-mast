@@ -71,7 +71,8 @@ spec:
             - name: OWLMAST_IDENTITY_ISSUER_URI
               value: {{ include "owl-mast.identity.issuerUri" . | quote }}
             # The backend itself refuses a plaintext issuer unless told otherwise: true only for a bundled
-            # Keycloak whose public origin is a loopback http origin (local fixtures) or the explicit
+            # Keycloak whose public origin is a loopback http origin (local fixtures; owl-mast.validate accepts
+            # one only beside a loopback routing.publicOrigin) or the explicit
             # identity.external.allowInsecureIssuer opt-in.
             - name: OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER
               value: {{ ternary "true" "false" (ternary (hasPrefix "http://" (include "owl-mast.keycloak.publicOrigin" .)) (default false .Values.identity.external.allowInsecureIssuer) .Values.identity.bundled) | quote }}

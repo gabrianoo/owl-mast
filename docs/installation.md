@@ -144,7 +144,8 @@ characters and complete `%XX` escapes, which is what the backend's URI parser ac
 port range as well. The
 backend also refuses a plaintext `http://` issuer by itself unless `owlmast.identity.allow-insecure-issuer` is
 true, which the chart sets (`OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER`) only for a bundled Keycloak whose
-`identity.keycloak.publicOrigin` is a loopback `http` origin or for `identity.external.allowInsecureIssuer=true`,
+`identity.keycloak.publicOrigin` is a loopback `http` origin (accepted only beside a loopback
+`routing.publicOrigin`) or for `identity.external.allowInsecureIssuer=true`,
 so the rule holds on every deployment path. The issuer is used verbatim: a trailing slash is part of it. For the
 bundled Keycloak the issuer is `<identity.keycloak.publicOrigin>/realms/<identity.realm>`, built with `KC_HOSTNAME`
 from one helper, and the backend reaches Keycloak on the cluster-local Service
@@ -270,7 +271,7 @@ been run on a cluster.
 | Change in 0.3.0 | What to do |
 | --- | --- |
 | `routing.publicOrigin` is required | Set it to the origin people open Owl Mast on (`https://…`; `http` only for a loopback host) |
-| `identity.keycloak.publicOrigin` is required with `identity.bundled=true` | Set it to the origin browsers reach Keycloak on, on a host that is not the application's (another port on the same host is refused, except on a loopback host without a Keycloak route), and route that origin to the Keycloak Service (`identity.keycloak.route.*`, or your own routing) |
+| `identity.keycloak.publicOrigin` is required with `identity.bundled=true` | Set it to the origin browsers reach Keycloak on, on a host that is not the application's (another port on the same host is refused, except on a loopback host without a Keycloak route; a loopback origin is accepted only beside a loopback `routing.publicOrigin`), and route that origin to the Keycloak Service (`identity.keycloak.route.*`, or your own routing) |
 | The backend needs `identity.client.existingSecret` (default `owl-mast-oidc-client`, key `client-secret`) in every combination | Create the Secret before the upgrade. Without it the backend pod stays in `CreateContainerConfigError`, and with `importRealm=true` the Keycloak pod does too |
 | The bundled issuer changes from the cluster-local address to `<identity.keycloak.publicOrigin>/realms/<realm>`; `KC_HOSTNAME` changes with it and the Keycloak pod is replaced | Nothing more for the backend: it receives the new issuer and the cluster-local back-channel base in the same upgrade. Tokens issued before the upgrade carry the old issuer (chart 0.2.0 had no client, so the installation issued none to Owl Mast) |
 | The realm import now carries the client and the invitation-only settings, but Keycloak skips it for a realm that exists | Create the client in the existing realm by hand, or delete the realm and restart Keycloak ([Realm and client](#realm-and-client)). Check the realm's self-registration switch yourself: the import that would set it does not run |
@@ -278,7 +279,9 @@ been run on a cluster.
 | The application's route may not cover the host of `identity.keycloak.publicOrigin` or `identity.keycloak.adminOrigin` (`routing.ingress.host`, `routing.gateway.hostnames`, or `routing.gateway.allowAllListenerHostnames=true` beside the Keycloak Gateway route); a wildcard counts for every depth below it | Route the application on hosts that leave Keycloak's out, and list the application's hostnames |
 | `identity.keycloak.adminOrigin` may not be the application's origin or another port on its host (a loopback host excepted; see the next row) | Give the admin console an address of its own, for example a port-forward |
 | `identity.keycloak.publicOrigin` or `identity.keycloak.adminOrigin` names the same port of the loopback host as `routing.publicOrigin` | Give it a port of its own: another scheme, or `127.0.0.1` for `localhost`, is the same local port, which forwards to one Service |
-| A loopback `identity.keycloak.publicOrigin` is refused with `identity.keycloak.route.*.enabled=true` | Set the public origin the route serves, or disable the Keycloak route and port-forward |
+| `identity.keycloak.adminOrigin` names the loopback port of `identity.keycloak.publicOrigin` under the other scheme (`127.0.0.1` and `localhost` are one host here) | Give it the scheme of `identity.keycloak.publicOrigin`, or a port of its own: one port takes one scheme |
+| A loopback `identity.keycloak.publicOrigin` is refused beside a `routing.publicOrigin` that is not loopback, with or without a route | Set the public origin browsers reach Keycloak on. A loopback Keycloak is only for an application that is port-forwarded too |
+| A loopback `identity.keycloak.publicOrigin` is refused with `identity.keycloak.route.*.enabled=true` | Set the public origin the route serves, or disable the Keycloak route and port-forward both Keycloak and the application |
 | `backend.replicas` greater than 1 is refused by the templates with the reason (was a schema maximum) | Keep 0 or 1 |
 | Every backend restart, rollout and upgrade signs everyone out (sessions are in the backend's memory) | Plan upgrades accordingly |
 | `identity.keycloak.proxyHeaders` keeps its rule; a rendered Keycloak route has the same peer rule under the NetworkPolicy | Name the proxy in `networkPolicy.keycloak.extraFrom` |
@@ -603,8 +606,14 @@ Keycloak route, as in the local qualification, where both are port-forwards; the
 session cookie and Keycloak's cookies to both ports. The ports must really differ: a loopback origin on the
 application's port is refused whatever its scheme (`https://localhost:8080` beside `http://localhost:8080`,
 `https://localhost:80` beside `http://localhost`) and whichever of `localhost` and `127.0.0.1` each one names,
-because one local port forwards to one Service. A loopback Keycloak origin is never routed: with
-`identity.keycloak.route.*.enabled=true` it is refused whatever the application's host, because a route for
+because one local port forwards to one Service. A loopback Keycloak origin is accepted only beside a loopback
+application origin, so both are port-forwards on one machine. Beside any other `routing.publicOrigin` it is
+refused, whether or not the chart renders a route (operator-owned routing cannot route `localhost` either).
+Loopback means `localhost` or `127.0.0.1` here and in every rule of this section; a name under `.localhost` and
+another `127.x.x.x` address are ordinary hosts to the chart, need `https`, and are not checked this way. The reason:
+every browser that opens the application would be sent to sign in on its own machine, and a loopback `http`
+origin would make the backend accept a plaintext issuer on a public installation. A loopback Keycloak origin
+is never routed: with `identity.keycloak.route.*.enabled=true` it is refused, because a route for
 `localhost` reaches Keycloak only from the machine that forwards the port. Rendering fails naming the value when one is missing or malformed. The
 chart does not derive `routing.publicOrigin` from `routing.ingress.host` or `routing.gateway.hostnames`, but it
 compares them: when the chart renders the application route, the origin's host must be the Ingress host (or one
@@ -631,7 +640,11 @@ the API's rule: below an Ingress wildcard host the application's host is exactly
 routing included): the application's origin is refused, and so is another port on the application's host,
 because the administrators' Keycloak cookies and the session cookie would be sent to both. Only a loopback host
 may carry both on different ports, and there the port must differ whatever the scheme, as for the public
-origin: `https://localhost:8080` is refused beside `http://localhost:8080`.
+origin: `https://localhost:8080` is refused beside `http://localhost:8080`. On the loopback port of
+`identity.keycloak.publicOrigin` the admin origin takes that origin's scheme: `https://localhost:8081` and
+`https://127.0.0.1:8081` are refused beside `http://localhost:8081`, because one port takes one scheme and the
+console's address would name a listener that cannot answer it. The equal value is accepted and changes nothing,
+and so is the other spelling under the same scheme (`http://127.0.0.1:8081`), which is the same port-forward.
 
 An HTTPRoute that takes every listener hostname
 (`routing.gateway.allowAllListenerHostnames=true`) is refused while

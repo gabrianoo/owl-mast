@@ -956,7 +956,8 @@ class ReviewCycle1Test(unittest.TestCase):
         def flag(*args):
             return env_of(deployments_of(render(*args))["t-owl-mast-backend"])["OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER"]["value"]
         self.assertEqual(flag(), "false")  # OM-02.01: the bundled issuer is Keycloak's public https origin
-        self.assertEqual(flag(*sets("identity.keycloak.publicOrigin=http://localhost:8081")), "true")  # a loopback fixture origin
+        # a loopback fixture origin, which only a loopback application takes (PR #194 review, R9-1)
+        self.assertEqual(flag(*sets("routing.publicOrigin=http://localhost:8080", "identity.keycloak.publicOrigin=http://localhost:8081")), "true")
         bundled = env_of(deployments_of(render())["t-owl-mast-backend"])
         self.assertEqual(bundled["OWLMAST_IDENTITY_ALLOW_INSECURE_BACKCHANNEL"]["value"], "true")  # the cluster-local Service speaks http by design
         self.assertNotIn("OWLMAST_IDENTITY_ALLOW_INSECURE_BACKCHANNEL", env_of(deployments_of(render(*sets(*self.EXTERNAL_ID)))["t-owl-mast-backend"]))
@@ -2055,7 +2056,9 @@ class SignInWiringTest(unittest.TestCase):
             for bad in ("https://owl-mast.example:443", "http://localhost:80"):
                 self.assertIn("names the scheme's default port", refused("--set-string", f"{key}={bad}"), bad)
             for good in ("https://a.example", "https://a.example:8443", "https://10.0.0.5", "https://single", "http://localhost", "http://localhost:8080", "http://127.0.0.1:18080"):
-                render("--set-string", f"{key}={good}")
+                # a loopback Keycloak origin needs a loopback application (R9-1), here on a port none of these names
+                beside = sets("routing.publicOrigin=http://127.0.0.1:9090") if key == "identity.keycloak.publicOrigin" and good.startswith(("http://localhost", "http://127.0.0.1")) else []
+                render("--set-string", f"{key}={good}", *beside)
         # the two origins are different origins
         err = refused(*sets("routing.publicOrigin=https://one.example", "identity.keycloak.publicOrigin=https://one.example"))
         self.assertIn("identity.keycloak.publicOrigin and routing.publicOrigin are both", err)
@@ -2088,11 +2091,12 @@ class SignInWiringTest(unittest.TestCase):
     def test_a_loopback_keycloak_origin_is_never_routed(self):
         """PR #194 review, R6-2: the loopback pair was refused behind a Keycloak route only when the application shared the host. With
         another application host the chart rendered an Ingress or HTTPRoute for the host localhost, which no browser but the operator's
-        own reaches."""
+        own reaches. Since R9-1 a loopback Keycloak needs a loopback application, so the other host is the other spelling of loopback."""
         routes = ([*GATEWAY_API, *sets(*KEYCLOAK_GATEWAY, *KEYCLOAK_PROXY)], sets(*KEYCLOAK_INGRESS, *KEYCLOAK_PROXY))
         for origin in ("http://localhost:8081", "http://localhost", "https://localhost", "http://127.0.0.1:8081"):
-            loopback = sets(f"identity.keycloak.publicOrigin={origin}")
-            render(*loopback)  # port-forwarded, with the application on a host of its own
+            app = "http://localhost:8080" if "127.0.0.1" in origin else "http://127.0.0.1:8080"
+            loopback = sets(f"routing.publicOrigin={app}", f"identity.keycloak.publicOrigin={origin}")
+            render(*loopback)  # both port-forwarded
             for route in routes:
                 for skip in ([], ["--skip-schema-validation"]):
                     err = refused(*skip, *route, *loopback)
@@ -2101,6 +2105,38 @@ class SignInWiringTest(unittest.TestCase):
         # a host that only starts with the loopback name is an ordinary host
         for route in routes:
             render(*route, *sets("identity.keycloak.publicOrigin=https://localhost.example"))
+
+    def test_a_loopback_keycloak_needs_a_loopback_application(self):
+        """PR #194 review, R9-1: a loopback identity.keycloak.publicOrigin beside an application on a public host was refused only behind
+        a Keycloak route. Without one it rendered: every browser was sent to sign in on its own machine, and an http loopback origin
+        set OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER=true on a public installation."""
+        gateway = [*GATEWAY_API, *sets("routing.gateway.enabled=true", "routing.gateway.parentRefs[0].name=gw", "routing.gateway.hostnames={owl-mast.example}")]
+        # no route (operator-owned routing), each application route, and each Keycloak route: the answer does not depend on a route
+        routings = ([], gateway, sets("routing.ingress.enabled=true", "routing.ingress.host=owl-mast.example"),
+                    [*GATEWAY_API, *sets(*KEYCLOAK_GATEWAY, *KEYCLOAK_PROXY)], sets(*KEYCLOAK_INGRESS, *KEYCLOAK_PROXY))
+        for origin in ("http://localhost:8081", "http://localhost", "https://localhost", "http://127.0.0.1:8081", "https://127.0.0.1:8443"):
+            for routing in routings:
+                for skip in ([], ["--skip-schema-validation"]):
+                    err = refused(*skip, *routing, *sets(f"identity.keycloak.publicOrigin={origin}"))
+                    self.assertIn(f'identity.keycloak.publicOrigin "{origin}" is a loopback origin, but routing.publicOrigin "{APP_ORIGIN}" is not', err, (origin, routing, skip))
+                    self.assertIn("A loopback Keycloak is only for an application that is port-forwarded too", err)
+        # other application hosts that are not the loopback host: an address, a single label, a name under .localhost, another 127.x.x.x
+        for app in ("https://10.0.0.5", "https://owl-mast", "https://app.localhost", "https://127.0.0.2:8080"):
+            err = refused(*sets(f"routing.publicOrigin={app}", "identity.keycloak.publicOrigin=http://localhost:8081"))
+            self.assertIn(f'is a loopback origin, but routing.publicOrigin "{app}" is not', err, app)
+        # the local qualification's pair renders, in either spelling of loopback, and a plaintext issuer is then accepted on purpose
+        for app, origin in (("http://localhost:8080", "http://localhost:8081"), ("http://127.0.0.1:8080", "http://127.0.0.1:8081"),
+                            ("http://localhost:8080", "http://127.0.0.1:8081"), ("https://localhost", "http://localhost:8081")):
+            for skip in ([], ["--skip-schema-validation"]):
+                documents = deployments_of(render(*skip, *sets(f"routing.publicOrigin={app}", f"identity.keycloak.publicOrigin={origin}")))
+                self.assertEqual(env_of(documents["t-owl-mast-keycloak"])["KC_HOSTNAME"]["value"], origin, (app, skip))
+                self.assertEqual(env_of(documents["t-owl-mast-backend"])["OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER"]["value"], "true", (app, skip))
+        # the rule is about Keycloak's public origin only: a port-forwarded application beside a public Keycloak, and a
+        # port-forwarded admin console beside a public application, are untouched
+        render(*sets("routing.publicOrigin=http://localhost:8080"))
+        render(*sets("identity.keycloak.adminOrigin=http://localhost:8082"))
+        # an external issuer has no bundled Keycloak: the value is not used and not checked
+        render(*COMBINATIONS["bundled-external"], *sets("identity.keycloak.publicOrigin=http://localhost:8081"))
 
     def test_the_application_route_never_answers_on_keycloaks_host(self):
         """PR #194 review, R6-1: only the two public origins were compared, so the application's own route could claim Keycloak's host: a
@@ -2232,9 +2268,8 @@ class SignInWiringTest(unittest.TestCase):
                 for route in routes if not skip else routes[:1]:
                     env = env_of(deployments_of(render(*skip, *route, *sets(f"routing.publicOrigin={app}", f"identity.keycloak.adminOrigin={other}")))["t-owl-mast-keycloak"])
                     self.assertEqual(env["KC_HOSTNAME_ADMIN"]["value"], other, (app, skip, route))
-        # the admin console on Keycloak's own port is not this case: both are Keycloak (round 7 accepts the equal value)
-        for admin in ("http://localhost:8081", "https://localhost:8081"):
-            render(*sets("routing.publicOrigin=http://localhost:8080", "identity.keycloak.publicOrigin=http://localhost:8081", f"identity.keycloak.adminOrigin={admin}"))
+        # the admin console on Keycloak's own port is not this case: both are Keycloak, and the equal value is accepted (round 7)
+        render(*sets("routing.publicOrigin=http://localhost:8080", "identity.keycloak.publicOrigin=http://localhost:8081", "identity.keycloak.adminOrigin=http://localhost:8081"))
         # only localhost and 127.0.0.1 are one host here: 127.0.0.2 can be bound apart, and a local proxy tells names under .localhost apart
         render(*sets("routing.publicOrigin=http://localhost:8080", "identity.keycloak.publicOrigin=https://127.0.0.2:8080"))
         render(*sets("routing.publicOrigin=https://app.localhost", "identity.keycloak.publicOrigin=https://id.localhost", "identity.keycloak.adminOrigin=https://admin.localhost"))
@@ -2243,6 +2278,42 @@ class SignInWiringTest(unittest.TestCase):
                      "identity.keycloak.adminOrigin=http://localhost:8443"))
         # an external issuer has no bundled Keycloak: the values are not used and not checked
         render(*COMBINATIONS["bundled-external"], *sets("routing.publicOrigin=http://localhost:8080", "identity.keycloak.adminOrigin=https://localhost:8080"))
+
+    def test_the_admin_console_on_keycloaks_loopback_port_takes_keycloaks_scheme(self):
+        """PR #194 review, R9-2: the admin origin's port was compared with the application's only, so an adminOrigin on Keycloak's own
+        loopback port under the other scheme rendered: KC_HOSTNAME=http://localhost:8081 beside KC_HOSTNAME_ADMIN=https://localhost:8081,
+        on one port that takes one scheme."""
+        routes = ([], [*GATEWAY_API, *sets(*KEYCLOAK_GATEWAY, *KEYCLOAK_PROXY)], sets(*KEYCLOAK_INGRESS, *KEYCLOAK_PROXY))
+        # (application, Keycloak, the admin origin, the shared port): another scheme, a scheme's default port, the other spelling of loopback
+        cases = (("http://localhost:8080", "http://localhost:8081", "https://localhost:8081", "8081"),
+                 ("http://localhost:8080", "https://localhost:8443", "http://localhost:8443", "8443"),
+                 ("http://localhost:8080", "http://localhost", "https://localhost:80", "80"),
+                 ("http://localhost:8080", "https://localhost", "http://localhost:443", "443"),
+                 ("http://127.0.0.1:8080", "http://127.0.0.1:8081", "https://127.0.0.1:8081", "8081"),
+                 ("http://localhost:8080", "http://localhost:8081", "https://127.0.0.1:8081", "8081"),
+                 ("http://localhost:8080", "http://localhost:443", "https://localhost", "443"),
+                 ("http://localhost:8080", "https://127.0.0.1:80", "http://localhost", "80"))
+        for app, keycloak, admin, port in cases:
+            local = sets(f"routing.publicOrigin={app}", f"identity.keycloak.publicOrigin={keycloak}")
+            for skip in ([], ["--skip-schema-validation"]):
+                err = refused(*skip, *local, *sets(f"identity.keycloak.adminOrigin={admin}"))
+                self.assertIn(f'identity.keycloak.adminOrigin "{admin}" and identity.keycloak.publicOrigin "{keycloak}" name the same port {port} of the loopback host '
+                              "under different schemes", err, (admin, skip))
+                self.assertIn("Give identity.keycloak.adminOrigin the scheme of identity.keycloak.publicOrigin, or a port of its own", err)
+                # the equal value changes nothing and renders; so does the other spelling of loopback under the same scheme, which is
+                # the same port-forward, and a port of the console's own under either scheme
+                other_spelling = keycloak.replace("localhost", "127.0.0.1") if "localhost" in keycloak else keycloak.replace("127.0.0.1", "localhost")
+                for accepted in (keycloak, other_spelling, "http://localhost:8082", "https://localhost:8082", "https://127.0.0.1:9443"):
+                    env = env_of(deployments_of(render(*skip, *local, *sets(f"identity.keycloak.adminOrigin={accepted}")))["t-owl-mast-keycloak"])
+                    self.assertEqual(env["KC_HOSTNAME_ADMIN"]["value"], accepted, (keycloak, accepted, skip))
+        # off loopback the port alone decides nothing: the console may share Keycloak's host on another port, or its port on another host
+        for route in routes:
+            for admin in (KEYCLOAK_ORIGIN, f"{KEYCLOAK_ORIGIN}:9443", "https://admin.owl-mast.example", "http://localhost:8082"):
+                env = env_of(deployments_of(render(*route, *sets(f"identity.keycloak.adminOrigin={admin}")))["t-owl-mast-keycloak"])
+                self.assertEqual(env["KC_HOSTNAME_ADMIN"]["value"], admin, (admin, route))
+        render(*sets("identity.keycloak.publicOrigin=https://id.owl-mast.example:8443", "identity.keycloak.adminOrigin=http://localhost:8443"))
+        # an external issuer has no bundled Keycloak: the values are not used and not checked
+        render(*COMBINATIONS["bundled-external"], *sets("identity.keycloak.publicOrigin=http://localhost:8081", "identity.keycloak.adminOrigin=https://localhost:8081"))
 
     def test_the_realm_name_is_checked_without_the_schema(self):
         """PR #194 review, R6-3: the realm pattern lived only in the values schema, so with --skip-schema-validation identity.realm=master/
