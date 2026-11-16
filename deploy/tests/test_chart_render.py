@@ -2084,6 +2084,88 @@ class SignInWiringTest(unittest.TestCase):
         render(*sets("routing.publicOrigin=https://owl-mast.example:8443", "identity.keycloak.publicOrigin=https://id.owl-mast.example:8443"))
         render(*sets("routing.publicOrigin=https://owl-mast.example", "identity.keycloak.publicOrigin=https://owl-mast.example.org"))
 
+    def test_a_loopback_keycloak_origin_is_never_routed(self):
+        """PR #194 review, R6-2: the loopback pair was refused behind a Keycloak route only when the application shared the host. With
+        another application host the chart rendered an Ingress or HTTPRoute for the host localhost, which no browser but the operator's
+        own reaches."""
+        routes = ([*GATEWAY_API, *sets(*KEYCLOAK_GATEWAY, *KEYCLOAK_PROXY)], sets(*KEYCLOAK_INGRESS, *KEYCLOAK_PROXY))
+        for origin in ("http://localhost:8081", "http://localhost", "https://localhost", "http://127.0.0.1:8081"):
+            loopback = sets(f"identity.keycloak.publicOrigin={origin}")
+            render(*loopback)  # port-forwarded, with the application on a host of its own
+            for route in routes:
+                for skip in ([], ["--skip-schema-validation"]):
+                    err = refused(*skip, *route, *loopback)
+                    self.assertIn(f'cannot route the loopback identity.keycloak.publicOrigin "{origin}"', err, (origin, route))
+                    self.assertIn("reached by port-forward, never through a proxy", err)
+        # a host that only starts with the loopback name is an ordinary host
+        for route in routes:
+            render(*route, *sets("identity.keycloak.publicOrigin=https://localhost.example"))
+
+    def test_the_application_route_never_answers_on_keycloaks_host(self):
+        """PR #194 review, R6-1: only the two public origins were compared, so the application's own route could claim Keycloak's host: a
+        Gateway hostname or the Ingress host equal to it or a wildcard over it, or an HTTPRoute without hostnames beside Keycloak's
+        HTTPRoute. The application was then served on Keycloak's origin, same-origin with Keycloak's session cookies."""
+        gateway, ingress = "routing.gateway.enabled=true", "routing.ingress.enabled=true"
+        parent = "routing.gateway.parentRefs[0].name=gw"
+        kc_gateway, kc_ingress = sets(*KEYCLOAK_GATEWAY, *KEYCLOAK_PROXY), sets(*KEYCLOAK_INGRESS, *KEYCLOAK_PROXY)
+        reason = "would answer on Keycloak's host as well"
+        # Gateway hostnames: Keycloak's host itself, and a wildcard over it (one label or more below the wildcard)
+        for hostnames, index, keycloak in (("{owl-mast.example,id.owl-mast.example}", 1, KEYCLOAK_ORIGIN), ("{owl-mast.example,*.owl-mast.example}", 1, KEYCLOAK_ORIGIN),
+                                           ("{*.example}", 0, KEYCLOAK_ORIGIN), ("{owl-mast.example,*.owl-mast.example}", 1, "https://a.id.owl-mast.example:8443")):
+            for extra in ([], kc_gateway, kc_ingress, ["--skip-schema-validation"]):
+                err = refused(*GATEWAY_API, *extra, *sets(gateway, parent, f"routing.gateway.hostnames={hostnames}", f"identity.keycloak.publicOrigin={keycloak}"))
+                self.assertIn(f"routing.gateway.hostnames[{index}]", err, (hostnames, extra)); self.assertIn(reason, err)
+                self.assertIn(f'identity.keycloak.publicOrigin "{keycloak}"', err)
+        # the Ingress host: Keycloak's host is one label below the wildcard
+        wildcard = sets(ingress, "routing.ingress.host=*.owl-mast.example", "routing.publicOrigin=https://a.owl-mast.example")
+        for extra in ([], kc_ingress, [*GATEWAY_API, *kc_gateway], ["--skip-schema-validation"]):
+            err = refused(*extra, *wildcard)
+            self.assertIn('routing.ingress.host "*.owl-mast.example" covers the host "id.owl-mast.example"', err, extra); self.assertIn(reason, err)
+        # an HTTPRoute without hostnames takes every hostname of its listener, Keycloak's included when Keycloak's HTTPRoute shares it
+        every = sets(gateway, parent, "routing.gateway.allowAllListenerHostnames=true")
+        for skip in ([], ["--skip-schema-validation"]):
+            err = refused(*GATEWAY_API, *skip, *kc_gateway, *every)
+            self.assertIn("routing.gateway.allowAllListenerHostnames=true is refused while identity.keycloak.route.gateway.enabled=true", err)
+            self.assertIn('Keycloak\'s host "id.owl-mast.example"', err)
+        # without Keycloak's HTTPRoute the chart cannot tell what else the listener serves: that stays the operator's
+        render(*GATEWAY_API, *every)
+        render(*GATEWAY_API, *kc_ingress, *every)
+        # the admin console's host is Keycloak's as well
+        admin = "identity.keycloak.adminOrigin=https://admin.owl-mast.example"
+        err = refused(*GATEWAY_API, *sets(gateway, parent, "routing.gateway.hostnames={owl-mast.example,admin.owl-mast.example}", admin))
+        self.assertIn('routing.gateway.hostnames[1] "admin.owl-mast.example" covers the host "admin.owl-mast.example" of identity.keycloak.adminOrigin', err)
+        err = refused(*wildcard, *sets("identity.keycloak.publicOrigin=https://a.id.owl-mast.example", admin))
+        self.assertIn('routing.ingress.host "*.owl-mast.example" covers the host "admin.owl-mast.example" of identity.keycloak.adminOrigin', err)
+        render(*GATEWAY_API, *sets(gateway, parent, "routing.gateway.hostnames={owl-mast.example}", admin))
+        render(*sets(ingress, "routing.ingress.host=localhost", "routing.publicOrigin=http://localhost:8080", "identity.keycloak.adminOrigin=http://localhost:8082"))
+        # disjoint hosts render, with either Keycloak route: an exact hostname, a wildcard beside Keycloak's host, an Ingress wildcard two labels up
+        for extra in (kc_gateway, kc_ingress):
+            render(*GATEWAY_API, *extra, *sets(gateway, parent, "routing.gateway.hostnames={owl-mast.example,*.apps.owl-mast.example}"))
+            render(*GATEWAY_API, *extra, *sets(ingress, "routing.ingress.host=owl-mast.example"))
+            render(*GATEWAY_API, *extra, *wildcard, *sets("identity.keycloak.publicOrigin=https://a.id.owl-mast.example"))
+        # a wildcard does not cover its own apex
+        render(*GATEWAY_API, *sets(gateway, parent, "routing.gateway.hostnames={a.id.owl-mast.example,*.id.owl-mast.example}", "routing.publicOrigin=https://a.id.owl-mast.example"))
+        # a loopback Keycloak is port-forwarded and never routed, so the application's route on that host receives nothing of Keycloak's
+        render(*sets(ingress, "routing.ingress.host=localhost", "routing.publicOrigin=http://localhost:8080", "identity.keycloak.publicOrigin=http://localhost:8081"))
+        # an external issuer has no bundled Keycloak host
+        render(*GATEWAY_API, *COMBINATIONS["bundled-external"], *sets(gateway, parent, "routing.gateway.hostnames={owl-mast.example,id.owl-mast.example}"))
+
+    def test_the_realm_name_is_checked_without_the_schema(self):
+        """PR #194 review, R6-3: the realm pattern lived only in the values schema, so with --skip-schema-validation identity.realm=master/
+        passed the master-realm refusal and the route published /realms/master//, which proxies that merge slashes serve as the
+        administrators' realm."""
+        for realm in ("master/", "/master", "a/../master", "owl mast", "-owl", "owl.mast", "owl%2Fmast", "owl\n"):
+            for args in ([], [*GATEWAY_API, *sets(*KEYCLOAK_GATEWAY, *KEYCLOAK_PROXY)], sets(*KEYCLOAK_INGRESS, *KEYCLOAK_PROXY)):
+                err = refused("--skip-schema-validation", *args, "--set-string", f"identity.realm={realm}")
+                self.assertIn("identity.realm " + json.dumps(realm) + " is not a realm name", err, (realm, args))
+            self.assertIn("realm", refused("--set-string", f"identity.realm={realm}"), realm)  # the schema refuses it as well
+        for realm in ("owl-mast", "Owl_Mast-2", "7"):
+            render("--skip-schema-validation", "--set-string", f"identity.realm={realm}")
+        # a number is a realm name once written out, and the master check reads the same text
+        render("--skip-schema-validation", *sets("identity.realm=7"))
+        # an external issuer has no bundled realm: the value is not used and not checked
+        render("--skip-schema-validation", *COMBINATIONS["bundled-external"], "--set-string", "identity.realm=master/")
+
     def test_the_master_realm_is_refused_as_the_realm_people_sign_in_to(self):
         """PR #194 review, R4-3: identity.realm=master rendered, and the Keycloak route then published /realms/master/, the administrators'
         login and token endpoint that both route templates say is never routed."""

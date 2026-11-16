@@ -277,9 +277,16 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- if not $v.identity.realm -}}
 {{- fail "identity.realm is required" -}}
 {{- end -}}
+{{- /* the schema's pattern, repeated so that --skip-schema-validation cannot open it: the realm is written into the */ -}}
+{{- /* issuer, the back-channel address and the routed path /realms/<realm>/, where "master/" or "a/../master" would */ -}}
+{{- /* name the master realm past the refusal below */ -}}
+{{- $realm := $v.identity.realm | toString -}}
+{{- if not (regexMatch "^[a-zA-Z0-9][a-zA-Z0-9_-]*$" $realm) -}}
+{{- fail (printf "identity.realm %q is not a realm name: letters, digits, '_' and '-', starting with a letter or digit. The realm is written as it is into the issuer and into the routed path /realms/<identity.realm>/" $realm) -}}
+{{- end -}}
 {{- /* Keycloak realm names are case-sensitive, so only "master" is that realm; any case is refused, which costs nothing */ -}}
-{{- if eq (lower $v.identity.realm) "master" -}}
-{{- fail (printf "identity.realm=%q is refused: master is the bundled Keycloak's administration realm, where administrators sign in and obtain tokens. People sign in to Owl Mast in a realm of their own, and the Keycloak route publishes /realms/<identity.realm>/, which would publish the administrators' realm" $v.identity.realm) -}}
+{{- if eq (lower $realm) "master" -}}
+{{- fail (printf "identity.realm=%q is refused: master is the bundled Keycloak's administration realm, where administrators sign in and obtain tokens. People sign in to Owl Mast in a realm of their own, and the Keycloak route publishes /realms/<identity.realm>/, which would publish the administrators' realm" $realm) -}}
 {{- end -}}
 {{- /* AC3: Keycloak keeps its own database on a shared server (the bundled instance, or the same external host and port) */ -}}
 {{- /* textual comparison (case and a trailing dot ignored); aliases such as an IP address and a DNS name are not detected */ -}}
@@ -365,6 +372,10 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- $idRouted := or (eq (include "owl-mast.keycloak.route.gateway.enabled" .) "true") (eq (include "owl-mast.keycloak.route.ingress.enabled" .) "true") -}}
 {{- if and $sameHost (or $idRouted (not $idLoopback)) -}}
 {{- fail (printf "identity.keycloak.publicOrigin %q and routing.publicOrigin %q name the same host %q: Keycloak needs a host of its own, not another port on the application's. Gateway and Ingress routes match the host without the port, so one hostname cannot keep Keycloak's paths apart from the application's, and cookies are scoped by host, so the session cookie and Keycloak's cookies would be sent to both. Only a loopback host (localhost, 127.0.0.1) may carry both on different ports, and only while the chart renders no Keycloak route" $idOrigin $appOrigin (include "owl-mast.originHost" $idOrigin)) -}}
+{{- end -}}
+{{- /* a loopback host is the machine the browser runs on: a route for it reaches Keycloak from nowhere else */ -}}
+{{- if and $idRouted $idLoopback -}}
+{{- fail (printf "identity.keycloak.route.*.enabled=true cannot route the loopback identity.keycloak.publicOrigin %q: a loopback host is reached by port-forward, never through a proxy, so people could sign in only from the machine that forwards the port. Set identity.keycloak.publicOrigin to the public origin the route serves, or disable the Keycloak route" $idOrigin) -}}
 {{- end -}}
 {{- with (include "owl-mast.keycloak.adminOrigin" .) -}}
 {{- include "owl-mast.validateOrigin" (list "identity.keycloak.adminOrigin" . "the address administrators open the Keycloak admin console on") -}}
@@ -462,27 +473,66 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- $appHost := include "owl-mast.originHost" $appOrigin -}}
 {{- if $v.routing.ingress.enabled -}}
 {{- $routed := $v.routing.ingress.host | toString -}}
-{{- $suffix := trimPrefix "*" $routed -}}
-{{- $covered := eq $routed $appHost -}}
-{{- if and (hasPrefix "*." $routed) (hasSuffix $suffix $appHost) -}}
-{{- $label := trimSuffix $suffix $appHost -}}
-{{- $covered = and (ne $label "") (not (contains "." $label)) -}}
-{{- end -}}
-{{- if not $covered -}}
+{{- if ne (include "owl-mast.routeCoversHost" (list $routed $appHost false)) "true" -}}
 {{- fail (printf "routing.publicOrigin %q names the host %q, which routing.ingress.host %q does not route: the sign-in redirect URI and the session cookie would be bound to an origin that never reaches Owl Mast. Set routing.publicOrigin to the origin of the routed host, or route its host" $appOrigin $appHost $routed) -}}
 {{- end -}}
 {{- end -}}
 {{- if and $v.routing.gateway.enabled $v.routing.gateway.hostnames -}}
 {{- $covered := false -}}
 {{- range $v.routing.gateway.hostnames -}}
-{{- $routed := . | toString -}}
-{{- $suffix := trimPrefix "*" $routed -}}
-{{- if eq $routed $appHost -}}{{- $covered = true -}}{{- end -}}
-{{- if and (hasPrefix "*." $routed) (hasSuffix $suffix $appHost) (ne (trimSuffix $suffix $appHost) "") -}}{{- $covered = true -}}{{- end -}}
+{{- if eq (include "owl-mast.routeCoversHost" (list . $appHost true)) "true" -}}{{- $covered = true -}}{{- end -}}
 {{- end -}}
 {{- if not $covered -}}
 {{- fail (printf "routing.publicOrigin %q names the host %q, which is not among routing.gateway.hostnames (%s): the sign-in redirect URI and the session cookie would be bound to an origin that never reaches Owl Mast. Set routing.publicOrigin to the origin of a routed hostname, or add its host to routing.gateway.hostnames" $appOrigin $appHost (join ", " $v.routing.gateway.hostnames)) -}}
 {{- end -}}
+{{- end -}}
+{{- /* OM-02.01: the application's route must not answer on a host of the bundled Keycloak: the public origin's, or the */ -}}
+{{- /* admin console's. It would serve the application on that origin for every path Keycloak's route does not take, */ -}}
+{{- /* same-origin with Keycloak's session cookies. A loopback host is reached by port-forward and never routed */ -}}
+{{- /* (refused above for the public origin), so no route receives it. */ -}}
+{{- if $v.identity.bundled -}}
+{{- $consequence := "would answer on Keycloak's host as well: the application would be served on Keycloak's origin for every path outside Keycloak's own, where its pages run same-origin with Keycloak's session cookies. Route the application on hosts that leave Keycloak's out, or give Keycloak a host outside them" -}}
+{{- range (list (list "identity.keycloak.publicOrigin" (include "owl-mast.keycloak.publicOrigin" .)) (list "identity.keycloak.adminOrigin" (include "owl-mast.keycloak.adminOrigin" .))) -}}
+{{- $idPath := index . 0 -}}
+{{- $idOrigin := index . 1 -}}
+{{- $idHost := include "owl-mast.originHost" $idOrigin -}}
+{{- if and $idOrigin (not (regexMatch "^(localhost|127\\.0\\.0\\.1)$" $idHost)) -}}
+{{- if and $v.routing.ingress.enabled (eq (include "owl-mast.routeCoversHost" (list $v.routing.ingress.host $idHost false)) "true") -}}
+{{- fail (printf "routing.ingress.host %q covers the host %q of %s %q: the application's Ingress %s" ($v.routing.ingress.host | toString) $idHost $idPath $idOrigin $consequence) -}}
+{{- end -}}
+{{- if $v.routing.gateway.enabled -}}
+{{- range $i, $routed := $v.routing.gateway.hostnames -}}
+{{- if eq (include "owl-mast.routeCoversHost" (list $routed $idHost true)) "true" -}}
+{{- fail (printf "routing.gateway.hostnames[%d] %q covers the host %q of %s %q: the application's HTTPRoute %s" $i ($routed | toString) $idHost $idPath $idOrigin $consequence) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- /* without hostnames the application's HTTPRoute takes every hostname of its listener; beside a Keycloak HTTPRoute */ -}}
+{{- /* that includes Keycloak's whenever both attach to one listener, which parentRefs alone cannot rule out. Where the */ -}}
+{{- /* chart renders no Keycloak HTTPRoute it cannot tell what else the listener serves: that stays the operator's. */ -}}
+{{- if and $v.routing.gateway.enabled (not $v.routing.gateway.hostnames) (eq (include "owl-mast.keycloak.route.gateway.enabled" .) "true") -}}
+{{- fail (printf "routing.gateway.allowAllListenerHostnames=true is refused while identity.keycloak.route.gateway.enabled=true: an HTTPRoute without hostnames attaches to every hostname of its listener, so on a listener the two routes share the application would answer on Keycloak's host %q as well, same-origin with Keycloak's session cookies. List the application's hostnames in routing.gateway.hostnames" (include "owl-mast.originHost" (include "owl-mast.keycloak.publicOrigin" .))) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Whether a routed host (an Ingress host or an HTTPRoute hostname) answers for a host: the same name, or a
+wildcard over it. An Ingress wildcard covers exactly one label; an HTTPRoute wildcard covers one or more.
+routeCoversHost (list "<routed host>" "<host>" <true when the wildcard covers more than one label>) renders
+"true" or nothing.
+*/}}
+{{- define "owl-mast.routeCoversHost" -}}
+{{- $routed := index . 0 | toString -}}
+{{- $host := index . 1 | toString -}}
+{{- $suffix := trimPrefix "*" $routed -}}
+{{- if eq $routed $host -}}
+true
+{{- else if and (hasPrefix "*." $routed) (hasSuffix $suffix $host) -}}
+{{- $label := trimSuffix $suffix $host -}}
+{{- if and (ne $label "") (or (index . 2) (not (contains "." $label))) -}}true{{- end -}}
 {{- end -}}
 {{- end -}}
 

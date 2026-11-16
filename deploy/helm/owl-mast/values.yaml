@@ -149,6 +149,7 @@ routing:
     # hostname of the referenced listener(s). DNS names only (the Gateway API forbids IP addresses).
     hostnames: []
     # Explicit acknowledgement for an empty hostnames list (a Gateway dedicated to this installation).
+    # Refused while identity.keycloak.route.gateway.enabled=true: the route would take Keycloak's host as well.
     allowAllListenerHostnames: false
     annotations: {}
 
@@ -234,7 +235,8 @@ postgresql:
 identity:
   bundled: true
   # Realm of the bundled issuer (<identity.keycloak.publicOrigin>/realms/<realm>) and of the realm import.
-  # Never "master": that is Keycloak's administration realm and is refused.
+  # Letters, digits, '_' and '-', starting with a letter or digit. Never "master": that is Keycloak's
+  # administration realm and is refused.
   realm: owl-mast
   # The backend signs people in as a confidential OpenID Connect client (authorization code with PKCE);
   # tokens stay in the backend. The bundled Keycloak imports this client; an external issuer must hold a
@@ -255,7 +257,9 @@ identity:
     # origin and never the application's: Keycloak's hostname and the issuer of every token. Same form as
     # routing.publicOrigin (https, or http for a loopback host only; no path; no default port). Its host must
     # differ from the application's: another port on the same host is refused, except on a loopback host with
-    # no Keycloak route rendered. The backend keeps calling Keycloak on the cluster-local Service.
+    # no Keycloak route rendered. A loopback origin is never routed (identity.keycloak.route.* refuses it), and
+    # the application's route (routing.ingress.host, routing.gateway.hostnames) must not cover this host.
+    # The backend keeps calling Keycloak on the cluster-local Service.
     publicOrigin: ""
     # Optional. The address administrators open the admin console on (KC_HOSTNAME_ADMIN), for example
     # http://localhost:8080 through `kubectl port-forward`. The admin console is never routed publicly; with
