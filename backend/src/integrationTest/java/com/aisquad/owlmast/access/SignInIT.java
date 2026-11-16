@@ -256,6 +256,61 @@ class SignInIT {
     assertNoCredentialIn(browser.everythingTheBackendSent());
   }
 
+  /**
+   * PR #194 review, R2-3, through the whole security chain: Keycloak is running and stops
+   * answering. A shell that starts now has no CSRF token; the session read gives it one in its 503,
+   * and the sign-out sent with it ends the session here.
+   */
+  @Test
+  void whileKeycloakDoesNotAnswerTheSessionReadCarriesTheCsrfTokenAndSignOutEndsTheSession() {
+    SyntheticBrowser browser = new SyntheticBrowser(port);
+    browser.signIn(keycloak, SyntheticKeycloak.ADA);
+    String principalId =
+        json(browser.get("/api/session")).get("person").get("principalId").asString();
+    int before = outcomes("session.sign-out", principalId).size();
+
+    keycloak.pause();
+    try {
+      // The read reaches the provider because of this class's access token lifespan of 30 s
+      // (owlmast.fixture.access-token-lifespan): inside the minute before expiry every request
+      // renews. With a longer lifespan the session would be served from what the backend holds.
+      HttpResponse<String> read = browser.get("/api/session");
+      assertThat(read.statusCode()).isEqualTo(503);
+      assertThat(read.headers().firstValue("Content-Type")).contains("application/problem+json");
+      assertThat(read.headers().firstValue("Cache-Control")).contains("no-store");
+      JsonNode problem = json(read);
+      assertThat(problem.get("status").asInt()).isEqualTo(503);
+      // The token and nothing about the person.
+      assertThat(problem.propertyNames())
+          .containsExactlyInAnyOrder("title", "status", "instance", "csrf");
+      assertThat(problem.get("csrf").propertyNames())
+          .containsExactlyInAnyOrder("headerName", "token");
+      assertThat(read.body()).doesNotContain(principalId).doesNotContain("Ada");
+      String header = problem.get("csrf").get("headerName").asString();
+      String token = problem.get("csrf").get("token").asString();
+      assertThat(header).isEqualTo("X-CSRF-TOKEN");
+
+      // Without the token the sign-out is refused; with the one from the 503 it ends the session.
+      assertThat(browser.post("/api/session/sign-out", "").statusCode()).isEqualTo(403);
+      HttpResponse<String> signedOut = browser.post("/api/session/sign-out", "", header, token);
+      assertThat(signedOut.statusCode()).isEqualTo(200);
+      assertThat(json(signedOut).get("state").asString()).isEqualTo("signed-out");
+      assertThat(json(signedOut).get("identityProvider").asString()).isEqualTo("unconfirmed");
+      assertThat(browser.backendCookies()).isEmpty();
+      // Nobody is signed in on this browser any more, which needs no identity provider to say.
+      HttpResponse<String> after = browser.get("/api/session");
+      assertThat(after.statusCode()).isEqualTo(200);
+      assertThat(json(after).get("state").asString()).isEqualTo("signed-out");
+    } finally {
+      keycloak.resume();
+      // Keycloak's own session was not ended by the unconfirmed sign-out: end it for the next
+      // test, also when this one failed.
+      keycloak.endSessionsOf(SyntheticKeycloak.ADA);
+    }
+    assertThat(outcomes("session.sign-out", principalId)).hasSize(before + 1);
+    assertNoCredentialIn(browser.everythingTheBackendSent());
+  }
+
   @Test
   void theOldCookieOfASignedOutSessionIsWorthNothing() {
     SyntheticBrowser browser = new SyntheticBrowser(port);

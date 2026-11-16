@@ -76,6 +76,7 @@ final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator 
   private final WebClient client;
   private final IdentityProperties properties;
   private final LongSupplier nanoTime;
+  private final Scheduler timer;
   private final Mono<Health> cached;
   private final AtomicReference<String> lastWarnedIssuer = new AtomicReference<>();
 
@@ -95,9 +96,11 @@ final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator 
   }
 
   /**
-   * The cache interval is measured with {@code nanoTime} and expired by {@code timer}. Production
-   * uses {@link System#nanoTime()} and the parallel scheduler; a test passes one virtual clock for
-   * both, so that the age of a result does not depend on how fast the test machine is.
+   * The cache interval is measured with {@code nanoTime} and expired by {@code timer}, and the time
+   * the provider is given to answer ({@link #TIMEOUT}) runs on {@code timer} too. Production uses
+   * {@link System#nanoTime()} and the parallel scheduler; a test passes one virtual clock for both,
+   * so that neither the age of a result nor the moment an unanswered request is given up depends on
+   * how fast the test machine is.
    */
   IdentityDiscoveryHealthIndicator(
       WebClient client,
@@ -108,6 +111,7 @@ final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator 
     this.client = client;
     this.properties = properties;
     this.nanoTime = nanoTime;
+    this.timer = timer;
     // discover() never errors and is never empty, so only the value's interval matters. What is
     // left of the interval after the answer arrived is how long the answer is kept: zero or less
     // means it is delivered to the waiting evaluations and the next one starts a new request.
@@ -141,7 +145,7 @@ final class IdentityDiscoveryHealthIndicator implements ReactiveHealthIndicator 
         .uri(properties.discoveryUri())
         .retrieve()
         .bodyToMono(DOCUMENT)
-        .timeout(TIMEOUT)
+        .timeout(TIMEOUT, timer)
         .map(this::evaluate)
         // An empty 200 or a 204 completes without a body: that is not a discovery document, so the
         // indicator must contribute DOWN rather than nothing (an absent contribution would let the

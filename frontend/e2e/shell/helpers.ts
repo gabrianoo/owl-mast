@@ -17,7 +17,11 @@ export const syntheticCsrf = { headerName: 'X-CSRF-TOKEN', token: 'synthetic-csr
 export const signedInSession = { state: 'signed-in', person: syntheticPerson, csrf: syntheticCsrf };
 export const signedOutSession = { state: 'signed-out' };
 
-export type SessionMock = { json: unknown } | { status: number };
+/**
+ * `csrf` on a status: the extension member the backend adds to the 503 of the session read while
+ * it keeps a session it cannot confirm.
+ */
+export type SessionMock = { json: unknown } | { status: number; csrf?: unknown };
 
 /**
  * Intercepts the session read. `current` may be replaced by the test to change what later reads
@@ -34,7 +38,7 @@ export async function mockSession(page: Page, initial: SessionMock): Promise<{ h
     return route.fulfill({
       status: current.status,
       contentType: 'application/problem+json',
-      body: JSON.stringify({ status: current.status, title: 'mocked' }),
+      body: JSON.stringify({ status: current.status, title: 'mocked', ...(current.csrf === undefined ? {} : { csrf: current.csrf }) }),
     });
   });
   return {

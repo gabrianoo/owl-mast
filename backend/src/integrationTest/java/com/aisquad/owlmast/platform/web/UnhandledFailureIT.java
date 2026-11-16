@@ -11,6 +11,7 @@ import com.aisquad.owlmast.testing.ContainersConfiguration;
 import com.aisquad.owlmast.testing.StubIdentityConfiguration;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
@@ -38,6 +39,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.server.ServerWebExchange;
 import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -343,12 +345,57 @@ class UnhandledFailureIT {
         .isEqualTo(403);
   }
 
+  /**
+   * PR #194 review, R2-3: an extension member the security chain adds to the envelope (the CSRF
+   * token of a kept session) is a top-level member of the body with the application's own codecs,
+   * next to the status, and not nested under a member of its own.
+   */
+  @Test
+  void anExtensionMemberIsWrittenAtTheTopLevelOfTheEnvelope() {
+    client()
+        .get()
+        .uri("/api/test-only/failure/extension")
+        .exchange()
+        .expectStatus()
+        .isEqualTo(503)
+        .expectHeader()
+        .contentType(MediaType.APPLICATION_PROBLEM_JSON)
+        .expectBody()
+        .jsonPath("$.status")
+        .isEqualTo(503)
+        .jsonPath("$.instance")
+        .isEqualTo("/api/test-only/failure/extension")
+        .jsonPath("$.synthetic.headerName")
+        .isEqualTo("X-SYNTHETIC")
+        .jsonPath("$.synthetic.token")
+        .isEqualTo("synthetic-value")
+        .jsonPath("$.properties")
+        .doesNotExist()
+        .jsonPath("$.detail")
+        .doesNotExist();
+  }
+
   private WebTestClient client() {
     return WebTestClient.bindToServer().baseUrl("http://localhost:" + port).build();
   }
 
   @RestController
   static class FailingController {
+
+    private final ProblemResponses problems;
+
+    FailingController(ProblemResponses problems) {
+      this.problems = problems;
+    }
+
+    @GetMapping("/api/test-only/failure/extension")
+    Mono<Void> extension(ServerWebExchange exchange) {
+      return problems.write(
+          exchange,
+          HttpStatus.SERVICE_UNAVAILABLE,
+          headers -> {},
+          Map.of("synthetic", Map.of("headerName", "X-SYNTHETIC", "token", "synthetic-value")));
+    }
 
     @GetMapping("/api/test-only/failure/thrown")
     Mono<String> thrown() {

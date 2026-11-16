@@ -204,6 +204,19 @@ public final class SyntheticKeycloak implements AutoCloseable {
         .block(CALL);
   }
 
+  /**
+   * Keycloak stops answering: its container is paused, so requests to it are accepted or not, and
+   * never answered. An outage of a running identity provider, until {@link #resume()}.
+   */
+  public void pause() {
+    container.getDockerClient().pauseContainerCmd(container.getContainerId()).exec();
+  }
+
+  /** Keycloak answers again, with every realm, user and session it had. */
+  public void resume() {
+    container.getDockerClient().unpauseContainerCmd(container.getContainerId()).exec();
+  }
+
   @Override
   public void close() {
     container.stop();

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createApiClient } from './client.ts';
 import {
   createSessionLink,
+  parseKeptSession,
   parseSession,
   parseSignOut,
   readSignInResult,
@@ -39,6 +40,27 @@ describe('session answer', () => {
     expect(() => parseSession(answer({ headerName: 'X-CSRF-TOKEN', token: '' }))).toThrow();
     expect(() => parseSession(answer({ headerName: 'X-CSRF-TOKEN', token: 'x'.repeat(4097) }))).toThrow();
     expect(() => parseSession(answer({ headerName: 'X-CSRF-TOKEN' }))).toThrow();
+  });
+
+  it('reads the csrf token of a kept session with the same checks, and nothing from anything else', () => {
+    expect(parseKeptSession(csrf)).toEqual(csrf);
+    expect(parseKeptSession({ ...csrf, extra: 'ignored' })).toEqual(csrf);
+    for (const value of [
+      undefined,
+      null,
+      'X-CSRF-TOKEN',
+      [],
+      {},
+      { headerName: 'X-CSRF-TOKEN' },
+      { token: 't' },
+      { headerName: 'X CSRF', token: 't' },
+      { headerName: 'X-CSRF-TOKEN:\r\nCookie', token: 't' },
+      { headerName: 'X-CSRF-TOKEN', token: 'a\r\nb' },
+      { headerName: 'X-CSRF-TOKEN', token: '' },
+      { headerName: 'X-CSRF-TOKEN', token: 'x'.repeat(4097) },
+    ]) {
+      expect(parseKeptSession(value), JSON.stringify(value)).toBeUndefined();
+    }
   });
 
   it('reports the identity provider session as ended only when told so', () => {

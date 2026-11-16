@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.aisquad.owlmast.access.adapter.identity.IdentityDiscovery;
+import com.aisquad.owlmast.access.adapter.identity.IdentityDiscoveryOnTestClock;
 import com.aisquad.owlmast.access.adapter.identity.IdentityProperties;
 import com.aisquad.owlmast.access.adapter.identity.IssuerSigningKeys;
 import com.aisquad.owlmast.access.adapter.identity.SigningIssuer;
@@ -213,6 +214,46 @@ class CredentialValidationTest {
             CredentialValidation.bearer(nowhere, CLIENT));
     assertThatThrownBy(() -> decoder.decode("not-a-token").block(ANSWER))
         .isInstanceOf(IdentityProviderUnavailableException.class);
+  }
+
+  /**
+   * R2-1: before a discovery document was accepted, every presented credential used to send its own
+   * discovery request. Now they share one per retry interval, across both kinds of credential, and
+   * each is still an outage, not a refusal.
+   */
+  @Test
+  void credentialsPresentedWhileDiscoveryFailsCostTheProviderOneDiscoveryRequestPerInterval() {
+    VirtualTimeScheduler time = VirtualTimeScheduler.create();
+    // A provider that answers, with a document the backend does not accept: another issuer.
+    try (StubIdentityProvider provider =
+            StubIdentityProvider.start("owl-mast", "https://elsewhere.example/realms/owl-mast");
+        SigningIssuer somebody = new SigningIssuer()) {
+      IssuerSigningKeys keys =
+          new IssuerSigningKeys(
+              WebClient.create(),
+              IdentityDiscoveryOnTestClock.of(
+                  new IdentityProperties(provider.issuerUri(), true), time));
+      List<ReactiveJwtDecoder> decoders =
+          List.of(
+              CredentialValidation.decoder(
+                  keys, CredentialValidation.bearer(provider.issuerUri(), CLIENT)),
+              CredentialValidation.decoder(
+                  keys, CredentialValidation.logoutToken(provider.issuerUri(), CLIENT)));
+
+      for (int round = 1; round <= 2; round++) {
+        for (int i = 0; i < 25; i++) {
+          for (ReactiveJwtDecoder decoder : decoders) {
+            String credential = somebody.signedBySomebodyElse(somebody.claims(CLIENT, "s"));
+            assertThatThrownBy(() -> decoder.decode(credential).block(ANSWER))
+                .isInstanceOf(IdentityProviderUnavailableException.class)
+                .matches(CredentialValidation::couldNotVerify);
+          }
+        }
+        assertThat(provider.discoveryRequests()).isEqualTo(round);
+        assertThat(somebody.keyRequests()).isZero();
+        time.advanceTimeBy(IdentityDiscoveryOnTestClock.RETRY);
+      }
+    }
   }
 
   /**

@@ -27,7 +27,9 @@ import reactor.core.publisher.Mono;
  * {@code signed-in} with the person to show and the CSRF token that every unsafe call must send
  * back in the named header. The person is a principal id and a display name; no token, subject,
  * email or username is published. A bearer caller has no browser session and reads {@code
- * signed-out}.
+ * signed-out}. A session that is kept while the identity provider cannot be asked about it does not
+ * reach this controller: the security chain answers 503 with the CSRF token ({@link
+ * SignInResponses#sessionUnconfirmed}).
  *
  * <p>{@code POST /api/session/sign-out} ends the session here and at the identity provider and says
  * whether the provider confirmed its part.
@@ -101,13 +103,10 @@ class SessionController {
     Map<String, Object> personView = new LinkedHashMap<>();
     personView.put("principalId", person.principalId().value());
     personView.put("displayName", person.displayName());
-    Map<String, Object> csrfView = new LinkedHashMap<>();
-    csrfView.put("headerName", csrf.getHeaderName());
-    csrfView.put("token", csrf.getToken());
     Map<String, Object> body = new LinkedHashMap<>();
     body.put("state", SIGNED_IN);
     body.put("person", personView);
-    body.put("csrf", csrfView);
+    body.put(SignInResponses.CSRF_MEMBER, SignInResponses.csrfView(csrf));
     return body;
   }
 

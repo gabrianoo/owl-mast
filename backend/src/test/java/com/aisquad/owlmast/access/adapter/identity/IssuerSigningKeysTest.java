@@ -27,9 +27,9 @@ import reactor.core.publisher.Mono;
 import reactor.test.scheduler.VirtualTimeScheduler;
 
 /**
- * How often the issuer is asked for its keys, whatever the presented tokens name (PR #194 review,
- * R1-1 and R1-3). The intervals run on a clock the test moves; the key endpoint is a local server
- * that counts its requests.
+ * How often the issuer is asked for its keys, whatever the presented tokens name, and how long a
+ * held key is served without asking (PR #194 review, R1-1, R1-3 and R2-2). The intervals run on a
+ * clock the test moves; the key endpoint is a local server that counts its requests.
  */
 @ExtendWith(OutputCaptureExtension.class)
 class IssuerSigningKeysTest {
@@ -47,6 +47,7 @@ class IssuerSigningKeysTest {
           IssuerSigningKeys.KEPT,
           IssuerSigningKeys.RETRY,
           IssuerSigningKeys.FETCH_TIMEOUT,
+          IssuerSigningKeys.MAX_AGE,
           time);
 
   @AfterEach
@@ -62,10 +63,90 @@ class IssuerSigningKeysTest {
     for (int i = 0; i < 20; i++) {
       assertThat(keysOf(current())).hasSize(1);
     }
-    // Long after the interval too: a key that is held needs no fetch.
-    time.advanceTimeBy(Duration.ofHours(1));
+    // Long after the fetch interval too: a key that is held needs no fetch while its set is
+    // younger than the maximum age.
+    time.advanceTimeBy(IssuerSigningKeys.MAX_AGE.minusMillis(1));
     assertThat(keysOf(current())).hasSize(1);
     assertThat(issuer.keyRequests()).isEqualTo(1);
+  }
+
+  /**
+   * R2-2: a key the issuer withdrew (a compromised key rotated out) stops verifying. Before, a held
+   * key was served without a request for as long as the process ran.
+   */
+  @Test
+  void aHeldKeyTheIssuerWithdrewStopsVerifyingOnceTheHeldSetIsTooOld() {
+    SignedJWT signedWithTheWithdrawnKey = current();
+    assertThat(keysOf(signedWithTheWithdrawnKey)).hasSize(1);
+    issuer.rotateTo("key-2");
+
+    // Younger than the maximum age, the held set still serves it, without a request.
+    time.advanceTimeBy(IssuerSigningKeys.MAX_AGE.minusMillis(1));
+    assertThat(keysOf(signedWithTheWithdrawnKey)).hasSize(1);
+    assertThat(issuer.keyRequests()).isEqualTo(1);
+
+    // At the maximum age the issuer is asked once, and the key is not in what it publishes.
+    time.advanceTimeBy(Duration.ofMillis(1));
+    for (int i = 0; i < 20; i++) {
+      assertThat(keysOf(signedWithTheWithdrawnKey)).isEmpty();
+    }
+    assertThat(issuer.keyRequests()).isEqualTo(2);
+    // The key the issuer signs with now came with the same fetch.
+    assertThat(keysOf(current())).extracting(JWK::getKeyID).containsExactly("key-2");
+    assertThat(issuer.keyRequests()).isEqualTo(2);
+  }
+
+  /** R2-2: an unchanged set that is too old is fetched again once, and then held again. */
+  @Test
+  void aHeldSetThatIsTooOldIsFetchedAgainOnceAndHeldAgain() {
+    assertThat(keysOf(current())).hasSize(1);
+    time.advanceTimeBy(IssuerSigningKeys.MAX_AGE);
+
+    for (int i = 0; i < 20; i++) {
+      assertThat(keysOf(current())).extracting(JWK::getKeyID).containsExactly("key-1");
+    }
+    assertThat(issuer.keyRequests()).isEqualTo(2);
+    // The new set has its own age: no request until it is too old in turn.
+    time.advanceTimeBy(IssuerSigningKeys.MAX_AGE.minusMillis(1));
+    assertThat(keysOf(current())).hasSize(1);
+    assertThat(issuer.keyRequests()).isEqualTo(2);
+    time.advanceTimeBy(Duration.ofMillis(1));
+    assertThat(keysOf(current())).hasSize(1);
+    assertThat(issuer.keyRequests()).isEqualTo(3);
+  }
+
+  /** R2-2: an outage of the key endpoint does not refuse credentials whose key is held. */
+  @Test
+  void whenTheRefreshOfATooOldSetFailsTheHeldKeysKeepVerifying() {
+    assertThat(keysOf(current())).hasSize(1);
+    time.advanceTimeBy(IssuerSigningKeys.MAX_AGE);
+    issuer.keysAre(Answer.FAILING);
+
+    for (int i = 0; i < 20; i++) {
+      assertThat(keysOf(current())).extracting(JWK::getKeyID).containsExactly("key-1");
+    }
+    // A token whose key is not held is an outage, not a refusal, and asks for nothing more.
+    assertUnavailable(unknown());
+    assertThat(issuer.keyRequests()).isEqualTo(2);
+
+    // One request per retry interval while the refresh keeps failing.
+    time.advanceTimeBy(IssuerSigningKeys.RETRY.minusMillis(1));
+    assertThat(keysOf(current())).hasSize(1);
+    assertThat(issuer.keyRequests()).isEqualTo(2);
+    time.advanceTimeBy(Duration.ofMillis(1));
+    for (int i = 0; i < 20; i++) {
+      assertThat(keysOf(current())).hasSize(1);
+    }
+    assertThat(issuer.keyRequests()).isEqualTo(3);
+
+    // The issuer answers again: the refresh succeeds and the set is young again.
+    time.advanceTimeBy(IssuerSigningKeys.RETRY);
+    issuer.keysAre(Answer.SERVED);
+    assertThat(keysOf(current())).hasSize(1);
+    assertThat(issuer.keyRequests()).isEqualTo(4);
+    time.advanceTimeBy(IssuerSigningKeys.KEPT);
+    assertThat(keysOf(current())).hasSize(1);
+    assertThat(issuer.keyRequests()).isEqualTo(4);
   }
 
   /** R1-3: the key id is the caller's choice, the rate of key requests is not. */
@@ -162,6 +243,34 @@ class IssuerSigningKeysTest {
     // The held key still serves; a token that needs a fetch is an outage without a new request.
     assertThat(keysOf(current())).extracting(JWK::getKeyID).containsExactly("key-1");
     assertUnavailable(unknown());
+    assertThat(issuer.keyRequests()).isEqualTo(2);
+  }
+
+  /**
+   * The price of asking again: past the maximum age a held key waits for the refresh to fail. A key
+   * endpoint that never answers holds its tokens until the fetch is given up, and only then do the
+   * held keys serve.
+   */
+  @Test
+  void aHeldKeyOfATooOldSetWaitsForAnUnansweredRefreshAndIsServedWhenItIsGivenUp()
+      throws Exception {
+    SignedJWT token = current();
+    assertThat(keysOf(token)).hasSize(1);
+    time.advanceTimeBy(IssuerSigningKeys.MAX_AGE);
+    issuer.keysAre(Answer.UNANSWERED);
+
+    CompletableFuture<List<JWK>> waiting = keys.of(token).collectList().toFuture();
+    awaitKeyRequests(2);
+    time.advanceTimeBy(IssuerSigningKeys.FETCH_TIMEOUT.minusMillis(1));
+    assertThat(waiting).isNotDone();
+    time.advanceTimeBy(Duration.ofMillis(1));
+
+    assertThat(waiting).isDone();
+    assertThat(waiting.get(ANSWER.toSeconds(), TimeUnit.SECONDS))
+        .extracting(JWK::getKeyID)
+        .containsExactly("key-1");
+    // For the retry interval after the failure the held key serves at once, without a request.
+    assertThat(keysOf(token)).hasSize(1);
     assertThat(issuer.keyRequests()).isEqualTo(2);
   }
 

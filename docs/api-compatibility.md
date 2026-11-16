@@ -19,7 +19,7 @@ The backend publishes one **API contract version** `major.minor`:
 | Contract | Story | Change |
 | --- | --- | --- |
 | 1.0 | OM-01.04 | `GET /api/compatibility`, the common error envelope |
-| 1.1 | OM-02.01 | The session endpoints below `/api/session` ([identity.md](identity.md#endpoints)) were added. Every other API path now needs an authenticated principal: an anonymous caller gets 401 in the same envelope where an unknown path used to answer 404. The envelope did not change, so this is a minor version |
+| 1.1 | OM-02.01 | The session endpoints below `/api/session` ([identity.md](identity.md#endpoints)) were added. Every other API path now needs an authenticated principal: an anonymous caller gets 401 in the same envelope where an unknown path used to answer 404. The envelope's members did not change. One answer of the new endpoints adds an extension member to it: the 503 of `GET /api/session` for a session that is kept and cannot be confirmed carries `csrf` (`headerName`, `token`). Nothing was removed or renamed, so this is a minor version |
 
 Rules for changing it:
 
@@ -141,7 +141,10 @@ Backend error responses are RFC 9457 problem details (`application/problem+json`
   It runs before Spring Boot's default error handler, whose `application/json` error attributes are
   therefore no longer produced. The security chain writes its own refusals through
   `platform/web/ProblemResponses`; verified by `SignInIT`, `IdentityProviderUnavailableIT`,
-  `CompatibilityEndpointIT` and `UnhandledFailureIT`.
+  `CompatibilityEndpointIT` and `UnhandledFailureIT`. One of these answers has an extension member
+  (RFC 9457 section 3.2) at the top level of the body: the 503 of `GET /api/session` for a session
+  that is kept and cannot be confirmed carries `csrf` ([identity.md](identity.md#endpoints)). It is
+  part of contract 1.1, which introduces that endpoint.
 
 Authentication and authorization answers (OM-02.01, [identity.md](identity.md)):
 
@@ -152,7 +155,7 @@ Authentication and authorization answers (OM-02.01, [identity.md](identity.md)):
 | An unsafe method without the session's CSRF token | 403 | |
 | An authenticated caller who is denied (`AccessDeniedException`, `OperationDeniedException`) | 403 | |
 | An `AccessDeniedException` raised for a caller nobody authenticated | 401 | `WWW-Authenticate: Bearer` |
-| The identity provider cannot be reached when a sign-in, a session renewal or a credential check needs it | 503 | |
+| The identity provider cannot be reached when a sign-in, a session renewal or a credential check needs it | 503. On `GET /api/session` for a kept session the body also has the extension member `csrf` (`headerName`, `token`) | `Cache-Control: no-store` on that one answer |
 | A logout notice that the identity provider did not sign | 400 | |
 
 The advice no longer answers Spring Security's `AccessDeniedException` and `AuthenticationException`

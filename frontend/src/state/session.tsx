@@ -2,9 +2,11 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useApi } from '../api/ApiProvider.tsx';
 import { joinPath } from '../api/client.ts';
 import {
+  CSRF_MEMBER,
   SESSION_PATH,
   SIGN_IN_PATH,
   SIGN_OUT_PATH,
+  parseKeptSession,
   parseSession,
   parseSignOut,
   readSignInResult,
@@ -29,14 +31,21 @@ import {
  * - `provider-error`: the identity provider could not be reached for sign-in.
  * - `problem`: the session endpoint itself did not give a usable answer. Fail closed: a read that
  *   fails while somebody is signed in also lands here, because the shell can no longer show that the
- *   session is current. `afterSignedIn` remembers that somebody was signed in, so that a later read
- *   saying nobody is reads as `expired` and not as a plain `signed-out`, and so that sign-out stays
- *   offered: the backend serves it while it cannot confirm the session (an identity provider
+ *   session is current. `afterSignedIn` says that a session is kept for this browser: somebody was
+ *   signed in before the reads failed, or the failed read itself said so (below). A later read
+ *   saying nobody is signed in then reads as `expired` and not as a plain `signed-out`, and sign-out
+ *   stays offered: the backend serves it while it cannot confirm the session (an identity provider
  *   outage), and a person on a shared device must be able to end the session then.
  *
- * The CSRF token of the last signed-in answer is kept until the backend says nobody is signed in or
- * a sign-out ended the session. A read that fails says nothing about the session, so it does not
- * take the token away: the sign-out offered in the `problem` state needs it.
+ * A session the backend keeps and cannot confirm answers the read with 503 and the session's CSRF
+ * token. That read is still a failed one (nobody is shown as signed in), but it sets the token and
+ * `afterSignedIn`, in whatever state it arrives: a shell that starts during the outage has no token
+ * and has seen nobody signed in, and offers and sends the sign-out all the same.
+ *
+ * The CSRF token of the last answer that carried one is kept until the backend says nobody is
+ * signed in or a sign-out ended the session. A read that fails without a token says nothing about
+ * the session, so it does not take the token away: the sign-out offered in the `problem` state
+ * needs it.
  *
  * The session is read while the document is visible only: every read makes the backend renew the
  * session with the identity provider, so a tab nobody looks at must not keep a session alive.
@@ -63,7 +72,13 @@ export interface SessionContextValue {
 }
 
 export const SESSION_POLL_MS = 60_000;
-export const SESSION_READ_TIMEOUT_MS = 10_000;
+/**
+ * How long a session read may take. It must stay above the 10 s the backend gives the identity
+ * provider to answer a renewal: against a provider that accepts the request and never answers, the
+ * backend writes its 503 with the CSRF token only after those 10 s, and a shell that gave up at the
+ * same moment would not learn that a session is kept and would offer no sign-out.
+ */
+export const SESSION_READ_TIMEOUT_MS = 15_000;
 
 const SIGNED_OUT_MESSAGE = 'You are signed out.';
 const SIGN_OUT_FAILED_MESSAGE = 'Sign-out could not be confirmed. You may still be signed in; try again.';
@@ -71,7 +86,11 @@ const SIGN_OUT_OFFLINE_MESSAGE = 'You are offline, so sign-out was not sent. You
 
 const SessionContext = createContext<SessionContextValue | null>(null);
 
-type Read = { kind: 'signed-in'; person: SessionPerson } | { kind: 'signed-out' } | { kind: 'failed' };
+type Read =
+  | { kind: 'signed-in'; person: SessionPerson }
+  | { kind: 'signed-out' }
+  /** `sessionKept`: the failed read said that the backend keeps a session it cannot confirm. */
+  | { kind: 'failed'; sessionKept?: true };
 
 function initialNotice(result: SignInResult | undefined): SessionState | undefined {
   if (result === 'unavailable') return { kind: 'provider-error' };
@@ -93,6 +112,8 @@ export function nextSessionState(current: SessionState, read: Read, notice?: Ses
     return current;
   }
   // The read failed. Nobody is shown as signed in on the strength of an answer that did not arrive.
+  // The backend said it keeps a session: sign-out is offered whatever the shell showed before.
+  if (read.sessionKept) return { kind: 'problem', afterSignedIn: true };
   if (current.kind === 'signed-in') return { kind: 'problem', afterSignedIn: true };
   if (current.kind === 'loading') return { kind: 'problem' };
   return current;
@@ -140,9 +161,20 @@ export function SessionProvider({
     }, readTimeoutMs);
     try {
       // Public: the endpoint answers for anybody and discloses nothing to a signed-out caller.
-      const result = await api.get(SESSION_PATH, { protected: false, signal: controller.signal }, parseSession);
+      const result = await api.get(
+        SESSION_PATH,
+        { protected: false, signal: controller.signal, errorExtension: CSRF_MEMBER },
+        parseSession,
+      );
       if (result.kind !== 'ok') {
-        // No answer about the session: the CSRF token of the last signed-in answer stays.
+        // 503 with a CSRF token: the backend keeps a session it cannot confirm. The token is the
+        // one the sign-out needs; the person is not named and is not shown as signed in.
+        const kept = result.kind === 'error' && result.status === 503 ? parseKeptSession(result.extension) : undefined;
+        if (kept) {
+          link.setCsrf(kept);
+          return { kind: 'failed', sessionKept: true };
+        }
+        // No answer about the session: the CSRF token of the last answer that carried one stays.
         return { kind: 'failed' };
       }
       if (result.value.state === 'signed-in') {
@@ -223,7 +255,7 @@ export function SessionProvider({
       if (result.kind === 'denied' && result.status === 403) {
         // The CSRF token was missing or stale: read the session once and try once more.
         const answer = await read();
-        if (answer.kind === 'signed-in') {
+        if (answer.kind === 'signed-in' || (answer.kind === 'failed' && answer.sessionKept)) {
           result = await api.post(SIGN_OUT_PATH, { protected: true }, parseSignOut);
         } else if (answer.kind === 'signed-out') {
           result = { kind: 'denied', status: 401 };

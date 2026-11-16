@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ApiClient, ApiResult } from '../api/client.ts';
@@ -7,7 +7,7 @@ import { createSessionLink, type SessionAnswer } from '../api/session.ts';
 import { App } from '../app/App.tsx';
 import { SYNTHETIC_CSRF, SYNTHETIC_PERSON, signedIn, signedOut, withSession, type SessionScript } from '../testing/session.ts';
 import { SessionControl } from '../app/shell/SessionControl.tsx';
-import { SessionProvider, nextSessionState, useSession, type SessionState } from './session.tsx';
+import { SESSION_READ_TIMEOUT_MS, SessionProvider, nextSessionState, useSession, type SessionState } from './session.tsx';
 
 const descriptorGet: Pick<ApiClient, 'get'> = {
   get: <T,>() => Promise.resolve({ kind: 'not-found' } as ApiResult<T>),
@@ -59,6 +59,33 @@ describe('session transitions', () => {
     expect(nextSessionState({ kind: 'problem' }, { kind: 'failed' })).toEqual({ kind: 'problem' });
     expect(nextSessionState({ kind: 'signed-out' }, { kind: 'failed' })).toEqual({ kind: 'signed-out' });
     expect(nextSessionState({ kind: 'expired' }, { kind: 'failed' })).toEqual({ kind: 'expired' });
+  });
+});
+
+describe('a failed read that says a session is kept (503 with the csrf token)', () => {
+  const kept = { kind: 'failed', sessionKept: true } as const;
+
+  it('offers sign-out from every state, and names nobody', () => {
+    const states: SessionState[] = [
+      { kind: 'loading' },
+      { kind: 'problem' },
+      { kind: 'problem', afterSignedIn: true },
+      { kind: 'signed-in', person: SYNTHETIC_PERSON },
+      { kind: 'signed-out' },
+      { kind: 'signed-out', identityProvider: 'unconfirmed' },
+      { kind: 'expired' },
+      { kind: 'sign-in-failed' },
+      { kind: 'provider-error' },
+    ];
+    for (const current of states) {
+      expect(nextSessionState(current, kept), current.kind).toEqual({ kind: 'problem', afterSignedIn: true });
+    }
+  });
+
+  it('is followed by expired when the backend then says nobody is signed in, and stays through a plain failure', () => {
+    const problem = nextSessionState({ kind: 'loading' }, kept);
+    expect(nextSessionState(problem, { kind: 'failed' })).toEqual({ kind: 'problem', afterSignedIn: true });
+    expect(nextSessionState(problem, { kind: 'signed-out' })).toEqual({ kind: 'expired' });
   });
 });
 
@@ -148,6 +175,180 @@ describe('sign-out while the session cannot be confirmed (identity provider outa
     const header = screen.getByRole('group', { name: 'Session' });
     expect(header).toHaveTextContent('Session not confirmed');
     expect(within(header).queryByRole('button', { name: 'Sign out' })).toBeNull();
+  });
+
+  /** The backend's answers to a shell that starts while it keeps a session it cannot confirm. */
+  function outageBackend(options: { csrfIn503: unknown; signOut: (csrf: string | null) => Response; status?: number }) {
+    const status = options.status ?? 503;
+    const seen = { sessionReads: 0, signOuts: [] as (string | null)[] };
+    const fetchStub = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url === '/api/session') {
+        seen.sessionReads += 1;
+        const body = { title: 'mocked', status, instance: '/api/session', ...(options.csrfIn503 === undefined ? {} : { csrf: options.csrfIn503 }) };
+        return Promise.resolve(new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/problem+json' } }));
+      }
+      const csrf = new Headers(init?.headers).get(SYNTHETIC_CSRF.headerName);
+      seen.signOuts.push(csrf);
+      return Promise.resolve(options.signOut(csrf));
+    });
+    return { seen, fetchStub };
+  }
+
+  const signedOutUnconfirmed = () =>
+    new Response(JSON.stringify({ state: 'signed-out', identityProvider: 'unconfirmed' }), { status: 200, headers: { 'content-type': 'application/json' } });
+
+  function renderControl(link = createSessionLink()) {
+    render(
+      <ApiProvider config={{ apiPathPrefix: '/api' }} session={link}>
+        <SessionProvider apiPathPrefix="/api" link={link}>
+          <SessionControl />
+        </SessionProvider>
+      </ApiProvider>,
+    );
+    return link;
+  }
+
+  it('a shell that starts during the outage learns the CSRF token from the 503, offers Sign out and sends the header (R2-3)', async () => {
+    const { seen, fetchStub } = outageBackend({ csrfIn503: SYNTHETIC_CSRF, signOut: signedOutUnconfirmed });
+    vi.stubGlobal('fetch', fetchStub);
+    try {
+      const link = renderControl();
+      await settle();
+      await settle();
+      const header = screen.getByRole('group', { name: 'Session' });
+      expect(header).toHaveTextContent('Session not confirmed');
+      expect(header).not.toHaveTextContent('Signed in');
+      expect(link.csrf()).toEqual(SYNTHETIC_CSRF);
+      await userEvent.setup().click(within(header).getByRole('button', { name: 'Sign out' }));
+      await settle();
+      await settle();
+      expect(seen.signOuts).toEqual([SYNTHETIC_CSRF.token]);
+      expect(header).toHaveTextContent('Signed out');
+      expect(link.csrf()).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a 503 without a usable csrf member says nothing about a session: no Sign out, no token', async () => {
+    for (const csrfIn503 of [undefined, { headerName: 'X CSRF', token: 't' }, 'synthetic-csrf-token']) {
+      const { fetchStub } = outageBackend({ csrfIn503, signOut: signedOutUnconfirmed });
+      vi.stubGlobal('fetch', fetchStub);
+      try {
+        const link = renderControl();
+        await settle();
+        await settle();
+        const header = screen.getByRole('group', { name: 'Session' });
+        expect(header).toHaveTextContent('Session not confirmed');
+        expect(within(header).queryByRole('button', { name: 'Sign out' })).toBeNull();
+        expect(link.csrf()).toBeUndefined();
+      } finally {
+        vi.unstubAllGlobals();
+        cleanup();
+      }
+    }
+  });
+
+  it('only a 503 says a session is kept: another error status with a valid csrf member offers no Sign out and sets no token', async () => {
+    const { fetchStub } = outageBackend({ csrfIn503: SYNTHETIC_CSRF, signOut: signedOutUnconfirmed, status: 500 });
+    vi.stubGlobal('fetch', fetchStub);
+    try {
+      const link = renderControl();
+      await settle();
+      await settle();
+      const header = screen.getByRole('group', { name: 'Session' });
+      expect(header).toHaveTextContent('Session not confirmed');
+      expect(within(header).queryByRole('button', { name: 'Sign out' })).toBeNull();
+      expect(link.csrf()).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('waits longer for the session read than the 10 s the backend gives a silent identity provider, so the late 503 still offers Sign out', async () => {
+    const BACKEND_PROVIDER_TIMEOUT_MS = 10_000;
+    expect(SESSION_READ_TIMEOUT_MS).toBeGreaterThan(BACKEND_PROVIDER_TIMEOUT_MS);
+    vi.useFakeTimers();
+    // The backend answers once it has given up on the provider; an aborted read is never answered.
+    const fetchStub = vi.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((resolve, reject) => {
+          const answer = setTimeout(() => {
+            resolve(
+              new Response(JSON.stringify({ title: 'Service Unavailable', status: 503, csrf: SYNTHETIC_CSRF }), {
+                status: 503,
+                headers: { 'content-type': 'application/problem+json' },
+              }),
+            );
+          }, BACKEND_PROVIDER_TIMEOUT_MS + 500);
+          init?.signal?.addEventListener('abort', () => {
+            clearTimeout(answer);
+            reject(new DOMException('aborted', 'AbortError'));
+          });
+        }),
+    );
+    vi.stubGlobal('fetch', fetchStub);
+    try {
+      const link = renderControl();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(BACKEND_PROVIDER_TIMEOUT_MS);
+      });
+      expect(screen.getByRole('group', { name: 'Session' })).toHaveTextContent('Checking your session');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+      const header = screen.getByRole('group', { name: 'Session' });
+      expect(header).toHaveTextContent('Session not confirmed');
+      expect(within(header).getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
+      expect(link.csrf()).toEqual(SYNTHETIC_CSRF);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a sign-out refused for a stale token (403) reads the kept session again and retries once with the new token', async () => {
+    const fresh = { headerName: SYNTHETIC_CSRF.headerName, token: 'synthetic-csrf-token-2' };
+    const { seen, fetchStub } = outageBackend({
+      csrfIn503: fresh,
+      signOut: (csrf) =>
+        csrf === fresh.token
+          ? signedOutUnconfirmed()
+          : new Response(JSON.stringify({ status: 403, title: 'Forbidden' }), { status: 403, headers: { 'content-type': 'application/problem+json' } }),
+    });
+    vi.stubGlobal('fetch', fetchStub);
+    try {
+      const link = renderControl();
+      await settle();
+      await settle();
+      // The token the shell holds is no longer the session's.
+      link.setCsrf({ headerName: SYNTHETIC_CSRF.headerName, token: 'stale-token' });
+      await userEvent.setup().click(screen.getByRole('button', { name: 'Sign out' }));
+      await settle();
+      await settle();
+      expect(seen.signOuts).toEqual(['stale-token', fresh.token]);
+      expect(seen.sessionReads).toBe(2);
+      expect(screen.getByRole('group', { name: 'Session' })).toHaveTextContent('Signed out');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a kept session is reported from a signed-out shell too (signed in in another tab during the outage)', async () => {
+    vi.useFakeTimers();
+    renderApp({ session: [ok(signedOut), { kind: 'error', status: 503, extension: SYNTHETIC_CSRF }] }, '/focus', { sessionPollIntervalMs: 1000 });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByRole('group', { name: 'Session' })).toHaveTextContent('Signed out');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    vi.useRealTimers();
+    const header = screen.getByRole('group', { name: 'Session' });
+    expect(header).toHaveTextContent('Session not confirmed');
+    expect(within(header).getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: 'The session could not be checked' })).toBeInTheDocument();
   });
 
   it('keeps the CSRF token over a failed read, so the sign-out carries it', async () => {

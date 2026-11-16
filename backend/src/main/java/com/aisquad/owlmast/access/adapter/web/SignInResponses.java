@@ -3,10 +3,15 @@ package com.aisquad.owlmast.access.adapter.web;
 import com.aisquad.owlmast.access.adapter.identity.SignInProperties;
 import com.aisquad.owlmast.platform.web.ProblemResponses;
 import java.net.URI;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.security.web.server.csrf.CsrfToken;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
@@ -21,6 +26,9 @@ final class SignInResponses {
 
   /** The challenge of every 401: the API accepts a session cookie or a bearer credential. */
   static final String CHALLENGE = "Bearer";
+
+  /** The member of a session answer that carries the CSRF token. */
+  static final String CSRF_MEMBER = "csrf";
 
   private final SignInProperties properties;
   private final ProblemResponses problems;
@@ -46,6 +54,40 @@ final class SignInResponses {
   /** An outage on a call that is not a sign-in step: always the status, never the shell. */
   Mono<Void> outage(ServerWebExchange exchange) {
     return problems.write(exchange, HttpStatus.SERVICE_UNAVAILABLE);
+  }
+
+  /**
+   * The session read ({@code GET /api/session}) of a session that is kept while the identity
+   * provider cannot be asked whether it still stands: the outage, with the session's CSRF token as
+   * the extension member {@code csrf} ({@code headerName}, {@code token}). Sign-out is served
+   * during the outage and needs that token; a shell that starts then has no other way to learn it,
+   * and the member also tells it that a session is kept. Nothing about the person is in the answer.
+   * A request for which the CSRF filter prepared no token gets the plain outage.
+   */
+  Mono<Void> sessionUnconfirmed(ServerWebExchange exchange) {
+    Mono<CsrfToken> prepared = exchange.getAttribute(CsrfToken.class.getName());
+    if (prepared == null) {
+      return outage(exchange);
+    }
+    return prepared
+        .map(Optional::of)
+        .defaultIfEmpty(Optional.empty())
+        .flatMap(csrf ->
+            csrf.map(token ->
+                    problems.write(
+                        exchange,
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        headers -> headers.setCacheControl(CacheControl.noStore()),
+                        Map.of(CSRF_MEMBER, csrfView(token))))
+                .orElseGet(() -> outage(exchange)));
+  }
+
+  /** The CSRF token as the session answers publish it: the header to send and its value. */
+  static Map<String, Object> csrfView(CsrfToken csrf) {
+    Map<String, Object> view = new LinkedHashMap<>();
+    view.put("headerName", csrf.getHeaderName());
+    view.put("token", csrf.getToken());
+    return view;
   }
 
   /** The browser already has a session: back to the shell, which shows it. */

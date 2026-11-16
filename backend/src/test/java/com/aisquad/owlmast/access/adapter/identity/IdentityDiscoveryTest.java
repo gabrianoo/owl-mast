@@ -5,15 +5,21 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.aisquad.owlmast.access.application.IdentityProviderUnavailableException;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 import reactor.netty.DisposableServer;
 import reactor.netty.http.server.HttpServer;
 import reactor.test.StepVerifier;
+import reactor.test.scheduler.VirtualTimeScheduler;
 
 /**
  * What the backend accepts as the issuer's endpoints, against a local server that publishes
@@ -23,6 +29,10 @@ class IdentityDiscoveryTest {
 
   private final AtomicReference<String> document = new AtomicReference<>("{}");
   private final AtomicInteger requests = new AtomicInteger();
+
+  /** Answers wait for this; a test replaces it to hold them. */
+  private final AtomicReference<Mono<Void>> gate = new AtomicReference<>(Mono.empty());
+
   private final DisposableServer server =
       HttpServer.create()
           .port(0)
@@ -33,7 +43,9 @@ class IdentityDiscoveryTest {
                     requests.incrementAndGet();
                     return response
                         .header("Content-Type", "application/json")
-                        .sendString(Mono.fromSupplier(document::get));
+                        .sendString(
+                            Mono.fromSupplier(document::get)
+                                .delaySubscription(Mono.defer(gate::get)));
                   }))
           .bindNow();
   private final String address = "http://localhost:" + server.port() + "/realms/owl-mast";
@@ -87,8 +99,13 @@ class IdentityDiscoveryTest {
 
   @Test
   void aDocumentOfAnotherIssuerOrWithoutEndpointsIsAnOutageAndIsAskedForAgain() {
+    // No retry interval here, so every call reads again.
     IdentityDiscovery discovery =
-        new IdentityDiscovery(WebClient.create(), new IdentityProperties(address, true));
+        new IdentityDiscovery(
+            WebClient.create(),
+            new IdentityProperties(address, true),
+            IdentityDiscovery.KEPT,
+            Duration.ZERO);
 
     publish(address + "/", address + "/auth", address + "/token", address + "/certs");
     StepVerifier.create(discovery.metadata())
@@ -103,10 +120,116 @@ class IdentityDiscoveryTest {
     StepVerifier.create(discovery.metadata())
         .expectError(IdentityProviderUnavailableException.class)
         .verify();
-    // A failure is not kept: once the provider is right, the next caller gets its endpoints.
+    // Once the provider is right, the next read gets its endpoints.
     publish(address, address + "/auth", address + "/token", address + "/certs");
     StepVerifier.create(discovery.metadata()).expectNextCount(1).verifyComplete();
     assertThat(requests).hasValue(4);
+  }
+
+  /**
+   * R2-1: anybody can cause a read by presenting a credential. While no document was accepted, the
+   * failure is kept for the retry interval, so the provider receives one discovery request per
+   * interval however many callers arrive. Before, every caller sent its own.
+   */
+  @Test
+  void beforeADocumentWasAcceptedAFailingProviderIsAskedOncePerRetryInterval() {
+    VirtualTimeScheduler time = VirtualTimeScheduler.create();
+    IdentityDiscovery discovery =
+        new IdentityDiscovery(
+            WebClient.create(),
+            new IdentityProperties(address, true),
+            IdentityDiscovery.KEPT,
+            IdentityDiscovery.RETRY,
+            time);
+
+    for (int i = 0; i < 50; i++) {
+      assertUnavailable(discovery);
+    }
+    assertThat(requests).hasValue(1);
+
+    time.advanceTimeBy(IdentityDiscovery.RETRY.minusMillis(1));
+    assertUnavailable(discovery);
+    assertThat(requests).hasValue(1);
+
+    // The interval has passed: one more read, which again answers every caller after it.
+    time.advanceTimeBy(Duration.ofMillis(1));
+    for (int i = 0; i < 50; i++) {
+      assertUnavailable(discovery);
+    }
+    assertThat(requests).hasValue(2);
+
+    // The provider is right at the next read, and the document is then kept as an accepted one.
+    time.advanceTimeBy(IdentityDiscovery.RETRY);
+    publish(address, address + "/auth", address + "/token", address + "/certs");
+    for (int i = 0; i < 50; i++) {
+      StepVerifier.create(discovery.metadata()).expectNextCount(1).verifyComplete();
+    }
+    assertThat(requests).hasValue(3);
+  }
+
+  /** R2-1: callers that arrive together before any acceptance share the one read in flight. */
+  @Test
+  void callersArrivingWhileAReadIsUnansweredBeforeAnyAcceptanceShareIt() throws Exception {
+    Sinks.Empty<Void> held = Sinks.empty();
+    gate.set(held.asMono());
+    IdentityDiscovery discovery = onClock(VirtualTimeScheduler.create());
+
+    List<CompletableFuture<ProviderMetadata>> waiting = new ArrayList<>();
+    for (int i = 0; i < 10; i++) {
+      waiting.add(discovery.metadata().toFuture());
+    }
+    awaitRequests(1);
+    assertThat(waiting).noneMatch(CompletableFuture::isDone);
+
+    held.tryEmitEmpty();
+    for (CompletableFuture<ProviderMetadata> answer : waiting) {
+      assertThatThrownBy(() -> answer.get(30, TimeUnit.SECONDS))
+          .hasCauseInstanceOf(IdentityProviderUnavailableException.class);
+    }
+    assertThat(requests).hasValue(1);
+  }
+
+  /** The time the provider is given runs on the timer: the test moves the clock to it. */
+  @Test
+  void aDiscoveryEndpointThatNeverAnswersIsAnOutageWhenItsTimeHasPassed() throws Exception {
+    gate.set(Mono.never());
+    VirtualTimeScheduler time = VirtualTimeScheduler.create();
+    IdentityDiscovery discovery = onClock(time);
+
+    CompletableFuture<ProviderMetadata> waiting = discovery.metadata().toFuture();
+    awaitRequests(1);
+    time.advanceTimeBy(IdentityDiscovery.TIMEOUT.minusMillis(1));
+    assertThat(waiting).isNotDone();
+    time.advanceTimeBy(Duration.ofMillis(1));
+
+    // Given up by the move of the clock itself, not by real time passing.
+    assertThat(waiting).isDone();
+    assertThatThrownBy(() -> waiting.get(30, TimeUnit.SECONDS))
+        .hasCauseInstanceOf(IdentityProviderUnavailableException.class);
+  }
+
+  private IdentityDiscovery onClock(VirtualTimeScheduler time) {
+    return new IdentityDiscovery(
+        WebClient.create(),
+        new IdentityProperties(address, true),
+        IdentityDiscovery.KEPT,
+        IdentityDiscovery.RETRY,
+        time);
+  }
+
+  /** Waits (real time, bounded) until the provider has received {@code count} requests. */
+  private void awaitRequests(int count) throws InterruptedException {
+    long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+    while (requests.get() < count && System.nanoTime() < deadline) {
+      Thread.sleep(5);
+    }
+    assertThat(requests).hasValue(count);
+  }
+
+  private static void assertUnavailable(IdentityDiscovery discovery) {
+    StepVerifier.create(discovery.metadata())
+        .expectError(IdentityProviderUnavailableException.class)
+        .verify(Duration.ofSeconds(30));
   }
 
   /** A provider that is briefly away or wrong must not turn valid sessions into outages. */

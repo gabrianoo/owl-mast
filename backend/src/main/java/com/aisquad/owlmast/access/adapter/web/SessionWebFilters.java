@@ -33,13 +33,16 @@ final class SessionWebFilters {
    * request is answered 503, with two exceptions: where {@code servedWithoutSession} matches
    * (public content that does not depend on who asks) it continues without the session, and where
    * {@code endsSession} matches (sign-out) it continues with it, so a person can always end their
-   * session here; the provider's part is then reported as unconfirmed.
+   * session here; the provider's part is then reported as unconfirmed. Where {@code readsSession}
+   * matches (the shell's session read) the 503 carries the session's CSRF token: a shell that
+   * starts during the outage learns from it that a session is kept and how to send the sign-out.
    */
   static WebFilter standing(
       SessionKeeper sessions,
       SignInResponses responses,
       ServerWebExchangeMatcher servedWithoutSession,
-      ServerWebExchangeMatcher endsSession) {
+      ServerWebExchangeMatcher endsSession,
+      ServerWebExchangeMatcher readsSession) {
     return (ServerWebExchange exchange, WebFilterChain chain) ->
         sessions
             .sweep()
@@ -67,8 +70,20 @@ final class SessionWebFilters {
                                       .flatMap(match ->
                                           match.isMatch()
                                               ? withoutSession(exchange, chain)
-                                              : responses.outage(exchange)));
+                                              : unverifiable(exchange, responses, readsSession)));
                 });
+  }
+
+  private static Mono<Void> unverifiable(
+      ServerWebExchange exchange,
+      SignInResponses responses,
+      ServerWebExchangeMatcher readsSession) {
+    return readsSession
+        .matches(exchange)
+        .flatMap(reading ->
+            reading.isMatch()
+                ? responses.sessionUnconfirmed(exchange)
+                : responses.outage(exchange));
   }
 
   private static Mono<Void> withoutSession(ServerWebExchange exchange, WebFilterChain chain) {

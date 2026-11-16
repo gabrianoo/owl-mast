@@ -1,9 +1,14 @@
 /**
  * Browser session contract (OM-02.01, docs/identity.md). The backend holds the session and the
  * tokens; the browser holds one HttpOnly cookie that scripts cannot read. The shell learns who is
- * signed in from `GET {apiPathPrefix}/session`, which is public and always answers 200:
+ * signed in from `GET {apiPathPrefix}/session`, which is public and answers 200:
  * `{"state":"signed-out"}` or the signed-in person with the CSRF token that unsafe calls must send.
  * An answer of any other shape is an error, never "signed in".
+ *
+ * One error answer says something about the session: 503 in the error envelope with the member
+ * `csrf`. The backend keeps a session for this browser and cannot confirm it (an identity provider
+ * outage). Nobody is shown as signed in on it, but the token lets the shell send the sign-out the
+ * backend still serves ({@link parseKeptSession}).
  */
 export interface SessionPerson {
   /** Opaque, stable id of the principal. Never shown as identity and never derived from a name. */
@@ -52,6 +57,37 @@ function boundedText(value: unknown, name: string): string {
   return value;
 }
 
+/** Name of the member that carries the CSRF token, in the signed-in answer and in the 503 of a kept session. */
+export const CSRF_MEMBER = 'csrf';
+
+/** The header name and token are checked before they can become a request header. */
+function parseCsrf(value: unknown): CsrfToken {
+  if (!isRecord(value)) {
+    throw new Error('session csrf is not an object');
+  }
+  const { headerName, token } = value;
+  if (typeof headerName !== 'string' || !HEADER_NAME.test(headerName)) {
+    throw new Error('session csrf header name is not a header name');
+  }
+  if (typeof token !== 'string' || token.length > MAX_TOKEN || !HEADER_VALUE.test(token)) {
+    throw new Error('session csrf token is not a header value');
+  }
+  return { headerName, token };
+}
+
+/**
+ * The CSRF token of a session the backend keeps and cannot confirm: the `csrf` member of the 503
+ * that answers the session read then. `undefined` when the member is absent or is not a usable
+ * token, which leaves the failed read saying nothing about the session.
+ */
+export function parseKeptSession(extension: unknown): CsrfToken | undefined {
+  try {
+    return parseCsrf(extension);
+  } catch {
+    return undefined;
+  }
+}
+
 export function parseSession(body: unknown): SessionAnswer {
   if (!isRecord(body)) {
     throw new Error('session answer is not an object');
@@ -62,20 +98,14 @@ export function parseSession(body: unknown): SessionAnswer {
   if (body.state !== 'signed-in' || !isRecord(body.person) || !isRecord(body.csrf)) {
     throw new Error('session answer has an unknown shape');
   }
-  const { headerName, token } = body.csrf;
-  if (typeof headerName !== 'string' || !HEADER_NAME.test(headerName)) {
-    throw new Error('session csrf header name is not a header name');
-  }
-  if (typeof token !== 'string' || token.length > MAX_TOKEN || !HEADER_VALUE.test(token)) {
-    throw new Error('session csrf token is not a header value');
-  }
+  const csrf = parseCsrf(body.csrf);
   return {
     state: 'signed-in',
     person: {
       principalId: boundedText(body.person.principalId, 'principal id'),
       displayName: boundedText(body.person.displayName, 'display name'),
     },
-    csrf: { headerName, token },
+    csrf,
   };
 }
 

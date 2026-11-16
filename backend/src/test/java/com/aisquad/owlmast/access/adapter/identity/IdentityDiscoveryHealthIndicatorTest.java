@@ -516,6 +516,42 @@ class IdentityDiscoveryHealthIndicatorTest {
     }
   }
 
+  /**
+   * PR #194 review, R2-5: a verified provider that accepts the request and never answers. The time
+   * it is given runs on the injected timer, so the test moves the clock to it: unanswered one
+   * millisecond before, UP with the detail at it. Before, the time ran on the default scheduler
+   * whatever timer was passed, and this case was not covered.
+   */
+  @Test
+  void upWithADetailWhenAVerifiedProviderDoesNotAnswerWithinItsTime() throws Exception {
+    VirtualTimeScheduler time = VirtualTimeScheduler.create();
+    try (StubIdentityProvider provider = StubIdentityProvider.start("owl-mast")) {
+      Duration ttl = Duration.ofSeconds(2);
+      IdentityDiscoveryHealthIndicator indicator = onVirtualTime(provider, ttl, time);
+      assertThat(indicator.health().block(ANSWER).getStatus()).isEqualTo(Status.UP);
+      time.advanceTimeBy(ttl);
+
+      provider.holdAnswers();
+      try {
+        CompletableFuture<Health> evaluation = indicator.health().toFuture();
+        awaitRequests(provider, 2);
+        time.advanceTimeBy(IdentityDiscoveryHealthIndicator.TIMEOUT.minusMillis(1));
+        assertThat(evaluation).isNotDone();
+        time.advanceTimeBy(Duration.ofMillis(1));
+
+        // Given up by the move of the clock itself, not by real time passing.
+        assertThat(evaluation).isDone();
+        Health health = evaluation.get(ANSWER.toSeconds(), TimeUnit.SECONDS);
+        assertThat(health.getStatus()).isEqualTo(Status.UP);
+        assertThat(health.getDetails())
+            .containsEntry("reason", IdentityDiscoveryHealthIndicator.UNANSWERED_AFTER_VERIFIED)
+            .containsEntry("issuer", provider.issuerUri());
+      } finally {
+        provider.releaseAnswers();
+      }
+    }
+  }
+
   /** A 404 is an answer: the realm is not there (deleted, renamed). It ends what was verified. */
   @Test
   void aNotFoundAnswerIsDownAfterTheIssuerWasVerified() {

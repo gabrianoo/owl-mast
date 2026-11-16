@@ -11,6 +11,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Scheduler;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * The issuer's endpoints, read from its discovery document when they are first needed and not at
@@ -25,8 +27,11 @@ import reactor.core.publisher.Mono;
  * fails, the last accepted document keeps being used and the read is tried again after {@link
  * #RETRY}: a provider that is briefly away must not turn requests of sessions that are still valid
  * into outages. Until a first document was accepted, every failure is an {@link
- * IdentityProviderUnavailableException}, which is never kept: callers answer 5xx and nothing from
- * the provider's answer reaches a response.
+ * IdentityProviderUnavailableException}: callers answer 5xx and nothing from the provider's answer
+ * reaches a response. That failure is kept for {@link #RETRY} too and answered to every caller in
+ * the interval. Anybody can cause a read by presenting a credential, so however many arrive, the
+ * provider receives one discovery request per {@link #RETRY} while its document is not accepted,
+ * and concurrent callers share the request in flight.
  */
 @Slf4j
 public final class IdentityDiscovery {
@@ -50,6 +55,19 @@ public final class IdentityDiscovery {
 
   IdentityDiscovery(
       WebClient client, IdentityProperties properties, Duration kept, Duration retry) {
+    this(client, properties, kept, retry, Schedulers.parallel());
+  }
+
+  /**
+   * The intervals are expired, and the read is timed out, by {@code timer}. Production uses the
+   * parallel scheduler; a test passes a virtual clock and moves it.
+   */
+  IdentityDiscovery(
+      WebClient client,
+      IdentityProperties properties,
+      Duration kept,
+      Duration retry,
+      Scheduler timer) {
     this.properties = properties;
     this.metadata =
         Mono.defer(() ->
@@ -58,7 +76,7 @@ public final class IdentityDiscovery {
                     .uri(properties.discoveryUri())
                     .retrieve()
                     .bodyToMono(DOCUMENT)
-                    .timeout(TIMEOUT)
+                    .timeout(TIMEOUT, timer)
                     .map(this::accept)
                     .switchIfEmpty(
                         Mono.error(() -> new IllegalStateException("empty discovery answer"))))
@@ -72,7 +90,7 @@ public final class IdentityDiscovery {
                   : Mono.error(new IdentityProviderUnavailableException(failure));
             })
             .cache(
-                read -> read.fresh() ? kept : retry, failure -> Duration.ZERO, () -> Duration.ZERO)
+                read -> read.fresh() ? kept : retry, failure -> retry, () -> Duration.ZERO, timer)
             .map(Read::metadata);
   }
 

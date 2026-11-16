@@ -121,6 +121,28 @@ describe('api client (UX-DR26/42)', () => {
     expect(await get()).toEqual({ kind: 'error', status: 500 });
   });
 
+  it('carries the one member of an error body a request names, and nothing else of the body', async () => {
+    const body = { title: 'Service Unavailable', status: 503, detail: 'pool exhausted at 10.0.0.1', csrf: { headerName: 'X-CSRF-TOKEN', token: 't' }, other: 'x' };
+    const fetchImpl = vi.fn(() => Promise.resolve(jsonResponse(body, 503, 'application/problem+json')));
+    const client = createApiClient({ apiPathPrefix: '/api', fetchImpl, isOnline: () => true });
+    const named = await client.get('/x', { protected: false, errorExtension: 'csrf' }, parseDescriptor);
+    expect(named).toEqual({
+      kind: 'error',
+      status: 503,
+      problem: { status: 503, title: 'Service Unavailable' },
+      extension: { headerName: 'X-CSRF-TOKEN', token: 't' },
+    });
+    expect(JSON.stringify(named)).not.toContain('10.0.0.1');
+    // Not asked for: not carried. Asked for and absent, or only inherited: no member.
+    expect(await client.get('/x', { protected: false }, parseDescriptor)).toEqual({ kind: 'error', status: 503, problem: { status: 503, title: 'Service Unavailable' } });
+    for (const name of ['missing', 'toString', '__proto__']) {
+      expect(await client.get('/x', { protected: false, errorExtension: name }, parseDescriptor)).not.toHaveProperty('extension');
+    }
+    // An error body that is not an object has no members.
+    fetchImpl.mockImplementation(() => Promise.resolve(jsonResponse(['csrf'], 503, 'application/problem+json')));
+    expect(await client.get('/x', { protected: false, errorExtension: 'csrf' }, parseDescriptor)).not.toHaveProperty('extension');
+  });
+
   it('treats a network failure as error while online and as offline when the browser went offline', async () => {
     let online = true;
     const client = createApiClient({

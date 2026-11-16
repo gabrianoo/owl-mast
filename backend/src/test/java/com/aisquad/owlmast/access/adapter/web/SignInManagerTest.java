@@ -102,6 +102,57 @@ class SignInManagerTest {
   }
 
   /**
+   * R2-4: the ID token's keys are fetched when a sign-in first needs them, not at every sign-in.
+   * Each callback arrives with a registration built anew, as in production. Before, a decoder was
+   * made per sign-in and each fetched the keys.
+   */
+  @Test
+  void theIdTokenKeysAreFetchedOnceForSignInsOfTheSameRegistration() throws Exception {
+    issuer.tokenAnswer(tokenAnswer(idToken -> {}));
+
+    for (int signIn = 0; signIn < 3; signIn++) {
+      assertThat(manager.authenticate(callback()).toFuture().get(30, TimeUnit.SECONDS)).isNotNull();
+    }
+
+    assertThat(issuer.tokenRequests()).isEqualTo(3);
+    assertThat(issuer.keyRequests()).isEqualTo(1);
+  }
+
+  /**
+   * The kept decoder belongs to one registration. When the discovery document names another issuer
+   * and key endpoint, the next sign-in gets a decoder of its own: the keys come from the new
+   * endpoint, and a token only the new issuer signed is accepted.
+   */
+  @Test
+  void aRegistrationThatNamesAnotherIssuerAndKeyEndpointGetsItsOwnDecoder() throws Exception {
+    issuer.tokenAnswer(tokenAnswer(idToken -> {}));
+    assertThat(manager.authenticate(callback()).toFuture().get(30, TimeUnit.SECONDS)).isNotNull();
+
+    try (SigningIssuer other = new SigningIssuer()) {
+      other.tokenAnswer(tokenAnswer(other, idToken -> {}));
+      Authentication signedIn =
+          manager.authenticate(callback(other)).toFuture().get(30, TimeUnit.SECONDS);
+
+      assertThat(signedIn.getPrincipal()).isInstanceOf(SignedInPerson.class);
+      assertThat(other.keyRequests()).isEqualTo(1);
+      assertThat(issuer.keyRequests()).isEqualTo(1);
+    }
+  }
+
+  /** A key the issuer starts signing ID tokens with is fetched when a token names it. */
+  @Test
+  void anIdTokenNamingAKeyTheDecoderDoesNotHoldCausesAFetch() throws Exception {
+    issuer.tokenAnswer(tokenAnswer(idToken -> {}));
+    assertThat(manager.authenticate(callback()).toFuture().get(30, TimeUnit.SECONDS)).isNotNull();
+
+    issuer.rotateTo("key-2");
+    issuer.tokenAnswer(tokenAnswer(idToken -> {}));
+    assertThat(manager.authenticate(callback()).toFuture().get(30, TimeUnit.SECONDS)).isNotNull();
+
+    assertThat(issuer.keyRequests()).isEqualTo(2);
+  }
+
+  /**
    * R1-5: the record of the sign-in commits later than the time given to the provider. The sign-in
    * completes and is recorded once; before, the bound around the whole step cut it off, leaving a
    * recorded sign-in without a session and a second, FAILED record of the same sign-in.
@@ -210,6 +261,11 @@ class SignInManagerTest {
 
   /** The browser's return from the identity provider with a code for a sign-in it started. */
   private OAuth2AuthorizationCodeAuthenticationToken callback() {
+    return callback(issuer);
+  }
+
+  /** The same return, with the registration a discovery document of {@code provider} gives. */
+  private static OAuth2AuthorizationCodeAuthenticationToken callback(SigningIssuer provider) {
     ClientRegistration registration =
         ClientRegistration.withRegistrationId(DiscoveredClientRegistrations.REGISTRATION_ID)
             .clientId(CLIENT)
@@ -218,16 +274,16 @@ class SignInManagerTest {
             .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
             .redirectUri(REDIRECT)
             .scope("openid")
-            .authorizationUri(issuer.issuerUri() + "/auth")
-            .tokenUri(issuer.tokenEndpoint())
-            .jwkSetUri(issuer.keyEndpoint())
-            .issuerUri(issuer.issuerUri())
+            .authorizationUri(provider.issuerUri() + "/auth")
+            .tokenUri(provider.tokenEndpoint())
+            .jwkSetUri(provider.keyEndpoint())
+            .issuerUri(provider.issuerUri())
             .userNameAttributeName("sub")
             .build();
     OAuth2AuthorizationRequest request =
         OAuth2AuthorizationRequest.authorizationCode()
             .clientId(CLIENT)
-            .authorizationUri(issuer.issuerUri() + "/auth")
+            .authorizationUri(provider.issuerUri() + "/auth")
             .redirectUri(REDIRECT)
             .scope("openid")
             .state("synthetic-state")
@@ -244,14 +300,23 @@ class SignInManagerTest {
 
   /** The token endpoint's answer with an ID token the issuer signed. */
   private String tokenAnswer(Consumer<JWTClaimsSet.Builder> change) {
+    return tokenAnswer(issuer, change);
+  }
+
+  private static String tokenAnswer(SigningIssuer provider, Consumer<JWTClaimsSet.Builder> change) {
     return "{\"access_token\":\"synthetic-access\",\"token_type\":\"Bearer\",\"expires_in\":300,"
         + "\"refresh_token\":\"synthetic-refresh\",\"id_token\":\""
-        + issuer.sign(idTokenClaims(change))
+        + provider.sign(idTokenClaims(provider, change))
         + "\"}";
   }
 
   private Consumer<JWTClaimsSet.Builder> idTokenClaims(Consumer<JWTClaimsSet.Builder> change) {
-    return issuer
+    return idTokenClaims(issuer, change);
+  }
+
+  private static Consumer<JWTClaimsSet.Builder> idTokenClaims(
+      SigningIssuer provider, Consumer<JWTClaimsSet.Builder> change) {
+    return provider
         .claims(CLIENT, "ada")
         .andThen(claims -> claims.claim("nonce", hashed(NONCE)).claim("name", "Ada Synthetic"))
         .andThen(change);

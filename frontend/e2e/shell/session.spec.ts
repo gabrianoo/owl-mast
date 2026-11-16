@@ -10,6 +10,7 @@ import {
   signedInSession,
   signedOutSession,
   syntheticCsrf,
+  type SessionMock,
 } from './helpers.ts';
 import { test } from './test.ts';
 
@@ -210,7 +211,55 @@ test.describe('session states: signed out, signed in, expired, sign-in failed, p
     await expect(page.getByText('mocked')).toHaveCount(0);
   });
 
-  test('a session endpoint that fails before anybody was signed in offers no sign-out', async ({ page }) => {
+  test('a shell that starts during an identity provider outage with a kept session: Sign out is offered, carries the CSRF header of the 503 and ends the session (R2-3)', async ({ page }) => {
+    // The backend keeps a session for this browser and cannot confirm it: 503 with the CSRF token.
+    const session = await mockSession(page, { status: 503, csrf: syntheticCsrf });
+    const calls: { method: string; csrf: string | undefined; authorization: string | undefined }[] = [];
+    await page.route(SIGN_OUT_URL, (route) => {
+      const request = route.request();
+      calls.push({
+        method: request.method(),
+        csrf: request.headers()[syntheticCsrf.headerName.toLowerCase()],
+        authorization: request.headers().authorization,
+      });
+      session.set({ json: signedOutSession });
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'signed-out', identityProvider: 'unconfirmed' }) });
+    });
+    await page.goto('/focus');
+    await expect(page.getByRole('heading', { level: 2, name: 'The session could not be checked' })).toBeVisible();
+    await expect(page.getByText('No assigned work to show')).toHaveCount(0);
+    await expect(page.getByText('mocked')).toHaveCount(0);
+    const control = page.getByRole('group', { name: 'Session' });
+    await expect(control.getByText('Session not confirmed')).toBeVisible();
+    await expect(control.getByText('Ada Synthetic')).toHaveCount(0);
+    await control.getByRole('button', { name: 'Sign out' }).click();
+    await expect(page.getByRole('heading', { level: 2, name: 'You are signed out' })).toBeVisible();
+    await expect(page.getByText(/could not confirm that the identity provider ended its own/)).toBeVisible();
+    await expect(control.getByRole('button', { name: 'Sign out' })).toHaveCount(0);
+    expect(calls).toEqual([{ method: 'POST', csrf: syntheticCsrf.token, authorization: undefined }]);
+    // The token is held in memory only.
+    expect(await page.evaluate(() => ({ local: window.localStorage.length, session: window.sessionStorage.length, cookie: document.cookie }))).toEqual({
+      local: 0,
+      session: 0,
+      cookie: '',
+    });
+  });
+
+  test('a shell that starts during the outage: a sign-out that fails is reported and stays offered', async ({ page }) => {
+    await mockSession(page, { status: 503, csrf: syntheticCsrf });
+    await page.route(SIGN_OUT_URL, (route) =>
+      route.fulfill({ status: 503, contentType: 'application/problem+json', body: JSON.stringify({ status: 503, title: 'mocked' }) }),
+    );
+    await page.goto('/focus');
+    const control = page.getByRole('group', { name: 'Session' });
+    await control.getByRole('button', { name: 'Sign out' }).click();
+    await expect(control.getByText('Sign-out could not be confirmed')).toBeVisible();
+    await expect(control.getByText('Session not confirmed')).toBeVisible();
+    await expect(control.getByRole('button', { name: 'Sign out' })).toBeVisible();
+    await expect(page.getByText('mocked')).toHaveCount(0);
+  });
+
+  test('a session endpoint that fails without a csrf member before anybody was signed in offers no sign-out', async ({ page }) => {
     await mockSession(page, { status: 503 });
     await page.goto('/focus');
     const control = page.getByRole('group', { name: 'Session' });
@@ -234,12 +283,13 @@ test.describe('session states: signed out, signed in, expired, sign-in failed, p
     expect(attempts).toBe(2);
   });
 
-  const states: { name: string; path: string; session: { json: unknown } | { status: number }; title: string }[] = [
+  const states: { name: string; path: string; session: SessionMock; title: string }[] = [
     { name: 'signed out', path: '/focus', session: { json: signedOutSession }, title: 'You are signed out' },
     { name: 'signed in', path: '/focus', session: { json: signedInSession }, title: 'No assigned work to show' },
     { name: 'sign-in failed', path: '/focus?sign-in=failed', session: { json: signedOutSession }, title: 'Sign-in was not completed' },
     { name: 'provider error', path: '/focus?sign-in=unavailable', session: { json: signedOutSession }, title: 'The identity provider is unavailable' },
     { name: 'session problem', path: '/focus', session: { status: 503 }, title: 'The session could not be checked' },
+    { name: 'kept session not confirmed at start', path: '/focus', session: { status: 503, csrf: syntheticCsrf }, title: 'The session could not be checked' },
   ];
   for (const theme of ['light', 'dark'] as const) {
     for (const width of [1280, 320]) {

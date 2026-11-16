@@ -15,7 +15,9 @@ import com.aisquad.owlmast.platform.scope.TenantId;
 import com.aisquad.owlmast.platform.web.ProblemResponses;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -38,6 +40,7 @@ import org.springframework.security.oauth2.client.ReactiveOAuth2AuthorizedClient
 import org.springframework.security.oauth2.client.endpoint.WebClientReactiveAuthorizationCodeTokenResponseClient;
 import org.springframework.security.oauth2.client.oidc.authentication.OidcAuthorizationCodeReactiveAuthenticationManager;
 import org.springframework.security.oauth2.client.oidc.authentication.ReactiveOidcIdTokenDecoderFactory;
+import org.springframework.security.oauth2.client.registration.ClientRegistration;
 import org.springframework.security.oauth2.client.registration.ReactiveClientRegistrationRepository;
 import org.springframework.security.oauth2.client.web.DefaultReactiveOAuth2AuthorizedClientManager;
 import org.springframework.security.oauth2.client.web.server.DefaultServerOAuth2AuthorizationRequestResolver;
@@ -313,7 +316,11 @@ class SecurityConfiguration {
         .addFilterAfter(outcomes.providerOutage(), SecurityWebFiltersOrder.HTTP_HEADERS_WRITER)
         .addFilterAfter(
             SessionWebFilters.standing(
-                sessions, responses, publicContent, path(HttpMethod.POST, SessionPaths.SIGN_OUT)),
+                sessions,
+                responses,
+                publicContent,
+                path(HttpMethod.POST, SessionPaths.SIGN_OUT),
+                path(HttpMethod.GET, SessionPaths.SESSION)),
             SecurityWebFiltersOrder.LOGOUT)
         .addFilterAfter(
             SessionWebFilters.scope(ledger.tenant()), SecurityWebFiltersOrder.AUTHORIZATION)
@@ -402,6 +409,14 @@ class SecurityConfiguration {
    * Binding the person and recording the sign-in ({@link PersonUserService}) is this backend's own
    * work and is not bounded here: a record that commits late is still the record of a sign-in that
    * completed, and cutting it off would leave a recorded sign-in without a session.
+   *
+   * <p>The ID token's decoder is the framework's, and one is kept and used for every sign-in of the
+   * same registration (issuer, client, key endpoint): it holds the issuer's keys, so the keys are
+   * fetched when a sign-in first needs them and again only when an ID token names a key the decoder
+   * does not hold. A decoder made per sign-in would fetch them every time. The ID token arrives on
+   * the backend's own connection to the token endpoint and is not something a caller can present,
+   * so this key source has no bound on its fetches and no maximum age, unlike {@link
+   * IssuerSigningKeys}.
    */
   static ReactiveAuthenticationManager signInManager(
       SessionLedger ledger, Duration providerTimeout, Scheduler timer) {
@@ -414,8 +429,15 @@ class SecurityConfiguration {
                 CredentialValidation.withinProviderTimeout(
                     Mono.defer(() -> codeExchange.getTokenResponse(grant)), providerTimeout, timer),
             new PersonUserService(ledger));
+    AtomicReference<IdTokenDecoder> kept = new AtomicReference<>();
     oidc.setJwtDecoderFactory(registration -> {
-      ReactiveJwtDecoder decoder = idTokenDecoders.createDecoder(registration);
+      ReactiveJwtDecoder decoder =
+          kept.updateAndGet(current ->
+                  current != null && current.serves(registration)
+                      ? current
+                      : IdTokenDecoder.of(
+                          registration, idTokenDecoders.createDecoder(registration)))
+              .decoder();
       return idToken ->
           CredentialValidation.withinProviderTimeout(
               Mono.defer(() -> decoder.decode(idToken)), providerTimeout, timer);
@@ -432,6 +454,29 @@ class SecurityConfiguration {
                         || CredentialValidation.couldNotVerify(failure),
                 failure ->
                     new AuthenticationServiceException("sign-in could not be completed", failure));
+  }
+
+  /**
+   * The ID-token decoder of one registration, named by what the decoder was built from: the issuer
+   * and the client it checks the token against, and the address it fetches the keys from. The
+   * registration itself is built anew from the discovery document for every sign-in.
+   */
+  private record IdTokenDecoder(
+      String issuer, String clientId, String keyEndpoint, ReactiveJwtDecoder decoder) {
+
+    static IdTokenDecoder of(ClientRegistration registration, ReactiveJwtDecoder decoder) {
+      return new IdTokenDecoder(
+          registration.getProviderDetails().getIssuerUri(),
+          registration.getClientId(),
+          registration.getProviderDetails().getJwkSetUri(),
+          decoder);
+    }
+
+    boolean serves(ClientRegistration registration) {
+      return Objects.equals(issuer, registration.getProviderDetails().getIssuerUri())
+          && Objects.equals(clientId, registration.getClientId())
+          && Objects.equals(keyEndpoint, registration.getProviderDetails().getJwkSetUri());
+    }
   }
 
   /**

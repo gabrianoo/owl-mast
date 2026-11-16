@@ -34,7 +34,8 @@ import reactor.core.scheduler.Scheduler;
  * ({@link #reasonOf}); the code goes to the audit record and never to the response.
  *
  * <p>The keys are the issuer's ({@link IssuerSigningKeys}), fetched when a credential needs one
- * that is not held; a provider that cannot be reached for them is an outage (5xx), not a refusal.
+ * that is not held or the held set is too old to speak for the issuer; a provider that cannot be
+ * reached for them is an outage (5xx), not a refusal.
  */
 final class CredentialValidation {
 

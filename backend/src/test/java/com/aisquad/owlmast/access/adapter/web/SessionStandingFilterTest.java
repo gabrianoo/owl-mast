@@ -2,25 +2,30 @@ package com.aisquad.owlmast.access.adapter.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.json.JsonParserFactory;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
 import org.springframework.security.core.context.ReactiveSecurityContextHolder;
 import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken;
+import org.springframework.security.web.server.csrf.CsrfToken;
+import org.springframework.security.web.server.csrf.DefaultCsrfToken;
 import org.springframework.security.web.server.util.matcher.PathPatternParserServerWebExchangeMatcher;
 import org.springframework.web.server.WebFilter;
 import org.springframework.web.server.WebFilterChain;
 import org.springframework.web.server.WebSession;
+import reactor.core.publisher.Mono;
 
 /**
  * What a request with a signed-in session gets, by the session's standing: served, served without
  * the session, or 503. The interesting row is the provider that cannot be asked: a protected call
- * is not served and not turned into "signed out", public content is still served, and sign-out
- * still reaches its handler with the session.
+ * is not served and not turned into "signed out", public content is still served, sign-out still
+ * reaches its handler with the session, and the session read says how to send that sign-out.
  */
 class SessionStandingFilterTest {
 
@@ -30,13 +35,17 @@ class SessionStandingFilterTest {
     WITHOUT_SESSION
   }
 
+  private static final String CSRF_HEADER = "X-CSRF-TOKEN";
+  private static final String CSRF_TOKEN = "synthetic-csrf-token";
+
   private final SessionFixture fixture = new SessionFixture();
   private final WebFilter filter =
       SessionWebFilters.standing(
           fixture.keeper,
           fixture.responses,
           new PathPatternParserServerWebExchangeMatcher("/api/compatibility", HttpMethod.GET),
-          new PathPatternParserServerWebExchangeMatcher(SessionPaths.SIGN_OUT, HttpMethod.POST));
+          new PathPatternParserServerWebExchangeMatcher(SessionPaths.SIGN_OUT, HttpMethod.POST),
+          new PathPatternParserServerWebExchangeMatcher(SessionPaths.SESSION, HttpMethod.GET));
   private final WebSession session = fixture.session();
   private final OAuth2AuthenticationToken authentication =
       SessionFixture.authentication(fixture.person("ref-1", "ada"));
@@ -102,6 +111,55 @@ class SessionStandingFilterTest {
     assertThat(other.getResponse().getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
   }
 
+  /**
+   * PR #194 review, R2-3: a shell that starts during the outage has no CSRF token and cannot tell
+   * that a session is kept, so it could not offer or send the sign-out the backend serves. The
+   * session read now says both in its 503.
+   */
+  @Test
+  void whenTheProviderCannotBeAskedTheSessionReadCarriesTheCsrfTokenOfTheKeptSession() {
+    fixture.renewalFailsWith("server_error");
+
+    MockServerWebExchange exchange = exchange(MockServerHttpRequest.get(SessionPaths.SESSION));
+    prepareCsrfToken(exchange);
+    assertThat(run(exchange)).isNull();
+
+    assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+    assertThat(exchange.getResponse().getHeaders().getContentType())
+        .hasToString("application/problem+json");
+    assertThat(exchange.getResponse().getHeaders().getCacheControl()).isEqualTo("no-store");
+    // The envelope with one extension member at its top level, and nothing about the person.
+    assertThat(body(exchange))
+        .containsOnlyKeys("title", "status", "instance", "csrf")
+        .containsEntry("status", 503)
+        .containsEntry("instance", SessionPaths.SESSION)
+        .containsEntry("csrf", Map.of("headerName", CSRF_HEADER, "token", CSRF_TOKEN));
+    assertThat(session.isExpired()).isFalse();
+    assertThat(fixture.actions()).isEmpty();
+  }
+
+  @Test
+  void onlyTheSessionReadCarriesTheCsrfTokenAndOnlyWhenOneWasPrepared() {
+    fixture.renewalFailsWith("server_error");
+
+    // Another call of the same session: the plain outage.
+    MockServerWebExchange other = exchange(MockServerHttpRequest.get("/api/anything"));
+    prepareCsrfToken(other);
+    assertThat(run(other)).isNull();
+    assertThat(other.getResponse().getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+    assertThat(body(other)).doesNotContainKey("csrf");
+    // The session read of a request the CSRF filter prepared no token for.
+    MockServerWebExchange unprepared = exchange(MockServerHttpRequest.get(SessionPaths.SESSION));
+    assertThat(run(unprepared)).isNull();
+    assertThat(unprepared.getResponse().getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+    assertThat(body(unprepared)).doesNotContainKey("csrf");
+    // A session that stands is read by the controller, not answered here.
+    fixture.renewalSucceeds();
+    MockServerWebExchange standing = exchange(MockServerHttpRequest.get(SessionPaths.SESSION));
+    prepareCsrfToken(standing);
+    assertThat(run(standing)).isEqualTo(Reached.WITH_SESSION);
+  }
+
   @Test
   void aSessionTheProviderRefusesIsRemovedFromTheRequestAndRecorded() {
     fixture.renewalFailsWith("invalid_grant");
@@ -121,6 +179,20 @@ class SessionStandingFilterTest {
     filter.filter(exchange, chain(reached)).block(SessionFixture.CALL);
 
     assertThat(reached).hasValue(Reached.WITHOUT_SESSION);
+  }
+
+  /** What the CSRF filter leaves in the exchange before this filter runs. */
+  private static void prepareCsrfToken(MockServerWebExchange exchange) {
+    exchange
+        .getAttributes()
+        .put(
+            CsrfToken.class.getName(),
+            Mono.<CsrfToken>just(new DefaultCsrfToken(CSRF_HEADER, "_csrf", CSRF_TOKEN)));
+  }
+
+  private static Map<String, Object> body(MockServerWebExchange exchange) {
+    return JsonParserFactory.getJsonParser()
+        .parseMap(exchange.getResponse().getBodyAsString().block(SessionFixture.CALL));
   }
 
   private MockServerWebExchange exchange(MockServerHttpRequest.BaseBuilder<?> request) {

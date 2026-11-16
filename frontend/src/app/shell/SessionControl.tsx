@@ -6,9 +6,11 @@ import { useSession } from '../../state/session.tsx';
  * the sign-out action, or the sign-in action when nobody is signed in. The name is display only;
  * the identity provider owns the account, its password and its recovery.
  *
- * When the session can no longer be confirmed for somebody who was signed in, the name is removed
- * and sign-out stays: the backend ends the session on request even while the identity provider is
- * unavailable, and that is when a person on a shared device needs it.
+ * When a session is kept and cannot be confirmed (somebody was signed in before the reads failed, or
+ * the backend said so in the failed read, as it does for a shell that starts during an identity
+ * provider outage), no name is shown and sign-out is offered: the backend ends the session on
+ * request even while the identity provider is unavailable, and that is when a person on a shared
+ * device needs it.
  */
 export function SessionControl() {
   const { state, signIn, signOut } = useSession();
