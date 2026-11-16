@@ -45,6 +45,9 @@ class MissingExtensionIT {
         "--spring.r2dbc.password=" + plain.getPassword(),
         // The identity contract is satisfied so the database failure is the one under test.
         "--owlmast.identity.issuer-uri=https://idp.example/realms/owl-mast",
+        "--owlmast.sign-in.client-id=owl-mast-web",
+        "--owlmast.sign-in.client-secret=" + java.util.UUID.randomUUID(),
+        "--owlmast.sign-in.application-origin=https://owl-mast.example",
       };
 
       Throwable failure = catchThrowable(() -> application.run(args));

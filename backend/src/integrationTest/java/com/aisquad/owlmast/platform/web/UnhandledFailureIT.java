@@ -2,6 +2,7 @@ package com.aisquad.owlmast.platform.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.aisquad.owlmast.fixtures.security.TestOnlyPathsConfiguration;
 import com.aisquad.owlmast.platform.authorization.OperationDeniedException;
 import com.aisquad.owlmast.platform.blocking.BoundedBlocking;
 import com.aisquad.owlmast.platform.blocking.BoundedBlockingProperties;
@@ -10,6 +11,7 @@ import com.aisquad.owlmast.testing.ContainersConfiguration;
 import com.aisquad.owlmast.testing.StubIdentityConfiguration;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
@@ -37,6 +39,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.server.ServerWebExchange;
 import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -44,12 +47,14 @@ import reactor.core.scheduler.Schedulers;
 /**
  * OM-01.04 common error envelope: a failure nobody handled answers as an RFC 9457 problem detail
  * with status 500 and none of the exception, and the framework's own error responses keep their
- * status. The failing endpoints exist only in this test.
+ * status. The failing endpoints exist only in this test, below the test-only paths that {@link
+ * TestOnlyPathsConfiguration} opens to a caller without a credential.
  */
 @SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT)
 @Import({
   ContainersConfiguration.class,
   StubIdentityConfiguration.class,
+  TestOnlyPathsConfiguration.class,
   UnhandledFailureIT.FailingController.class
 })
 @ExtendWith(OutputCaptureExtension.class)
@@ -176,8 +181,11 @@ class UnhandledFailureIT {
     "/api/test-only/failure/error-response-signalled, 422, Unprocessable Content",
     "/api/test-only/failure/response-status, 410, Gone",
     "/api/test-only/failure/response-status-inherited, 410, Gone",
-    "/api/test-only/failure/access-denied, 403, Forbidden",
-    "/api/test-only/failure/access-denied-subclass, 403, Forbidden",
+    // OM-02.01: a security exception leaves the advice. Nobody is authenticated here, so the
+    // security chain answers a denial with 401 (403 is for an authenticated caller: SignInIT);
+    // an authentication failure is answered by FilterFailureHandler.
+    "/api/test-only/failure/access-denied, 401, Unauthorized",
+    "/api/test-only/failure/access-denied-subclass, 401, Unauthorized",
     "/api/test-only/failure/unauthenticated, 401, Unauthorized",
     "/api/test-only/failure/unauthenticated-signalled, 401, Unauthorized",
     // E01-R-05: the platform's own denial carries no web type and used to answer 500.
@@ -300,46 +308,71 @@ class UnhandledFailureIT {
         .valueEquals("Retry-After", "30");
   }
 
-  /**
-   * The stand-ins under {@code src/integrationTest/java/org/springframework/security} exist only
-   * while Spring Security is not a dependency. Once it is, the same class name resolves twice and
-   * the stand-in could shadow the real class without anyone noticing: this fails instead.
-   */
+  /** OM-02.01: every 401 carries the challenge, whichever part of the chain answered it. */
   @ParameterizedTest
   @ValueSource(
-      classes = {
-        AccessDeniedException.class,
-        AuthenticationException.class,
-        AuthenticationServiceException.class
-      })
-  void theSecurityStandInsAreTheOnlyClassesOfTheirName(Class<?> standIn) throws Exception {
-    String resource = standIn.getName().replace('.', '/') + ".class";
-    assertThat(java.util.Collections.list(getClass().getClassLoader().getResources(resource)))
-        .hasSize(1)
-        .allSatisfy(url -> assertThat(url.getProtocol()).isEqualTo("file"));
+      strings = {"/api/test-only/failure/access-denied", "/api/test-only/failure/unauthenticated"})
+  void anUnauthorizedAnswerCarriesTheChallenge(String path) {
+    client()
+        .get()
+        .uri(path)
+        .exchange()
+        .expectStatus()
+        .isEqualTo(401)
+        .expectHeader()
+        .valueEquals(HttpHeaders.WWW_AUTHENTICATE, "Bearer");
   }
 
   @Test
   void theStatusIsReadFromTheFailureItselfNotFromItsCause() {
-    assertThat(UnhandledFailureAdvice.statusOf(new Denied(SECRET)).value()).isEqualTo(403);
-    assertThat(UnhandledFailureAdvice.statusOf(new Unauthenticated(SECRET)).value()).isEqualTo(401);
-    assertThat(
-            UnhandledFailureAdvice.statusOf(new IllegalStateException(new Denied(SECRET))).value())
+    // Security failures are answered outside the advice: by the security chain, or by
+    // FilterFailureHandler for what the chain does not translate.
+    assertThat(FilterFailureHandler.statusOf(new Denied(SECRET)).value()).isEqualTo(403);
+    assertThat(FilterFailureHandler.statusOf(new Unauthenticated(SECRET)).value()).isEqualTo(401);
+    assertThat(FilterFailureHandler.statusOf(new IllegalStateException(new Denied(SECRET))).value())
         .isEqualTo(500);
     assertThat(UnhandledFailureAdvice.statusOf(new SecurityException(SECRET)).value())
         .isEqualTo(500);
-    // The order of the three sources: an ErrorResponse before an annotation before a name.
-    assertThat(UnhandledFailureAdvice.statusOf(new DeniedButGone(SECRET)).value()).isEqualTo(410);
-    // The nearest listed class wins: a failing identity provider is not a credential problem.
-    assertThat(UnhandledFailureAdvice.statusOf(new AuthenticationServiceException(SECRET)).value())
+    // A failing identity provider or user store is an outage, not a credential problem.
+    assertThat(FilterFailureHandler.statusOf(new AuthenticationServiceException(SECRET)).value())
         .isEqualTo(500);
-    assertThat(UnhandledFailureAdvice.statusOf(new IdentityProviderDown(SECRET)).value())
+    assertThat(FilterFailureHandler.statusOf(new IdentityProviderDown(SECRET)).value())
         .isEqualTo(500);
-    assertThat(UnhandledFailureAdvice.STATUS_BY_CLASS_NAME)
-        .containsOnlyKeys(
-            AccessDeniedException.class.getName(),
-            AuthenticationException.class.getName(),
-            AuthenticationServiceException.class.getName());
+    // Everything else keeps the status the advice reads: an annotation, an ErrorResponse, the
+    // shared kernel's table.
+    assertThat(FilterFailureHandler.statusOf(new GoneForGood(SECRET)).value()).isEqualTo(410);
+    assertThat(FilterFailureHandler.statusOf(new OperationDeniedException("not-permitted")).value())
+        .isEqualTo(403);
+  }
+
+  /**
+   * PR #194 review, R2-3: an extension member the security chain adds to the envelope (the CSRF
+   * token of a kept session) is a top-level member of the body with the application's own codecs,
+   * next to the status, and not nested under a member of its own.
+   */
+  @Test
+  void anExtensionMemberIsWrittenAtTheTopLevelOfTheEnvelope() {
+    client()
+        .get()
+        .uri("/api/test-only/failure/extension")
+        .exchange()
+        .expectStatus()
+        .isEqualTo(503)
+        .expectHeader()
+        .contentType(MediaType.APPLICATION_PROBLEM_JSON)
+        .expectBody()
+        .jsonPath("$.status")
+        .isEqualTo(503)
+        .jsonPath("$.instance")
+        .isEqualTo("/api/test-only/failure/extension")
+        .jsonPath("$.synthetic.headerName")
+        .isEqualTo("X-SYNTHETIC")
+        .jsonPath("$.synthetic.token")
+        .isEqualTo("synthetic-value")
+        .jsonPath("$.properties")
+        .doesNotExist()
+        .jsonPath("$.detail")
+        .doesNotExist();
   }
 
   private WebTestClient client() {
@@ -348,6 +381,21 @@ class UnhandledFailureIT {
 
   @RestController
   static class FailingController {
+
+    private final ProblemResponses problems;
+
+    FailingController(ProblemResponses problems) {
+      this.problems = problems;
+    }
+
+    @GetMapping("/api/test-only/failure/extension")
+    Mono<Void> extension(ServerWebExchange exchange) {
+      return problems.write(
+          exchange,
+          HttpStatus.SERVICE_UNAVAILABLE,
+          headers -> {},
+          Map.of("synthetic", Map.of("headerName", "X-SYNTHETIC", "token", "synthetic-value")));
+    }
 
     @GetMapping("/api/test-only/failure/thrown")
     Mono<String> thrown() {
@@ -560,16 +608,6 @@ class UnhandledFailureIT {
     private static final long serialVersionUID = 1L;
 
     Denied(String message) {
-      super(message);
-    }
-  }
-
-  @ResponseStatus(HttpStatus.GONE)
-  static class DeniedButGone extends AccessDeniedException {
-
-    private static final long serialVersionUID = 1L;
-
-    DeniedButGone(String message) {
       super(message);
     }
   }

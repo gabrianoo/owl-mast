@@ -19,7 +19,7 @@ No other tool is installed globally. Pins and the evidence behind them are in [t
 | `./gradlew :backend:test` | Fast unit/component suite; no containers. |
 | `./gradlew :backend:integrationTest` | Container-backed suite (migrations, transactions, health, missing-extension negative case, durable work and audit recovery including a separate-process restart and a graceful-shutdown give-back). |
 | `./gradlew :backend:spotlessApply` | Reformat sources. |
-| `./gradlew :backend:bootTestRun --args='--server.port=8080'` | Run the application locally against a disposable VectorChord container; `GET http://localhost:8080/actuator/health` answers `{"status":"UP"}`. Stop with Ctrl-C; the container is removed. |
+| `./gradlew :backend:bootTestRun --args='--server.port=8080'` | Run the application locally against a disposable VectorChord container and the pinned Keycloak with a synthetic realm (OM-02.01); `GET http://localhost:8080/actuator/health` answers `{"status":"UP"}`. Sign-in works: the synthetic users are `ada.synthetic` and `grace.synthetic`, and their password is the value of `OWLMAST_FIXTURE_USER_PASSWORD` in the environment of the run (generated and not shown when unset). When the shell is served from another address (the Vite dev or preview server), pass it as `--owlmast.sign-in.application-origin=http://localhost:5173` next to the port, so the identity provider returns the browser there. Stop with Ctrl-C; the containers are removed. |
 | `./gradlew :backend:bootRun` | Run against an existing database; see below. |
 | `scripts/verify-quality-gates.sh` | Prove that the formatting, Error Prone, Lombok, module-rule, layering, tenant-internal-grant, wake-up-source, frozen-contract and qualified-JDK gates, and the frontend accessibility-lint, type, design-token and API-pair gates, each fail with a useful diagnostic on an injected violation. Needs `frontend/node_modules` (`npm ci`). |
 | `scripts/verify-backend-image.sh` | Build the backend image from the `bootJar` and prove its contract with the chart: jar name, UID/GID 10001, qualified JDK, entrypoint with `--enable-native-access=ALL-UNNAMED`, start on a read-only root with the chart's environment up to the first database connection. |
@@ -28,7 +28,7 @@ No other tool is installed globally. Pins and the evidence behind them are in [t
 | `./gradlew :backend:dependencies --write-locks` | Refresh `backend/gradle.lockfile` after changing pins. |
 | `cd frontend && npm ci && npm run lint && npm run typecheck && npm test && npm run build` | Frontend gates and unit/component suite ([frontend.md](frontend.md)). |
 | `cd frontend && npx playwright install chromium` | Once per machine and after a Playwright bump: the browser the two suites below drive. `npm ci` does not download it. |
-| `cd frontend && npm run test:e2e` / `npm run test:e2e:smoke` | Browser accessibility/state suite with a mocked API; browser → real backend smoke (starts `bootTestRun`, needs Docker). |
+| `cd frontend && npm run test:e2e` / `npm run test:e2e:smoke` | Browser accessibility/state suite with a mocked API; browser → real backend smoke, including a sign-in through Keycloak's own login page (starts `bootTestRun` with the VectorChord and Keycloak containers, needs Docker). |
 | `scripts/verify-frontend-artifact.sh` | Build the frontend image and prove its runtime contract (non-root 8080, SPA fallback, config endpoint, published API contract, 404 below the API prefix, prefix guard, no JDK); `OWLMAST_IMAGE_BROWSER_SMOKE=1` adds Chromium against the container. |
 | `scripts/check-api-compatibility.py [--frontend-url URL] [--backend-url URL]` | Frontend/backend API contract check ([api-compatibility.md](api-compatibility.md)). |
 
@@ -72,7 +72,7 @@ The VectorChord image's default command preloads the extension; the fixture (`Ow
 4. `script-lint`: `scripts/verify-script-lint.sh` (shellcheck and ruff).
 5. `automation-tests`: the unattended-execution qualification suite.
 6. `frontend`: lint, typecheck, unit/component tests, build, Playwright accessibility/state suite and the static API pair check.
-7. `frontend-backend-smoke`: the frontend image contract and the browser → real backend smoke.
+7. `frontend-backend-smoke`: the frontend image contract and the browser → real backend smoke, with the browser sign-in against the pinned Keycloak (OM-02.01).
 
 `DevelopmentDocumentTest` in the deploy suite fails when a job of the workflow is missing from this list or the list names a job the workflow does not have.
 
@@ -87,7 +87,7 @@ backend/
     OwlMastApplication.java   entry point
     platform/                 shared kernel: scope, service identity, blocking, persistence
     bootstrap/                first feature: api, application, port, adapter.*
-    access/                   identity-provider contract (OM-01.02)
+    access/                   identity-provider contract (OM-01.02), browser sign-in and session (OM-02.01)
     jobs/                     durable work: enqueue, claims, leases, retries, scheduling (OM-01.03)
     audit/                    audit envelope, publication intent, publisher, history (OM-01.03)
   src/main/resources

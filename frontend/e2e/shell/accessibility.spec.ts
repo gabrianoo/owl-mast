@@ -1,5 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { test } from './test.ts';
 import { compatibleDescriptor, mockDescriptor, type DescriptorMock } from './helpers.ts';
 
 const routes = ['/', '/preferences', '/focus', '/not-a-destination'];

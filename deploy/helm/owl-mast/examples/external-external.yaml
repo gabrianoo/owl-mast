@@ -1,6 +1,10 @@
 # Both dependencies supplied by the operator: only the backend (and optionally the frontend) is deployed.
 # sslMode `require` encrypts the connection but does not authenticate the server; `verify-ca` and `verify-full`
 # are refused until the chart mounts a CA trust (docs/installation.md).
+# The issuer must hold the client `owl-mast-web` with the secret in owl-mast-oidc-client (key client-secret)
+# and the redirect URI https://owl-mast.example.internal/api/session/callback (docs/installation.md).
+routing:
+  publicOrigin: https://owl-mast.example.internal
 database:
   bundled: false
   external:

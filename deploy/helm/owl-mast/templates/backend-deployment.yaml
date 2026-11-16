@@ -9,7 +9,8 @@ metadata:
 spec:
   replicas: {{ .Values.backend.replicas }}
   # Single instance (AD-14): the old pod stops before the new one starts, so a rollout never runs two
-  # backends (and two startup migrations) against the same database.
+  # backends (and two startup migrations) against the same database. Browser sessions live in this pod's
+  # memory (OM-02.01): every rollout or restart signs everyone out, and more than one replica is refused.
   strategy:
     type: Recreate
   selector:
@@ -66,12 +67,34 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.database.existingSecret }}
                   key: password
+            # The issuer tokens carry: the bundled Keycloak's public origin and realm, or the external issuer as it is.
             - name: OWLMAST_IDENTITY_ISSUER_URI
               value: {{ include "owl-mast.identity.issuerUri" . | quote }}
-            # The backend itself refuses a plaintext issuer unless told otherwise: true only for the
-            # cluster-local bundled Keycloak or the explicit identity.external.allowInsecureIssuer opt-in.
+            # The backend itself refuses a plaintext issuer unless told otherwise: true only for a bundled
+            # Keycloak whose public origin is a loopback http origin (local fixtures; owl-mast.validate accepts
+            # one only beside a loopback routing.publicOrigin) or the explicit
+            # identity.external.allowInsecureIssuer opt-in.
             - name: OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER
-              value: {{ ternary "true" "false" (or .Values.identity.bundled (default false .Values.identity.external.allowInsecureIssuer)) | quote }}
+              value: {{ ternary "true" "false" (ternary (hasPrefix "http://" (include "owl-mast.keycloak.publicOrigin" .)) (default false .Values.identity.external.allowInsecureIssuer) .Values.identity.bundled) | quote }}
+            {{- if .Values.identity.bundled }}
+            # Where the backend reaches the bundled Keycloak: the cluster-local Service, plaintext inside the
+            # cluster (NetworkPolicy admits the backend only). An external issuer is used on its own address.
+            - name: OWLMAST_IDENTITY_BACKCHANNEL_URI
+              value: {{ include "owl-mast.identity.backchannelUri" . | quote }}
+            - name: OWLMAST_IDENTITY_ALLOW_INSECURE_BACKCHANNEL
+              value: "true"
+            {{- end }}
+            # The backend is a confidential OpenID Connect client; tokens stay in the backend.
+            - name: OWLMAST_IDENTITY_CLIENT_ID
+              value: {{ include "owl-mast.identity.clientId" . | quote }}
+            - name: OWLMAST_IDENTITY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "owl-mast.identity.clientSecret" . }}
+                  key: client-secret
+            # The one application origin (frontend at /, backend at /api): redirect URI and session cookie.
+            - name: OWLMAST_IDENTITY_APPLICATION_ORIGIN
+              value: {{ include "owl-mast.routing.publicOrigin" . | quote }}
             {{- range .Values.backend.extraEnv }}
             - name: {{ .name | quote }}
               value: {{ .value | quote }}

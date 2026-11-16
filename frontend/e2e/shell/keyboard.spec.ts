@@ -1,4 +1,5 @@
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { test } from './test.ts';
 import { compatibleDescriptor, mockDescriptor } from './helpers.ts';
 
 test.describe('keyboard flow, title/focus and return behaviour (AC2, UX-DR40)', () => {

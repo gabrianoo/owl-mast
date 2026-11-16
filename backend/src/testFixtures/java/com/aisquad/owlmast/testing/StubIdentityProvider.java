@@ -17,6 +17,9 @@ import reactor.netty.http.server.HttpServer;
  */
 public final class StubIdentityProvider implements AutoCloseable {
 
+  /** A loopback address whose port (1) nothing listens on: a connection is refused at once. */
+  public static final String UNREACHABLE = "http://127.0.0.1:1";
+
   private final DisposableServer server;
   private final String realm;
   private final AtomicReference<UnaryOperator<String>> published;
@@ -94,12 +97,38 @@ public final class StubIdentityProvider implements AutoCloseable {
     return start(realm, UnaryOperator.identity(), delay);
   }
 
+  /**
+   * Starts a happy-path provider whose document also names a token and a key endpoint, both at an
+   * address nobody listens on ({@link #UNREACHABLE}): the document is one the backend accepts, and
+   * every call to those endpoints is refused at once. This is an identity provider whose discovery
+   * is still answered (or still held by the backend) while the provider itself is away.
+   */
+  public static StubIdentityProvider startWithUnreachableEndpoints(String realm) {
+    return start(
+        realm,
+        UnaryOperator.identity(),
+        Duration.ZERO,
+        ",\"token_endpoint\":\""
+            + UNREACHABLE
+            + "/protocol/openid-connect/token\",\"jwks_uri\":\""
+            + UNREACHABLE
+            + "/protocol/openid-connect/certs\"");
+  }
+
   private static StubIdentityProvider start(String realm, UnaryOperator<String> published) {
     return start(realm, published, Duration.ZERO);
   }
 
   private static StubIdentityProvider start(
       String realm, UnaryOperator<String> initiallyPublished, Duration delay) {
+    return start(realm, initiallyPublished, delay, "");
+  }
+
+  private static StubIdentityProvider start(
+      String realm,
+      UnaryOperator<String> initiallyPublished,
+      Duration delay,
+      String furtherMembers) {
     AtomicInteger requests = new AtomicInteger();
     AtomicReference<UnaryOperator<String>> published = new AtomicReference<>(initiallyPublished);
     AtomicReference<Mono<Void>> gate = new AtomicReference<>(Mono.empty());
@@ -122,7 +151,9 @@ public final class StubIdentityProvider implements AutoCloseable {
                                           + published.get().apply(own[0])
                                           + "\",\"authorization_endpoint\":\""
                                           + own[0]
-                                          + "/protocol/openid-connect/auth\"}")
+                                          + "/protocol/openid-connect/auth\""
+                                          + furtherMembers
+                                          + "}")
                                   .delaySubscription(delay)
                                   .delaySubscription(Mono.defer(gate::get)));
                     }))

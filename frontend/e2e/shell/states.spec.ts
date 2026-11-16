@@ -1,4 +1,5 @@
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { test } from './test.ts';
 import { compatibleDescriptor, mockDescriptor } from './helpers.ts';
 
 test.describe('connection states: loading, compatible, incompatible, unsupported, denied, error, offline (AC3/AC4)', () => {
@@ -90,7 +91,7 @@ test.describe('connection states: loading, compatible, incompatible, unsupported
   });
 
   test('a background rollback does not take focus from the control in use', async ({ page }) => {
-    let contract = { major: 1, minor: 0 };
+    let contract = { major: 1, minor: 1 };
     await page.route('**/api/compatibility', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...compatibleDescriptor, apiContract: contract }) }),
     );
@@ -193,7 +194,7 @@ test.describe('connection states: loading, compatible, incompatible, unsupported
   });
 
   test('a backend rollback replaces the Compatible verdict without any user action', async ({ page }) => {
-    let contract = { major: 1, minor: 0 };
+    let contract = { major: 1, minor: 1 };
     await page.route('**/api/compatibility', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...compatibleDescriptor, apiContract: contract }) }),
     );

@@ -35,7 +35,8 @@ def rendered_pod_run_labels():
     if HELM is None:
         return None
     import yaml
-    r = subprocess.run([HELM, "template", "owl-mast", str(CHART), "--set", f"commonLabels.{RUN_LABEL_KEY.replace('.', chr(92) + '.')}={RUN_ID}"],
+    r = subprocess.run([HELM, "template", "owl-mast", str(CHART), "--set", "routing.publicOrigin=http://localhost:8080", "--set", "identity.keycloak.publicOrigin=http://localhost:8081",
+                        "--set", f"commonLabels.{RUN_LABEL_KEY.replace('.', chr(92) + '.')}={RUN_ID}"],
                        capture_output=True, text=True, check=False)
     if r.returncode != 0:
         raise AssertionError(r.stderr)
@@ -221,7 +222,8 @@ fi
 if [ "${STUB_RUNTIME:-}" = 1 ]; then
   if [[ "$args" == *" get --raw /api/v1/namespaces/"* ]]; then
     svc="$(sed -E 's/.*\/services\/([^:\/]+).*/\1/' <<<"$args")"
-    if [[ "$args" == *"openid-configuration"* ]]; then printf '{"issuer":"http://%s:8080/realms/owl-mast"}\n' "$svc"; else printf '{"status":"UP"}\n'; fi
+    # A bundled Keycloak publishes its public origin (the script's loopback default), whichever address it is read on (OM-02.01).
+    if [[ "$args" == *"openid-configuration"* ]]; then printf '{"issuer":"%s/realms/owl-mast"}\n' "${STUB_KEYCLOAK_ORIGIN:-http://localhost:8081}"; else printf '{"status":"UP"}\n'; fi
     exit 0
   fi
   # The release's Keycloak pods that are not being deleted, as `name deletionTimestamp` lines (keycloak_pod_names): a retired
@@ -475,16 +477,19 @@ class PreflightTests(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             calls = h.calls.read_text().splitlines()
             created = [c for c in calls if " create secret generic " in c]
-            self.assertEqual(len(created), 6)  # eight synthetic Secrets minus the two that already exist and are owned
+            self.assertEqual(len(created), 7)  # eight username/password Secrets minus the two that already exist and are owned, plus the client Secret (OM-02.01)
+            client = [c for c in created if " owl-mast-oidc-client " in c]
+            self.assertEqual(len(client), 1); self.assertIn("--from-file=client-secret=/dev/stdin", client[0]); self.assertIn(" -n owl-mast-test ", client[0])
+            self.assertNotIn("--from-literal=client-secret", "\n".join(calls))  # the value is never an argument
             # 109/4543776459: each Secret is built client-side and created WITH its label in one call; no separate label call exists
             self.assertTrue(all("--dry-run=client" in c and "-o json" in c for c in created), created)
             self.assertEqual([c for c in calls if " label " in c and " secret" in c], [])
-            # 109/4543776464: six labelled creations plus the two replications, all `create` (never `apply`, which overwrites)
-            self.assertEqual(sum(" create -f -" in c for c in calls), 8)
+            # 109/4543776464: seven labelled creations plus the two replications, all `create` (never `apply`, which overwrites)
+            self.assertEqual(sum(" create -f -" in c for c in calls), 9)
             self.assertEqual(sum(" apply -f -" in c for c in calls), 0)  # no Secret is ever written with apply
             world = h.world.read_text().splitlines()
             self.assertEqual([l for l in world if l.startswith("secret ") and not l.endswith(" owned")], [], "every created Secret carries this run's label")
-            self.assertEqual(len([l for l in world if l.startswith("secret ")]), 2 + 8)
+            self.assertEqual(len([l for l in world if l.startswith("secret ")]), 2 + 9)
             self.assertIn("owned by this run (kept)", r.stdout)
             self.assertNotIn(SENTINEL, r.stdout + r.stderr + h.evidence_text())
             inventory = (h.evidence / "runtime" / "secrets-inventory.txt").read_text()
@@ -748,10 +753,11 @@ class PreflightTests(unittest.TestCase):
             for sec in ("owl-mast-postgres-admin", "owl-mast-db", "owl-mast-keycloak-db", "owl-mast-keycloak-bootstrap"):
                 world += f"secret {ns} {sec} owned\n"
         world += "secret owl-mast-test owl-mast-external-db owned\nsecret owl-mast-test owl-mast-external-keycloak-db owned\nsecret owl-mast-test owl-mast-db-broken owned\n"
+        world += "secret owl-mast-test owl-mast-oidc-client owned\n"  # OM-02.01: the backend's client Secret, consumed by every install
         for rel in ("owl-mast", "owl-mast-broken", "owl-mast-wrongidp"):
             world += f"release - {rel} owned\n"
             for kind, suffix in (("deployment", "-backend"), ("deployment", "-postgresql"), ("deployment", "-keycloak"), ("deployment", "-frontend"), ("service", "-backend"), ("service", "-postgresql"), ("service", "-keycloak"), ("service", "-frontend"),
-                                 ("configmap", "-postgresql-init"), ("configmap", "-keycloak-realm"), ("configmap", "-postgresql-provision-scripts"), ("job", "-postgresql-provision-keycloak"), ("ingress", ""), ("httproute", ""), ("pvc", "-postgresql-data"),
+                                 ("configmap", "-postgresql-init"), ("configmap", "-keycloak-realm"), ("configmap", "-postgresql-provision-scripts"), ("job", "-postgresql-provision-keycloak"), ("ingress", ""), ("httproute", ""), ("ingress", "-keycloak"), ("httproute", "-keycloak"), ("pvc", "-postgresql-data"),
                                  ("networkpolicy", "-postgresql"), ("networkpolicy", "-keycloak")):
                 world += f"{kind} owl-mast-test {rel}{suffix} owned\n"
             for comp in ("backend", "postgresql", "keycloak"):

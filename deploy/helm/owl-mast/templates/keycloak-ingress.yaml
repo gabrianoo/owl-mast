@@ -1,0 +1,38 @@
+{{- if and .Values.identity.bundled (eq (include "owl-mast.keycloak.route.ingress.enabled" .) "true") }}
+{{- $in := .Values.identity.keycloak.route.ingress }}
+# Public route to the bundled Keycloak on its own origin (identity.keycloak.publicOrigin): the endpoints
+# of the realm identity.realm and the login theme resources only. The master realm (/realms/master/: the
+# administrators' login and token endpoint) and the admin console (/admin) are never routed.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "owl-mast.keycloak.fullname" . }}
+  labels:
+    {{- include "owl-mast.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keycloak
+  {{- with $in.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $in.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with $in.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ include "owl-mast.originHost" (include "owl-mast.keycloak.publicOrigin" .) | quote }}
+      http:
+        paths:
+          {{- range (list (printf "/realms/%s/" .Values.identity.realm) "/resources/") }}
+          - path: {{ . }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "owl-mast.keycloak.fullname" $ }}
+                port:
+                  name: http
+          {{- end }}
+{{- end }}

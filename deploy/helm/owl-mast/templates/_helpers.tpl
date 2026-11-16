@@ -119,12 +119,88 @@ so 443 is an ordinary port and stays.
 {{- end -}}
 {{- end -}}
 
-{{/* Issuer the backend trusts: bundled Keycloak realm or the supplied external issuer. */}}
+{{/*
+Values added in chart 0.3.0, read through dig so that a release upgraded with --reuse-values (values without
+these keys) reaches the validation below, which names the missing value, instead of a nil-pointer error.
+*/}}
+{{- define "owl-mast.routing.publicOrigin" -}}{{ dig "publicOrigin" "" .Values.routing | toString }}{{- end -}}
+{{- define "owl-mast.keycloak.publicOrigin" -}}{{ dig "publicOrigin" "" .Values.identity.keycloak | toString }}{{- end -}}
+{{- define "owl-mast.keycloak.adminOrigin" -}}{{ dig "adminOrigin" "" .Values.identity.keycloak | toString }}{{- end -}}
+{{- define "owl-mast.identity.clientId" -}}{{ dig "client" "id" "owl-mast-web" .Values.identity | toString }}{{- end -}}
+{{- define "owl-mast.identity.clientSecret" -}}{{ dig "client" "existingSecret" "owl-mast-oidc-client" .Values.identity | toString }}{{- end -}}
+{{- define "owl-mast.keycloak.route.gateway.enabled" -}}{{ dig "route" "gateway" "enabled" false .Values.identity.keycloak | toString }}{{- end -}}
+{{- define "owl-mast.keycloak.route.ingress.enabled" -}}{{ dig "route" "ingress" "enabled" false .Values.identity.keycloak | toString }}{{- end -}}
+
+{{/* Host of an origin (scheme://host[:port]) that owl-mast.validateOrigin accepted. */}}
+{{- define "owl-mast.originHost" -}}
+{{- regexReplaceAll ":[0-9]+$" (regexReplaceAll "^https?://" . "") "" -}}
+{{- end -}}
+
+{{/*
+Where an origin that owl-mast.validateOrigin accepted listens: its host and the port it names, or its scheme's
+default port (443 for https, 80 for http). The scheme is left out, because one port carries one listener
+whatever the scheme. localhost and 127.0.0.1 are one machine, so both are written "(loopback)", which no host
+can be. Two origins with the same result cannot be two services. Nothing else is folded: a name under
+.localhost can be told apart by a local proxy that routes by host, and another 127.x.x.x address can be bound
+apart, so they stay hosts of their own.
+*/}}
+{{- define "owl-mast.originSocket" -}}
+{{- $host := include "owl-mast.originHost" . -}}
+{{- if regexMatch "^(localhost|127\\.0\\.0\\.1)$" $host -}}{{- $host = "(loopback)" -}}{{- end -}}
+{{- $port := regexFind "[0-9]+$" (regexFind ":[0-9]+$" .) | default (ternary "443" "80" (hasPrefix "https://" .)) -}}
+{{- printf "%s:%s" $host $port -}}
+{{- end -}}
+
+{{/*
+Issuer the backend trusts, which is the issuer tokens carry: for the bundled Keycloak its PUBLIC origin
+(identity.keycloak.publicOrigin, also KC_HOSTNAME) followed by the realm, for an external issuer the supplied
+value as it is. The browser reaches Keycloak on that origin; the backend reaches the bundled Keycloak through
+the cluster-local Service (owl-mast.identity.backchannelUri).
+*/}}
 {{- define "owl-mast.identity.issuerUri" -}}
 {{- if .Values.identity.bundled -}}
-{{- printf "%s/realms/%s" (include "owl-mast.keycloak.baseUrl" .) .Values.identity.realm -}}
+{{- printf "%s/realms/%s" (include "owl-mast.keycloak.publicOrigin" .) .Values.identity.realm -}}
 {{- else -}}
 {{- .Values.identity.external.issuerUri -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Where the backend fetches the bundled Keycloak's discovery document and calls its token and key endpoints: the
+cluster-local Service. Keycloak runs with KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true, so a request that arrives on
+this address is answered with the public issuer and with back-channel endpoints on this address.
+*/}}
+{{- define "owl-mast.identity.backchannelUri" -}}
+{{- printf "%s/realms/%s" (include "owl-mast.keycloak.baseUrl" .) .Values.identity.realm -}}
+{{- end -}}
+
+{{/*
+A public origin: scheme://host[:port] and nothing else. https, or plain http for a loopback host only (the
+session cookie is always Secure, and browsers accept a Secure cookie over http on loopback alone). The host is
+lowercase, as browsers send it: a DNS name whose last label starts with a letter, a single label, or an IPv4
+address. The scheme's default port is refused, because Keycloak and browsers leave it out and origins and
+issuers are compared as exact strings. validateOrigin (list "<values path>" <origin> "<what it is>")
+*/}}
+{{- define "owl-mast.validateOrigin" -}}
+{{- $path := index . 0 -}}
+{{- $origin := index . 1 -}}
+{{- $what := index . 2 -}}
+{{- $octet := "(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])" -}}
+{{- $label := "[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?" -}}
+{{- $top := "[a-z]([-a-z0-9]{0,61}[a-z0-9])?" -}}
+{{- $host := printf "((%s\\.){3}%s|%s|(%s\\.)+%s)" $octet $octet $label $label $top -}}
+{{- $port := "(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?" -}}
+{{- if not (regexMatch (printf "^https?://%s%s$" $host $port) $origin) -}}
+{{- fail (printf "%s %q is not an origin: %s must be scheme://host[:port] with nothing after it (no path, trailing slash, query, fragment or user info), a lowercase host (a DNS name whose last label starts with a letter, a single label, or an IPv4 address) and a port 1-65535" $path $origin $what) -}}
+{{- end -}}
+{{- if gt (len (include "owl-mast.originHost" $origin)) 253 -}}
+{{- fail (printf "%s %q is not an origin: its host exceeds 253 characters" $path $origin) -}}
+{{- end -}}
+{{- if and (hasPrefix "http://" $origin) (not (regexMatch "^http://(localhost|127\\.0\\.0\\.1)(:[0-9]+)?$" $origin)) -}}
+{{- fail (printf "%s %q uses plaintext http: %s must be https. Plain http is accepted only for a loopback host (http://localhost or http://127.0.0.1, with an optional port), because the session cookie is always Secure and credentials would cross the network unencrypted" $path $origin $what) -}}
+{{- end -}}
+{{- if or (regexMatch "^https://[^:]+:443$" $origin) (regexMatch "^http://[^:]+:80$" $origin) -}}
+{{- fail (printf "%s %q names the scheme's default port: write it without the port. Browsers and Keycloak leave the default port out, and origins and issuers are compared as exact strings" $path $origin) -}}
 {{- end -}}
 {{- end -}}
 
@@ -213,8 +289,24 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- end -}}
 {{- include "owl-mast.validateSslMode" (list "identity.keycloak.database.external" $v.identity.keycloak.database.external) -}}
 {{- end -}}
-{{- if not $v.identity.realm -}}
+{{- if or (kindIs "invalid" $v.identity.realm) (and (kindIs "string" $v.identity.realm) (not $v.identity.realm)) -}}
 {{- fail "identity.realm is required" -}}
+{{- end -}}
+{{- /* the schema's pattern, repeated so that --skip-schema-validation cannot open it: the realm is written into the */ -}}
+{{- /* issuer, the back-channel address and the routed path /realms/<realm>/, where "master/" or "a/../master" would */ -}}
+{{- /* name the master realm past the refusal below */ -}}
+{{- /* only text is a realm name: every consumer formats the value as it is, so a number would be written as */ -}}
+{{- /* %!s(int64=7) into the issuer and the routed path while its string form passed the checks below */ -}}
+{{- if not (kindIs "string" $v.identity.realm) -}}
+{{- fail (printf "identity.realm %v is not text (its kind is %s): a realm name is a string. Quote the value in the values file, or pass it with --set-string. The realm is written as it is into the issuer and into the routed path /realms/<identity.realm>/" $v.identity.realm (kindOf $v.identity.realm)) -}}
+{{- end -}}
+{{- $realm := $v.identity.realm -}}
+{{- if not (regexMatch "^[a-zA-Z0-9][a-zA-Z0-9_-]*$" $realm) -}}
+{{- fail (printf "identity.realm %q is not a realm name: letters, digits, '_' and '-', starting with a letter or digit. The realm is written as it is into the issuer and into the routed path /realms/<identity.realm>/" $realm) -}}
+{{- end -}}
+{{- /* Keycloak realm names are case-sensitive, so only "master" is that realm; any case is refused, which costs nothing */ -}}
+{{- if eq (lower $realm) "master" -}}
+{{- fail (printf "identity.realm=%q is refused: master is the bundled Keycloak's administration realm, where administrators sign in and obtain tokens. People sign in to Owl Mast in a realm of their own, and the Keycloak route publishes /realms/<identity.realm>/, which would publish the administrators' realm" $realm) -}}
 {{- end -}}
 {{- /* AC3: Keycloak keeps its own database on a shared server (the bundled instance, or the same external host and port) */ -}}
 {{- /* textual comparison (case and a trailing dot ignored); aliases such as an IP address and a DNS name are not detected */ -}}
@@ -236,70 +328,7 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- if not $peers -}}
 {{- fail (printf "identity.keycloak.proxyHeaders=%s needs networkPolicy.keycloak.extraFrom to name the trusted proxy: with no entry the policy admits only the backend, whose direct requests are not proxied" $v.identity.keycloak.proxyHeaders) -}}
 {{- end -}}
-{{- /* a peer must NAME the proxy: an empty peer or an empty selector admits every pod, and so does a selector made */ -}}
-{{- /* only of Exists, NotIn or DoesNotExist terms (key Exists on a label every namespace carries is {} spelled */ -}}
-{{- /* differently). An ipBlock must be a narrow range: /0 is every address, and two /1 blocks are too. */ -}}
-{{- range $i, $peer := $peers -}}
-{{- if not $peer -}}
-{{- fail (printf "networkPolicy.keycloak.extraFrom[%d] is empty: with identity.keycloak.proxyHeaders=%s every entry must name the trusted proxy (podSelector, namespaceSelector or ipBlock), because an empty peer admits every pod" $i $v.identity.keycloak.proxyHeaders) -}}
-{{- end -}}
-{{- range $key := list "podSelector" "namespaceSelector" -}}
-{{- if hasKey $peer $key -}}
-{{- $selector := get $peer $key | default dict -}}
-{{- if and (not (get $selector "matchLabels")) (not (get $selector "matchExpressions")) -}}
-{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].%s is empty: with identity.keycloak.proxyHeaders=%s it must select the trusted proxy by matchLabels or matchExpressions, because an empty selector admits every %s, each able to send forged X-Forwarded-*/Forwarded headers" $i $key $v.identity.keycloak.proxyHeaders (ternary "pod of the release namespace" "pod of every namespace" (eq $key "podSelector"))) -}}
-{{- end -}}
-{{- $names := not (empty (get $selector "matchLabels")) -}}
-{{- range $expr := (get $selector "matchExpressions" | default list) -}}
-{{- if kindIs "map" $expr -}}
-{{- if and (eq (toString (get $expr "operator")) "In") (get $expr "values") -}}{{- $names = true -}}{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- if not $names -}}
-{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].%s names nothing: with identity.keycloak.proxyHeaders=%s it must select the trusted proxy by a matchLabels entry or a matchExpressions term with operator In. Exists, NotIn and DoesNotExist terms alone can match every %s (key Exists on a label all of them carry is an empty selector spelled differently), each able to send forged X-Forwarded-*/Forwarded headers" $i $key $v.identity.keycloak.proxyHeaders (ternary "pod of the release namespace" "namespace" (eq $key "podSelector"))) -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- if hasKey $peer "ipBlock" -}}
-{{- $cidr := toString (get (get $peer "ipBlock" | default dict) "cidr") -}}
-{{- $minPrefix := ternary 32 8 (contains ":" $cidr) -}}
-{{- if not (regexMatch "^[0-9A-Fa-f:.]+/[0-9]{1,3}$" $cidr) -}}
-{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].ipBlock.cidr %q is refused: with identity.keycloak.proxyHeaders=%s it must be the proxy's own address range in CIDR form (address/prefix)" $i $cidr $v.identity.keycloak.proxyHeaders) -}}
-{{- end -}}
-{{- if lt (int (regexFind "[0-9]+$" $cidr)) $minPrefix -}}
-{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].ipBlock.cidr %q is refused: with identity.keycloak.proxyHeaders=%s it must be the proxy's own address range, with a prefix of at least /%d (/8 for IPv4, /32 for IPv6). A wider block, alone (/0) or combined with another (0.0.0.0/1 and 128.0.0.0/1), admits every address" $i $cidr $v.identity.keycloak.proxyHeaders $minPrefix) -}}
-{{- end -}}
-{{- /* An IPv6 range is read group by group. One that embeds an IPv4 address is refused whatever its prefix: Go's */ -}}
-{{- /* net.ParseCIDR reads ::ffff:0.0.0.0/96 as 0.0.0.0/0, so the IPv6 floor would admit every IPv4 address. */ -}}
-{{- if contains ":" $cidr -}}
-{{- $address := lower (regexReplaceAll "/[0-9]+$" $cidr "") -}}
-{{- if contains "." $address -}}
-{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].ipBlock.cidr %q is refused: with identity.keycloak.proxyHeaders=%s an IPv6 range must not embed a dotted IPv4 address. An IPv4-mapped range such as ::ffff:0.0.0.0/96 is read as the IPv4 range 0.0.0.0/0, which admits every address; write the proxy's IPv4 range itself (for example 10.1.2.0/24)" $i $cidr $v.identity.keycloak.proxyHeaders) -}}
-{{- end -}}
-{{- $halves := splitList "::" $address -}}
-{{- $groups := compact (splitList ":" (index $halves 0)) -}}
-{{- $wellFormed := and (le (len $halves) 2) (not (regexMatch "(^:[^:]|[^:]:$|:::)" $address)) -}}
-{{- if eq (len $halves) 2 -}}
-{{- $tail := compact (splitList ":" (index $halves 1)) -}}
-{{- if gt (add (len $groups) (len $tail)) 7 -}}{{- $wellFormed = false -}}{{- end -}}
-{{- range until (int (max 0 (sub 8 (add (len $groups) (len $tail))))) -}}{{- $groups = append $groups "0" -}}{{- end -}}
-{{- $groups = concat $groups $tail -}}
-{{- end -}}
-{{- if ne (len $groups) 8 -}}{{- $wellFormed = false -}}{{- end -}}
-{{- $normal := list -}}
-{{- range $group := $groups -}}
-{{- if not (regexMatch "^[0-9a-f]{1,4}$" $group) -}}{{- $wellFormed = false -}}{{- end -}}
-{{- $normal = append $normal (regexReplaceAll "^0+([0-9a-f])" $group "${1}") -}}
-{{- end -}}
-{{- if not $wellFormed -}}
-{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].ipBlock.cidr %q is refused: with identity.keycloak.proxyHeaders=%s it must be the proxy's own address range in CIDR form (address/prefix), and this is not an IPv6 address of eight hexadecimal groups (one \"::\" may stand for the zero groups)" $i $cidr $v.identity.keycloak.proxyHeaders) -}}
-{{- end -}}
-{{- if regexMatch "^0:0:0:0:0:(ffff|0):" (join ":" $normal) -}}
-{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].ipBlock.cidr %q is refused: with identity.keycloak.proxyHeaders=%s an IPv6 range must not be an IPv4-mapped (::ffff:0:0/96) or IPv4-compatible (::/96) one. An IPv4-mapped range is read as an IPv4 range (::ffff:0:0/96 is 0.0.0.0/0), which admits every address; write the proxy's IPv4 range itself (for example 10.1.2.0/24)" $i $cidr $v.identity.keycloak.proxyHeaders) -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
+{{- include "owl-mast.validateKeycloakPeers" (list $peers (printf "identity.keycloak.proxyHeaders=%s" $v.identity.keycloak.proxyHeaders) "send forged X-Forwarded-*/Forwarded headers") -}}
 {{- end -}}
 {{- else -}}
 {{- $issuer := $v.identity.external.issuerUri -}}
@@ -326,8 +355,116 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- fail (printf "identity.external.issuerUri %q must be an absolute https:// URL with a host the backend can parse (a DNS name whose last label starts with a letter, a single label, or an IPv4 address with octets 0-255; no IPv6 literal), an optional port 1-65535, valid path characters and no query, fragment or user info" $issuer) -}}
 {{- end -}}
 {{- end -}}
+{{- /* OM-02.01: sessions live in the backend's memory, so a second replica would not know them */ -}}
+{{- if gt (int $v.backend.replicas) 1 -}}
+{{- fail (printf "backend.replicas=%v is refused: it must be 0 or 1. Browser sessions are held in the backend's memory, so a second replica would answer a signed-in person as signed out, and two backends would run against one database (a durable session store is deferred work)" $v.backend.replicas) -}}
+{{- end -}}
+{{- /* OM-02.01: the one application origin (frontend at / and backend at /api): redirect URI, cookie */ -}}
+{{- $appOrigin := include "owl-mast.routing.publicOrigin" . -}}
+{{- if not $appOrigin -}}
+{{- fail "routing.publicOrigin is required: the public origin people open Owl Mast on (for example https://owl-mast.example.com), which serves the frontend at / and the backend at /api. The sign-in redirect URI and the session cookie are bound to it" -}}
+{{- end -}}
+{{- include "owl-mast.validateOrigin" (list "routing.publicOrigin" $appOrigin "the application origin") -}}
+{{- /* OM-02.01: the backend is a confidential OpenID Connect client; its secret is an existing Secret reference */ -}}
+{{- if not (include "owl-mast.identity.clientSecret" .) -}}
+{{- fail "identity.client.existingSecret is required: an existing Secret with the key client-secret, the secret of the backend's OpenID Connect client (the bundled Keycloak imports the client with it; an external issuer must hold the same value)" -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" (include "owl-mast.identity.clientSecret" .)) -}}
+{{- fail (printf "identity.client.existingSecret %q is not a valid Secret name" (include "owl-mast.identity.clientSecret" .)) -}}
+{{- end -}}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" (include "owl-mast.identity.clientId" .)) -}}
+{{- fail (printf "identity.client.id %q is refused: a client id of letters, digits, '.', '_' and '-', starting with a letter or digit, at most 128 characters" (include "owl-mast.identity.clientId" .)) -}}
+{{- end -}}
+{{- if $v.identity.bundled -}}
+{{- /* OM-02.01: the browser reaches the bundled Keycloak on its own public origin, never on the cluster-local Service */ -}}
+{{- $idOrigin := include "owl-mast.keycloak.publicOrigin" . -}}
+{{- if not $idOrigin -}}
+{{- fail "identity.keycloak.publicOrigin is required when identity.bundled=true: the public origin browsers reach the bundled Keycloak on (for example https://id.owl-mast.example.com). It is Keycloak's hostname and the issuer of every token; the cluster-local Service address is not reachable from a browser" -}}
+{{- end -}}
+{{- include "owl-mast.validateOrigin" (list "identity.keycloak.publicOrigin" $idOrigin "the bundled Keycloak's public origin") -}}
+{{- if eq $idOrigin $appOrigin -}}
+{{- fail (printf "identity.keycloak.publicOrigin and routing.publicOrigin are both %q: Keycloak is reached on its own origin, separate from the application's (the chart routes only / and /api on the application origin)" $appOrigin) -}}
+{{- end -}}
+{{- /* another port is not another host: Gateway and Ingress match the host without the port, and cookies are scoped */ -}}
+{{- /* by host. The one exception is a loopback host that the chart renders no Keycloak route for (port-forwards). */ -}}
+{{- $sameHost := eq (include "owl-mast.originHost" $idOrigin) (include "owl-mast.originHost" $appOrigin) -}}
+{{- $idLoopback := regexMatch "^(localhost|127\\.0\\.0\\.1)$" (include "owl-mast.originHost" $idOrigin) -}}
+{{- $idRouted := or (eq (include "owl-mast.keycloak.route.gateway.enabled" .) "true") (eq (include "owl-mast.keycloak.route.ingress.enabled" .) "true") -}}
+{{- if and $sameHost (or $idRouted (not $idLoopback)) -}}
+{{- fail (printf "identity.keycloak.publicOrigin %q and routing.publicOrigin %q name the same host %q: Keycloak needs a host of its own, not another port on the application's. Gateway and Ingress routes match the host without the port, so one hostname cannot keep Keycloak's paths apart from the application's, and cookies are scoped by host, so the session cookie and Keycloak's cookies would be sent to both. Only a loopback host (localhost, 127.0.0.1) may carry both on different ports, and only while the chart renders no Keycloak route" $idOrigin $appOrigin (include "owl-mast.originHost" $idOrigin)) -}}
+{{- end -}}
+{{- /* a loopback host is the machine the browser runs on. Beside an application that other machines open, every */ -}}
+{{- /* browser would be sent to sign in on itself, and a loopback http origin would switch on the plaintext issuer */ -}}
+{{- /* (OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER) for a public installation. No route is needed for that, so this runs */ -}}
+{{- /* with or without one, and before the route refusal, whose advice to disable the route would lead here. */ -}}
+{{- if and $idLoopback (not (regexMatch "^(localhost|127\\.0\\.0\\.1)$" (include "owl-mast.originHost" $appOrigin))) -}}
+{{- fail (printf "identity.keycloak.publicOrigin %q is a loopback origin, but routing.publicOrigin %q is not: every browser that opens the application would be sent to sign in on its own machine, so people could sign in only from the machine that forwards the Keycloak port. A loopback Keycloak is only for an application that is port-forwarded too (routing.publicOrigin on localhost or 127.0.0.1). Set identity.keycloak.publicOrigin to the public origin browsers reach Keycloak on" $idOrigin $appOrigin) -}}
+{{- end -}}
+{{- /* with a loopback application as well, a route for the loopback host still reaches Keycloak from nowhere else */ -}}
+{{- if and $idRouted $idLoopback -}}
+{{- fail (printf "identity.keycloak.route.*.enabled=true cannot route the loopback identity.keycloak.publicOrigin %q: a loopback host is reached by port-forward, never through a proxy, so people could sign in only from the machine that forwards the port. Set identity.keycloak.publicOrigin to the public origin the route serves, or disable the Keycloak route" $idOrigin) -}}
+{{- end -}}
+{{- /* what is left on the application's host and port is an unrouted loopback pair that differs in the scheme alone, */ -}}
+{{- /* or in the spelling of the loopback host: one local port forwards to one Service, whatever the scheme */ -}}
+{{- if eq (include "owl-mast.originSocket" $idOrigin) (include "owl-mast.originSocket" $appOrigin) -}}
+{{- fail (printf "identity.keycloak.publicOrigin %q and routing.publicOrigin %q name the same port %s of the loopback host: another scheme is not another address, and localhost and 127.0.0.1 are the same machine, so one port-forward would have to carry both Keycloak and the application. Give Keycloak a port of its own" $idOrigin $appOrigin (regexFind "[0-9]+$" (include "owl-mast.originSocket" $idOrigin))) -}}
+{{- end -}}
+{{- with (include "owl-mast.keycloak.adminOrigin" .) -}}
+{{- include "owl-mast.validateOrigin" (list "identity.keycloak.adminOrigin" . "the address administrators open the Keycloak admin console on") -}}
+{{- /* the admin console signs administrators in with the master realm's cookies, and cookies are scoped by host: it */ -}}
+{{- /* is kept off the application's origin and host as the public origin is. These run without a rendered route, so */ -}}
+{{- /* operator-owned routing is covered. A loopback host may carry both on different ports (port-forwards), with or */ -}}
+{{- /* without a Keycloak route: that route serves the public origin's host and never /admin. */ -}}
+{{- if eq . $appOrigin -}}
+{{- fail (printf "identity.keycloak.adminOrigin and routing.publicOrigin are both %q: the admin console is reached on an address of its own, never on the application's origin" .) -}}
+{{- end -}}
+{{- $adminHost := include "owl-mast.originHost" . -}}
+{{- if and (eq $adminHost (include "owl-mast.originHost" $appOrigin)) (not (regexMatch "^(localhost|127\\.0\\.0\\.1)$" $adminHost)) -}}
+{{- fail (printf "identity.keycloak.adminOrigin %q and routing.publicOrigin %q name the same host %q: the admin console needs a host that is not the application's, not another port on it. Cookies are scoped by host, so the administrators' Keycloak cookies and the application's session cookie would be sent to both. Only a loopback host (localhost, 127.0.0.1) may carry both on different ports" . $appOrigin $adminHost) -}}
+{{- end -}}
+{{- /* as for the public origin: a loopback pair on one port is one listener, whatever the scheme or the spelling */ -}}
+{{- if eq (include "owl-mast.originSocket" .) (include "owl-mast.originSocket" $appOrigin) -}}
+{{- fail (printf "identity.keycloak.adminOrigin %q and routing.publicOrigin %q name the same port %s of the loopback host: another scheme is not another address, and localhost and 127.0.0.1 are the same machine, so one port-forward would have to carry both the admin console and the application. Give the admin console a port of its own" . $appOrigin (regexFind "[0-9]+$" (include "owl-mast.originSocket" .))) -}}
+{{- end -}}
+{{- /* on Keycloak's own port the console is Keycloak, so sharing the port is fine (the equal value, or the other */ -}}
+{{- /* spelling of loopback, is the same port-forward). Another scheme there is not: one port takes one scheme, so */ -}}
+{{- /* one of the two addresses would name a listener that cannot answer it. */ -}}
+{{- if and (eq (include "owl-mast.originSocket" .) (include "owl-mast.originSocket" $idOrigin)) (ne (hasPrefix "https://" .) (hasPrefix "https://" $idOrigin)) -}}
+{{- fail (printf "identity.keycloak.adminOrigin %q and identity.keycloak.publicOrigin %q name the same port %s of the loopback host under different schemes: one port takes one scheme, and localhost and 127.0.0.1 are the same machine, so one of the two addresses would name a listener that cannot answer it. Give identity.keycloak.adminOrigin the scheme of identity.keycloak.publicOrigin, or a port of its own" . $idOrigin (regexFind "[0-9]+$" (include "owl-mast.originSocket" .))) -}}
+{{- end -}}
+{{- end -}}
+{{- $kcGateway := eq (include "owl-mast.keycloak.route.gateway.enabled" .) "true" -}}
+{{- $kcIngress := eq (include "owl-mast.keycloak.route.ingress.enabled" .) "true" -}}
+{{- if and $kcGateway $kcIngress -}}
+{{- fail "identity.keycloak.route.gateway.enabled and identity.keycloak.route.ingress.enabled are both true: choose one routing mechanism for Keycloak (ambiguous exposure is refused)" -}}
+{{- end -}}
+{{- $idHost := include "owl-mast.originHost" $idOrigin -}}
+{{- if $kcGateway -}}
+{{- include "owl-mast.validateParentRefs" (list . "identity.keycloak.route.gateway" (dig "route" "gateway" "parentRefs" list $v.identity.keycloak)) -}}
+{{- if regexMatch (include "owl-mast.ipv4Pattern" .) $idHost -}}
+{{- fail (printf "identity.keycloak.route.gateway.enabled=true cannot route identity.keycloak.publicOrigin %q: its host is an IP address, and the Gateway API Hostname type forbids IP addresses" $idOrigin) -}}
+{{- end -}}
+{{- if not (.Capabilities.APIVersions.Has "gateway.networking.k8s.io/v1/HTTPRoute") -}}
+{{- fail "identity.keycloak.route.gateway.enabled=true requires the Gateway API CRDs: the target does not serve the capability gateway.networking.k8s.io/v1/HTTPRoute (install the standard-channel CRDs first; for helm template pass --api-versions gateway.networking.k8s.io/v1/HTTPRoute)" -}}
+{{- end -}}
+{{- end -}}
+{{- if $kcIngress -}}
+{{- include "owl-mast.validateIngress" (list . "identity.keycloak.route.ingress" "the host of identity.keycloak.publicOrigin" $idHost (dig "route" "ingress" "tls" list $v.identity.keycloak)) -}}
+{{- end -}}
+{{- /* a rendered route is useless, or the policy is, unless the Keycloak NetworkPolicy admits exactly the proxy */ -}}
+{{- $policy := $v.networkPolicy | default dict -}}
+{{- if and (or $kcGateway $kcIngress) (dig "enabled" true $policy) (not $v.identity.keycloak.proxyHeaders) -}}
+{{- $routeValue := ternary "identity.keycloak.route.gateway.enabled=true" "identity.keycloak.route.ingress.enabled=true" $kcGateway -}}
+{{- $peers := dig "keycloak" "extraFrom" list $policy -}}
+{{- if not $peers -}}
+{{- fail (printf "%s needs networkPolicy.keycloak.extraFrom to name the proxy (the Gateway or Ingress data plane): with no entry the Keycloak NetworkPolicy admits only the backend, so the route would reach nothing. Name the proxy, or set networkPolicy.enabled=false" $routeValue) -}}
+{{- end -}}
+{{- include "owl-mast.validateKeycloakPeers" (list $peers $routeValue "reach Keycloak directly, past the proxy") -}}
+{{- end -}}
+{{- end -}}
 {{- /* AC3: every principal has its own Secret */ -}}
 {{- $secrets := list (list "database.existingSecret" $v.database.existingSecret) -}}
+{{- $secrets = append $secrets (list "identity.client.existingSecret" (include "owl-mast.identity.clientSecret" .)) -}}
 {{- if $v.database.bundled -}}{{- $secrets = append $secrets (list "postgresql.adminExistingSecret" $v.postgresql.adminExistingSecret) -}}{{- end -}}
 {{- if $v.identity.bundled -}}
 {{- $secrets = append $secrets (list "identity.keycloak.database.existingSecret" $v.identity.keycloak.database.existingSecret) -}}
@@ -360,7 +497,7 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- include "owl-mast.validateImageTag" (list "frontend.image.tag" $v.frontend.image.tag) -}}
 {{- end -}}
 {{- if $v.routing.ingress.enabled -}}
-{{- include "owl-mast.validateIngress" . -}}
+{{- include "owl-mast.validateIngress" (list . "routing.ingress" "routing.ingress.host" $v.routing.ingress.host $v.routing.ingress.tls) -}}
 {{- end -}}
 {{- if and $v.routing.ingress.enabled $v.routing.gateway.enabled -}}
 {{- fail "routing.ingress.enabled and routing.gateway.enabled are both true: choose one routing mechanism (ambiguous exposure is refused)" -}}
@@ -385,6 +522,149 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- if ne $v.routing.frontendPathPrefix "/" -}}
 {{- fail (printf "routing.frontendPathPrefix %q is not served by the frontend shell: it must be / (the chart renders no rewrite)" $v.routing.frontendPathPrefix) -}}
 {{- end -}}
+{{- /* OM-02.01: the sign-in redirect URI and the session cookie are bound to routing.publicOrigin, so it must be a host this chart routes */ -}}
+{{- $appHost := include "owl-mast.originHost" $appOrigin -}}
+{{- if $v.routing.ingress.enabled -}}
+{{- $routed := $v.routing.ingress.host | toString -}}
+{{- if ne (include "owl-mast.routeCoversHost" (list $routed $appHost false)) "true" -}}
+{{- fail (printf "routing.publicOrigin %q names the host %q, which routing.ingress.host %q does not route: the sign-in redirect URI and the session cookie would be bound to an origin that never reaches Owl Mast. Set routing.publicOrigin to the origin of the routed host, or route its host" $appOrigin $appHost $routed) -}}
+{{- end -}}
+{{- end -}}
+{{- if and $v.routing.gateway.enabled $v.routing.gateway.hostnames -}}
+{{- $covered := false -}}
+{{- range $v.routing.gateway.hostnames -}}
+{{- if eq (include "owl-mast.routeCoversHost" (list . $appHost true)) "true" -}}{{- $covered = true -}}{{- end -}}
+{{- end -}}
+{{- if not $covered -}}
+{{- fail (printf "routing.publicOrigin %q names the host %q, which is not among routing.gateway.hostnames (%s): the sign-in redirect URI and the session cookie would be bound to an origin that never reaches Owl Mast. Set routing.publicOrigin to the origin of a routed hostname, or add its host to routing.gateway.hostnames" $appOrigin $appHost (join ", " $v.routing.gateway.hostnames)) -}}
+{{- end -}}
+{{- end -}}
+{{- /* OM-02.01: the application's route must not answer on a host of the bundled Keycloak: the public origin's, or the */ -}}
+{{- /* admin console's. It would serve the application on that origin for every path Keycloak's route does not take, */ -}}
+{{- /* same-origin with Keycloak's session cookies. A loopback host is reached by port-forward and never routed */ -}}
+{{- /* (refused above for the public origin), so no route receives it. A wildcard is read as covering every depth */ -}}
+{{- /* below it for both mechanisms: the Ingress API says one label, but the chart cannot tell that the controller */ -}}
+{{- /* holds to it (an nginx server_name wildcard, for one, matches deeper names), and this refusal fails closed. */ -}}
+{{- if $v.identity.bundled -}}
+{{- $consequence := "would answer on Keycloak's host as well: the application would be served on Keycloak's origin for every path outside Keycloak's own, where its pages run same-origin with Keycloak's session cookies. Route the application on hosts that leave Keycloak's out, or give Keycloak a host outside them" -}}
+{{- range (list (list "identity.keycloak.publicOrigin" (include "owl-mast.keycloak.publicOrigin" .)) (list "identity.keycloak.adminOrigin" (include "owl-mast.keycloak.adminOrigin" .))) -}}
+{{- $idPath := index . 0 -}}
+{{- $idOrigin := index . 1 -}}
+{{- $idHost := include "owl-mast.originHost" $idOrigin -}}
+{{- if and $idOrigin (not (regexMatch "^(localhost|127\\.0\\.0\\.1)$" $idHost)) -}}
+{{- if and $v.routing.ingress.enabled (eq (include "owl-mast.routeCoversHost" (list $v.routing.ingress.host $idHost true)) "true") -}}
+{{- fail (printf "routing.ingress.host %q covers the host %q of %s %q: the application's Ingress %s" ($v.routing.ingress.host | toString) $idHost $idPath $idOrigin $consequence) -}}
+{{- end -}}
+{{- if $v.routing.gateway.enabled -}}
+{{- range $i, $routed := $v.routing.gateway.hostnames -}}
+{{- if eq (include "owl-mast.routeCoversHost" (list $routed $idHost true)) "true" -}}
+{{- fail (printf "routing.gateway.hostnames[%d] %q covers the host %q of %s %q: the application's HTTPRoute %s" $i ($routed | toString) $idHost $idPath $idOrigin $consequence) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- /* without hostnames the application's HTTPRoute takes every hostname of its listener; beside a Keycloak HTTPRoute */ -}}
+{{- /* that includes Keycloak's whenever both attach to one listener, which parentRefs alone cannot rule out. Where the */ -}}
+{{- /* chart renders no Keycloak HTTPRoute it cannot tell what else the listener serves: that stays the operator's. */ -}}
+{{- if and $v.routing.gateway.enabled (not $v.routing.gateway.hostnames) (eq (include "owl-mast.keycloak.route.gateway.enabled" .) "true") -}}
+{{- fail (printf "routing.gateway.allowAllListenerHostnames=true is refused while identity.keycloak.route.gateway.enabled=true: an HTTPRoute without hostnames attaches to every hostname of its listener, so on a listener the two routes share the application would answer on Keycloak's host %q as well, same-origin with Keycloak's session cookies. List the application's hostnames in routing.gateway.hostnames" (include "owl-mast.originHost" (include "owl-mast.keycloak.publicOrigin" .))) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Whether a routed host (an Ingress host or an HTTPRoute hostname) answers for a host: the same name, or a
+wildcard over it. By the APIs an Ingress wildcard covers exactly one label and an HTTPRoute wildcard one or
+more; a caller that refuses on coverage passes true for both, because it cannot rely on the controller's reading.
+routeCoversHost (list "<routed host>" "<host>" <true when the wildcard covers more than one label>) renders
+"true" or nothing.
+*/}}
+{{- define "owl-mast.routeCoversHost" -}}
+{{- $routed := index . 0 | toString -}}
+{{- $host := index . 1 | toString -}}
+{{- $suffix := trimPrefix "*" $routed -}}
+{{- if eq $routed $host -}}
+true
+{{- else if and (hasPrefix "*." $routed) (hasSuffix $suffix $host) -}}
+{{- $label := trimSuffix $suffix $host -}}
+{{- if and (ne $label "") (or (index . 2) (not (contains "." $label))) -}}true{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+networkPolicy.keycloak.extraFrom must NAME the proxy in front of the bundled Keycloak whenever something relies
+on it: trusted forwarding headers (identity.keycloak.proxyHeaders) or a rendered route. validateKeycloakPeers
+(list <peers> "<the value that needs them>" "<what an unnamed peer could do>")
+*/}}
+{{- define "owl-mast.validateKeycloakPeers" -}}
+{{- $peers := index . 0 -}}
+{{- $reason := index . 1 -}}
+{{- $risk := index . 2 -}}
+{{- /* a peer must NAME the proxy: an empty peer or an empty selector admits every pod, and so does a selector made */ -}}
+{{- /* only of Exists, NotIn or DoesNotExist terms (key Exists on a label every namespace carries is {} spelled */ -}}
+{{- /* differently). An ipBlock must be a narrow range: /0 is every address, and two /1 blocks are too. */ -}}
+{{- range $i, $peer := $peers -}}
+{{- if not $peer -}}
+{{- fail (printf "networkPolicy.keycloak.extraFrom[%d] is empty: with %s every entry must name the trusted proxy (podSelector, namespaceSelector or ipBlock), because an empty peer admits every pod" $i $reason) -}}
+{{- end -}}
+{{- range $key := list "podSelector" "namespaceSelector" -}}
+{{- if hasKey $peer $key -}}
+{{- $selector := get $peer $key | default dict -}}
+{{- if and (not (get $selector "matchLabels")) (not (get $selector "matchExpressions")) -}}
+{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].%s is empty: with %s it must select the trusted proxy by matchLabels or matchExpressions, because an empty selector admits every %s. Every one of them could %s" $i $key $reason (ternary "pod of the release namespace" "pod of every namespace" (eq $key "podSelector")) $risk) -}}
+{{- end -}}
+{{- $names := not (empty (get $selector "matchLabels")) -}}
+{{- range $expr := (get $selector "matchExpressions" | default list) -}}
+{{- if kindIs "map" $expr -}}
+{{- if and (eq (toString (get $expr "operator")) "In") (get $expr "values") -}}{{- $names = true -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if not $names -}}
+{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].%s names nothing: with %s it must select the trusted proxy by a matchLabels entry or a matchExpressions term with operator In. Exists, NotIn and DoesNotExist terms alone can match every %s (key Exists on a label all of them carry is an empty selector spelled differently). Every one of them could %s" $i $key $reason (ternary "pod of the release namespace" "namespace" (eq $key "podSelector")) $risk) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey $peer "ipBlock" -}}
+{{- $cidr := toString (get (get $peer "ipBlock" | default dict) "cidr") -}}
+{{- $minPrefix := ternary 32 8 (contains ":" $cidr) -}}
+{{- if not (regexMatch "^[0-9A-Fa-f:.]+/[0-9]{1,3}$" $cidr) -}}
+{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].ipBlock.cidr %q is refused: with %s it must be the proxy's own address range in CIDR form (address/prefix)" $i $cidr $reason) -}}
+{{- end -}}
+{{- if lt (int (regexFind "[0-9]+$" $cidr)) $minPrefix -}}
+{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].ipBlock.cidr %q is refused: with %s it must be the proxy's own address range, with a prefix of at least /%d (/8 for IPv4, /32 for IPv6). A wider block, alone (/0) or combined with another (0.0.0.0/1 and 128.0.0.0/1), admits every address" $i $cidr $reason $minPrefix) -}}
+{{- end -}}
+{{- /* An IPv6 range is read group by group. One that embeds an IPv4 address is refused whatever its prefix: Go's */ -}}
+{{- /* net.ParseCIDR reads ::ffff:0.0.0.0/96 as 0.0.0.0/0, so the IPv6 floor would admit every IPv4 address. */ -}}
+{{- if contains ":" $cidr -}}
+{{- $address := lower (regexReplaceAll "/[0-9]+$" $cidr "") -}}
+{{- if contains "." $address -}}
+{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].ipBlock.cidr %q is refused: with %s an IPv6 range must not embed a dotted IPv4 address. An IPv4-mapped range such as ::ffff:0.0.0.0/96 is read as the IPv4 range 0.0.0.0/0, which admits every address; write the proxy's IPv4 range itself (for example 10.1.2.0/24)" $i $cidr $reason) -}}
+{{- end -}}
+{{- $halves := splitList "::" $address -}}
+{{- $groups := compact (splitList ":" (index $halves 0)) -}}
+{{- $wellFormed := and (le (len $halves) 2) (not (regexMatch "(^:[^:]|[^:]:$|:::)" $address)) -}}
+{{- if eq (len $halves) 2 -}}
+{{- $tail := compact (splitList ":" (index $halves 1)) -}}
+{{- if gt (add (len $groups) (len $tail)) 7 -}}{{- $wellFormed = false -}}{{- end -}}
+{{- range until (int (max 0 (sub 8 (add (len $groups) (len $tail))))) -}}{{- $groups = append $groups "0" -}}{{- end -}}
+{{- $groups = concat $groups $tail -}}
+{{- end -}}
+{{- if ne (len $groups) 8 -}}{{- $wellFormed = false -}}{{- end -}}
+{{- $normal := list -}}
+{{- range $group := $groups -}}
+{{- if not (regexMatch "^[0-9a-f]{1,4}$" $group) -}}{{- $wellFormed = false -}}{{- end -}}
+{{- $normal = append $normal (regexReplaceAll "^0+([0-9a-f])" $group "${1}") -}}
+{{- end -}}
+{{- if not $wellFormed -}}
+{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].ipBlock.cidr %q is refused: with %s it must be the proxy's own address range in CIDR form (address/prefix), and this is not an IPv6 address of eight hexadecimal groups (one \"::\" may stand for the zero groups)" $i $cidr $reason) -}}
+{{- end -}}
+{{- if regexMatch "^0:0:0:0:0:(ffff|0):" (join ":" $normal) -}}
+{{- fail (printf "networkPolicy.keycloak.extraFrom[%d].ipBlock.cidr %q is refused: with %s an IPv6 range must not be an IPv4-mapped (::ffff:0:0/96) or IPv4-compatible (::/96) one. An IPv4-mapped range is read as an IPv4 range (::ffff:0:0/96 is 0.0.0.0/0), which admits every address; write the proxy's IPv4 range itself (for example 10.1.2.0/24)" $i $cidr $reason) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 
 {{/* D1: external PostgreSQL transport. validateSslMode (list "<values path>" <external values>) */}}
@@ -402,35 +682,41 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- end -}}
 {{- end -}}
 
-{{/* Ingress host and TLS: the host is a lowercase DNS name (optional leading '*.'), and a TLS block must cover it. */}}
+{{/*
+Ingress host and TLS: the host is a lowercase DNS name (optional leading '*.'), and a TLS block must cover it.
+validateIngress (list <root> "<values path of the ingress>" "<values path of the host>" <host> <tls entries>)
+*/}}
 {{- define "owl-mast.validateIngress" -}}
-{{- $in := .Values.routing.ingress -}}
+{{- $root := index . 0 -}}
+{{- $path := index . 1 -}}
+{{- $hostPath := index . 2 -}}
+{{- $in := dict "host" (index . 3) "tls" (index . 4) -}}
 {{- $hostPattern := "^(\\*\\.)?[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$" -}}
-{{- $ipPattern := include "owl-mast.ipv4Pattern" . -}}
+{{- $ipPattern := include "owl-mast.ipv4Pattern" $root -}}
 {{- if not $in.host -}}
-{{- fail "routing.ingress.enabled=true requires routing.ingress.host" -}}
+{{- fail (printf "%s.enabled=true requires %s" $path $hostPath) -}}
 {{- end -}}
 {{- if or (gt (len $in.host) 253) (not (regexMatch $hostPattern $in.host)) -}}
-{{- fail (printf "routing.ingress.host %q is not a valid Ingress host: lowercase DNS name with labels of at most 63 characters, optional leading wildcard label '*.', no scheme, port or path" $in.host) -}}
+{{- fail (printf "%s %q is not a valid Ingress host: lowercase DNS name with labels of at most 63 characters, optional leading wildcard label '*.', no scheme, port or path" $hostPath $in.host) -}}
 {{- end -}}
 {{- if regexMatch $ipPattern $in.host -}}
-{{- fail (printf "routing.ingress.host %q is an IP address: the Kubernetes API server rejects an IP address as an Ingress host (it must be a DNS name)" $in.host) -}}
+{{- fail (printf "%s %q is an IP address: the Kubernetes API server rejects an IP address as an Ingress host (it must be a DNS name)" $hostPath $in.host) -}}
 {{- end -}}
 {{- if $in.tls -}}
 {{- $covered := false -}}
 {{- range $i, $t := $in.tls -}}
 {{- if not $t.hosts -}}
-{{- fail (printf "routing.ingress.tls[%d].hosts must list the host it secures" $i) -}}
+{{- fail (printf "%s.tls[%d].hosts must list the host it secures" $path $i) -}}
 {{- end -}}
 {{- if not $t.secretName -}}
-{{- fail (printf "routing.ingress.tls[%d].secretName is required: a TLS entry without a Secret makes the controller serve its default certificate" $i) -}}
+{{- fail (printf "%s.tls[%d].secretName is required: a TLS entry without a Secret makes the controller serve its default certificate" $path $i) -}}
 {{- end -}}
 {{- range $t.hosts -}}
 {{- if or (gt (len .) 253) (not (regexMatch $hostPattern .)) -}}
-{{- fail (printf "routing.ingress.tls[%d].hosts entry %q is not a valid DNS name" $i .) -}}
+{{- fail (printf "%s.tls[%d].hosts entry %q is not a valid DNS name" $path $i .) -}}
 {{- end -}}
 {{- if regexMatch $ipPattern . -}}
-{{- fail (printf "routing.ingress.tls[%d].hosts entry %q is an IP address: the Kubernetes API server rejects an IP address as an Ingress TLS host" $i .) -}}
+{{- fail (printf "%s.tls[%d].hosts entry %q is an IP address: the Kubernetes API server rejects an IP address as an Ingress TLS host" $path $i .) -}}
 {{- end -}}
 {{- if eq . $in.host -}}{{- $covered = true -}}{{- end -}}
 {{- if and (hasPrefix "*." .) (not (hasPrefix "*." $in.host)) (contains "." $in.host) -}}
@@ -439,7 +725,7 @@ Rendering stops with the offending value named; nothing is installed partially.
 {{- end -}}
 {{- end -}}
 {{- if not $covered -}}
-{{- fail (printf "routing.ingress.tls does not cover routing.ingress.host %q: the controller would serve its default certificate" $in.host) -}}
+{{- fail (printf "%s.tls does not cover %s %q: the controller would serve its default certificate" $path $hostPath $in.host) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -453,52 +739,7 @@ by the operator's Gateway.
 */}}
 {{- define "owl-mast.validateGateway" -}}
 {{- $gw := .Values.routing.gateway -}}
-{{- if not $gw.parentRefs -}}
-{{- fail "routing.gateway.enabled=true requires at least one routing.gateway.parentRefs entry naming the operator-supplied Gateway" -}}
-{{- end -}}
-{{- if gt (len $gw.parentRefs) 32 -}}
-{{- fail (printf "routing.gateway.parentRefs has %d entries; HTTPRoute allows at most 32" (len $gw.parentRefs)) -}}
-{{- end -}}
-{{- $seen := dict -}}
-{{- range $i, $ref := $gw.parentRefs -}}
-{{- if not $ref.name -}}
-{{- fail (printf "routing.gateway.parentRefs[%d] needs a name" $i) -}}
-{{- end -}}
-{{- if gt (len $ref.name) 253 -}}
-{{- fail (printf "routing.gateway.parentRefs[%d].name exceeds 253 characters" $i) -}}
-{{- end -}}
-{{- if $ref.namespace -}}
-{{- if or (gt (len $ref.namespace) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $ref.namespace)) -}}
-{{- fail (printf "routing.gateway.parentRefs[%d].namespace %q is not a valid namespace name (lowercase RFC 1123 label, at most 63 characters)" $i $ref.namespace) -}}
-{{- end -}}
-{{- end -}}
-{{- if $ref.sectionName -}}
-{{- if or (gt (len $ref.sectionName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $ref.sectionName)) -}}
-{{- fail (printf "routing.gateway.parentRefs[%d].sectionName %q is not a valid listener section name (lowercase RFC 1123 subdomain, at most 253 characters)" $i $ref.sectionName) -}}
-{{- end -}}
-{{- end -}}
-{{- if hasKey $ref "port" -}}
-{{- if or (lt (int $ref.port) 1) (gt (int $ref.port) 65535) -}}
-{{- fail (printf "routing.gateway.parentRefs[%d].port %v is outside 1-65535" $i $ref.port) -}}
-{{- end -}}
-{{- end -}}
-{{- /* CEL: references to the same parent must all carry a sectionName, and those must be unique */ -}}
-{{- /* an omitted namespace is the route's own (the release namespace): both spellings name the same Gateway */ -}}
-{{- $parent := printf "%s/%s" (default $.Release.Namespace $ref.namespace) $ref.name -}}
-{{- $section := default "" $ref.sectionName -}}
-{{- if hasKey $seen $parent -}}
-{{- $prev := index $seen $parent -}}
-{{- if or (eq $section "") (eq $prev "") -}}
-{{- fail (printf "routing.gateway.parentRefs: Gateway %q is referenced more than once; every reference to the same parent must set a distinct sectionName" $parent) -}}
-{{- end -}}
-{{- if has $section (splitList "," $prev) -}}
-{{- fail (printf "routing.gateway.parentRefs: Gateway %q is referenced twice with sectionName %q; sectionName must be unique per parent" $parent $section) -}}
-{{- end -}}
-{{- $_ := set $seen $parent (printf "%s,%s" $prev $section) -}}
-{{- else -}}
-{{- $_ := set $seen $parent $section -}}
-{{- end -}}
-{{- end -}}
+{{- include "owl-mast.validateParentRefs" (list . "routing.gateway" $gw.parentRefs) -}}
 {{- if and (not $gw.hostnames) (not (dig "allowAllListenerHostnames" false $gw)) -}}
 {{- fail "routing.gateway.hostnames is empty: an HTTPRoute without hostnames attaches to every hostname of the referenced listener(s), including other tenants' on a shared Gateway. List the hostnames, or set routing.gateway.allowAllListenerHostnames=true to accept every listener hostname explicitly" -}}
 {{- end -}}
@@ -511,6 +752,59 @@ by the operator's Gateway.
 {{- end -}}
 {{- if regexMatch (include "owl-mast.ipv4Pattern" $) $host -}}
 {{- fail (printf "routing.gateway.hostnames[%d] %q is an IP address: the Gateway API Hostname type forbids IP addresses, and no conformant controller matches one" $i $host) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/* HTTPRoute parentRefs of one route. validateParentRefs (list <root> "<values path of the gateway block>" <parentRefs>) */}}
+{{- define "owl-mast.validateParentRefs" -}}
+{{- $root := index . 0 -}}
+{{- $path := index . 1 -}}
+{{- $refs := index . 2 -}}
+{{- if not $refs -}}
+{{- fail (printf "%s.enabled=true requires at least one %s.parentRefs entry naming the operator-supplied Gateway" $path $path) -}}
+{{- end -}}
+{{- if gt (len $refs) 32 -}}
+{{- fail (printf "%s.parentRefs has %d entries; HTTPRoute allows at most 32" $path (len $refs)) -}}
+{{- end -}}
+{{- $seen := dict -}}
+{{- range $i, $ref := $refs -}}
+{{- if not $ref.name -}}
+{{- fail (printf "%s.parentRefs[%d] needs a name" $path $i) -}}
+{{- end -}}
+{{- if gt (len $ref.name) 253 -}}
+{{- fail (printf "%s.parentRefs[%d].name exceeds 253 characters" $path $i) -}}
+{{- end -}}
+{{- if $ref.namespace -}}
+{{- if or (gt (len $ref.namespace) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $ref.namespace)) -}}
+{{- fail (printf "%s.parentRefs[%d].namespace %q is not a valid namespace name (lowercase RFC 1123 label, at most 63 characters)" $path $i $ref.namespace) -}}
+{{- end -}}
+{{- end -}}
+{{- if $ref.sectionName -}}
+{{- if or (gt (len $ref.sectionName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $ref.sectionName)) -}}
+{{- fail (printf "%s.parentRefs[%d].sectionName %q is not a valid listener section name (lowercase RFC 1123 subdomain, at most 253 characters)" $path $i $ref.sectionName) -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey $ref "port" -}}
+{{- if or (lt (int $ref.port) 1) (gt (int $ref.port) 65535) -}}
+{{- fail (printf "%s.parentRefs[%d].port %v is outside 1-65535" $path $i $ref.port) -}}
+{{- end -}}
+{{- end -}}
+{{- /* CEL: references to the same parent must all carry a sectionName, and those must be unique */ -}}
+{{- /* an omitted namespace is the route's own (the release namespace): both spellings name the same Gateway */ -}}
+{{- $parent := printf "%s/%s" (default $root.Release.Namespace $ref.namespace) $ref.name -}}
+{{- $section := default "" $ref.sectionName -}}
+{{- if hasKey $seen $parent -}}
+{{- $prev := index $seen $parent -}}
+{{- if or (eq $section "") (eq $prev "") -}}
+{{- fail (printf "%s.parentRefs: Gateway %q is referenced more than once; every reference to the same parent must set a distinct sectionName" $path $parent) -}}
+{{- end -}}
+{{- if has $section (splitList "," $prev) -}}
+{{- fail (printf "%s.parentRefs: Gateway %q is referenced twice with sectionName %q; sectionName must be unique per parent" $path $parent $section) -}}
+{{- end -}}
+{{- $_ := set $seen $parent (printf "%s,%s" $prev $section) -}}
+{{- else -}}
+{{- $_ := set $seen $parent $section -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

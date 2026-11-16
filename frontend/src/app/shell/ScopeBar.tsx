@@ -49,7 +49,7 @@ export function ScopeBar() {
       >
         <StateMessage kind="empty" title="No authorized projects are available in this session">
           <p>
-            Sign-in and project authorization are not part of this version of the shell. Nothing is hidden: this
+            Project authorization is not part of this version of Owl Mast. Nothing is hidden: signed in or not, this
             session has no authorized project, so no project can be selected yet.
           </p>
         </StateMessage>

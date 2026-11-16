@@ -12,6 +12,7 @@ or runtime qualification of a Gateway.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import unittest
@@ -24,13 +25,30 @@ REPO = Path(__file__).resolve().parents[2]
 CHART = REPO / "deploy" / "helm" / "owl-mast"
 FIXTURES = REPO / "deploy" / "tests" / "fixtures" / "gateway-api"
 HELM = os.environ.get("OWLMAST_HELM") or shutil.which("helm")
+# The values chart 0.3.0 has no default for (OM-02.01): the application origin and the bundled Keycloak's own.
+REQUIRED = ["--set", "routing.publicOrigin=https://owl-mast.example", "--set", "identity.keycloak.publicOrigin=https://id.owl-mast.example"]
 SCHEMA = json.loads((FIXTURES / "httproute-v1.4.0-openapi-v1.json").read_text())
 GATEWAY_ON = ["routing.gateway.enabled=true", "routing.gateway.parentRefs[0].name=shared-gw", "routing.gateway.hostnames[0]=owl.example.internal"]
 
 
+ROUTED_HOST = re.compile(r"routing\.gateway\.hostnames\[0\]=((\*\.)?[a-z0-9]([-a-z0-9.]{0,200}[a-z0-9])?)$")
+
+
+def required_for(sets):
+    """routing.publicOrigin must be a host the chart routes: a test that routes a host and names no origin gets that host."""
+    if any(s.startswith("routing.publicOrigin=") for s in sets):
+        return REQUIRED
+    hosts = [m.group(1) for m in (ROUTED_HOST.match(s) for s in sets) if m]
+    hosts = [h for h in hosts if not re.fullmatch(r"[0-9.]+", h) and all(len(label) <= 63 for label in h.split("."))]
+    if not hosts:
+        return REQUIRED
+    origin = "https://" + ("a" + hosts[-1][1:] if hosts[-1].startswith("*.") else hosts[-1])
+    return ["--set", f"routing.publicOrigin={origin}", *REQUIRED[2:]]
+
+
 def helm_template(*sets, extra=()):
     # The capability the chart requires before it renders an HTTPRoute (absent in a bare helm template).
-    args = [HELM, "template", "t", str(CHART), "--api-versions", "gateway.networking.k8s.io/v1/HTTPRoute", *extra]
+    args = [HELM, "template", "t", str(CHART), *required_for(sets), "--api-versions", "gateway.networking.k8s.io/v1/HTTPRoute", *extra]
     for s in sets:
         args += ["--set", s]
     return subprocess.run(args, capture_output=True, text=True, check=False)
@@ -162,9 +180,41 @@ class GatewaySchemaTests(unittest.TestCase):
         self.assertIn("schema", helm_template(*GATEWAY_ON, "routing.gateway.parentRefs[0].port=0").stderr.lower())
         self.assertEqual(routes(*GATEWAY_ON, "routing.gateway.parentRefs[0].port=1")[0]["spec"]["parentRefs"][0]["port"], 1)
 
+    def test_keycloak_route_validates_against_the_pinned_schema(self):
+        """OM-02.01: the Keycloak route (its own origin, /realms/<realm>/ and /resources/ only) passes the same upstream schema, and
+        its parentRefs are checked by the same rules as the application route's, in the schema and in the templates."""
+        proxy = "networkPolicy.keycloak.extraFrom[0].namespaceSelector.matchLabels.gateway=shared"
+        on = ["identity.keycloak.route.gateway.enabled=true", "identity.keycloak.route.gateway.parentRefs[0].name=shared-gw", proxy]
+        route, = routes(*on)
+        self.assertEqual(upstream_errors(route), [])
+        self.assertEqual(route["spec"]["hostnames"], ["id.owl-mast.example"])
+        full, = routes(*on, "identity.keycloak.route.gateway.parentRefs[0].namespace=gateway-system", "identity.keycloak.route.gateway.parentRefs[0].sectionName=https",
+                       "identity.keycloak.route.gateway.parentRefs[0].port=443", "identity.keycloak.route.gateway.annotations.example\\.com/x=y")
+        self.assertEqual(upstream_errors(full), [])
+        self.assertEqual(full["spec"]["parentRefs"][0], {"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": "shared-gw", "namespace": "gateway-system",
+                                                         "sectionName": "https", "port": 443})
+        self.assertEqual(full["metadata"]["annotations"], {"example.com/x": "y"})
+        # both routes of one release validate, each with its own hostnames
+        both = routes(*GATEWAY_ON, *on)
+        self.assertEqual(sorted(r["metadata"]["name"] for r in both), ["t-owl-mast", "t-owl-mast-keycloak"])
+        for r in both:
+            self.assertEqual(upstream_errors(r), [], r["metadata"]["name"])
+        skip = ("--skip-schema-validation",)
+        for sets, expected in (
+            (on + ["identity.keycloak.route.gateway.parentRefs[0].namespace=Bad_NS"], "identity.keycloak.route.gateway.parentRefs[0].namespace"),
+            (on + ["identity.keycloak.route.gateway.parentRefs[0].sectionName=Bad_Section"], "identity.keycloak.route.gateway.parentRefs[0].sectionName"),
+            (on + ["identity.keycloak.route.gateway.parentRefs[1].name=shared-gw"], "identity.keycloak.route.gateway.parentRefs: Gateway"),
+            (on + [f"identity.keycloak.route.gateway.parentRefs[{i}].name=gw-{i}" for i in range(1, 33)], "at most 32"),
+            (["identity.keycloak.route.gateway.enabled=true", "identity.keycloak.route.gateway.parentRefs[0].namespace=x", proxy], "identity.keycloak.route.gateway.parentRefs[0] needs a name"),
+        ):
+            result = helm_template(*sets, extra=skip)
+            self.assertNotEqual(result.returncode, 0, sets); self.assertIn(expected, result.stderr, sets)
+        for sets in (on + ["identity.keycloak.route.gateway.parentRefs[0].namespace=Bad_NS"], on + ["identity.keycloak.route.gateway.parentRefs[0].port=0"]):
+            self.assertIn("schema", helm_template(*sets).stderr.lower(), sets)
+
     def test_gateway_annotations_are_a_string_map(self):
         """116/4543777568: the string-map fix for routing.gateway.annotations had no test on the Gateway side."""
-        args = [HELM, "template", "t", str(CHART), "--api-versions", "gateway.networking.k8s.io/v1/HTTPRoute"]
+        args = [HELM, "template", "t", str(CHART), *REQUIRED, "--api-versions", "gateway.networking.k8s.io/v1/HTTPRoute"]
         for s in GATEWAY_ON:
             args += ["--set", s]
         for bad in ('{"a":1}', '{"a":true}', '{"a":{"b":"c"}}', '["a"]'):

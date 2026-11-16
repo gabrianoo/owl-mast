@@ -3,10 +3,12 @@ package com.aisquad.owlmast.access.adapter.identity;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.aisquad.owlmast.testing.StubIdentityProvider;
+import java.net.URI;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.health.contributor.Health;
@@ -14,7 +16,12 @@ import org.springframework.boot.health.contributor.Status;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.reactive.function.client.ClientRequest;
+import org.springframework.web.reactive.function.client.ClientResponse;
+import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
 import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Mono;
 import reactor.test.scheduler.VirtualTimeScheduler;
 
 @ExtendWith(OutputCaptureExtension.class)
@@ -461,6 +468,214 @@ class IdentityDiscoveryHealthIndicatorTest {
     }
   }
 
+  /**
+   * PR #194 review, R1-4: readiness decides whether the only backend receives requests. Once the
+   * provider has published the matching issuer to this process, a provider that stops answering
+   * does not take the backend out of service: what it answers during the outage needs no provider.
+   */
+  @Test
+  void upWithADetailWhenTheProviderStopsAnsweringAfterItsIssuerWasVerified(CapturedOutput output) {
+    StubIdentityProvider provider = StubIdentityProvider.start("owl-mast");
+    IdentityDiscoveryHealthIndicator indicator;
+    try {
+      indicator =
+          new IdentityDiscoveryHealthIndicator(
+              WebClient.create(),
+              new IdentityProperties(provider.issuerUri(), true),
+              Duration.ZERO);
+      assertThat(indicator.health().block(ANSWER).getStatus()).isEqualTo(Status.UP);
+    } finally {
+      provider.close();
+    }
+
+    // The provider is gone: every evaluation asks (a zero interval) and gets no answer.
+    for (int i = 0; i < 3; i++) {
+      Health health = indicator.health().block(ANSWER);
+      assertThat(health.getStatus()).isEqualTo(Status.UP);
+      assertThat(health.getDetails())
+          .containsEntry("reason", IdentityDiscoveryHealthIndicator.UNANSWERED_AFTER_VERIFIED)
+          .containsEntry("issuer", provider.issuerUri());
+      assertThat(health.getDetails().values()).noneMatch(v -> v.toString().contains("Connection"));
+    }
+    // The outage is still in the log, as class names.
+    assertThat(output.getAll()).contains("Identity discovery failed: ").doesNotContain("\tat ");
+  }
+
+  /** A 5xx is no answer about the issuer: the provider is there and cannot say. */
+  @Test
+  void upWhenAVerifiedProviderAnswersWithAServerError() {
+    try (StubIdentityProvider provider = StubIdentityProvider.start("owl-mast")) {
+      AtomicReference<ExchangeFilterFunction> answer = new AtomicReference<>(PROVIDER_ANSWERS);
+      IdentityDiscoveryHealthIndicator indicator = verified(provider, answer);
+
+      answer.set(answering(ClientResponse.create(HttpStatus.SERVICE_UNAVAILABLE).build()));
+      Health health = indicator.health().block(ANSWER);
+      assertThat(health.getStatus()).isEqualTo(Status.UP);
+      assertThat(health.getDetails())
+          .containsEntry("reason", IdentityDiscoveryHealthIndicator.UNANSWERED_AFTER_VERIFIED);
+    }
+  }
+
+  /**
+   * PR #194 review, R2-5: a verified provider that accepts the request and never answers. The time
+   * it is given runs on the injected timer, so the test moves the clock to it: unanswered one
+   * millisecond before, UP with the detail at it. Before, the time ran on the default scheduler
+   * whatever timer was passed, and this case was not covered.
+   */
+  @Test
+  void upWithADetailWhenAVerifiedProviderDoesNotAnswerWithinItsTime() throws Exception {
+    VirtualTimeScheduler time = VirtualTimeScheduler.create();
+    try (StubIdentityProvider provider = StubIdentityProvider.start("owl-mast")) {
+      Duration ttl = Duration.ofSeconds(2);
+      IdentityDiscoveryHealthIndicator indicator = onVirtualTime(provider, ttl, time);
+      assertThat(indicator.health().block(ANSWER).getStatus()).isEqualTo(Status.UP);
+      time.advanceTimeBy(ttl);
+
+      provider.holdAnswers();
+      try {
+        CompletableFuture<Health> evaluation = indicator.health().toFuture();
+        awaitRequests(provider, 2);
+        time.advanceTimeBy(IdentityDiscoveryHealthIndicator.TIMEOUT.minusMillis(1));
+        assertThat(evaluation).isNotDone();
+        time.advanceTimeBy(Duration.ofMillis(1));
+
+        // Given up by the move of the clock itself, not by real time passing.
+        assertThat(evaluation).isDone();
+        Health health = evaluation.get(ANSWER.toSeconds(), TimeUnit.SECONDS);
+        assertThat(health.getStatus()).isEqualTo(Status.UP);
+        assertThat(health.getDetails())
+            .containsEntry("reason", IdentityDiscoveryHealthIndicator.UNANSWERED_AFTER_VERIFIED)
+            .containsEntry("issuer", provider.issuerUri());
+      } finally {
+        provider.releaseAnswers();
+      }
+    }
+  }
+
+  /** A 404 is an answer: the realm is not there (deleted, renamed). It ends what was verified. */
+  @Test
+  void aNotFoundAnswerIsDownAfterTheIssuerWasVerified() {
+    try (StubIdentityProvider provider = StubIdentityProvider.start("owl-mast")) {
+      AtomicReference<ExchangeFilterFunction> answer = new AtomicReference<>(PROVIDER_ANSWERS);
+      IdentityDiscoveryHealthIndicator indicator = verified(provider, answer);
+
+      // The same provider, asked for a realm it does not have.
+      answer.set((request, next) ->
+          next.exchange(
+              ClientRequest.from(request)
+                  .url(URI.create(request.url().toString().replace("owl-mast", "missing")))
+                  .build()));
+      Health notFound = indicator.health().block(ANSWER);
+      assertThat(notFound.getStatus()).isEqualTo(Status.DOWN);
+      assertThat(notFound.getDetails()).containsEntry("reason", "discovery document unavailable");
+
+      assertDownWhenUnanswered(indicator, answer);
+    }
+  }
+
+  /** A provider that answers with another issuer is DOWN, however often it matched before. */
+  @Test
+  void aMismatchedIssuerStaysDownAfterTheIssuerWasVerified() {
+    String wrong = "https://other.example/realms/owl-mast";
+    StubIdentityProvider provider = StubIdentityProvider.start("owl-mast");
+    IdentityDiscoveryHealthIndicator indicator;
+    try {
+      indicator =
+          new IdentityDiscoveryHealthIndicator(
+              WebClient.create(),
+              new IdentityProperties(provider.issuerUri(), true),
+              Duration.ZERO);
+      assertThat(indicator.health().block(ANSWER).getStatus()).isEqualTo(Status.UP);
+
+      provider.publish(wrong);
+      Health mismatched = indicator.health().block(ANSWER);
+      assertThat(mismatched.getStatus()).isEqualTo(Status.DOWN);
+      assertThat(mismatched.getDetails()).containsEntry("publishedIssuer", wrong);
+    } finally {
+      provider.close();
+    }
+
+    // Its last answer was another issuer: no answer now does not make it the verified one again.
+    Health unanswered = indicator.health().block(ANSWER);
+    assertThat(unanswered.getStatus()).isEqualTo(Status.DOWN);
+    assertThat(unanswered.getDetails()).containsEntry("reason", "discovery document unavailable");
+  }
+
+  @Test
+  void anAnswerWithoutABodyIsDownAfterTheIssuerWasVerified() {
+    try (StubIdentityProvider provider = StubIdentityProvider.start("owl-mast")) {
+      AtomicReference<ExchangeFilterFunction> answer = new AtomicReference<>(PROVIDER_ANSWERS);
+      IdentityDiscoveryHealthIndicator indicator = verified(provider, answer);
+
+      answer.set(answering(ClientResponse.create(HttpStatus.OK).build()));
+      Health health = indicator.health().block(ANSWER);
+      assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+      assertThat(health.getDetails()).containsEntry("reason", "discovery response has no body");
+
+      assertDownWhenUnanswered(indicator, answer);
+    }
+  }
+
+  @Test
+  void aDocumentWithoutAnIssuerIsDownAfterTheIssuerWasVerified() {
+    try (StubIdentityProvider provider = StubIdentityProvider.start("owl-mast")) {
+      AtomicReference<ExchangeFilterFunction> answer = new AtomicReference<>(PROVIDER_ANSWERS);
+      IdentityDiscoveryHealthIndicator indicator = verified(provider, answer);
+
+      answer.set(
+          answering(
+              ClientResponse.create(HttpStatus.OK)
+                  .header("Content-Type", "application/json")
+                  .body("{\"authorization_endpoint\":\"https://id.example/auth\"}")
+                  .build()));
+      Health health = indicator.health().block(ANSWER);
+      assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+      assertThat(health.getDetails()).containsEntry("reason", "discovery document has no issuer");
+
+      assertDownWhenUnanswered(indicator, answer);
+    }
+  }
+
+  /** The provider's own answer, unchanged. */
+  private static final ExchangeFilterFunction PROVIDER_ANSWERS =
+      (request, next) -> next.exchange(request);
+
+  /** This answer in place of the provider's. */
+  private static ExchangeFilterFunction answering(ClientResponse response) {
+    return (request, next) -> Mono.just(response);
+  }
+
+  /**
+   * An indicator that asks on every evaluation (a zero interval) through {@code answer}, after the
+   * provider has published the matching issuer to it once.
+   */
+  private static IdentityDiscoveryHealthIndicator verified(
+      StubIdentityProvider provider, AtomicReference<ExchangeFilterFunction> answer) {
+    IdentityDiscoveryHealthIndicator indicator =
+        new IdentityDiscoveryHealthIndicator(
+            WebClient.builder()
+                .filter((request, next) -> answer.get().filter(request, next))
+                .build(),
+            new IdentityProperties(provider.issuerUri(), true),
+            Duration.ZERO);
+    assertThat(indicator.health().block(ANSWER).getStatus()).isEqualTo(Status.UP);
+    return indicator;
+  }
+
+  /** The last answer ended what was verified: no answer now is DOWN, not UP with the detail. */
+  private static void assertDownWhenUnanswered(
+      IdentityDiscoveryHealthIndicator indicator, AtomicReference<ExchangeFilterFunction> answer) {
+    answer.set((request, next) ->
+        next.exchange(
+            ClientRequest.from(request)
+                .url(URI.create(StubIdentityProvider.UNREACHABLE + "/realms/owl-mast"))
+                .build()));
+    Health unanswered = indicator.health().block(ANSWER);
+    assertThat(unanswered.getStatus()).isEqualTo(Status.DOWN);
+    assertThat(unanswered.getDetails()).containsEntry("reason", "discovery document unavailable");
+  }
+
+  /** A process that has not seen the matching issuer is not ready: nothing was verified. */
   @Test
   void downWhenIssuerIsUnreachable() {
     Health health = check("http://127.0.0.1:1/realms/owl-mast");

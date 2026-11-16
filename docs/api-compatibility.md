@@ -13,8 +13,13 @@ The backend publishes one **API contract version** `major.minor`:
 - published at `GET /api/compatibility` (no authentication, no protected content):
 
 ```json
-{"service":"owl-mast-backend","backendVersion":"0.1.0-SNAPSHOT","apiContract":{"major":1,"minor":0}}
+{"service":"owl-mast-backend","backendVersion":"0.1.0-SNAPSHOT","apiContract":{"major":1,"minor":1}}
 ```
+
+| Contract | Story | Change |
+| --- | --- | --- |
+| 1.0 | OM-01.04 | `GET /api/compatibility`, the common error envelope |
+| 1.1 | OM-02.01 | The session endpoints below `/api/session` ([identity.md](identity.md#endpoints)) were added. Every other API path now needs an authenticated principal: an anonymous caller gets 401 in the same envelope where an unknown path used to answer 404. The envelope's members did not change. One answer of the new endpoints adds an extension member to it: the 503 of `GET /api/session` for a session that is kept and cannot be confirmed carries `csrf` (`headerName`, `token`). Nothing was removed or renamed, so this is a minor version |
 
 Rules for changing it:
 
@@ -26,8 +31,10 @@ Rules for changing it:
 The frontend declares what it supports in `frontend/api-compatibility.json`:
 
 ```json
-{"frontendVersion":"0.1.0","supportedApiContract":{"major":1,"minMinor":0},"descriptorPath":"/compatibility"}
+{"frontendVersion":"0.1.0","supportedApiContract":{"major":1,"minMinor":1},"descriptorPath":"/compatibility"}
 ```
+
+The shell needs 1.1 since OM-02.01: it reads `GET /api/session`, which a 1.0 backend does not serve.
 
 ## Compatibility rule
 
@@ -126,26 +133,39 @@ Backend error responses are RFC 9457 problem details (`application/problem+json`
   rethrown by Reactor and reaches no handler.
 - The same advice keeps the status of a failure that carries one, still as a problem detail without
   message or reason: an exception that implements `ErrorResponse` (its status and headers), a class
-  annotated with `@ResponseStatus`, and Spring Security's `AccessDeniedException` (403) and
-  `AuthenticationException` (401) or a subclass. The two security types are matched by class name,
-  because Spring Security is not a dependency yet, and `AuthenticationServiceException` (the identity
-  provider or user store failed) stays 500. A carried status outside 4xx/5xx becomes 500, and
-  only the failure itself is looked at, not its causes. To give a new exception type its own status,
-  implement `ErrorResponse`, annotate it, or add a more specific advice.
+  annotated with `@ResponseStatus`, and the shared kernel's own failures. A carried status outside
+  4xx/5xx becomes 500, and only the failure itself is looked at, not its causes. To give a new
+  exception type its own status, implement `ErrorResponse`, annotate it, or add a more specific advice.
+- Failures raised outside a controller (OM-02.01): `platform/web/FilterFailureHandler` answers what a
+  web filter or the security filter chain raises, and what the advice hands on, in the same envelope.
+  It runs before Spring Boot's default error handler, whose `application/json` error attributes are
+  therefore no longer produced. The security chain writes its own refusals through
+  `platform/web/ProblemResponses`; verified by `SignInIT`, `IdentityProviderUnavailableIT`,
+  `CompatibilityEndpointIT` and `UnhandledFailureIT`. One of these answers has an extension member
+  (RFC 9457 section 3.2) at the top level of the body: the 503 of `GET /api/session` for a session
+  that is kept and cannot be confirmed carries `csrf` ([identity.md](identity.md#endpoints)). It is
+  part of contract 1.1, which introduces that endpoint.
 
-Not covered:
+Authentication and authorization answers (OM-02.01, [identity.md](identity.md)):
 
-- A failure raised outside a controller (a web filter, the codec layer before a handler is chosen) still
-  gets Spring Boot's default error body, which is `application/json` with `status`, `error`, `path` and
-  `requestId` and, by Boot's defaults, no message or trace. No such filter exists yet; the story that adds
-  one (authentication, E02) must bring it under the envelope.
-- The authentication challenge. The name guard answers 401 without `WWW-Authenticate`, and only for
-  an exception that reaches a controller advice; the story that introduces authentication (E02) owns
-  the challenge and the failures its security filter raises before a controller runs. A controller
-  advice answers before a web filter sees the failure, so that story must remove the two names from the
-  guard (or replace them with its own advice) for Spring Security's own translation to apply.
+| Situation | Status | Headers |
+| --- | --- | --- |
+| A protected call without a credential, or with a session that ended | 401 | `WWW-Authenticate: Bearer`; never a `Location` |
+| A bearer credential that was refused | 401 | `WWW-Authenticate: Bearer error="invalid_token"`, without a description |
+| An unsafe method without the session's CSRF token | 403 | |
+| An authenticated caller who is denied (`AccessDeniedException`, `OperationDeniedException`) | 403 | |
+| An `AccessDeniedException` raised for a caller nobody authenticated | 401 | `WWW-Authenticate: Bearer` |
+| The identity provider cannot be reached when a sign-in, a session renewal or a credential check needs it | 503. On `GET /api/session` for a kept session the body also has the extension member `csrf` (`headerName`, `token`) | `Cache-Control: no-store` on that one answer |
+| A logout notice that the identity provider did not sign | 400 | |
+
+The advice no longer answers Spring Security's `AccessDeniedException` and `AuthenticationException`
+by class name, as it did while Spring Security was not a dependency: it signals them again, so that
+the security filter chain decides between 401 and 403, and `FilterFailureHandler` answers an
+`AuthenticationException` the chain does not translate (401 with the challenge;
+`AuthenticationServiceException`, the identity provider or a store failing, stays 500). None of these
+answers carries a reason: the reason of a refusal is a fixed code in the audit record.
 
 Stack traces, exception messages and binding errors are never included. The frontend client
-(`frontend/src/api/client.ts`) maps 401/403 to the denied state, 404 to not-found, other failures to a
-problem state, and renders only its own safe copy plus the status code; `detail` is never shown. A 2xx
+(`frontend/src/api/client.ts`) maps 401/403 to the denied state (a 401 on a protected call also makes the shell read its session again),
+404 to not-found, other failures to a problem state, and renders only its own safe copy plus the status code; `detail` is never shown. A 2xx
 answer that is not a descriptor is reported as unverifiable, never as "status 200".

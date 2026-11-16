@@ -19,5 +19,15 @@ public final class OwlMastImages {
                   + "@sha256:035b9ab53cfa147d7202b61f5f7782b939ae815b7d6bc81c96b7b42ff1fca950")
           .asCompatibleSubstituteFor("postgres");
 
+  /**
+   * Keycloak 26.8.2, the image and digest the installation chart pins ({@code
+   * identity.keycloak.image}); a deploy test keeps the two equal. Used for the synthetic realm of
+   * the sign-in tests (OM-02.01).
+   */
+  public static final DockerImageName KEYCLOAK =
+      DockerImageName.parse(
+          "quay.io/keycloak/keycloak:26.8.2"
+              + "@sha256:3879c623248408de29a5303178b5816c77e8dfef3890c361f8c0bbeaa979ba3b");
+
   private OwlMastImages() {}
 }

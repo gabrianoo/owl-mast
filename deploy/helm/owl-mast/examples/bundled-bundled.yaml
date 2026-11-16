@@ -3,10 +3,16 @@
 #   kubectl create secret generic owl-mast-db --from-literal=username=owlmast_app --from-literal=password=...
 #   kubectl create secret generic owl-mast-keycloak-db --from-literal=username=keycloak_app --from-literal=password=...
 #   kubectl create secret generic owl-mast-keycloak-bootstrap --from-literal=username=... --from-literal=password=...
+#   kubectl create secret generic owl-mast-oidc-client --from-literal=client-secret=...
+# The two origins are examples: the application origin serves / and /api, Keycloak has its own.
+routing:
+  publicOrigin: https://owl-mast.example.internal
 database:
   bundled: true
 identity:
   bundled: true
+  keycloak:
+    publicOrigin: https://id.owl-mast.example.internal
 postgresql:
   persistence:
     storageClass: ""

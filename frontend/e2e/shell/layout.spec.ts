@@ -1,4 +1,5 @@
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { test } from './test.ts';
 import { compatibleDescriptor, expectControlTargets, expectNoHorizontalOverflow, mockDescriptor, rgb } from './helpers.ts';
 
 test.describe('responsive layout, 320px reflow, 200% text zoom, 44px targets, reduced motion (AC1/AC2)', () => {

@@ -2,6 +2,8 @@
 # application database), bundled Keycloak using its own database/principal on the same server.
 # sslMode `require` encrypts the connection but does not authenticate the server; `verify-ca` and `verify-full`
 # are refused until the chart mounts a CA trust (docs/installation.md).
+routing:
+  publicOrigin: https://owl-mast.example.internal
 database:
   bundled: false
   name: owlmast
@@ -13,6 +15,7 @@ database:
 identity:
   bundled: true
   keycloak:
+    publicOrigin: https://id.owl-mast.example.internal
     database:
       name: keycloak
       existingSecret: owl-mast-keycloak-db

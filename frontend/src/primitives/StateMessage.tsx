@@ -2,10 +2,10 @@ import { useEffect, useRef, type ReactNode, type RefObject } from 'react';
 
 /**
  * state-message (UX-DR26): distinct loading / empty / error / offline / denied / stale /
- * unsupported states with a plain title, a scope-safe explanation and a useful next step. The kind
+ * unsupported / signed-out states with a plain title, a scope-safe explanation and a useful next step. The kind
  * is spelled out as text so it never depends on colour. Loading never shows placeholder numbers.
  */
-export type StateKind = 'loading' | 'empty' | 'error' | 'offline' | 'denied' | 'stale' | 'unsupported' | 'ready';
+export type StateKind = 'loading' | 'empty' | 'error' | 'offline' | 'denied' | 'stale' | 'unsupported' | 'ready' | 'signed-out';
 
 export const STATE_KIND_LABEL: Record<StateKind, string> = {
   loading: 'Loading',
@@ -16,6 +16,7 @@ export const STATE_KIND_LABEL: Record<StateKind, string> = {
   stale: 'Stale',
   unsupported: 'Unsupported',
   ready: 'Ready',
+  'signed-out': 'Signed out',
 };
 
 export interface StateMessageProps {

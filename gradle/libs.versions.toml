@@ -1,5 +1,9 @@
 # Qualified pins for OM-01.01-T1. Evidence and re-check commands: docs/toolchain-qualification.md.
 # Libraries without a version here are managed by the Spring Boot 4.1.2 BOM.
+# OM-02.01: the Spring Security OAuth2 client and resource-server starters are BOM-managed (Spring
+# Security 7.1.2) and declared in backend/build.gradle.kts. The Keycloak image used by the sign-in
+# tests is pinned by digest in OwlMastImages.KEYCLOAK, the digest the chart pins; no Keycloak or
+# Testcontainers-Keycloak library is used.
 [versions]
 java = "27"
 spring-boot = "4.1.2"

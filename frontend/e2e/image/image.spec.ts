@@ -7,7 +7,7 @@ import { expect, test, type Page } from '@playwright/test';
  */
 const prefix = process.env.OWLMAST_IMAGE_API_PREFIX ?? '/owl/api';
 
-const descriptor = { service: 'owl-mast-backend', backendVersion: '0.1.0-image', apiContract: { major: 1, minor: 0 } };
+const descriptor = { service: 'owl-mast-backend', backendVersion: '0.1.0-image', apiContract: { major: 1, minor: 1 } };
 
 interface CspWindow {
   owlmastCspViolations?: string[];

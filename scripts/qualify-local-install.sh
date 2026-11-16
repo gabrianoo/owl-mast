@@ -40,6 +40,14 @@ FE_RELEASE="${FE_RELEASE:-owl-mast-fe}"
 BACKEND_IMAGE_TAG="${BACKEND_IMAGE_TAG:-0.1.0}"
 BACKEND_IMAGE_ID="${BACKEND_IMAGE_ID:-}"
 KIND_NODE="${KIND_NODE:-owl-mast-om0102-control-plane}"
+# Chart 0.3.0 (OM-02.01) has no default for the two public origins. The Kind target has no public route, so
+# every install passes loopback origins (plain http is accepted for a loopback host only). They decide the
+# issuer the bundled Keycloak publishes and the backend trusts; no browser signs in during this script, and the
+# Keycloak route is not rendered. The backend's OpenID Connect client secret is one more synthetic Secret.
+APP_ORIGIN="${OWLMAST_QUALIFY_APP_ORIGIN:-http://localhost:8080}"
+KEYCLOAK_ORIGIN="${OWLMAST_QUALIFY_KEYCLOAK_ORIGIN:-http://localhost:8081}"
+ORIGINS=(--set "routing.publicOrigin=$APP_ORIGIN" --set "identity.keycloak.publicOrigin=$KEYCLOAK_ORIGIN")
+OIDC_CLIENT_SECRET=owl-mast-oidc-client
 OUT="$EVIDENCE_DIR/runtime"
 mkdir -p "$OUT/preflight"
 export KUBECONFIG
@@ -235,7 +243,7 @@ release_state() { # release_state <release>: absent | present | error:<message> 
 RELEASE_KINDS_AND_SUFFIXES=( "deployment:-backend" "deployment:-postgresql" "deployment:-keycloak" "deployment:-frontend"
   "service:-backend" "service:-postgresql" "service:-keycloak" "service:-frontend"
   "configmap:-postgresql-init" "configmap:-keycloak-realm" "configmap:-postgresql-provision-scripts"
-  "job:-postgresql-provision-keycloak" "ingress:" "httproute:" "pvc:-postgresql-data"
+  "job:-postgresql-provision-keycloak" "ingress:" "httproute:" "ingress:-keycloak" "httproute:-keycloak" "pvc:-postgresql-data"
   "networkpolicy:-postgresql" "networkpolicy:-keycloak" )
 # Components whose pod template carries no commonLabels, so their pods and ReplicaSets have NO run label: the
 # chart keeps commonLabels off the PostgreSQL pod template (a label edit must not recreate the database).
@@ -328,6 +336,7 @@ preflight_secrets_of() { # the four synthetic Secrets of a namespace
 preflight_install_common() { # what every product install in $NS consumes
   preflight_resource - storageclass "$STORAGE_CLASS"
   preflight_resource - namespace "$NS"
+  preflight_resource "$NS" secret "$OIDC_CLIENT_SECRET"  # the backend's client secret, in every combination
 }
 preflight_fixture_endpoints() { # what every external combination consumes from the fixture namespace (read-only use)
   preflight_resource - namespace "$EXT_NS"
@@ -345,6 +354,7 @@ preflight() { # preflight <step...>: every resource the selected steps consume o
         preflight_resource - namespace "$NS"; preflight_resource - namespace "$EXT_NS"
         preflight_resource "$NS" resourcequota owl-mast-test-budget; preflight_resource "$EXT_NS" resourcequota owl-mast-test-external-budget
         preflight_secrets_of "$NS"; preflight_secrets_of "$EXT_NS"
+        preflight_resource "$NS" secret "$OIDC_CLIENT_SECRET"
         preflight_resource "$NS" secret owl-mast-external-db; preflight_resource "$NS" secret owl-mast-external-keycloak-db ;;
       fixtures)
         preflight_resource - storageclass "$STORAGE_CLASS"  # consumed by the fixture claim
@@ -367,7 +377,7 @@ preflight() { # preflight <step...>: every resource the selected steps consume o
       first-enable)
         [ -n "$FE_RUN_ID" ] || refuse "step first-enable needs OWLMAST_FOLLOWUP_RUN_ID, the explicit identity of its fixture"
         preflight_install_common; preflight_fixture_endpoints
-        local s; for s in postgres-admin db keycloak-db keycloak-bootstrap; do preflight_resource "$NS" secret "$FE_RELEASE-$s" "$FE_RUN_ID"; done
+        local s; for s in postgres-admin db keycloak-db keycloak-bootstrap oidc-client; do preflight_resource "$NS" secret "$FE_RELEASE-$s" "$FE_RUN_ID"; done
         preflight_release "$FE_RELEASE" "$FE_RUN_ID" ;;
       failure-paths)
         preflight_install_common; preflight_fixture_endpoints
@@ -409,6 +419,20 @@ ensure_secret() { # ensure_secret <namespace> <name> <username> [owner]: random 
   # (Process substitution, not a pipeline: the function must run in this shell so that its refusal stops the run.)
   create_labelled_secret "$ns" "$name" "$owner" --from-literal=username="$user" --from-file=password=/dev/stdin \
     < <(printf '%s' "$password")  # created with its explicit identity in one call
+  log "secret $ns/$name created (synthetic, value not recorded)"
+}
+ensure_client_secret() { # ensure_client_secret <namespace> <name> [owner]: the backend's OpenID Connect client secret (key client-secret), random, created only if absent
+  local ns="$1" name="$2" owner="${3:-$RUN_ID}" state
+  state="$(resource_state "$ns" secret "$name" "$owner")"
+  case "$state" in
+    owned) log "secret $ns/$name exists and is owned by this run (kept)"; return ;;
+    absent) ;;
+    *) refuse "secret $ns/$name: $state" ;;
+  esac
+  local value; value="$(openssl rand -base64 48 | tr -d '/+=' | cut -c1-40)"
+  # On stdin, written by a shell builtin, like the passwords above: never an argument of any process.
+  create_labelled_secret "$ns" "$name" "$owner" --from-file=client-secret=/dev/stdin \
+    < <(printf '%s' "$value")
   log "secret $ns/$name created (synthetic, value not recorded)"
 }
 replicate_secret() { # replicate_secret <src-ns> <src-name> <dst-ns> <dst-name>: same values, owned source only, piped in memory only
@@ -686,6 +710,10 @@ step_prepare() {
     ensure_secret "$ns" owl-mast-keycloak-db keycloak_app
     ensure_secret "$ns" owl-mast-keycloak-bootstrap temp-admin
   done
+  # The backend is a confidential OpenID Connect client in every combination (OM-02.01). The bundled Keycloak
+  # imports its client with this value on a fresh database; the external fixture realm has no such client
+  # (this script proves discovery and readiness, not a sign-in).
+  ensure_client_secret "$NS" "$OIDC_CLIENT_SECRET"
   # The synthetic external instance has its own credentials; the product install in $NS references
   # them under distinct names, exactly as an operator would for an existing service.
   replicate_secret "$EXT_NS" owl-mast-db "$NS" owl-mast-external-db
@@ -696,7 +724,7 @@ step_prepare() {
 
 step_fixtures() {
   log "== synthetic external fixtures in $EXT_NS"
-  h template external "$CHART" --set fullnameOverride=external --set commonLabels."owlmast\.aisquad\.com/run"="$RUN_ID" -s templates/postgresql-init-configmap.yaml \
+  h template external "$CHART" "${ORIGINS[@]}" --set fullnameOverride=external --set commonLabels."owlmast\.aisquad\.com/run"="$RUN_ID" -s templates/postgresql-init-configmap.yaml \
     | sed "s/^  namespace: .*//" | k -n "$EXT_NS" apply -f - >"$OUT/fixtures-init-configmap.txt" 2>&1
   record fixtures-apply k apply -f "$ROOT/deploy/local-kind/external-fixtures.yaml"
   record fixtures-postgresql-ready wait_ready "$EXT_NS" external-postgresql 300
@@ -712,7 +740,7 @@ install_combo() { # install_combo <name> <helm args...>
   log "== install $name"
   record "$name-install" h upgrade --install "$RELEASE" "$CHART" -n "$NS" --wait --timeout 15m \
     --set backend.image.tag="$BACKEND_IMAGE_TAG" --set backend.image.pullPolicy=Never \
-    --set commonLabels."owlmast\.aisquad\.com/run"="$RUN_ID" \
+    --set commonLabels."owlmast\.aisquad\.com/run"="$RUN_ID" "${ORIGINS[@]}" \
     --set postgresql.persistence.storageClass=owl-mast-local-retain "$@"
   record "$name-pods" k get pods,pvc -n "$NS" -o wide
   record "$name-backend-readiness" proxy_get "$NS" "$RELEASE-backend:http" /actuator/health/readiness
@@ -888,7 +916,7 @@ retire_bootstrap_admin() {
   fi
   record "$prefix-keycloak-ready" proxy_get "$NS" "$rel-keycloak:management" /health/ready || return 1
   record "$prefix-keycloak-discovery" proxy_get "$NS" "$rel-keycloak:http" /realms/owl-mast/.well-known/openid-configuration || return 1
-  grep -q "\"issuer\":\"http://$rel-keycloak:8080/realms/owl-mast\"" "$OUT/$prefix-keycloak-discovery.txt" || { log "FAIL $prefix: bundled issuer after the retirement"; return 1; }
+  grep -q "\"issuer\":\"$KEYCLOAK_ORIGIN/realms/owl-mast\"" "$OUT/$prefix-keycloak-discovery.txt" || { log "FAIL $prefix: bundled issuer after the retirement"; return 1; }
   record "$prefix-backend-readiness" proxy_get "$NS" "$rel-backend:http" /actuator/health/readiness || return 1
   grep -q '"status":"UP"' "$OUT/$prefix-backend-readiness.txt" || { log "FAIL $prefix: backend not UP after the retirement"; return 1; }
   record_keycloak_identity "$prefix-keycloak-identity" "$NS" "$rel-postgresql" || return 1
@@ -900,7 +928,7 @@ retire_bootstrap_admin() {
 check_bundled_keycloak() {
   record "ac1-keycloak-ready" proxy_get "$NS" "$RELEASE-keycloak:management" /health/ready
   record "ac1-keycloak-discovery" proxy_get "$NS" "$RELEASE-keycloak:http" /realms/owl-mast/.well-known/openid-configuration
-  grep -q "\"issuer\":\"http://$RELEASE-keycloak:8080/realms/owl-mast\"" "$OUT/ac1-keycloak-discovery.txt" && log "ok   ac1-keycloak-issuer" || { log "FAIL keycloak issuer"; return 1; }
+  grep -q "\"issuer\":\"$KEYCLOAK_ORIGIN/realms/owl-mast\"" "$OUT/ac1-keycloak-discovery.txt" && log "ok   ac1-keycloak-issuer" || { log "FAIL keycloak issuer"; return 1; }
 }
 
 step_bundled_bundled() {
@@ -1012,10 +1040,12 @@ step_first_enable() {
   ensure_secret "$NS" "$FE_RELEASE-db" owlmast_app "$FE_RUN_ID"
   ensure_secret "$NS" "$FE_RELEASE-keycloak-db" keycloak_app "$FE_RUN_ID"
   ensure_secret "$NS" "$FE_RELEASE-keycloak-bootstrap" temp-admin "$FE_RUN_ID"
+  ensure_client_secret "$NS" "$FE_RELEASE-oidc-client" "$FE_RUN_ID"
   local -a common=(--set "backend.image.tag=$BACKEND_IMAGE_TAG" --set backend.image.pullPolicy=Never
     --set "commonLabels.owlmast\.aisquad\.com/run=$FE_RUN_ID" --set postgresql.persistence.storageClass=owl-mast-local-retain
     --set "postgresql.adminExistingSecret=$FE_RELEASE-postgres-admin" --set "database.existingSecret=$FE_RELEASE-db"
-    --set "identity.keycloak.database.existingSecret=$FE_RELEASE-keycloak-db" --set "identity.keycloak.bootstrapExistingSecret=$FE_RELEASE-keycloak-bootstrap")
+    --set "identity.keycloak.database.existingSecret=$FE_RELEASE-keycloak-db" --set "identity.keycloak.bootstrapExistingSecret=$FE_RELEASE-keycloak-bootstrap"
+    --set "identity.client.existingSecret=$FE_RELEASE-oidc-client" "${ORIGINS[@]}")
   record fe1-install-external-identity h upgrade --install "$FE_RELEASE" "$CHART" -n "$NS" --wait --timeout 10m "${common[@]}" \
     --set identity.bundled=false --set identity.external.allowInsecureIssuer=true --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast"
   record fe1-postgresql-pod k -n "$NS" get pods -l "app.kubernetes.io/instance=$FE_RELEASE,app.kubernetes.io/component=postgresql" -o custom-columns=NAME:.metadata.name,READY:.status.containerStatuses[0].ready,RESTARTS:.status.containerStatuses[0].restartCount
@@ -1046,7 +1076,7 @@ step_first_enable() {
   log "ok   fe2-first-enable-provisioned (role and database absent before, present after the pre-upgrade hook: $(keycloak_identity_of fe2-keycloak-identity))"
   record fe2-keycloak-ready proxy_get "$NS" "$FE_RELEASE-keycloak:management" /health/ready
   record fe2-keycloak-discovery proxy_get "$NS" "$FE_RELEASE-keycloak:http" /realms/owl-mast/.well-known/openid-configuration
-  grep -q "\"issuer\":\"http://$FE_RELEASE-keycloak:8080/realms/owl-mast\"" "$OUT/fe2-keycloak-discovery.txt" || { log "FAIL bundled issuer after enable"; return 1; }
+  grep -q "\"issuer\":\"$KEYCLOAK_ORIGIN/realms/owl-mast\"" "$OUT/fe2-keycloak-discovery.txt" || { log "FAIL bundled issuer after enable"; return 1; }
   record fe2-backend-readiness proxy_get "$NS" "$FE_RELEASE-backend:http" /actuator/health/readiness
   grep -q '"status":"UP"' "$OUT/fe2-backend-readiness.txt" || { log "FAIL backend not UP on the bundled issuer"; return 1; }
   record fe2-backend-issuer-env k get deploy "$FE_RELEASE-backend" -n "$NS" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="OWLMAST_IDENTITY_ISSUER_URI")].value}'
@@ -1078,7 +1108,7 @@ step_failure_paths() {
   log "== failure paths: missing secret key, wrong issuer"
   ensure_broken_secret
   if h upgrade --install "$RELEASE-broken" "$CHART" -n "$NS" --wait --timeout 90s \
-      --set backend.image.tag="$BACKEND_IMAGE_TAG" --set backend.image.pullPolicy=Never --set commonLabels."owlmast\.aisquad\.com/run"="$RUN_ID" \
+      --set backend.image.tag="$BACKEND_IMAGE_TAG" --set backend.image.pullPolicy=Never --set commonLabels."owlmast\.aisquad\.com/run"="$RUN_ID" "${ORIGINS[@]}" \
       --set database.bundled=false --set database.external.host="external-postgresql.$EXT_NS.svc" --set database.external.sslMode=disable --set database.external.allowInsecureTransport=true \
       --set database.existingSecret=owl-mast-db-broken \
       --set identity.bundled=false --set identity.external.allowInsecureIssuer=true --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/owl-mast" \
@@ -1089,7 +1119,7 @@ step_failure_paths() {
   grep -q CreateContainerConfigError "$OUT/fail-missing-secret-key-pods.txt" && log "ok   fail-missing-secret-key (CreateContainerConfigError, nothing started)" || { log "FAIL unexpected pod state"; return 1; }
   record fail-missing-secret-key-uninstall h uninstall "$RELEASE-broken" -n "$NS" --wait
   if h upgrade --install "$RELEASE-wrongidp" "$CHART" -n "$NS" --wait --timeout 150s \
-      --set backend.image.tag="$BACKEND_IMAGE_TAG" --set backend.image.pullPolicy=Never --set commonLabels."owlmast\.aisquad\.com/run"="$RUN_ID" \
+      --set backend.image.tag="$BACKEND_IMAGE_TAG" --set backend.image.pullPolicy=Never --set commonLabels."owlmast\.aisquad\.com/run"="$RUN_ID" "${ORIGINS[@]}" \
       --set database.bundled=false --set database.existingSecret=owl-mast-external-db --set database.external.host="external-postgresql.$EXT_NS.svc" --set database.external.sslMode=disable --set database.external.allowInsecureTransport=true \
       --set identity.bundled=false --set identity.external.allowInsecureIssuer=true --set identity.external.issuerUri="http://external-keycloak.$EXT_NS.svc:8080/realms/does-not-exist" \
       >"$OUT/fail-wrong-issuer-install.txt" 2>&1; then

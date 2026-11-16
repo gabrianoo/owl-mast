@@ -99,7 +99,7 @@ def stub(body: bytes, status: int = 200, redirect_to: str | None = None):
         server.server_close()
 
 
-DESCRIPTOR = json.dumps({"service": "owl-mast-backend", "backendVersion": "0.1.0", "apiContract": {"major": 1, "minor": 0}}).encode()
+DESCRIPTOR = json.dumps({"service": "owl-mast-backend", "backendVersion": "0.1.0", "apiContract": {"major": 1, "minor": 1}}).encode()
 FRONTEND_SECRET = "Bearer frontend-s3cr3t-9f1c"
 BACKEND_SECRET = "Basic YmFja2VuZDpzM2NyM3QtYjdlMg=="
 # The scheme word is not secret (the usage message names "Bearer <token>"); everything after it is.
@@ -188,7 +188,7 @@ class ApiCompatibilityCheckTest(unittest.TestCase):
 
     def test_live_descriptor_compatible_incompatible_and_missing(self):
         cases = [
-            (200, json.dumps({"service": "owl-mast-backend", "backendVersion": "0.1.0", "apiContract": {"major": 1, "minor": 0}}).encode(), 0),
+            (200, json.dumps({"service": "owl-mast-backend", "backendVersion": "0.1.0", "apiContract": {"major": 1, "minor": 1}}).encode(), 0),
             (200, json.dumps({"service": "owl-mast-backend", "backendVersion": "9.0.0", "apiContract": {"major": 2, "minor": 0}}).encode(), 1),
             (404, b'{"status":404,"title":"Not Found"}', 1),
             (200, b"not json", 1),

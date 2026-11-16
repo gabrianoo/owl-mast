@@ -4,6 +4,7 @@ import { Link, useRouter } from '../router.tsx';
 import { BrandMark } from './BrandMark.tsx';
 import { PrimaryNavigation } from './PrimaryNavigation.tsx';
 import { ScopeBar } from './ScopeBar.tsx';
+import { SessionControl } from './SessionControl.tsx';
 import { SkipLink } from './SkipLink.tsx';
 
 export const MAIN_ID = 'main';
@@ -16,7 +17,7 @@ export interface ShellProps {
 }
 
 /**
- * Workspace shell: skip link, brand (home link), primary navigation, scope bar and the main reading
+ * Workspace shell: skip link, brand (home link), session control, primary navigation, scope bar and the main reading
  * area. On every in-app route change the document title updates and focus moves to the view's h1
  * (UX-DR40); the first paint leaves focus at the document start.
  */
@@ -42,6 +43,7 @@ export function Shell({ heading, destination, children }: ShellProps) {
             <BrandMark />
             <span>{APP_NAME}</span>
           </Link>
+          <SessionControl />
         </header>
         <div className="app__body">
           <PrimaryNavigation current={destination} />

@@ -86,7 +86,7 @@ check "the chart's javaToolOptions allow-list does not admit --enable-native-acc
 # initializer's first connection is refused; any other ending is a failure of the image, not of the configuration.
 smoke_log=""
 smoke_rc=0
-smoke() { # smoke <issuer> <allow-insecure-issuer>: sets smoke_log and smoke_rc
+smoke() { # smoke <issuer> <allow-insecure-issuer> [<back-channel base of the bundled Keycloak>]: sets smoke_log and smoke_rc
   local name="owlmast-backend-smoke-$$"
   smoke_rc=0
   smoke_log="$(timeout 180 docker run --name "$name" --network none --read-only --tmpfs /tmp:rw,size=64m \
@@ -96,7 +96,10 @@ smoke() { # smoke <issuer> <allow-insecure-issuer>: sets smoke_log and smoke_rc
     -e "OWLMAST_DATABASE_R2DBC_URL=r2dbc:postgresql://127.0.0.1:1/owlmast?sslMode=disable" \
     -e "OWLMAST_DATABASE_JDBC_URL=jdbc:postgresql://127.0.0.1:1/owlmast?sslmode=disable" \
     -e OWLMAST_DATABASE_USERNAME=smoke -e OWLMAST_DATABASE_PASSWORD=smoke \
-    -e "OWLMAST_IDENTITY_ISSUER_URI=$1" -e "OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER=$2" "$IMAGE" 2>&1)" || smoke_rc=$?
+    -e "OWLMAST_IDENTITY_ISSUER_URI=$1" -e "OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER=$2" \
+    ${3:+-e "OWLMAST_IDENTITY_BACKCHANNEL_URI=$3" -e OWLMAST_IDENTITY_ALLOW_INSECURE_BACKCHANNEL=true} \
+    -e OWLMAST_IDENTITY_CLIENT_ID=owl-mast-web -e OWLMAST_IDENTITY_CLIENT_SECRET=smoke \
+    -e OWLMAST_IDENTITY_APPLICATION_ORIGIN=https://owl-mast.invalid "$IMAGE" 2>&1)" || smoke_rc=$?
   docker rm -f "$name" >/dev/null 2>&1 || true
 }
 smoke_checks() { # smoke_checks <label> <issuer> <allow-insecure-issuer>: a start that must reach the first database connection
@@ -114,9 +117,13 @@ smoke_checks() { # smoke_checks <label> <issuer> <allow-insecure-issuer>: a star
 echo "== start the application on the read-only root (expected to stop at the first database connection)"
 smoke https://idp.invalid/realms/owl-mast false
 smoke_checks "external https issuer" https://idp.invalid/realms/owl-mast false
-# What the default bundled install renders: the cluster-local Keycloak over http, with the explicit opt-in.
+# What a bundled install renders (chart 0.3.0): the issuer on Keycloak's public origin, and the cluster-local
+# Service as the back-channel base, plaintext with its own opt-in.
+smoke https://id.owl-mast.invalid/realms/owl-mast false http://owl-mast-keycloak:8080/realms/owl-mast
+smoke_checks "bundled public issuer with the cluster-local back channel" https://id.owl-mast.invalid/realms/owl-mast false
+# A plaintext issuer with the explicit opt-in (a loopback public origin or identity.external.allowInsecureIssuer).
 smoke http://owl-mast-keycloak:8080/realms/owl-mast true
-smoke_checks "bundled http issuer with the opt-in" http://owl-mast-keycloak:8080/realms/owl-mast true
+smoke_checks "http issuer with the opt-in" http://owl-mast-keycloak:8080/realms/owl-mast true
 # Control: the same http issuer without the opt-in is refused by the identity configuration, before any
 # database connection. It proves the binding checks above are able to fail.
 smoke http://owl-mast-keycloak:8080/realms/owl-mast false

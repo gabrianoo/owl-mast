@@ -22,10 +22,11 @@ Re-qualified on 2026-11-13 (GitHub issue #160): the wrapper moved from Gradle 9.
 | Testcontainers | 2.0.5 (`testcontainers-postgresql`, `testcontainers-r2dbc`) with `spring-boot-testcontainers` 4.1.2 | BOM | https://docs.spring.io/spring-boot/reference/testing/testcontainers.html; Maven Central metadata for the 2.x artifacts |
 | Database image | `tensorchord/vchord-postgres:pg18-v1.1.1@sha256:700ff05ebdc7e4afd4dd8442e0684293046c3833677fec326550000a04cf8a91` (PostgreSQL 18.3, VectorChord 1.1.1, pgvector 0.8.2; image created 2026-02-28) | `OwlMastImages` | https://docs.vectorchord.ai/vectorchord/getting-started/installation.html (`docker run … tensorchord/vchord-postgres:pg18-v1.1.1`; `CREATE EXTENSION IF NOT EXISTS vchord CASCADE`); Docker Hub tag listing |
 | Negative-test image | `postgres:18.2-alpine@sha256:035b9ab53cfa147d7202b61f5f7782b939ae815b7d6bc81c96b7b42ff1fca950` | `OwlMastImages` | Docker Hub official image |
+| Identity provider image (OM-02.01) | `quay.io/keycloak/keycloak:26.8.2@sha256:3879c623248408de29a5303178b5816c77e8dfef3890c361f8c0bbeaa979ba3b`, the digest the chart pins (`identity.keycloak.image`). Run with Testcontainers' `GenericContainer` (`start-dev`, a realm, users and secrets generated per run); no Keycloak client or Testcontainers-Keycloak library was added | `OwlMastImages.KEYCLOAK`, `SyntheticKeycloak` | [installation.md](installation.md#pins); pulled and run on 2026-11-15 (`./gradlew build`: `SignInIT`; `npm run test:e2e:smoke`) |
 | Container runtime | Docker Engine (local: Docker Desktop 29.9.2 on WSL2, 29.9.3 at the 2026-11-12 and 2026-11-13 reruns; CI: the Docker engine preinstalled on GitHub's pinned `ubuntu-26.04` runner) | docs/development.md, `.github/workflows/ci.yml` (`runs-on: ubuntu-26.04` on every job) | `docker version` |
 | CI actions | `actions/checkout` v7.0.1 `3d3c42e5aac5ba805825da76410c181273ba90b1`; `actions/setup-java` v6.2.0 `77dd5b2ce225ea11469928ac317850245a74ae78`; `gradle/actions` v6.4.1 `8da46b539cd8fe6ab27ca75128919a18d757604c` | `.github/workflows/ci.yml` | GitHub releases and tag dereference via the GitHub API |
 
-Boot-BOM-managed versions recorded from `spring-boot-dependencies-4.1.2.pom`: Spring Framework 7.0.10, Reactor BOM 2025.0.8 (reactor-core 3.8.8), Netty 4.2.19.Final, JUnit Jupiter 6.0.3, AssertJ 3.27.7, Micrometer 1.17.2, Jackson 3.1.7, Spring Security 7.1.2 (not yet used). All resolved versions are locked in `backend/gradle.lockfile`.
+Boot-BOM-managed versions recorded from `spring-boot-dependencies-4.1.2.pom`: Spring Framework 7.0.10, Reactor BOM 2025.0.8 (reactor-core 3.8.8), Netty 4.2.19.Final, JUnit Jupiter 6.0.3, AssertJ 3.27.7, Micrometer 1.17.2, Jackson 3.1.7, Spring Security 7.1.2 (used since OM-02.01 through the Boot starters `spring-boot-starter-security-oauth2-client` and `spring-boot-starter-security-oauth2-resource-server`; with it Nimbus JOSE+JWT and the OAuth2 OIDC SDK at the versions the Spring Security 7.1.2 POMs name, locked in `backend/gradle.lockfile`). All resolved versions are locked in `backend/gradle.lockfile`.
 
 ## Executable checks and results
 
@@ -175,7 +176,8 @@ $ curl -s http://localhost:18080/actuator/health
 - PMD and Checkstyle: Gradle's 9.8.2 notes (read on 2026-11-06) state PMD does not yet support Java 27; Error Prone plus javac lint and google-java-format cover the static-analysis and style scope without a second parser.
 - NullAway/JSpecify: deferred until a feature with nullable boundaries exists; the Boot BOM already manages `jspecify` 1.0.1.
 - Spring Modulith: ArchUnit rules are sufficient for the package-by-feature contract and avoid an extra framework pin.
-- Spring Security, Keycloak fixtures, Spring AI: owned by E02/OM-04.x; nothing was pinned.
+- Spring AI: owned by OM-04.x; nothing was pinned. (Spring Security and the Keycloak fixture arrived with OM-02.01; see the table above.)
+- A Testcontainers module or admin client for Keycloak: the fixture drives Keycloak's admin REST API with the WebClient already on the classpath, so no further dependency needed qualifying.
 - Palantir Java Format: google-java-format matches the user-cited standard.
 
 ## Open items carried forward

@@ -1,0 +1,47 @@
+{{- if and .Values.identity.bundled (eq (include "owl-mast.keycloak.route.gateway.enabled" .) "true") }}
+{{- $gw := .Values.identity.keycloak.route.gateway }}
+# Public route to the bundled Keycloak on its own origin (identity.keycloak.publicOrigin): the endpoints
+# of the realm identity.realm and the login theme resources only. The master realm (/realms/master/: the
+# administrators' login and token endpoint) and the admin console (/admin) are never routed. The Gateway, its
+# listeners and TLS are the operator's, as for the application route.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "owl-mast.keycloak.fullname" . }}
+  labels:
+    {{- include "owl-mast.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keycloak
+  {{- with $gw.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs:
+    {{- range $gw.parentRefs }}
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ .name | quote }}
+      {{- with .namespace }}
+      namespace: {{ . | quote }}
+      {{- end }}
+      {{- with .sectionName }}
+      sectionName: {{ . | quote }}
+      {{- end }}
+      {{- with .port }}
+      port: {{ . }}
+      {{- end }}
+    {{- end }}
+  hostnames:
+    - {{ include "owl-mast.originHost" (include "owl-mast.keycloak.publicOrigin" .) | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ printf "/realms/%s/" .Values.identity.realm | quote }}
+        - path:
+            type: PathPrefix
+            value: /resources/
+      backendRefs:
+        - name: {{ include "owl-mast.keycloak.fullname" . }}
+          port: {{ .Values.identity.keycloak.service.port }}
+{{- end }}

@@ -5,18 +5,19 @@ import type { ApiClient, ApiResult } from '../api/client.ts';
 import type { CompatibilityDescriptor } from '../api/compatibility.ts';
 import { App } from '../app/App.tsx';
 import { THEME_ATTRIBUTE, THEME_STORAGE_KEY } from '../theme/themePreference.ts';
+import { withSession } from '../testing/session.ts';
 
-const compatible: CompatibilityDescriptor = { service: 'owl-mast-backend', backendVersion: '0.1.0-SNAPSHOT', apiContract: { major: 1, minor: 0 } };
+const compatible: CompatibilityDescriptor = { service: 'owl-mast-backend', backendVersion: '0.1.0-SNAPSHOT', apiContract: { major: 1, minor: 1 } };
 
 function clientReturning(results: ApiResult<CompatibilityDescriptor>[]): { client: ApiClient; calls: () => number } {
   let calls = 0;
-  const client: ApiClient = {
+  const client: ApiClient = withSession({
     get: <T,>() => {
       calls += 1;
       const next = results.length > 1 ? results.shift() : results[0];
       return Promise.resolve((next ?? { kind: 'error' }) as ApiResult<T>);
     },
-  };
+  });
   return { client, calls: () => calls };
 }
 
@@ -28,12 +29,12 @@ function renderApp(client: ApiClient, path = '/', pollIntervalMs = 1000) {
 describe('Daily Work connection panel (AC3/AC4)', () => {
   it('shows labelled loading without numbers, then the compatible pair', async () => {
     let settle: (value: ApiResult<CompatibilityDescriptor>) => void = () => undefined;
-    const client: ApiClient = {
+    const client: ApiClient = withSession({
       get: <T,>() =>
         new Promise<ApiResult<T>>((resolve) => {
           settle = resolve as (value: ApiResult<CompatibilityDescriptor>) => void;
         }),
-    };
+    });
     renderApp(client);
     const panel = screen.getByRole('region', { name: 'Workspace connection' });
     expect(within(panel).getByText('Loading')).toBeInTheDocument();
@@ -45,7 +46,7 @@ describe('Daily Work connection panel (AC3/AC4)', () => {
     });
     expect(within(panel).getByText('Compatible frontend and backend')).toBeInTheDocument();
     expect(within(panel).getByText('0.1.0-SNAPSHOT')).toBeInTheDocument();
-    expect(within(panel).getByText('1.0')).toBeInTheDocument();
+    expect(within(panel).getByText('1.1')).toBeInTheDocument();
     expect(within(panel).getByText(/Checked at/)).toBeInTheDocument();
   });
 
@@ -455,7 +456,7 @@ describe('Daily Work connection panel (AC3/AC4)', () => {
         { kind: 'ok', value: { ...compatible, backendVersion: '0.2.0' } },
       ];
       let calls = 0;
-      const client: ApiClient = {
+      const client: ApiClient = withSession({
         get: <T,>() => {
           calls += 1;
           const next = results.shift();
@@ -467,7 +468,7 @@ describe('Daily Work connection panel (AC3/AC4)', () => {
             };
           });
         },
-      };
+      });
       renderApp(client);
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);
@@ -517,7 +518,7 @@ describe('Daily Work connection panel (AC3/AC4)', () => {
     try {
       let answer: () => void = () => undefined;
       let calls = 0;
-      const client: ApiClient = {
+      const client: ApiClient = withSession({
         get: <T,>() => {
           calls += 1;
           if (calls === 1) return Promise.resolve({ kind: 'ok', value: compatible } as ApiResult<T>);
@@ -528,7 +529,7 @@ describe('Daily Work connection panel (AC3/AC4)', () => {
             };
           });
         },
-      };
+      });
       renderApp(client, '/', 60_000);
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);

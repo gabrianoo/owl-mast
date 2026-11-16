@@ -22,6 +22,18 @@ spring:
     problemdetails:
       enabled: true
 
+server:
+  reactive:
+    session:
+      # The browser's only credential (docs/identity.md): one HttpOnly, Secure, SameSite=Lax cookie
+      # holding an opaque id of a session kept in this process's memory. Tokens stay in the backend.
+      cookie:
+        name: OWLMAST_SESSION
+        http-only: true
+        secure: true
+        same-site: lax
+        path: /api
+
 management:
   endpoints:
     web:
@@ -46,6 +58,22 @@ owlmast:
     issuer-uri: ${OWLMAST_IDENTITY_ISSUER_URI:}
     # A plaintext http issuer is refused unless this is true (cluster-local or disposable fixtures only).
     allow-insecure-issuer: ${OWLMAST_IDENTITY_ALLOW_INSECURE_ISSUER:false}
+    # Optional: where the backend itself reaches the issuer (discovery, token and key endpoints) when
+    # that differs from the public issuer the browser and the tokens use, as with the bundled Keycloak
+    # behind its own public origin. Absent means the issuer. Plaintext needs its own opt-in.
+    backchannel-uri: ${OWLMAST_IDENTITY_BACKCHANNEL_URI:}
+    allow-insecure-backchannel: ${OWLMAST_IDENTITY_ALLOW_INSECURE_BACKCHANNEL:false}
+  sign-in:
+    # Browser sign-in (OM-02.01, docs/identity.md). All three are required; there is no value that
+    # turns authentication off. The secret comes from the environment and is never logged.
+    client-id: ${OWLMAST_IDENTITY_CLIENT_ID:}
+    client-secret: ${OWLMAST_IDENTITY_CLIENT_SECRET:}
+    # The one public origin that serves the shell (/) and this backend (/api): https, or http on a
+    # loopback host. Redirects and the session cookie belong to it.
+    application-origin: ${OWLMAST_IDENTITY_APPLICATION_ORIGIN:}
+    # audience: the audience a bearer credential must carry; absent means the client id.
+    # Tenant of every signed-in principal until OM-02.02 supplies tenant membership.
+    tenant: default
   blocking:
     max-concurrency: 8
     max-queued-per-thread: 16

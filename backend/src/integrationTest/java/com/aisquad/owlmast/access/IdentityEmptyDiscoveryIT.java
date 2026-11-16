@@ -1,6 +1,7 @@
 package com.aisquad.owlmast.access;
 
 import com.aisquad.owlmast.testing.ContainersConfiguration;
+import com.aisquad.owlmast.testing.StubIdentityConfiguration;
 import com.aisquad.owlmast.testing.StubIdentityProvider;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
@@ -31,6 +32,7 @@ class IdentityEmptyDiscoveryIT {
   static void issuer(DynamicPropertyRegistry registry) {
     registry.add("owlmast.identity.issuer-uri", EMPTY::issuerUri);
     registry.add("owlmast.identity.allow-insecure-issuer", () -> "true");
+    StubIdentityConfiguration.registerSignIn(registry);
   }
 
   @AfterAll

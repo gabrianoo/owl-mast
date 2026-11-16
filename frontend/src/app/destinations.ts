@@ -25,7 +25,7 @@ export const HOME: Destination = {
   lede: 'Progress, attention, agent observations and shared learning for the authorized scope.',
   firstUse: {
     title: 'No authorized project yet',
-    body: 'Daily Work shows observed work once a project is authorized for this session. Sign-in and project authorization are not part of this version of the shell.',
+    body: 'Daily Work shows observed work once a project is authorized for this session. Project authorization is not part of this version of Owl Mast.',
   },
 };
 
