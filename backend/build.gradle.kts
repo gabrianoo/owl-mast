@@ -145,11 +145,13 @@ tasks.withType<Test>().configureEach {
     // Netty loads native libraries; JDK 24+ warns (and will block) without explicit native access.
     jvmArgs("--enable-native-access=ALL-UNNAMED")
     // Files outside the backend project that tests read and compare with the code (the contract's
-    // operator query and versions, the chart's role statements). They are declared inputs, so an edit
+    // operator query and versions, the chart's role statements, the shell's session read limit).
+    // They are declared inputs, so an edit
     // to one of them alone reruns the tests instead of reusing an up-to-date or cached result.
     inputs.files(
             rootProject.file("docs/durable-work-and-audit-contract.md"),
             rootProject.file("deploy/helm/owl-mast/templates/postgresql-init-configmap.yaml"),
+            rootProject.file("frontend/src/state/session.tsx"),
         )
         .withPathSensitivity(PathSensitivity.RELATIVE)
         .withPropertyName("repositoryDocuments")

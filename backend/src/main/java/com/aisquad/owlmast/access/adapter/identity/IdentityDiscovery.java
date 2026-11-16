@@ -20,18 +20,22 @@ import reactor.core.scheduler.Schedulers;
  * IdentityDiscoveryHealthIndicator}) keeps traffic away until the provider has published the
  * configured issuer and while it publishes another one; it does not look at the endpoints, so a
  * document this class refuses for them (missing, not http, plaintext where plaintext was not
- * allowed) leaves the backend ready and every sign-in step answering "unavailable".
+ * allowed) leaves the backend ready. Before a first document was accepted, every sign-in step then
+ * answers "unavailable". After that, a refused document is treated like a read that failed: the
+ * last accepted endpoints keep being used, as the next paragraph says. (A document that names
+ * another issuer also makes the backend unready, which is the health indicator's doing.)
  *
  * <p>A document is accepted only when it publishes exactly the configured issuer and http(s)
  * endpoints. An accepted document is used for {@link #KEPT} and then read again. When that read
- * fails, the last accepted document keeps being used and the read is tried again after {@link
- * #RETRY}: a provider that is briefly away must not turn requests of sessions that are still valid
- * into outages. Until a first document was accepted, every failure is an {@link
- * IdentityProviderUnavailableException}: callers answer 5xx and nothing from the provider's answer
- * reaches a response. That failure is kept for {@link #RETRY} too and answered to every caller in
- * the interval. Anybody can cause a read by presenting a credential, so however many arrive, the
- * provider receives one discovery request per {@link #RETRY} while its document is not accepted,
- * and concurrent callers share the request in flight.
+ * fails, or the document it returns is refused, the last accepted document keeps being used and the
+ * read is tried again after {@link #RETRY}, without a limit on how long: a provider that is briefly
+ * away or wrong must not turn requests of sessions that are still valid into outages. Until a first
+ * document was accepted, every failure is an {@link IdentityProviderUnavailableException}: callers
+ * answer 5xx and nothing from the provider's answer reaches a response. That failure is kept for
+ * {@link #RETRY} too and answered to every caller in the interval. Anybody can cause a read by
+ * presenting a credential, so however many arrive, the provider receives one discovery request per
+ * {@link #RETRY} while its document is not accepted, and concurrent callers share the request in
+ * flight.
  */
 @Slf4j
 public final class IdentityDiscovery {

@@ -7,13 +7,19 @@ import com.aisquad.owlmast.platform.scope.Scopes;
 import com.aisquad.owlmast.testing.ContainersConfiguration;
 import com.aisquad.owlmast.testing.SyntheticKeycloak;
 import com.aisquad.owlmast.testing.SyntheticKeycloakConfiguration;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -56,6 +62,7 @@ import tools.jackson.databind.json.JsonMapper;
 class SignInIT {
 
   private static final String WHO_AM_I = "/api/test-only/who-am-i";
+  private static final String SHELL_SESSION = "frontend/src/state/session.tsx";
   private static final JsonMapper JSON = JsonMapper.builder().build();
 
   @LocalServerPort private int port;
@@ -259,7 +266,8 @@ class SignInIT {
   /**
    * PR #194 review, R2-3, through the whole security chain: Keycloak is running and stops
    * answering. A shell that starts now has no CSRF token; the session read gives it one in its 503,
-   * and the sign-out sent with it ends the session here.
+   * and the sign-out sent with it ends the session here. R3-1: that 503 arrives before the shell
+   * gives up its session read.
    */
   @Test
   void whileKeycloakDoesNotAnswerTheSessionReadCarriesTheCsrfTokenAndSignOutEndsTheSession() {
@@ -274,8 +282,16 @@ class SignInIT {
       // The read reaches the provider because of this class's access token lifespan of 30 s
       // (owlmast.fixture.access-token-lifespan): inside the minute before expiry every request
       // renews. With a longer lifespan the session would be served from what the backend holds.
+      long asked = System.nanoTime();
       HttpResponse<String> read = browser.get("/api/session");
+      Duration answeredAfter = Duration.ofNanos(System.nanoTime() - asked);
       assertThat(read.statusCode()).isEqualTo(503);
+      // PR #194 review, R3-1: the shell gives up a session read after its own limit. The 503 must
+      // arrive before that, whatever the backend does around the renewal, or a shell that starts
+      // now never learns that a session is kept and offers no sign-out.
+      assertThat(answeredAfter)
+          .as("the time the backend took to answer 503, against the shell's session read limit")
+          .isLessThan(shellSessionReadLimit());
       assertThat(read.headers().firstValue("Content-Type")).contains("application/problem+json");
       assertThat(read.headers().firstValue("Cache-Control")).contains("no-store");
       JsonNode problem = json(read);
@@ -309,6 +325,27 @@ class SignInIT {
     }
     assertThat(outcomes("session.sign-out", principalId)).hasSize(before + 1);
     assertNoCredentialIn(browser.everythingTheBackendSent());
+  }
+
+  /**
+   * How long the shell waits for a session read: {@code SESSION_READ_TIMEOUT_MS}, read from the
+   * shell's source so that lowering it there fails here.
+   */
+  private static Duration shellSessionReadLimit() {
+    Path directory = Path.of("").toAbsolutePath();
+    while (directory != null && !Files.exists(directory.resolve(SHELL_SESSION))) {
+      directory = directory.getParent();
+    }
+    assertThat(directory).as("a parent directory that holds %s", SHELL_SESSION).isNotNull();
+    String source;
+    try {
+      source = Files.readString(directory.resolve(SHELL_SESSION));
+    } catch (IOException unreadable) {
+      throw new UncheckedIOException(unreadable);
+    }
+    Matcher declared = Pattern.compile("SESSION_READ_TIMEOUT_MS = ([0-9_]+);").matcher(source);
+    assertThat(declared.find()).as("SESSION_READ_TIMEOUT_MS in %s", SHELL_SESSION).isTrue();
+    return Duration.ofMillis(Long.parseLong(declared.group(1).replace("_", "")));
   }
 
   @Test

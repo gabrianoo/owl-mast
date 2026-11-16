@@ -139,6 +139,126 @@ class SignInManagerTest {
     }
   }
 
+  /**
+   * R3-2: the key endpoint alone names another decoder. The discovery document moves the key
+   * endpoint and nothing else; the next sign-in fetches from the new endpoint, so a token signed
+   * with a key only that endpoint publishes is accepted, and the earlier endpoint is not asked
+   * again.
+   */
+  @Test
+  void aRegistrationThatNamesOnlyAnotherKeyEndpointFetchesItsKeysThere() throws Exception {
+    issuer.tokenAnswer(tokenAnswer(idToken -> {}));
+    assertThat(manager.authenticate(callback()).toFuture().get(30, TimeUnit.SECONDS)).isNotNull();
+
+    try (SigningIssuer moved = new SigningIssuer()) {
+      // The same issuer and token endpoint; the ID token names the issuer and is signed with the
+      // key the new endpoint publishes.
+      issuer.tokenAnswer(idTokenAnswer(moved.sign(idTokenClaims(idToken -> {}))));
+      Authentication signedIn =
+          manager
+              .authenticate(
+                  callback(CLIENT, issuer.issuerUri(), issuer.tokenEndpoint(), moved.keyEndpoint()))
+              .toFuture()
+              .get(30, TimeUnit.SECONDS);
+
+      assertThat(signedIn.getPrincipal()).isInstanceOf(SignedInPerson.class);
+      assertThat(moved.keyRequests()).isEqualTo(1);
+      assertThat(issuer.keyRequests()).isEqualTo(1);
+    }
+  }
+
+  /**
+   * R3-2: the issuer alone names another decoder. The token and key endpoints stay; a token that
+   * names the new issuer is accepted, which the kept decoder, checking the earlier issuer, would
+   * refuse. The new decoder fetches the keys for itself.
+   */
+  @Test
+  void aRegistrationThatNamesOnlyAnotherIssuerGetsADecoderThatChecksThatIssuer() throws Exception {
+    issuer.tokenAnswer(tokenAnswer(idToken -> {}));
+    assertThat(manager.authenticate(callback()).toFuture().get(30, TimeUnit.SECONDS)).isNotNull();
+
+    String renamed = issuer.issuerUri() + "-renamed";
+    issuer.tokenAnswer(tokenAnswer(idToken -> idToken.issuer(renamed)));
+    Authentication signedIn =
+        manager
+            .authenticate(callback(CLIENT, renamed, issuer.tokenEndpoint(), issuer.keyEndpoint()))
+            .toFuture()
+            .get(30, TimeUnit.SECONDS);
+
+    assertThat(signedIn.getPrincipal()).isInstanceOf(SignedInPerson.class);
+    assertThat(issuer.keyRequests()).isEqualTo(2);
+
+    // The new decoder checks the new issuer only: a token naming the earlier one is now refused.
+    issuer.tokenAnswer(tokenAnswer(idToken -> {}));
+    assertThatThrownBy(() ->
+            manager
+                .authenticate(
+                    callback(CLIENT, renamed, issuer.tokenEndpoint(), issuer.keyEndpoint()))
+                .block(ANSWER))
+        .isInstanceOf(OAuth2AuthenticationException.class)
+        .matches(failure -> !CredentialValidation.couldNotVerify(failure));
+  }
+
+  /**
+   * R3-2: the client alone names another decoder. A token for the new client is accepted, which the
+   * kept decoder, checking the earlier client as the audience, would refuse.
+   */
+  @Test
+  void aRegistrationThatNamesOnlyAnotherClientGetsADecoderThatChecksThatClient() throws Exception {
+    issuer.tokenAnswer(tokenAnswer(idToken -> {}));
+    assertThat(manager.authenticate(callback()).toFuture().get(30, TimeUnit.SECONDS)).isNotNull();
+
+    String client = "owl-mast-web-2";
+    issuer.tokenAnswer(tokenAnswer(idToken -> idToken.audience(client)));
+    Authentication signedIn =
+        manager
+            .authenticate(
+                callback(client, issuer.issuerUri(), issuer.tokenEndpoint(), issuer.keyEndpoint()))
+            .toFuture()
+            .get(30, TimeUnit.SECONDS);
+
+    assertThat(signedIn.getPrincipal()).isInstanceOf(SignedInPerson.class);
+    assertThat(issuer.keyRequests()).isEqualTo(2);
+
+    // The new decoder checks the new client only: a token for the earlier one is now refused.
+    issuer.tokenAnswer(tokenAnswer(idToken -> {}));
+    assertThatThrownBy(() ->
+            manager
+                .authenticate(
+                    callback(
+                        client, issuer.issuerUri(), issuer.tokenEndpoint(), issuer.keyEndpoint()))
+                .block(ANSWER))
+        .isInstanceOf(OAuth2AuthenticationException.class)
+        .matches(failure -> !CredentialValidation.couldNotVerify(failure));
+  }
+
+  /**
+   * R3-2: the token endpoint is not part of the decoder's name. A document that moves only the
+   * token endpoint keeps the decoder: the code is exchanged at the new endpoint and no key is
+   * fetched again.
+   */
+  @Test
+  void aRegistrationThatNamesOnlyAnotherTokenEndpointKeepsTheDecoder() throws Exception {
+    issuer.tokenAnswer(tokenAnswer(idToken -> {}));
+    assertThat(manager.authenticate(callback()).toFuture().get(30, TimeUnit.SECONDS)).isNotNull();
+
+    try (SigningIssuer moved = new SigningIssuer()) {
+      moved.tokenAnswer(tokenAnswer(idToken -> {}));
+      Authentication signedIn =
+          manager
+              .authenticate(
+                  callback(CLIENT, issuer.issuerUri(), moved.tokenEndpoint(), issuer.keyEndpoint()))
+              .toFuture()
+              .get(30, TimeUnit.SECONDS);
+
+      assertThat(signedIn.getPrincipal()).isInstanceOf(SignedInPerson.class);
+      assertThat(moved.tokenRequests()).isEqualTo(1);
+      assertThat(issuer.tokenRequests()).isEqualTo(1);
+      assertThat(issuer.keyRequests()).isEqualTo(1);
+      assertThat(moved.keyRequests()).isZero();
+    }
+  }
+
   /** A key the issuer starts signing ID tokens with is fetched when a token names it. */
   @Test
   void anIdTokenNamingAKeyTheDecoderDoesNotHoldCausesAFetch() throws Exception {
@@ -266,24 +386,30 @@ class SignInManagerTest {
 
   /** The same return, with the registration a discovery document of {@code provider} gives. */
   private static OAuth2AuthorizationCodeAuthenticationToken callback(SigningIssuer provider) {
+    return callback(CLIENT, provider.issuerUri(), provider.tokenEndpoint(), provider.keyEndpoint());
+  }
+
+  /** The same return, with a registration that names exactly these four values. */
+  private static OAuth2AuthorizationCodeAuthenticationToken callback(
+      String client, String issuerUri, String tokenEndpoint, String keyEndpoint) {
     ClientRegistration registration =
         ClientRegistration.withRegistrationId(DiscoveredClientRegistrations.REGISTRATION_ID)
-            .clientId(CLIENT)
+            .clientId(client)
             .clientSecret("synthetic")
             .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
             .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
             .redirectUri(REDIRECT)
             .scope("openid")
-            .authorizationUri(provider.issuerUri() + "/auth")
-            .tokenUri(provider.tokenEndpoint())
-            .jwkSetUri(provider.keyEndpoint())
-            .issuerUri(provider.issuerUri())
+            .authorizationUri(issuerUri + "/auth")
+            .tokenUri(tokenEndpoint)
+            .jwkSetUri(keyEndpoint)
+            .issuerUri(issuerUri)
             .userNameAttributeName("sub")
             .build();
     OAuth2AuthorizationRequest request =
         OAuth2AuthorizationRequest.authorizationCode()
-            .clientId(CLIENT)
-            .authorizationUri(provider.issuerUri() + "/auth")
+            .clientId(client)
+            .authorizationUri(issuerUri + "/auth")
             .redirectUri(REDIRECT)
             .scope("openid")
             .state("synthetic-state")
@@ -304,9 +430,14 @@ class SignInManagerTest {
   }
 
   private static String tokenAnswer(SigningIssuer provider, Consumer<JWTClaimsSet.Builder> change) {
+    return idTokenAnswer(provider.sign(idTokenClaims(provider, change)));
+  }
+
+  /** The token endpoint's answer that carries this signed ID token. */
+  private static String idTokenAnswer(String idToken) {
     return "{\"access_token\":\"synthetic-access\",\"token_type\":\"Bearer\",\"expires_in\":300,"
         + "\"refresh_token\":\"synthetic-refresh\",\"id_token\":\""
-        + provider.sign(idTokenClaims(provider, change))
+        + idToken
         + "\"}";
   }
 

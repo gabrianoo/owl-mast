@@ -26,6 +26,11 @@ export function readFrontendFile(relativePath: string): string {
   return readFileSync(resolve(FRONTEND_ROOT, relativePath), 'utf8');
 }
 
+/** A file of the repository outside the frontend package, by its path from the repository root. */
+export function readRepositoryFile(relativePath: string): string {
+  return readFileSync(resolve(FRONTEND_ROOT, '..', relativePath), 'utf8');
+}
+
 export interface DesignTokens {
   colors: Record<string, string>;
   typography: Record<string, Record<string, string>>;

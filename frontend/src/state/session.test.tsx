@@ -5,6 +5,7 @@ import type { ApiClient, ApiResult } from '../api/client.ts';
 import { ApiProvider, useApi } from '../api/ApiProvider.tsx';
 import { createSessionLink, type SessionAnswer } from '../api/session.ts';
 import { App } from '../app/App.tsx';
+import { readRepositoryFile } from '../testing/planning.ts';
 import { SYNTHETIC_CSRF, SYNTHETIC_PERSON, signedIn, signedOut, withSession, type SessionScript } from '../testing/session.ts';
 import { SessionControl } from '../app/shell/SessionControl.tsx';
 import { SESSION_READ_TIMEOUT_MS, SessionProvider, nextSessionState, useSession, type SessionState } from './session.tsx';
@@ -32,6 +33,23 @@ async function settle() {
 afterEach(() => {
   vi.useRealTimers();
 });
+
+const BACKEND_WEB = 'backend/src/main/java/com/aisquad/owlmast/access/adapter/web';
+
+/**
+ * The time the backend gives the identity provider to answer a renewal, read from the backend's
+ * source: `CredentialValidation.PROVIDER_TIMEOUT`, which `SessionKeeper` applies to the renewal.
+ */
+function backendProviderTimeoutMs(): number {
+  const declared = /Duration PROVIDER_TIMEOUT = Duration\.ofSeconds\((\d+)\);/.exec(
+    readRepositoryFile(`${BACKEND_WEB}/CredentialValidation.java`),
+  );
+  if (!declared?.[1]) throw new Error('"Duration PROVIDER_TIMEOUT = Duration.ofSeconds(N);" was not found in CredentialValidation.java: adjust this reader to how the value is declared now');
+  if (!readRepositoryFile(`${BACKEND_WEB}/SessionKeeper.java`).includes('.timeout(CredentialValidation.PROVIDER_TIMEOUT)')) {
+    throw new Error('".timeout(CredentialValidation.PROVIDER_TIMEOUT)" was not found in SessionKeeper.java: check which value bounds the renewal now and adjust this reader');
+  }
+  return Number(declared[1]) * 1000;
+}
 
 describe('session transitions', () => {
   const person = SYNTHETIC_PERSON;
@@ -266,8 +284,11 @@ describe('sign-out while the session cannot be confirmed (identity provider outa
     }
   });
 
-  it('waits longer for the session read than the 10 s the backend gives a silent identity provider, so the late 503 still offers Sign out', async () => {
-    const BACKEND_PROVIDER_TIMEOUT_MS = 10_000;
+  it('waits longer for the session read than the time the backend gives a silent identity provider, so the late 503 still offers Sign out', async () => {
+    // The backend's own value (CredentialValidation.PROVIDER_TIMEOUT), not a copy of it: raising it
+    // to the shell's limit or above fails here. SignInIT measures the 503 itself against the
+    // shell's limit, which also covers the work the backend does around the renewal.
+    const BACKEND_PROVIDER_TIMEOUT_MS = backendProviderTimeoutMs();
     expect(SESSION_READ_TIMEOUT_MS).toBeGreaterThan(BACKEND_PROVIDER_TIMEOUT_MS);
     vi.useFakeTimers();
     // The backend answers once it has given up on the provider; an aborted read is never answered.

@@ -249,11 +249,21 @@ class IdentityDiscoveryTest {
     StepVerifier.create(discovery.metadata())
         .assertNext(metadata -> assertThat(metadata.tokenEndpoint()).isEqualTo(address + "/token"))
         .verifyComplete();
+    // PR #194 review, R3-3: a document this class refuses is treated like a read that failed,
+    // whatever it is refused for: another issuer, or an endpoint that is not http(s).
+    publish("https://other.example/realms/x", address + "/auth", address + "/token2", address);
+    StepVerifier.create(discovery.metadata())
+        .assertNext(metadata -> assertThat(metadata.tokenEndpoint()).isEqualTo(address + "/token"))
+        .verifyComplete();
+    publish(address, address + "/auth", "ftp://id.example/token", address + "/certs");
+    StepVerifier.create(discovery.metadata())
+        .assertNext(metadata -> assertThat(metadata.tokenEndpoint()).isEqualTo(address + "/token"))
+        .verifyComplete();
     server.disposeNow();
     StepVerifier.create(discovery.metadata())
         .assertNext(metadata -> assertThat(metadata.tokenEndpoint()).isEqualTo(address + "/token"))
         .verifyComplete();
-    assertThat(requests).hasValue(2);
+    assertThat(requests).hasValue(4);
   }
 
   /** A read that failed is tried again after the retry interval, not after the kept interval. */

@@ -76,7 +76,9 @@ export const SESSION_POLL_MS = 60_000;
  * How long a session read may take. It must stay above the 10 s the backend gives the identity
  * provider to answer a renewal: against a provider that accepts the request and never answers, the
  * backend writes its 503 with the CSRF token only after those 10 s, and a shell that gave up at the
- * same moment would not learn that a session is kept and would offer no sign-out.
+ * same moment would not learn that a session is kept and would offer no sign-out. Two tests hold
+ * the two values together: session.test.tsx reads the backend's value from its source, and the
+ * backend's SignInIT reads this one and measures the 503 against it.
  */
 export const SESSION_READ_TIMEOUT_MS = 15_000;
 
